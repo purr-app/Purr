@@ -1,0 +1,71 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-canvas: #f7f7fb;
+    --color-surface: #ffffff;
+    --color-surface-raised: #f0f0f5;
+    --color-surface-strong: #e4e4eb;
+    --color-surface-hover: #dedee7;
+    --color-foreground: #1b1b22;
+    --color-muted: #666976;
+    --color-muted-foreground: #7b7e8b;
+    --color-border: #dedfe7;
+    --color-border-strong: #b9bbc6;
+    --color-primary: #005ac2;
+    --color-primary-foreground: #ffffff;
+    --color-success: #00885b;
+  }
+
+  :root.dark {
+    --color-canvas: #12131a;
+    --color-surface: #1a1b22;
+    --color-surface-raised: #1e1f26;
+    --color-surface-strong: #292931;
+    --color-surface-hover: #33343c;
+    --color-foreground: #e3e1ec;
+    --color-muted: #c2c6d6;
+    --color-muted-foreground: #8c909f;
+    --color-border: #33343c;
+    --color-border-strong: #424754;
+    --color-primary: #adc6ff;
+    --color-primary-foreground: #002e6a;
+    --color-success: #4edea3;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    @apply min-h-screen;
+  }
+
+  body {
+    @apply m-0 bg-canvas font-sans text-foreground antialiased;
+    overscroll-behavior: none;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+}
+
+@layer utilities {
+  .focus-ring {
+    outline: none;
+  }
+
+  .focus-ring:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+  }
+}
