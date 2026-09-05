@@ -1,4 +1,4 @@
-import { SendHorizonal } from "lucide-react";
+import { SendHorizontal } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
@@ -28,27 +28,26 @@ export function RequestComposer({ draft, onDraftChange, onSend }: RequestCompose
   };
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-surface shadow-panel" aria-label="Request composer">
+    <section className="overflow-hidden rounded-ui-xl border border-border-default bg-purr-surface shadow-panel" aria-label="Request composer">
       <form
-        className="p-2.5"
+        className="p-ui-2-5"
         onSubmit={(event) => {
           event.preventDefault();
           onSend();
         }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-ui-3">
           <HttpMethodPicker value={draft.method} onValueChange={(method) => onDraftChange({ ...draft, method })} />
           <Input
-            className="min-w-0 flex-1 font-mono text-body-sm sm:text-body-md"
+            className="min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
             value={draft.url}
             onChange={(event) => onDraftChange({ ...draft, url: event.target.value })}
             aria-label="Request URL"
             spellCheck="false"
           />
-          <Button className="h-10 bg-[#9fbaf8] px-4 text-[#102c5c] hover:bg-[#b3c8ff] active:bg-[#90acf0] sm:min-w-28" type="submit">
+          <Button className="h-control-lg px-ui-4" type="submit">
             Send
-          <SendHorizonal size={12} className="text-[#102c5c]"/>
-            {/*<KbdGroup className="hidden text-[#102c5c] sm:inline-flex" kbdClassName="border-[#6e8dce] bg-[#89a7e8] text-[#102c5c] dark:border-[#6e8dce] dark:bg-[#89a7e8]" keys={["mod", "enter"]} />*/}
+            <SendHorizontal className="size-ui-4" aria-hidden="true" />
           </Button>
         </div>
       </form>

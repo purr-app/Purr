@@ -16,6 +16,7 @@ export type KeyboardShortcut = {
 
 export const defaultKeyboardShortcuts = {
   openMethodSelector: { hotkey: "mod+shift+m", keys: ["mod", "shift", "m"] },
+  dismissPopover: { hotkey: "esc", keys: ["escape"] },
   sendRequest: { hotkey: "mod+enter", keys: ["mod", "enter"] },
   pasteCurl: { hotkey: "mod+v", keys: ["mod", "v"] },
   importRequest: { hotkey: "mod+o", keys: ["mod", "o"] },

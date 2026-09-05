@@ -24,20 +24,20 @@ export function RequestWorkbench() {
   }, [focusComposer]);
 
   return (
-    <div className="flex min-h-screen flex-col bg-canvas">
-      <main className="mx-auto flex w-full max-w-[1360px] flex-1 flex-col px-4 pb-6 pt-6 sm:px-7 sm:pt-8">
+    <div className="flex min-h-screen flex-col bg-purr-base">
+      <main className="mx-auto flex w-full max-w-content flex-1 flex-col px-ui-4 pb-ui-6 pt-ui-6 sm:px-ui-7 sm:pt-ui-8">
         <div className="shrink-0">
           <RequestTabBar />
-          <div ref={composerRef} className="mt-3">
+          <div ref={composerRef} className="mt-ui-3">
             <RequestComposer draft={draft} onDraftChange={setDraft} onSend={focusComposer} />
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center pb-16 pt-10">
+        <div className="flex flex-1 items-center justify-center pb-ui-16 pt-ui-10">
           <EmptyResponse onPasteUrl={pasteCurl} />
         </div>
       </main>
-      <footer className="pointer-events-none flex h-10 items-center justify-end px-7 text-body-xs text-muted-foreground">
+      <footer className="pointer-events-none flex h-control-lg items-center justify-end px-ui-7 font-code text-ui-xs text-content-tertiary">
         Purr v0.0.0
       </footer>
     </div>

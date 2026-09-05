@@ -1,32 +1,21 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 
-export type Theme = "light" | "dark";
+export type Theme = "dark";
 
 type ThemeContextValue = {
   theme: Theme;
-  setTheme: (theme: Theme) => void;
-  toggleTheme: () => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
-const storageKey = "purr-theme";
+const purrTheme: Theme = "dark";
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const storedTheme = window.localStorage.getItem(storageKey);
-    return storedTheme === "light" ? "light" : "dark";
-  });
-
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    document.documentElement.style.colorScheme = theme;
-    window.localStorage.setItem(storageKey, theme);
-  }, [theme]);
+    document.documentElement.classList.add(purrTheme);
+    document.documentElement.style.colorScheme = purrTheme;
+  }, []);
 
-  const value = useMemo(
-    () => ({ theme, setTheme, toggleTheme: () => setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark")) }),
-    [theme],
-  );
+  const value = useMemo(() => ({ theme: purrTheme }), []);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

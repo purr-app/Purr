@@ -24,15 +24,21 @@ export function EmptyResponse({ onPasteUrl }: EmptyResponseProps) {
 
   return (
     <section className="flex flex-col items-center text-center" aria-label="Empty response state">
-      <div className="mb-4 grid size-16 place-items-center rounded-xl border border-border bg-surface-strong p-3.5">
-        <img className="size-8" src="/purr.svg" alt="" aria-hidden="true" />
+      <div className="mb-ui-4 grid size-ui-16 place-items-center rounded-ui-xl border border-border-default bg-purr-elevated p-ui-3-5">
+        <img className="size-ui-8" src="/purr.svg" alt="" aria-hidden="true" />
       </div>
-      <h1 className="m-0 text-base font-medium text-muted">Send a request to inspect its response.</h1>
-      <p className="mt-1 text-sm text-muted-foreground">No projects, collections, or environments required. Just raw wire speed.</p>
-      <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+      <h1 className="m-ui-0 text-ui-lg font-medium text-content-primary">Send a request to inspect its response.</h1>
+      <p className="mt-ui-1 text-ui-md text-content-secondary">No projects, collections, or environments required. Just raw wire speed.</p>
+      <div className="mt-ui-5 flex flex-wrap items-center justify-center gap-ui-2-5">
         {quickActions.map(({ label, shortcut, icon: Icon, onClick }) => (
-          <Button key={label} className="h-10 gap-2.5 rounded-lg px-4 text-[15px]" onClick={onClick} variant="secondary" type="button">
-            <Icon className="size-[18px]" aria-hidden="true" />
+          <Button
+            key={label}
+            className="h-control-lg gap-ui-2-5 rounded-ui-lg px-ui-4 text-ui-lg"
+            onClick={onClick}
+            variant="secondary"
+            type="button"
+          >
+            <Icon className="size-ui-5" aria-hidden="true" />
             {label}
             <KbdGroup keys={shortcut.keys} />
           </Button>

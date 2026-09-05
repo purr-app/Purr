@@ -9,14 +9,18 @@ type RequestSectionTabsProps = {
 
 export function RequestSectionTabs({ activeSection, onSectionChange }: RequestSectionTabsProps) {
   return (
-    <div className="flex min-h-10 flex-wrap items-center gap-1 border-t border-border bg-surface-raised px-2.5 py-1.5" role="tablist" aria-label="Request options">
+    <div
+      className="flex min-h-control-md flex-wrap items-center gap-ui-1 border-t border-border-default bg-purr-elevated px-ui-2-5 py-ui-1-5"
+      role="tablist"
+      aria-label="Request options"
+    >
       {requestEditorSections.map((section) => {
         return (
           <Button
             key={section.id}
             className={cn(
-              "h-7 px-2 text-xs font-normal leading-3",
-              activeSection === section.id ? "text-foreground" : "text-muted opacity-60",
+              "h-control-sm px-ui-2 text-ui-2xs font-normal",
+              activeSection === section.id ? "bg-purr-highlight text-content-primary" : "text-content-secondary opacity-ui-inactive",
             )}
             variant="ghost"
             size="sm"

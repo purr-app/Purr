@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type TransitionEvent } from "react";
 
 import { getRequestEditorSection, type RequestEditorSection } from "../model/request-editor-section";
 
@@ -14,26 +14,29 @@ export function RequestSectionPanel({ activeSection }: RequestSectionPanelProps)
   useEffect(() => {
     if (activeSection) {
       setRenderedSection(activeSection);
-      return;
     }
-
-    const removeContentTimer = window.setTimeout(() => setRenderedSection(null), 200);
-    return () => window.clearTimeout(removeContentTimer);
   }, [activeSection]);
+
+  const handleTransitionEnd = (event: TransitionEvent<HTMLDivElement>) => {
+    if (!activeSection && event.target === event.currentTarget && event.propertyName === "opacity") {
+      setRenderedSection(null);
+    }
+  };
 
   return (
     <div
-      className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${activeSection ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+      className={`grid transition-ui-expand duration-ui-normal ease-out ${activeSection ? "grid-rows-ui-expanded opacity-ui-visible" : "grid-rows-ui-collapsed opacity-ui-hidden"}`}
       aria-hidden={!activeSection}
+      onTransitionEnd={handleTransitionEnd}
     >
-      <div className="min-h-0 overflow-hidden">
+      <div className="min-h-ui-0 overflow-hidden">
         {section ? (
-          <section id={`request-section-${section.id}`} role="tabpanel" className="bg-surface-raised px-4 py-4 sm:px-5">
-            <div className="flex items-baseline justify-between gap-4">
-              <h2 className="m-0 text-body-md font-medium text-foreground">{section.label}</h2>
-              <p className="m-0 text-body-xs text-muted-foreground">{section.description}</p>
+          <section id={`request-section-${section.id}`} role="tabpanel" className="bg-purr-elevated px-ui-4 py-ui-4 sm:px-ui-5">
+            <div className="flex items-baseline justify-between gap-ui-4">
+              <h2 className="m-ui-0 text-ui-md font-medium text-content-primary">{section.label}</h2>
+              <p className="m-ui-0 text-ui-xs text-content-tertiary">{section.description}</p>
             </div>
-            <div className="mt-4 min-h-36 rounded-lg border border-dashed border-border-strong bg-surface-raised" />
+            <div className="mt-ui-4 min-h-panel rounded-ui-lg border border-dashed border-border-subtle bg-purr-surface" />
           </section>
         ) : null}
       </div>

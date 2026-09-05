@@ -29,14 +29,23 @@ export function getHttpMethodShortcut(method: HttpMethod) {
 export const httpMethodShortcutKeys = httpMethods.map((method) => getHttpMethodShortcut(method).hotkey).join(",");
 
 const methodStyles: Record<HttpMethod, { badge: string; text: string }> = {
-  GET: { badge: "bg-[#1f4c3d] text-[#78e0b4]", text: "text-[#78e0b4]" },
-  POST: { badge: "bg-[#354977] text-[#b8cbff]", text: "text-[#b8cbff]" },
-  PUT: { badge: "bg-[#614928] text-[#ffc36d]", text: "text-[#ffc36d]" },
-  PATCH: { badge: "bg-[#3d3930] text-[#f7c56e]", text: "text-[#f7c56e]" },
-  DELETE: { badge: "bg-[#592d32] text-[#ffb4ab]", text: "text-[#ffb4ab]" },
-  HEAD: { badge: "bg-[#343641] text-[#cbd1df]", text: "text-[#cbd1df]" },
-  OPTIONS: { badge: "bg-[#343641] text-[#cbd1df]", text: "text-[#cbd1df]" },
-  QUERY: { badge: "bg-[#234957] text-[#86d7f5]", text: "text-[#86d7f5]" },
+  GET: {
+    badge: "border border-action-emerald-border bg-action-emerald-surface text-method-get",
+    text: "text-method-get",
+  },
+  POST: {
+    badge: "border border-action-brand-border bg-action-brand-surface text-method-post",
+    text: "text-method-post",
+  },
+  PUT: { badge: "bg-purr-highlight text-method-put", text: "text-method-put" },
+  PATCH: { badge: "bg-purr-highlight text-method-patch", text: "text-method-patch" },
+  DELETE: { badge: "bg-purr-highlight text-method-delete", text: "text-method-delete" },
+  HEAD: { badge: "bg-purr-highlight text-method-head", text: "text-method-head" },
+  OPTIONS: { badge: "bg-purr-highlight text-method-options", text: "text-method-options" },
+  QUERY: {
+    badge: "border border-action-brand-border bg-action-brand-surface text-action-brand",
+    text: "text-action-brand",
+  },
 };
 
 export function getHttpMethodStyle(method: HttpMethod) {

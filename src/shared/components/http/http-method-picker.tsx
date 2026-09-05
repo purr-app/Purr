@@ -34,71 +34,77 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
     [open, onValueChange],
   );
 
-  useHotkeys("esc", () => setOpen(false), { enabled: open, enableOnFormTags: true, preventDefault: true }, [open]);
+  useHotkeys(
+    keyboardShortcuts.dismissPopover.hotkey,
+    () => setOpen(false),
+    { enabled: open, enableOnFormTags: true, preventDefault: true },
+    [open],
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           className={cn(
-            "focus-ring flex h-10 shrink-0 items-center rounded-md border border-transparent bg-surface-strong px-3 font-mono text-body-sm font-semibold hover:bg-surface-hover",
+            "ui-focus-ring flex h-control-lg shrink-0 items-center rounded-ui-md border border-purr-elevated bg-purr-elevated px-ui-3 font-code text-ui-sm font-semibold transition-colors duration-ui-fast hover:bg-purr-highlight",
             getHttpMethodStyle(value).text,
             className,
           )}
           type="button"
-          aria-label="Choose HTTP method (Command Shift M)"
+          aria-label="Choose HTTP method"
         >
           {value}
         </button>
       </PopoverTrigger>
 
       <PopoverContent
-          className="z-50 w-36 rounded-md border border-border-strong bg-surface-raised p-1 shadow-[0_14px_32px_rgba(0,0,0,0.36)]"
-          side="bottom"
-          align="start"
-          sideOffset={10}
-        >
-          <div role="menu" aria-label="HTTP methods" className="space-y-1">
-            {httpMethodDefinitions.map((method) => {
-              const isSelected = method.value === value;
-              const methodStyle = getHttpMethodStyle(method.value);
+        className="z-50 mt-ui-2 w-method-popover rounded-ui-md border border-border-default bg-purr-overlay p-ui-1 shadow-popover"
+        side="bottom"
+        align="start"
+      >
+        <div role="menu" aria-label="HTTP methods" className="space-y-ui-1-5">
+          {httpMethodDefinitions.map((method) => {
+            const isSelected = method.value === value;
+            const methodStyle = getHttpMethodStyle(method.value);
 
-              return (
-                <button
-                  key={method.value}
+            return (
+              <button
+                key={method.value}
+                className={cn(
+                  "ui-focus-ring flex h-control-sm w-full items-center justify-between rounded-ui-sm px-ui-1-5 text-left transition-colors duration-ui-fast",
+                  isSelected ? "bg-purr-highlight" : "hover:bg-purr-elevated",
+                )}
+                type="button"
+                role="menuitemradio"
+                aria-checked={isSelected}
+                onClick={() => selectMethod(method.value)}
+              >
+                <span
                   className={cn(
-                    "focus-ring flex h-7 w-full items-center justify-between rounded px-1.5 text-left transition-colors",
-                    isSelected ? "bg-surface-hover" : "hover:bg-surface-strong",
+                    "min-w-method-badge rounded-ui-sm px-ui-1 py-ui-1 text-center font-code text-ui-xs font-medium leading-none",
+                    methodStyle.badge,
                   )}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={isSelected}
-                  onClick={() => selectMethod(method.value)}
                 >
-                  <span
-                    className={cn("min-w-14 rounded px-1 py-1 text-center font-mono text-sm  leading-none", methodStyle.badge)}
-                    title={method.title}
-                  >
-                    {method.value}
-                  </span>
-                  <span className="font-mono text-[10px] font-normal text-muted-foreground" aria-hidden="true">
-                    {getHttpMethodShortcut(method.value).keys[0]}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                  {method.value}
+                </span>
+                <span className="font-code text-ui-2xs font-normal text-content-tertiary" aria-hidden="true">
+                  {getHttpMethodShortcut(method.value).keys[0]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
 
-          {onCustomMethod ? (
-            <button
-              className="focus-ring mt-1 flex h-7 w-full items-center gap-2 rounded border-t border-border px-1.5 pt-1 text-[10px] text-muted-foreground hover:text-foreground"
-              type="button"
-              onClick={onCustomMethod}
-            >
-              <ListFilter className="size-3.5" aria-hidden="true" />
-              Custom HTTP method
-            </button>
-          ) : null}
+        {onCustomMethod ? (
+          <button
+            className="ui-focus-ring mt-ui-1 flex h-control-sm w-full items-center gap-ui-2 rounded-ui-sm border-t border-border-subtle px-ui-1-5 pt-ui-1 font-ui text-ui-2xs text-content-tertiary transition-colors duration-ui-fast hover:text-content-primary"
+            type="button"
+            onClick={onCustomMethod}
+          >
+            <ListFilter className="size-ui-3-5" aria-hidden="true" />
+            Custom HTTP method
+          </button>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
