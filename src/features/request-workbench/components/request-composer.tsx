@@ -1,11 +1,14 @@
-import { Plus, SendHorizonal } from "lucide-react";
+import { SendHorizonal } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
 import { HttpMethodPicker } from "../../../shared/components/http/http-method-picker";
+import { useClickOutside } from "../../../shared/hooks/use-click-outside";
 import type { RequestDraft } from "../model/request";
-
-const requestSections = ["Query", "Header", "Auth", "Body"];
+import { RequestSectionPanel } from "./request-section-panel";
+import { RequestSectionTabs } from "./request-section-tabs";
+import type { RequestEditorSection } from "../model/request-editor-section";
 
 type RequestComposerProps = {
   draft: RequestDraft;
@@ -14,6 +17,16 @@ type RequestComposerProps = {
 };
 
 export function RequestComposer({ draft, onDraftChange, onSend }: RequestComposerProps) {
+  const [activeSection, setActiveSection] = useState<RequestEditorSection | null>(null);
+  const sectionControlsRef = useRef<HTMLDivElement>(null);
+
+  const closeSection = useCallback(() => setActiveSection(null), []);
+  useClickOutside(sectionControlsRef, closeSection, activeSection !== null);
+
+  const toggleSection = (section: RequestEditorSection) => {
+    setActiveSection((currentSection) => (currentSection === section ? null : section));
+  };
+
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-surface shadow-panel" aria-label="Request composer">
       <form
@@ -40,15 +53,9 @@ export function RequestComposer({ draft, onDraftChange, onSend }: RequestCompose
         </div>
       </form>
 
-      <div className="flex min-h-10 flex-wrap items-center gap-1 border-t border-border bg-surface-raised px-2.5 py-1.5">
-        <div className="flex flex-wrap items-center gap-1">
-          {requestSections.map((section) => (
-            <Button key={section} className="h-7 px-2 text-body-sm" variant="ghost" size="sm" type="button">
-              <Plus className="size-3.5" aria-hidden="true" />
-              {section}
-            </Button>
-          ))}
-        </div>
+      <div ref={sectionControlsRef}>
+        <RequestSectionTabs activeSection={activeSection} onSectionChange={toggleSection} />
+        <RequestSectionPanel activeSection={activeSection} />
       </div>
     </section>
   );
