@@ -5,12 +5,14 @@ import { requestEditorSections, type RequestEditorSection } from "../model/reque
 type RequestSectionTabsProps = {
   activeSection: RequestEditorSection | null;
   onSectionChange: (section: RequestEditorSection) => void;
+  headerCount: number;
+  hasHeaderError: boolean;
 };
 
-export function RequestSectionTabs({ activeSection, onSectionChange }: RequestSectionTabsProps) {
+export function RequestSectionTabs({ activeSection, onSectionChange, headerCount, hasHeaderError }: RequestSectionTabsProps) {
   return (
     <div
-      className="flex min-h-control-md flex-wrap items-center gap-ui-1 bg-purr-elevated px-ui-2-5 py-ui-1-5"
+      className="flex min-h-control-md flex-wrap items-center gap-ui-1 bg-purr-elevated px-ui-2 py-ui-1-5"
       role="tablist"
       aria-label="Request options"
     >
@@ -28,6 +30,8 @@ export function RequestSectionTabs({ activeSection, onSectionChange }: RequestSe
             onClick={() => onSectionChange(section.id)}
           >
             {section.label}
+            {section.id === "headers" && hasHeaderError ? <span className="size-ui-2 rounded-full bg-method-delete" aria-label="Headers contain validation errors" /> : null}
+            {section.id === "headers" && !hasHeaderError && headerCount > 0 ? <span className="font-code text-action-brand">{headerCount}</span> : null}
           </Button>
         );
       })}

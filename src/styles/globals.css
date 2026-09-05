@@ -134,6 +134,7 @@
     --panel-min-height: 9rem;
     --content-max-width: 85rem;
     --method-popover-width: 9rem;
+    --header-validation-popover-width: 20rem;
 
     --radius-sm: 0.25rem;
     --radius-md: 0.375rem;
@@ -195,6 +196,18 @@
 }
 
 @layer components {
+  .ui-popover-match-anchor {
+    width: var(--radix-popover-trigger-width);
+  }
+
+  .ui-drop-indicator {
+    box-shadow: inset 0 calc(var(--border-width-emphasis) * -1) 0 var(--action-emerald);
+  }
+
+  .ui-header-validation-popover {
+    width: var(--header-validation-popover-width);
+  }
+
   .ui-focus-ring {
     outline: none;
   }

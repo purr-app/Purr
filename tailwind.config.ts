@@ -90,6 +90,7 @@ export default {
         panel: "var(--panel-min-height)",
         content: "var(--content-max-width)",
         "method-popover": "var(--method-popover-width)",
+        "header-validation-popover": "var(--header-validation-popover-width)",
       },
       borderRadius: {
         DEFAULT: "var(--radius-md)",

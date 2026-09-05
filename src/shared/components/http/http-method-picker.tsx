@@ -54,7 +54,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
           aria-label="Choose HTTP method"
         >
           {value}
-          <ChevronsUpDown className="size-ui-3-5 text-content-tertiary" aria-hidden="true" />
+          <ChevronsUpDown className={cn("size-ui-3-5", getHttpMethodStyle(value).text)} aria-hidden="true" />
         </button>
       </PopoverTrigger>
 

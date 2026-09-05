@@ -5,7 +5,7 @@ import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
 import { HttpMethodPicker } from "../../../shared/components/http/http-method-picker";
 import { useClickOutside } from "../../../shared/hooks/use-click-outside";
-import type { RequestDraft } from "../model/request";
+import { getEnabledRequestHeaderCount, hasRequestHeaderValidationError, type RequestDraft } from "../model/request";
 import { RequestSectionPanel } from "./request-section-panel";
 import { RequestSectionTabs } from "./request-section-tabs";
 import type { RequestEditorSection } from "../model/request-editor-section";
@@ -21,7 +21,12 @@ export function RequestComposer({ draft, onDraftChange, onSend }: RequestCompose
   const sectionControlsRef = useRef<HTMLDivElement>(null);
 
   const closeSection = useCallback(() => setActiveSection(null), []);
-  useClickOutside(sectionControlsRef, closeSection, activeSection !== null);
+  useClickOutside(
+    sectionControlsRef,
+    closeSection,
+    activeSection !== null,
+    (target) => target instanceof Element && target.closest("[data-request-section-popover]") !== null,
+  );
 
   const toggleSection = (section: RequestEditorSection) => {
     setActiveSection((currentSection) => (currentSection === section ? null : section));
@@ -54,8 +59,13 @@ export function RequestComposer({ draft, onDraftChange, onSend }: RequestCompose
       </form>
 
       <div ref={sectionControlsRef}>
-        <RequestSectionTabs activeSection={activeSection} onSectionChange={toggleSection} />
-        <RequestSectionPanel activeSection={activeSection} />
+        <RequestSectionTabs
+          activeSection={activeSection}
+          onSectionChange={toggleSection}
+          headerCount={getEnabledRequestHeaderCount(draft.headers)}
+          hasHeaderError={hasRequestHeaderValidationError(draft.headers)}
+        />
+        <RequestSectionPanel activeSection={activeSection} draft={draft} onDraftChange={onDraftChange} />
       </div>
     </section>
   );
