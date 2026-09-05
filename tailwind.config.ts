@@ -90,7 +90,6 @@ export default {
         panel: "var(--panel-min-height)",
         content: "var(--content-max-width)",
         "method-popover": "var(--method-popover-width)",
-        "method-badge": "var(--method-badge-min-width)",
       },
       borderRadius: {
         DEFAULT: "var(--radius-md)",
@@ -102,6 +101,7 @@ export default {
       borderWidth: {
         DEFAULT: "var(--border-width-hairline)",
         hairline: "var(--border-width-hairline)",
+        emphasis: "var(--border-width-emphasis)",
       },
       boxShadow: {
         panel: "var(--shadow-panel)",
@@ -120,6 +120,7 @@ export default {
         "ui-sm": ["var(--font-size-sm)", { lineHeight: "var(--line-height-sm)" }],
         "ui-md": ["var(--font-size-md)", { lineHeight: "var(--line-height-md)" }],
         "ui-lg": ["var(--font-size-lg)", { lineHeight: "var(--line-height-lg)" }],
+        "ui-xl": ["var(--font-size-xl)", { lineHeight: "var(--line-height-xl)" }],
       },
       fontWeight: {
         normal: "var(--font-weight-normal)",

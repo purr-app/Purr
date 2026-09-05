@@ -33,9 +33,10 @@ export function EmptyResponse({ onPasteUrl }: EmptyResponseProps) {
         {quickActions.map(({ label, shortcut, icon: Icon, onClick }) => (
           <Button
             key={label}
-            className="h-control-lg gap-ui-2-5 rounded-ui-lg px-ui-4 text-ui-lg"
+            className="gap-ui-2-5 rounded-ui-lg"
             onClick={onClick}
             variant="secondary"
+            size="lg"
             type="button"
           >
             <Icon className="size-ui-5" aria-hidden="true" />

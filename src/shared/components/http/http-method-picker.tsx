@@ -1,4 +1,4 @@
-import { ListFilter } from "lucide-react";
+import { Check, ChevronsUpDown, PencilLine } from "lucide-react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useState } from "react";
 
@@ -46,7 +46,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
       <PopoverTrigger asChild>
         <button
           className={cn(
-            "ui-focus-ring flex h-control-lg shrink-0 items-center rounded-ui-md border border-purr-elevated bg-purr-elevated px-ui-3 font-code text-ui-sm font-semibold transition-colors duration-ui-fast hover:bg-purr-highlight",
+            "ui-focus-ring flex h-control-lg shrink-0 items-center gap-ui-1 rounded-ui-md px-ui-2 font-code text-ui-xl font-normal transition-colors duration-ui-fast hover:bg-purr-highlight",
             getHttpMethodStyle(value).text,
             className,
           )}
@@ -54,6 +54,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
           aria-label="Choose HTTP method"
         >
           {value}
+          <ChevronsUpDown className="size-ui-3-5 text-content-tertiary" aria-hidden="true" />
         </button>
       </PopoverTrigger>
 
@@ -62,7 +63,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
         side="bottom"
         align="start"
       >
-        <div role="menu" aria-label="HTTP methods" className="space-y-ui-1-5">
+        <div role="menu" aria-label="HTTP methods" className="space-y-ui-1">
           {httpMethodDefinitions.map((method) => {
             const isSelected = method.value === value;
             const methodStyle = getHttpMethodStyle(method.value);
@@ -71,7 +72,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
               <button
                 key={method.value}
                 className={cn(
-                  "ui-focus-ring flex h-control-sm w-full items-center justify-between rounded-ui-sm px-ui-1-5 text-left transition-colors duration-ui-fast",
+                  "ui-focus-ring flex h-control-sm w-full items-center gap-ui-2 rounded-ui-sm px-ui-1 text-left transition-colors duration-ui-fast",
                   isSelected ? "bg-purr-highlight" : "hover:bg-purr-elevated",
                 )}
                 type="button"
@@ -79,15 +80,13 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
                 aria-checked={isSelected}
                 onClick={() => selectMethod(method.value)}
               >
-                <span
-                  className={cn(
-                    "min-w-method-badge rounded-ui-sm px-ui-1 py-ui-1 text-center font-code text-ui-xs font-medium leading-none",
-                    methodStyle.badge,
-                  )}
-                >
-                  {method.value}
-                </span>
-                <span className="font-code text-ui-2xs font-normal text-content-tertiary" aria-hidden="true">
+                {isSelected ? (
+                  <Check className="size-ui-4 shrink-0 text-content-primary" aria-hidden="true" />
+                ) : (
+                  <span className="size-ui-4 shrink-0" aria-hidden="true" />
+                )}
+                <span className={cn("font-code text-ui-xl font-normal", methodStyle.text)}>{method.value}</span>
+                <span className="font-code text-ui-xs font-normal leading-none text-content-tertiary" aria-hidden="true">
                   {getHttpMethodShortcut(method.value).keys[0]}
                 </span>
               </button>
@@ -97,11 +96,11 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
 
         {onCustomMethod ? (
           <button
-            className="ui-focus-ring mt-ui-1 flex h-control-sm w-full items-center gap-ui-2 rounded-ui-sm border-t border-border-subtle px-ui-1-5 pt-ui-1 font-ui text-ui-2xs text-content-tertiary transition-colors duration-ui-fast hover:text-content-primary"
+            className="ui-focus-ring mt-ui-1 flex h-control-sm w-full items-center gap-ui-2 rounded-ui-sm border-t border-border-subtle px-ui-1 pt-ui-1 font-ui text-ui-sm font-normal text-content-tertiary transition-colors duration-ui-fast hover:text-content-primary"
             type="button"
             onClick={onCustomMethod}
           >
-            <ListFilter className="size-ui-3-5" aria-hidden="true" />
+            <PencilLine className="size-ui-3-5" aria-hidden="true" />
             Custom HTTP method
           </button>
         ) : null}

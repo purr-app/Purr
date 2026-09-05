@@ -10,7 +10,7 @@ type RequestSectionTabsProps = {
 export function RequestSectionTabs({ activeSection, onSectionChange }: RequestSectionTabsProps) {
   return (
     <div
-      className="flex min-h-control-md flex-wrap items-center gap-ui-1 border-t border-border-default bg-purr-elevated px-ui-2-5 py-ui-1-5"
+      className="flex min-h-control-md flex-wrap items-center gap-ui-1 bg-purr-elevated px-ui-2-5 py-ui-1-5"
       role="tablist"
       aria-label="Request options"
     >
@@ -18,12 +18,9 @@ export function RequestSectionTabs({ activeSection, onSectionChange }: RequestSe
         return (
           <Button
             key={section.id}
-            className={cn(
-              "h-control-sm px-ui-2 text-ui-2xs font-normal",
-              activeSection === section.id ? "bg-purr-highlight text-content-primary" : "text-content-secondary opacity-ui-inactive",
-            )}
+            className={cn(activeSection === section.id ? "bg-purr-highlight text-content-primary" : "text-content-secondary opacity-ui-inactive")}
             variant="ghost"
-            size="sm"
+            weight="normal"
             type="button"
             role="tab"
             aria-selected={activeSection === section.id}

@@ -28,24 +28,25 @@ export function RequestComposer({ draft, onDraftChange, onSend }: RequestCompose
   };
 
   return (
-    <section className="overflow-hidden rounded-ui-xl border border-border-default bg-purr-surface shadow-panel" aria-label="Request composer">
+    <section className="overflow-hidden rounded-ui-xl border-emphasis border-purr-elevated bg-purr-elevated shadow-panel" aria-label="Request composer">
       <form
-        className="p-ui-2-5"
+        className="bg-purr-base p-ui-2"
         onSubmit={(event) => {
           event.preventDefault();
           onSend();
         }}
       >
-        <div className="flex items-center gap-ui-3">
+        <div className="flex items-center gap-ui-2">
           <HttpMethodPicker value={draft.method} onValueChange={(method) => onDraftChange({ ...draft, method })} />
           <Input
             className="min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
+            variant="transparent"
             value={draft.url}
             onChange={(event) => onDraftChange({ ...draft, url: event.target.value })}
             aria-label="Request URL"
             spellCheck="false"
           />
-          <Button className="h-control-lg px-ui-4" type="submit">
+          <Button size="lg" type="submit">
             Send
             <SendHorizontal className="size-ui-4" aria-hidden="true" />
           </Button>
