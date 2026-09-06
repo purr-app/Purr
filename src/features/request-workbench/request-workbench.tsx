@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState } from "react";
 
-import { EmptyResponse } from "./components/empty-response";
 import { RequestComposer } from "./components/request-composer";
 import { RequestTabBar } from "./components/request-tab-bar";
 import { initialRequestDraft, type RequestDraft } from "./model/request";
@@ -13,16 +12,6 @@ export function RequestWorkbench() {
     composerRef.current?.querySelector<HTMLInputElement>("input")?.focus();
   }, []);
 
-  const pasteCurl = useCallback(async () => {
-    focusComposer();
-    try {
-      const clipboardText = await navigator.clipboard.readText();
-      if (clipboardText.startsWith("http")) setDraft((currentDraft) => ({ ...currentDraft, url: clipboardText }));
-    } catch {
-      // Clipboard access is optional; focusing the composer remains useful when it is unavailable.
-    }
-  }, [focusComposer]);
-
   return (
     <div className="flex min-h-screen flex-col bg-purr-base">
       <main className="mx-auto flex w-full max-w-content flex-1 flex-col px-ui-4 pb-ui-6 pt-ui-6 sm:px-ui-7 sm:pt-ui-8">
@@ -33,9 +22,6 @@ export function RequestWorkbench() {
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center pb-ui-16 pt-ui-10">
-          <EmptyResponse onPasteUrl={pasteCurl} />
-        </div>
       </main>
       <footer className="pointer-events-none flex h-control-lg items-center justify-end px-ui-7 font-code text-ui-xs text-content-tertiary">
         Purr v0.0.0

@@ -3,16 +3,17 @@ import { Button } from "../../../shared/components/ui/button";
 import { requestEditorSections, type RequestEditorSection } from "../model/request-editor-section";
 
 type RequestSectionTabsProps = {
-  activeSection: RequestEditorSection | null;
+  activeSection: RequestEditorSection;
   onSectionChange: (section: RequestEditorSection) => void;
+  queryCount: number;
   headerCount: number;
   hasHeaderError: boolean;
 };
 
-export function RequestSectionTabs({ activeSection, onSectionChange, headerCount, hasHeaderError }: RequestSectionTabsProps) {
+export function RequestSectionTabs({ activeSection, onSectionChange, queryCount, headerCount, hasHeaderError }: RequestSectionTabsProps) {
   return (
     <div
-      className="flex min-h-control-md flex-wrap items-center gap-ui-1 bg-purr-elevated px-ui-2 py-ui-1-5"
+      className="flex min-h-control-md flex-wrap items-center gap-ui-1 bg-purr-elevated px-ui-1 py-ui-1-5"
       role="tablist"
       aria-label="Request options"
     >
@@ -30,6 +31,7 @@ export function RequestSectionTabs({ activeSection, onSectionChange, headerCount
             onClick={() => onSectionChange(section.id)}
           >
             {section.label}
+            {section.id === "query" && queryCount > 0 ? <span className="font-code text-accent-orange">{queryCount}</span> : null}
             {section.id === "headers" && hasHeaderError ? <span className="size-ui-2 rounded-full bg-method-delete" aria-label="Headers contain validation errors" /> : null}
             {section.id === "headers" && !hasHeaderError && headerCount > 0 ? <span className="font-code text-action-brand">{headerCount}</span> : null}
           </Button>

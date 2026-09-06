@@ -45,6 +45,16 @@ export default {
             border: "var(--action-brand-border)",
           },
         },
+        accent: {
+          emerald: "var(--accent-emerald)",
+          blue: "var(--accent-blue)",
+          orange: "var(--accent-orange)",
+          violet: "var(--accent-violet)",
+          red: "var(--accent-red)",
+          cyan: "var(--accent-cyan)",
+          slate: "var(--accent-slate)",
+          magenta: "var(--accent-magenta)",
+        },
         method: {
           get: "var(--method-get)",
           post: "var(--method-post)",
@@ -108,6 +118,7 @@ export default {
         panel: "var(--shadow-panel)",
         popover: "var(--shadow-popover)",
         button: "var(--shadow-button)",
+        action: "var(--shadow-action)",
       },
       fontFamily: {
         ui: ["Space Grotesk", "ui-sans-serif", "system-ui", "sans-serif"],

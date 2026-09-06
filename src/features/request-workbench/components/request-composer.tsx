@@ -1,11 +1,10 @@
 import { SendHorizontal } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
 import { HttpMethodPicker } from "../../../shared/components/http/http-method-picker";
-import { useClickOutside } from "../../../shared/hooks/use-click-outside";
-import { getEnabledRequestHeaderCount, hasRequestHeaderValidationError, type RequestDraft } from "../model/request";
+import { getEnabledRequestHeaderCount, getEnabledRequestQueryParamCount, getRequestQueryParamsFromUrl, hasRequestHeaderValidationError, type RequestDraft } from "../model/request";
 import { RequestSectionPanel } from "./request-section-panel";
 import { RequestSectionTabs } from "./request-section-tabs";
 import type { RequestEditorSection } from "../model/request-editor-section";
@@ -17,20 +16,9 @@ type RequestComposerProps = {
 };
 
 export function RequestComposer({ draft, onDraftChange, onSend }: RequestComposerProps) {
-  const [activeSection, setActiveSection] = useState<RequestEditorSection | null>(null);
-  const sectionControlsRef = useRef<HTMLDivElement>(null);
+  const [activeSection, setActiveSection] = useState<RequestEditorSection>("headers");
 
-  const closeSection = useCallback(() => setActiveSection(null), []);
-  useClickOutside(
-    sectionControlsRef,
-    closeSection,
-    activeSection !== null,
-    (target) => target instanceof Element && target.closest("[data-request-section-popover]") !== null,
-  );
-
-  const toggleSection = (section: RequestEditorSection) => {
-    setActiveSection((currentSection) => (currentSection === section ? null : section));
-  };
+  const selectSection = (section: RequestEditorSection) => setActiveSection(section);
 
   return (
     <section className="overflow-hidden rounded-ui-xl border-emphasis border-purr-elevated bg-purr-elevated shadow-panel" aria-label="Request composer">
@@ -47,21 +35,25 @@ export function RequestComposer({ draft, onDraftChange, onSend }: RequestCompose
             className="min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
             variant="transparent"
             value={draft.url}
-            onChange={(event) => onDraftChange({ ...draft, url: event.target.value })}
+            onChange={(event) => {
+              const url = event.target.value;
+              onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params) });
+            }}
             aria-label="Request URL"
             spellCheck="false"
           />
-          <Button size="lg" type="submit">
+          <Button className="shadow-action" size="lg" type="submit">
             Send
             <SendHorizontal className="size-ui-4" aria-hidden="true" />
           </Button>
         </div>
       </form>
 
-      <div ref={sectionControlsRef}>
+      <div>
         <RequestSectionTabs
           activeSection={activeSection}
-          onSectionChange={toggleSection}
+          onSectionChange={selectSection}
+          queryCount={getEnabledRequestQueryParamCount(draft.params)}
           headerCount={getEnabledRequestHeaderCount(draft.headers)}
           hasHeaderError={hasRequestHeaderValidationError(draft.headers)}
         />
