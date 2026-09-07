@@ -61,9 +61,10 @@
 @layer base {
   :root {
     color-scheme: dark;
-
+    /*#08090e #12131a #090e19  #171a26 #0e111a*/
     /* Purr Obsidian palette: the single approved colour source. */
     --purr-base: #0b0d13;
+    --purr-code-bg: #0e111a;
     --purr-surface: #12131a;
     --purr-elevated: #1a1b24;
     --purr-overlay: #1f222e;
@@ -76,7 +77,7 @@
 
     --content-primary: #f4f4f5;
     --content-secondary: #a1a1aa;
-    --content-tertiary: #71717a;
+    --content-tertiary: #85858f;
     --content-quaternary: #52525b;
 
     /* Named accents are reusable; methods and status codes reference these tokens. */
@@ -87,7 +88,19 @@
     --accent-red: #ef4444;
     --accent-cyan: #06b6d4;
     --accent-slate: #64748b;
-    --accent-magenta: #e10098;
+    /*--accent-magenta: #e10098;*/
+    --accent-magenta: #f02ab3;
+
+    /* Softer code colours from the request-editor reference. */
+    --syntax-property: #d8e2ff;
+    --syntax-string: #78dbaa;
+    --syntax-number: #f6d7b0;
+    --syntax-boolean: #f4bd65;
+    --syntax-tag: #aabfee;
+    --syntax-attribute: #dec398;
+    --editor-active-line: rgb(244 244 245 / 3%);
+    --editor-selection: rgb(59 130 246 / 25%);
+    --editor-selection-inactive: rgb(59 130 246 / 14%);
 
     --action-emerald: var(--accent-emerald);
     --action-emerald-hover: #059669;
@@ -110,11 +123,10 @@
     --method-head: var(--accent-cyan);
     --method-options: var(--accent-slate);
 
-    --status-200: var(--accent-emerald);
-    --status-201: var(--accent-blue);
-    --status-204: #d97706;
-    --status-400: var(--accent-orange);
-    --status-500: var(--accent-red);
+    --status-success: var(--accent-emerald); /* 2xx */
+    --status-redirect: var(--accent-cyan);   /* 3xx */
+    --status-client-error: var(--accent-orange); /* 4xx */
+    --status-server-error: var(--accent-red);    /* 5xx */
 
     --mac-close: #ff5f56;
     --mac-minimize: #ffbd2e;
@@ -145,6 +157,11 @@
     --content-max-width: 85rem;
     --method-popover-width: 9rem;
     --validation-popover-width: 20rem;
+    --body-editor-min-height: 24rem;
+    --body-editor-max-height: 42rem;
+    --code-line-number-width: 2.5rem;
+    --multipart-row-min-width: 48rem;
+    --multipart-type-width: 5rem;
 
     --radius-sm: 0.25rem;
     --radius-md: 0.375rem;
@@ -167,6 +184,10 @@
     --line-height-lg: 1.25rem;
     --font-size-xl: 0.9375rem;
     --line-height-xl: 1.25rem;
+    --font-family-ui: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+    --font-family-code: "Google Sans Code", ui-monospace, monospace;
+    --font-size-code: 0.875rem;
+    --line-height-code: 1.625rem;
     --font-weight-normal: 400;
     --font-weight-medium: 500;
     --font-weight-semibold: 600;
@@ -181,7 +202,9 @@
     --shadow-panel: 0 0.75rem 1.75rem rgb(11 13 19 / 48%);
     --shadow-popover: 0 1rem 2.5rem rgb(11 13 19 / 60%);
     --shadow-button: inset 0 0.0625rem 0 rgb(244 244 245 / 8%);
-    --shadow-action: 0 0.5rem 1rem var(--action-emerald-surface), inset 0 0.0625rem 0 rgb(244 244 245 / 8%);
+    --shadow-action:
+      0 0.5rem 1rem var(--action-emerald-surface),
+      inset 0 0.0625rem 0 rgb(244 244 245 / 8%);
   }
 
   * {
@@ -212,12 +235,27 @@
   }
 
   .ui-drop-indicator {
-    box-shadow: inset 0 calc(var(--border-width-emphasis) * -1) 0 var(--action-emerald);
+    box-shadow: inset 0 calc(var(--border-width-emphasis) * -1) 0
+      var(--action-emerald);
   }
 
-.ui-validation-popover {
+  .ui-validation-popover {
     width: var(--validation-popover-width);
-}
+  }
+
+  .ui-multipart-editor {
+    overflow-x: auto;
+  }
+
+  .ui-multipart-editor .ui-multipart-row {
+    display: grid;
+    grid-template-columns:
+      var(--control-height-xs) minmax(10rem, 1fr) var(--multipart-type-width)
+      minmax(16rem, 2fr) var(--control-height-xs) var(--control-height-xs);
+    min-width: var(--multipart-row-min-width);
+    gap: var(--space-2);
+    align-items: center;
+  }
 
   .ui-focus-ring {
     outline: none;

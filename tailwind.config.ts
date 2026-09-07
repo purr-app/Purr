@@ -6,8 +6,17 @@ export default {
   theme: {
     extend: {
       colors: {
+        syntax: {
+          property: "var(--syntax-property)",
+          string: "var(--syntax-string)",
+          number: "var(--syntax-number)",
+          boolean: "var(--syntax-boolean)",
+          tag: "var(--syntax-tag)",
+          attribute: "var(--syntax-attribute)",
+        },
         purr: {
           base: "var(--purr-base)",
+          codefield: "var(--purr-code-bg)",
           surface: "var(--purr-surface)",
           elevated: "var(--purr-elevated)",
           overlay: "var(--purr-overlay)",
@@ -100,7 +109,6 @@ export default {
         panel: "var(--panel-min-height)",
         content: "var(--content-max-width)",
         "method-popover": "var(--method-popover-width)",
-        "header-validation-popover": "var(--header-validation-popover-width)",
       },
       borderRadius: {
         DEFAULT: "var(--radius-md)",
@@ -127,12 +135,30 @@ export default {
         mono: ["Google Sans Code", "ui-monospace", "monospace"],
       },
       fontSize: {
-        "ui-2xs": ["var(--font-size-2xs)", { lineHeight: "var(--line-height-2xs)" }],
-        "ui-xs": ["var(--font-size-xs)", { lineHeight: "var(--line-height-xs)" }],
-        "ui-sm": ["var(--font-size-sm)", { lineHeight: "var(--line-height-sm)" }],
-        "ui-md": ["var(--font-size-md)", { lineHeight: "var(--line-height-md)" }],
-        "ui-lg": ["var(--font-size-lg)", { lineHeight: "var(--line-height-lg)" }],
-        "ui-xl": ["var(--font-size-xl)", { lineHeight: "var(--line-height-xl)" }],
+        "ui-2xs": [
+          "var(--font-size-2xs)",
+          { lineHeight: "var(--line-height-2xs)" },
+        ],
+        "ui-xs": [
+          "var(--font-size-xs)",
+          { lineHeight: "var(--line-height-xs)" },
+        ],
+        "ui-sm": [
+          "var(--font-size-sm)",
+          { lineHeight: "var(--line-height-sm)" },
+        ],
+        "ui-md": [
+          "var(--font-size-md)",
+          { lineHeight: "var(--line-height-md)" },
+        ],
+        "ui-lg": [
+          "var(--font-size-lg)",
+          { lineHeight: "var(--line-height-lg)" },
+        ],
+        "ui-xl": [
+          "var(--font-size-xl)",
+          { lineHeight: "var(--line-height-xl)" },
+        ],
       },
       fontWeight: {
         normal: "var(--font-weight-normal)",

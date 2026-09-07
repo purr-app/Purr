@@ -7,7 +7,8 @@ type HeadersEditorProps = {
   onHeadersChange: (headers: RequestHeader[]) => void;
 };
 
-const headerValidationMessage = "Header names may only use Latin letters, digits, and valid HTTP token symbols — without spaces.";
+const headerValidationMessage =
+  "Header names may only use Latin letters, digits, and valid HTTP token symbols — without spaces.";
 
 function createEmptyHeader(entries: KeyValueEntry[]): KeyValueEntry {
   const highestId = entries.reduce((highest, entry) => {
@@ -18,27 +19,39 @@ function createEmptyHeader(entries: KeyValueEntry[]): KeyValueEntry {
   return { id: `header-${highestId + 1}`, key: "", value: "", enabled: false };
 }
 
-export function HeadersEditor({ headers, onHeadersChange }: HeadersEditorProps) {
+export function HeadersEditor({
+  headers,
+  onHeadersChange,
+}: HeadersEditorProps) {
   const entries: KeyValueEntry[] = headers.map((header) => ({
     id: header.id,
     key: header.name,
     value: header.value,
     enabled: header.enabled,
+    readOnly: header.readOnly,
+    readOnlyReason: header.readOnlyReason,
   }));
 
   return (
     <KeyValueEditor
       entries={entries}
-      onEntriesChange={(nextEntries) => onHeadersChange(nextEntries.map((entry) => ({
-        id: entry.id,
-        name: entry.key,
-        value: entry.value,
-        enabled: entry.enabled,
-      })))}
+      onEntriesChange={(nextEntries) =>
+        onHeadersChange(
+          nextEntries.map((entry) => ({
+            id: entry.id,
+            name: entry.key,
+            value: entry.value,
+            enabled: entry.enabled,
+            readOnly: entry.readOnly,
+            readOnlyReason: entry.readOnlyReason,
+          })),
+        )
+      }
       createEmptyEntry={createEmptyHeader}
       keyLabel="header"
       keyPlaceholder="Header-name"
       valuePlaceholder="value"
+      keyTextClassName="text-syntax-property"
       keySuggestions={commonHttpHeaders}
       isKeyValid={isRequestHeaderNameValid}
       validationMessage={headerValidationMessage}
