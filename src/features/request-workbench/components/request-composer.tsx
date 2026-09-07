@@ -28,7 +28,7 @@ export function RequestComposer({
   onSend,
 }: RequestComposerProps) {
   const [activeSection, setActiveSection] =
-    useState<RequestEditorSection>("body");
+    useState<RequestEditorSection>("query");
   const headers = getRequestHeaders(draft);
 
   const selectSection = (section: RequestEditorSection) =>
