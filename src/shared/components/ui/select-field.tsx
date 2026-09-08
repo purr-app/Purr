@@ -16,6 +16,7 @@ type SelectFieldProps<Value extends string> = {
   label: string;
   className?: string;
   muted?: boolean;
+  size?: "sm" | "lg";
 };
 
 export function SelectField<Value extends string>({
@@ -25,6 +26,7 @@ export function SelectField<Value extends string>({
   label,
   className,
   muted = false,
+  size = "sm",
 }: SelectFieldProps<Value>) {
   const [open, setOpen] = useState(false);
   const listboxId = useId();
@@ -55,7 +57,10 @@ export function SelectField<Value extends string>({
           aria-expanded={open}
           aria-controls={listboxId}
           className={cn(
-            "ui-focus-ring flex h-control-sm min-w-0 items-center justify-between gap-ui-1 rounded-ui-sm bg-purr-elevated px-ui-2 font-ui text-ui-sm text-content-secondary transition-colors duration-ui-fast hover:bg-purr-highlight hover:text-content-primary",
+            "ui-focus-ring flex min-w-0 items-center justify-between gap-ui-2 border border-border-subtle bg-purr-elevated px-ui-2 font-ui text-ui-sm text-content-secondary transition-colors duration-ui-fast hover:bg-purr-highlight hover:text-content-primary",
+            size === "lg"
+              ? "h-control-lg rounded-ui-lg"
+              : "h-control-sm rounded-ui-sm",
             muted && "opacity-ui-inactive",
             className,
           )}

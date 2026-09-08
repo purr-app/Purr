@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "tsx --test tests/request-body.test.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:ui": "playwright test",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -32,9 +33,11 @@
     "react-dom": "^19.1.0",
     "react-hotkeys-hook": "^5.3.3",
     "react-router-dom": "^7.18.3",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "tough-cookie": "^6.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "^2",
     "@types/node": "^26.4.1",
     "@types/react": "^19.1.8",

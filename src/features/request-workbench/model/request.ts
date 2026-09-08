@@ -1,5 +1,11 @@
 import type { HttpMethod } from "../../../shared/model/http-method";
 import {
+  createRequestAuth,
+  getAuthBindingForRequest,
+  type AuthContext,
+  type RequestAuth,
+} from "./request-auth";
+import {
   createRequestBody,
   getBodyContentType,
   type RequestBody,
@@ -25,6 +31,7 @@ export type RequestHeader = {
   enabled: boolean;
   readOnly?: boolean;
   readOnlyReason?: string;
+  secret?: boolean;
 };
 
 export type RequestQueryParam = {
@@ -32,6 +39,9 @@ export type RequestQueryParam = {
   key: string;
   value: string;
   enabled: boolean;
+  readOnly?: boolean;
+  readOnlyReason?: string;
+  secret?: boolean;
 };
 
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -42,6 +52,8 @@ export type RequestDraft = {
   params: RequestQueryParam[];
   headers: RequestHeader[];
   body: RequestBody;
+  auth: RequestAuth;
+  useCookieJar: boolean;
 };
 
 export const initialRequestDraft: RequestDraft = {
@@ -50,6 +62,8 @@ export const initialRequestDraft: RequestDraft = {
   params: [{ id: "param-1", key: "", value: "", enabled: false }],
   headers: [{ id: "header-1", name: "", value: "", enabled: false }],
   body: createRequestBody(),
+  auth: createRequestAuth(),
+  useCookieJar: true,
 };
 
 const bodyContentTypeHeaderId = "body-content-type";
@@ -58,37 +72,139 @@ const isContentTypeHeader = (header: RequestHeader) =>
 
 // Body owns the effective Content-Type. A manual value is kept in the draft and
 // becomes visible again when None is selected, without sending duplicate headers.
-export function getRequestHeaders(draft: RequestDraft): RequestHeader[] {
+export function getRequestHeaders(
+  draft: RequestDraft,
+  context: AuthContext = {},
+): RequestHeader[] {
   const contentType = getBodyContentType(draft.body);
-  if (!contentType) return draft.headers;
-  return [
-    {
-      id: bodyContentTypeHeaderId,
-      name: "Content-Type",
-      value: contentType,
-      enabled: true,
-      readOnly: true,
-      readOnlyReason: "Set automatically by the selected body type",
-    },
-    ...draft.headers.filter((header) => !isContentTypeHeader(header)),
-  ];
+  let headers = draft.headers;
+  if (contentType)
+    headers = [
+      {
+        id: bodyContentTypeHeaderId,
+        name: "Content-Type",
+        value: contentType,
+        enabled: true,
+        readOnly: true,
+        readOnlyReason: "Set automatically by the selected body type",
+      },
+      ...draft.headers.filter((header) => !isContentTypeHeader(header)),
+    ];
+  const { binding } = getAuthBindingForRequest(
+    draft.auth,
+    draft.url,
+    context,
+  );
+  if (binding?.target === "header") {
+    headers = [
+      {
+        id: "auth-header",
+        name: binding.name,
+        value: binding.value,
+        enabled: true,
+        readOnly: true,
+        secret: true,
+        readOnlyReason:
+          "Managed by Auth. Edit the credentials in the Auth tab.",
+      },
+      ...headers.filter(
+        (header) =>
+          header.name.trim().toLowerCase() !== binding.name.toLowerCase(),
+      ),
+    ];
+  }
+  if (binding?.target === "cookie") {
+    const manual = headers
+      .filter(
+        (header) => header.enabled && header.name.toLowerCase() === "cookie",
+      )
+      .flatMap((header) => header.value.split(";"))
+      .map((part) => part.trim())
+      .filter((part) => part && part.split("=")[0] !== binding.name);
+    headers = [
+      {
+        id: "auth-header",
+        name: "Cookie",
+        value: [...manual, `${binding.name}=${binding.value}`].join("; "),
+        enabled: true,
+        readOnly: true,
+        secret: true,
+        readOnlyReason:
+          "API key cookie managed by Auth. Session cookies are added from the cookie jar on send.",
+      },
+      ...headers.filter((header) => header.name.toLowerCase() !== "cookie"),
+    ];
+  }
+  return headers;
 }
 
 export function updateRequestHeaders(
   draft: RequestDraft,
   headers: RequestHeader[],
+  context: AuthContext = {},
 ): RequestDraft {
-  if (!getBodyContentType(draft.body)) return { ...draft, headers };
-  const manualContentTypes = draft.headers.filter(isContentTypeHeader);
+  const managedNames = new Set(
+    getRequestHeaders(draft, context)
+      .filter((header) => header.readOnly)
+      .map((header) => header.name.toLowerCase()),
+  );
   return {
     ...draft,
     headers: [
-      ...manualContentTypes,
+      ...draft.headers.filter((header) =>
+        managedNames.has(header.name.toLowerCase()),
+      ),
       ...headers.filter(
         (header) =>
-          header.id !== bodyContentTypeHeaderId && !isContentTypeHeader(header),
+          !header.readOnly && !managedNames.has(header.name.toLowerCase()),
       ),
     ],
+  };
+}
+
+export function getRequestQueryParams(
+  draft: RequestDraft,
+  context: AuthContext = {},
+): RequestQueryParam[] {
+  const { binding } = getAuthBindingForRequest(
+    draft.auth,
+    draft.url,
+    context,
+  );
+  if (binding?.target !== "query") return draft.params;
+  return [
+    {
+      id: "auth-query",
+      key: binding.name,
+      value: binding.value,
+      enabled: true,
+      readOnly: true,
+      secret: true,
+      readOnlyReason:
+        "Managed by Auth. Added to the URL when the request is sent.",
+    },
+    ...draft.params.filter((param) => param.key !== binding.name),
+  ];
+}
+
+export function updateRequestQueryParams(
+  draft: RequestDraft,
+  params: RequestQueryParam[],
+  context: AuthContext = {},
+): RequestDraft {
+  const managed = getRequestQueryParams(draft, context)
+    .filter((param) => param.readOnly)
+    .map((param) => param.key);
+  const next = [
+    ...draft.params.filter((param) => managed.includes(param.key)),
+    ...params.filter(
+      (param) => !param.readOnly && !managed.includes(param.key),
+    ),
+  ];
+  return {
+    ...draft,
+    params: next,
+    url: applyRequestQueryParamsToUrl(draft.url, next),
   };
 }
 

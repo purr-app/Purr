@@ -1,5 +1,5 @@
-import { SendHorizontal } from "lucide-react";
-import { useState } from "react";
+import { LoaderCircle, SendHorizontal } from "lucide-react";
+import { useState, useSyncExternalStore } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
@@ -8,6 +8,7 @@ import {
   getEnabledRequestHeaderCount,
   getEnabledRequestQueryParamCount,
   getRequestHeaders,
+  getRequestQueryParams,
   getRequestQueryParamsFromUrl,
   hasRequestHeaderValidationError,
   type RequestDraft,
@@ -15,21 +16,33 @@ import {
 import { RequestSectionPanel } from "./request-section-panel";
 import { RequestSectionTabs } from "./request-section-tabs";
 import type { RequestEditorSection } from "../model/request-editor-section";
+import type { AuthContext } from "../model/request-auth";
+import type { AuthRuntime } from "../hooks/use-auth-runtime";
+import type { SessionCookieJar } from "../model/cookie-jar";
 
 type RequestComposerProps = {
   draft: RequestDraft;
   onDraftChange: (draft: RequestDraft) => void;
   onSend: () => void;
+  sending: boolean;
+  authContext: AuthContext;
+  authRuntime: AuthRuntime;
+  cookieJar: SessionCookieJar;
 };
 
 export function RequestComposer({
   draft,
   onDraftChange,
   onSend,
+  sending,
+  authContext,
+  authRuntime,
+  cookieJar,
 }: RequestComposerProps) {
   const [activeSection, setActiveSection] =
     useState<RequestEditorSection>("query");
-  const headers = getRequestHeaders(draft);
+  useSyncExternalStore(cookieJar.subscribe, cookieJar.getVersion);
+  const headers = getRequestHeaders(draft, authContext);
 
   const selectSection = (section: RequestEditorSection) =>
     setActiveSection(section);
@@ -67,9 +80,21 @@ export function RequestComposer({
               aria-label="Request URL"
               spellCheck="false"
             />
-            <Button className="shadow-action" size="lg" type="submit">
-              Send
-              <SendHorizontal className="size-ui-4" aria-hidden="true" />
+            <Button
+              className="shadow-action"
+              size="lg"
+              type="submit"
+              disabled={sending}
+            >
+              {sending ? "Sending…" : "Send"}
+              {sending ? (
+                <LoaderCircle
+                  className="size-ui-4 animate-spin"
+                  aria-hidden="true"
+                />
+              ) : (
+                <SendHorizontal className="size-ui-4" aria-hidden="true" />
+              )}
             </Button>
           </div>
         </form>
@@ -78,15 +103,23 @@ export function RequestComposer({
           activeSection={activeSection}
           onSectionChange={selectSection}
           bodyType={draft.body.type}
-          queryCount={getEnabledRequestQueryParamCount(draft.params)}
+          authType={draft.auth.type}
+          queryCount={getEnabledRequestQueryParamCount(
+            getRequestQueryParams(draft, authContext),
+          )}
           headerCount={getEnabledRequestHeaderCount(headers)}
           hasHeaderError={hasRequestHeaderValidationError(headers)}
+          cookieCount={cookieJar.list().length}
+          useCookieJar={draft.useCookieJar}
         />
       </div>
       <RequestSectionPanel
         activeSection={activeSection}
         draft={draft}
         onDraftChange={onDraftChange}
+        authContext={authContext}
+        authRuntime={authRuntime}
+        cookieJar={cookieJar}
       />
     </section>
   );

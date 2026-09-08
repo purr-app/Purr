@@ -1,3 +1,6 @@
+mod http;
+mod oauth;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -23,13 +26,20 @@ fn set_macos_app_icon() {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(http::HttpClient::default())
+        .manage(oauth::OAuthCallbacks::default())
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            http::send_http,
+            oauth::authorize_oauth,
+            oauth::cancel_oauth
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

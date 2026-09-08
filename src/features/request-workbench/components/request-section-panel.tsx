@@ -1,6 +1,7 @@
 import {
-  applyRequestQueryParamsToUrl,
   getRequestHeaders,
+  getRequestQueryParams,
+  updateRequestQueryParams,
   updateRequestHeaders,
   type RequestDraft,
 } from "../model/request";
@@ -11,17 +12,28 @@ import {
 import { BodyEditor } from "./body-editor";
 import { HeadersEditor } from "./headers-editor";
 import { QueryParamsEditor } from "./query-params-editor";
+import { AuthEditor } from "./auth-editor";
+import { CookieJarEditor } from "./cookie-jar-editor";
+import type { AuthContext } from "../model/request-auth";
+import type { AuthRuntime } from "../hooks/use-auth-runtime";
+import type { SessionCookieJar } from "../model/cookie-jar";
 
 type RequestSectionPanelProps = {
   activeSection: RequestEditorSection;
   draft: RequestDraft;
   onDraftChange: (draft: RequestDraft) => void;
+  authContext: AuthContext;
+  authRuntime: AuthRuntime;
+  cookieJar: SessionCookieJar;
 };
 
 export function RequestSectionPanel({
   activeSection,
   draft,
   onDraftChange,
+  authContext,
+  authRuntime,
+  cookieJar,
 }: RequestSectionPanelProps) {
   const section = getRequestEditorSection(activeSection);
 
@@ -30,6 +42,29 @@ export function RequestSectionPanel({
       body={draft.body}
       onBodyChange={(body) => onDraftChange({ ...draft, body })}
     />
+  ) : section?.id === "auth" ? (
+    <AuthEditor
+      auth={draft.auth}
+      onAuthChange={(auth) => onDraftChange({ ...draft, auth })}
+      context={authContext}
+      runtime={authRuntime}
+    />
+  ) : section?.id === "cookies" ? (
+    <section
+      id="request-section-cookies"
+      role="region"
+      aria-labelledby="request-cookies-button"
+      className="min-w-0 overflow-hidden rounded-ui-xl bg-purr-surface"
+    >
+      <CookieJarEditor
+        jar={cookieJar}
+        url={draft.url}
+        enabled={draft.useCookieJar}
+        onEnabledChange={(useCookieJar) =>
+          onDraftChange({ ...draft, useCookieJar })
+        }
+      />
+    </section>
   ) : section?.id === "query" ? (
     <section
       id="request-section-query"
@@ -38,13 +73,9 @@ export function RequestSectionPanel({
       className="overflow-hidden rounded-ui-xl bg-purr-elevated"
     >
       <QueryParamsEditor
-        params={draft.params}
+        params={getRequestQueryParams(draft, authContext)}
         onParamsChange={(params) =>
-          onDraftChange({
-            ...draft,
-            params,
-            url: applyRequestQueryParamsToUrl(draft.url, params),
-          })
+          onDraftChange(updateRequestQueryParams(draft, params, authContext))
         }
       />
     </section>
@@ -56,9 +87,9 @@ export function RequestSectionPanel({
       className="overflow-hidden rounded-ui-xl bg-purr-elevated"
     >
       <HeadersEditor
-        headers={getRequestHeaders(draft)}
+        headers={getRequestHeaders(draft, authContext)}
         onHeadersChange={(headers) =>
-          onDraftChange(updateRequestHeaders(draft, headers))
+          onDraftChange(updateRequestHeaders(draft, headers, authContext))
         }
       />
     </section>

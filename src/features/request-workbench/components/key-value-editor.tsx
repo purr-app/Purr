@@ -1,4 +1,11 @@
-import { Check, GripVertical, LockKeyhole, Trash2 } from "lucide-react";
+import {
+  Check,
+  Eye,
+  EyeOff,
+  GripVertical,
+  LockKeyhole,
+  Trash2,
+} from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -25,6 +32,7 @@ export type KeyValueEntry = {
   enabled: boolean;
   readOnly?: boolean;
   readOnlyReason?: string;
+  secret?: boolean;
   fieldType?: "text" | "file";
   attachment?: File | null;
   contentType?: string;
@@ -62,6 +70,7 @@ type KeyValueFieldProps = {
   className?: string;
   readOnly?: boolean;
   label?: string;
+  secret?: boolean;
 };
 
 function hasEntryContent(entry: KeyValueEntry) {
@@ -503,6 +512,7 @@ function KeyValueRow({
         <KeyValueField
           className="flex-1"
           readOnly={entry.readOnly}
+          secret={entry.secret}
           label={entry.key ? "Value for " + entry.key : keyLabel + " value"}
           font={valueFont}
           inputRef={valueInputRef}
@@ -775,7 +785,55 @@ function KeyValueField({
   className,
   readOnly,
   label,
+  secret = false,
 }: KeyValueFieldProps) {
+  const [revealed, setRevealed] = useState(false);
+  if (secret)
+    return (
+      <div
+        className={cn(
+          "flex h-control-md min-w-0 items-center gap-ui-2 rounded-ui-md border border-transparent bg-purr-surface px-ui-2",
+          className,
+          muted && "opacity-ui-disabled",
+          invalid && "border-method-delete",
+        )}
+      >
+        <input
+          className={cn(
+            "h-full min-w-0 flex-1 bg-transparent px-ui-1 text-ui-md font-normal text-content-secondary outline-none disabled:cursor-not-allowed disabled:opacity-ui-visible",
+            font === "code" ? "font-code" : "font-ui",
+          )}
+          type={revealed ? "text" : "password"}
+          disabled={readOnly}
+          aria-readonly={readOnly || undefined}
+          aria-label={label}
+          ref={inputRef}
+          value={value}
+          placeholder={placeholder}
+          spellCheck="false"
+          aria-invalid={invalid || undefined}
+          title={invalid ? validationMessage : undefined}
+          onChange={(event) => onChange(event.target.value)}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          onKeyDown={onKeyDown}
+        />
+        <button
+          className="ui-focus-ring flex size-control-xs shrink-0 items-center justify-center rounded-ui-md text-content-tertiary hover:bg-purr-highlight hover:text-content-primary"
+          type="button"
+          aria-label={`${revealed ? "Hide" : "Reveal"} ${label ?? "secret"}`}
+          aria-pressed={revealed}
+          onClick={() => setRevealed(!revealed)}
+        >
+          {revealed ? (
+            <EyeOff className="size-ui-3-5" aria-hidden="true" />
+          ) : (
+            <Eye className="size-ui-3-5" aria-hidden="true" />
+          )}
+        </button>
+      </div>
+    );
+
   return (
     <input
       className={cn(

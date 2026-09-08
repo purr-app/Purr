@@ -1,0 +1,200 @@
+import { Braces, Fingerprint, RadioTower } from "lucide-react";
+import { useState } from "react";
+import { Button } from "../../../shared/components/ui/button";
+import { FormField } from "../../../shared/components/ui/form-field";
+import { JsonCodePreview } from "../../../shared/components/ui/json-code-preview";
+import { SelectField } from "../../../shared/components/ui/select-field";
+import { cn } from "../../../shared/lib/cn";
+import {
+  getBearerToken,
+  inspectJwt,
+  tokenExpiryLabel,
+  type AuthContext,
+  type RequestAuth,
+} from "../model/request-auth";
+
+export function BearerAuthForm({
+  auth,
+  onAuthChange,
+  context,
+  now,
+}: {
+  auth: RequestAuth;
+  onAuthChange: (auth: RequestAuth) => void;
+  context: AuthContext;
+  now: number;
+}) {
+  const [inspect, setInspect] = useState(false);
+  let bearer = "";
+  try {
+    bearer = getBearerToken(auth, context);
+  } catch {
+    /* inline binding status explains unresolved source */
+  }
+  const jwt = inspectJwt(bearer);
+
+  return (
+    <div className="space-y-ui-4">
+      <div className="flex flex-wrap items-center justify-between gap-ui-3">
+        <div className="flex items-center gap-ui-2 text-ui-md">
+          <Fingerprint className="size-ui-4 text-action-brand" />
+          Bearer credentials
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() =>
+            onAuthChange({
+              ...auth,
+              bearer: {
+                ...auth.bearer,
+                source:
+                  auth.bearer.source === "manual" ? "response" : "manual",
+                responseError: "",
+              },
+            })
+          }
+        >
+          <RadioTower className="size-ui-3-5" />
+          {auth.bearer.source === "manual"
+            ? "Use token from response"
+            : "Use pasted token"}
+        </Button>
+      </div>
+      <div
+        className={
+          auth.bearer.source === "manual"
+            ? "ui-auth-bearer-grid"
+            : "ui-auth-response-grid"
+        }
+      >
+        <div className="space-y-ui-2">
+          <span className="block text-ui-xs font-medium text-content-secondary">
+            Token prefix
+          </span>
+          <SelectField
+            label="Token prefix"
+            size="lg"
+            value={auth.bearer.prefix}
+            options={[
+              { value: "Bearer", label: "Bearer" },
+              { value: "Token", label: "Token" },
+              { value: "", label: "No prefix" },
+            ]}
+            className="w-full font-code"
+            onValueChange={(prefix) =>
+              onAuthChange({
+                ...auth,
+                bearer: { ...auth.bearer, prefix },
+              })
+            }
+          />
+        </div>
+        {auth.bearer.source === "manual" ? (
+          <FormField
+            label="Bearer token"
+            secret
+            placeholder="Paste your token"
+            value={auth.bearer.token}
+            onChange={(event) =>
+              onAuthChange({
+                ...auth,
+                bearer: {
+                  ...auth.bearer,
+                  token: event.target.value.trim().replace(/^Bearer\s+/i, ""),
+                },
+              })
+            }
+          />
+        ) : (
+          <>
+            <FormField
+              label="Token endpoint path"
+              value={auth.bearer.endpointPath}
+              placeholder="/auth/token"
+              onChange={(event) =>
+                onAuthChange({
+                  ...auth,
+                  bearer: {
+                    ...auth.bearer,
+                    endpointPath: event.target.value,
+                    receivedToken: "",
+                    responseError: "",
+                  },
+                })
+              }
+            />
+            <FormField
+              label="Response token path"
+              value={auth.bearer.expression}
+              placeholder=".auth.token"
+              onChange={(event) =>
+                onAuthChange({
+                  ...auth,
+                  bearer: {
+                    ...auth.bearer,
+                    expression: event.target.value,
+                    receivedToken: "",
+                    responseError: "",
+                  },
+                })
+              }
+            />
+          </>
+        )}
+      </div>
+      {auth.bearer.responseError ? (
+        <p role="alert" className="text-ui-sm text-accent-red">
+          {auth.bearer.responseError}
+        </p>
+      ) : null}
+      {jwt ? (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setInspect(!inspect)}
+            aria-expanded={inspect}
+          >
+            <Braces className="size-ui-3-5" />
+            {inspect ? "Hide" : "Inspect"} JWT{" "}
+            <span
+              className={cn(
+                "font-code text-ui-xs",
+                jwt.expiresAt && jwt.expiresAt <= now
+                  ? "text-accent-orange"
+                  : "text-content-tertiary",
+              )}
+            >
+              {jwt.expiresAt === undefined
+                ? "No exp claim"
+                : tokenExpiryLabel(jwt.expiresAt, now)}
+            </span>
+          </Button>
+        </div>
+      ) : null}
+      {inspect && jwt ? (
+        <div className="rounded-ui-xl bg-purr-elevated p-ui-4">
+          <div className="grid min-w-0 gap-ui-4 md:grid-cols-2">
+            {[
+              ["Header", jwt.header],
+              ["Claims", jwt.claims],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="flex min-w-0 flex-col">
+                <h3 className="mb-ui-2 text-ui-xs text-content-secondary">
+                  {String(label)}
+                </h3>
+                <JsonCodePreview
+                  value={value}
+                  label={`${String(label)} JWT JSON`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

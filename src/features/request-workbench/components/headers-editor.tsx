@@ -30,6 +30,7 @@ export function HeadersEditor({
     enabled: header.enabled,
     readOnly: header.readOnly,
     readOnlyReason: header.readOnlyReason,
+    secret: header.secret,
   }));
 
   return (
@@ -44,6 +45,7 @@ export function HeadersEditor({
             enabled: entry.enabled,
             readOnly: entry.readOnly,
             readOnlyReason: entry.readOnlyReason,
+            secret: entry.secret,
           })),
         )
       }
@@ -55,7 +57,7 @@ export function HeadersEditor({
       keySuggestions={commonHttpHeaders}
       isKeyValid={isRequestHeaderNameValid}
       validationMessage={headerValidationMessage}
-      valueFont="ui"
+      valueFont="code"
     />
   );
 }

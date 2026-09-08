@@ -109,6 +109,7 @@ export default {
         panel: "var(--panel-min-height)",
         content: "var(--content-max-width)",
         "method-popover": "var(--method-popover-width)",
+        "auth-grant": "var(--auth-grant-width)",
       },
       borderRadius: {
         DEFAULT: "var(--radius-md)",
