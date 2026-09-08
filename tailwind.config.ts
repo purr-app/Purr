@@ -74,11 +74,10 @@ export default {
           options: "var(--method-options)",
         },
         status: {
-          200: "var(--status-200)",
-          201: "var(--status-201)",
-          204: "var(--status-204)",
-          400: "var(--status-400)",
-          500: "var(--status-500)",
+          success: "var(--status-success)",
+          redirect: "var(--status-redirect)",
+          "client-error": "var(--status-client-error)",
+          "server-error": "var(--status-server-error)",
         },
         mac: {
           close: "var(--mac-close)",
@@ -110,6 +109,9 @@ export default {
         content: "var(--content-max-width)",
         "method-popover": "var(--method-popover-width)",
         "auth-grant": "var(--auth-grant-width)",
+      },
+      maxWidth: {
+        "validation-popover": "var(--validation-popover-width)",
       },
       borderRadius: {
         DEFAULT: "var(--radius-md)",

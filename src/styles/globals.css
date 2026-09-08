@@ -159,6 +159,8 @@
     --validation-popover-width: 20rem;
     --body-editor-min-height: 24rem;
     --body-editor-max-height: 42rem;
+    --response-viewer-min-height: 24rem;
+    --response-viewer-max-height: 48rem;
     --code-line-number-width: 2.5rem;
     --multipart-row-min-width: 48rem;
     --multipart-type-width: 5rem;
@@ -276,6 +278,11 @@
   .ui-json-preview .cm-editor {
     overflow: hidden;
     border-radius: var(--radius-lg);
+  }
+
+  .ui-response-code .cm-editor,
+  .ui-response-code .cm-scroller {
+    height: 100%;
   }
 
   .ui-drop-indicator {

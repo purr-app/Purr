@@ -52,12 +52,14 @@ export function AuthEditor({
         id="auth-type-panel"
         role="tabpanel"
         aria-labelledby={`auth-type-${auth.type}`}
-        className="p-ui-4 sm:p-ui-5"
+        className={
+          auth.type === "none" ? "p-ui-3 sm:p-ui-4" : "p-ui-4 sm:p-ui-5"
+        }
       >
         {auth.type === "none" ? (
-          <div className="flex min-h-panel flex-col items-center justify-center gap-ui-2 text-content-tertiary">
-            <CircleOff className="size-ui-6" />
-            <span className="text-ui-md">No authentication</span>
+          <div className="flex items-center gap-ui-2 text-content-tertiary">
+            <CircleOff className="size-ui-4" aria-hidden="true" />
+            <span className="text-ui-sm">No authentication</span>
           </div>
         ) : null}
 

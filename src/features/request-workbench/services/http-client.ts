@@ -15,11 +15,28 @@ export type WireResponse = {
   headers: [string, string][];
   bodyBase64: string;
   durationMs: number;
+  headersDurationMs?: number;
+  downloadDurationMs?: number;
+  httpVersion?: string;
+  localAddress?: string;
+  remoteAddress?: string;
+};
+export type HttpTimeline = {
+  startedAtMs: number;
+  prepareMs: number;
+  waitingMs: number;
+  downloadMs: number;
+  completedAtMs: number;
+  request: Pick<WireRequest, "url" | "method" | "headers">;
+  followRedirects: boolean;
+  usesCookieJar: boolean;
+  timeoutMs: number;
 };
 export type HttpResult = WireResponse & {
   url: string;
   text: string;
   size: number;
+  timeline: HttpTimeline;
 };
 export type HttpTransport = (request: WireRequest) => Promise<WireResponse>;
 export const nativeTransport: HttpTransport = (request) => {
@@ -102,6 +119,7 @@ export async function executeHttp(
       ...current,
       headers,
     });
+    const completedAtMs = Date.now();
     options.jar?.receive(url.toString(), response.headers);
     const location = response.headers.find(
       ([name]) => name.toLowerCase() === "location",
@@ -151,12 +169,39 @@ export async function executeHttp(
     const bytes = Uint8Array.from(atob(response.bodyBase64), (char) =>
       char.charCodeAt(0),
     );
+    const transportMs = Math.max(0, Number(response.durationMs) || 0);
+    const waitingMs = Math.max(
+      0,
+      Math.min(
+        transportMs,
+        Number(response.headersDurationMs ?? transportMs) || 0,
+      ),
+    );
+    const downloadMs = Math.max(
+      0,
+      Math.min(
+        transportMs - waitingMs,
+        Number(response.downloadDurationMs ?? transportMs - waitingMs) || 0,
+      ),
+    );
+    const totalMs = Math.max(transportMs, completedAtMs - started);
     return {
       ...response,
       url: current.url || initial.toString(),
       text: new TextDecoder().decode(bytes),
       size: bytes.length,
-      durationMs: Date.now() - started,
+      durationMs: totalMs,
+      timeline: {
+        startedAtMs: started,
+        prepareMs: Math.max(0, totalMs - waitingMs - downloadMs),
+        waitingMs,
+        downloadMs,
+        completedAtMs: started + totalMs,
+        request: { url: current.url, method: current.method, headers },
+        followRedirects: options.followRedirects !== false,
+        usesCookieJar: Boolean(options.jar),
+        timeoutMs: 60_000,
+      },
     };
   }
   throw new Error("Request failed.");

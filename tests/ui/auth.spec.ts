@@ -1,5 +1,43 @@
 import { test, expect } from "@playwright/test";
 
+test("empty authentication and body states stay compact", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("tab", { name: "Auth", exact: true }).click();
+  const noAuthentication = page.getByText("No authentication", { exact: true });
+  await expect(noAuthentication).toBeVisible();
+  expect(
+    await noAuthentication
+      .locator("..")
+      .evaluate((element) => getComputedStyle(element).flexDirection),
+  ).toBe("row");
+  expect((await page.locator("#auth-type-panel").boundingBox())!.height).toBeLessThan(
+    100,
+  );
+
+  await page.getByRole("tab", { name: "Body", exact: true }).click();
+  const noBody = page.getByText("No body", { exact: true }).first();
+  await expect(noBody).toBeVisible();
+  expect(
+    await noBody
+      .locator("..")
+      .evaluate((element) => getComputedStyle(element).flexDirection),
+  ).toBe("row");
+  await page.screenshot({
+    path: "test-results/request-empty-body.png",
+    fullPage: true,
+  });
+
+  await page.getByRole("tab", { name: "Binary", exact: true }).click();
+  const binaryPicker = page.locator('button[aria-label="Choose body file"]');
+  await expect(binaryPicker).toBeVisible();
+  expect((await binaryPicker.boundingBox())!.height).toBeLessThan(100);
+  await page.screenshot({
+    path: "test-results/request-binary-body.png",
+    fullPage: true,
+  });
+});
+
 test("Bearer is masked, generates a locked header, and preserves separate auth drafts", async ({
   page,
 }) => {

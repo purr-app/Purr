@@ -121,7 +121,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
       id="request-section-body"
       role="tabpanel"
       aria-labelledby="request-tab-body"
-      className="min-w-0 overflow-hidden rounded-ui-xl bg-purr-base"
+      className="min-w-0 overflow-hidden rounded-ui-xl bg-purr-surface"
       aria-label="Request body"
     >
       <div className="flex flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated px-ui-3 py-ui-2">
@@ -260,6 +260,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
           />
         ) : body.type === "binary" ? (
           <FileUploader
+            dense
             file={body.binary?.file ?? null}
             onFileChange={(file) =>
               onBodyChange({
@@ -276,9 +277,9 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
             }
           />
         ) : (
-          <div className="flex min-h-panel items-center justify-center flex-col gap-ui-2 bg-purr-surface">
-            <CircleOff className=" text-content-tertiary size-14" />
-            <span className="font-ui text-content-tertiary">No body</span>
+          <div className="flex items-center gap-ui-2 bg-purr-surface px-ui-4 py-ui-3 text-content-tertiary">
+            <CircleOff className="size-ui-4" aria-hidden="true" />
+            <span className="font-ui text-ui-sm">No body</span>
           </div>
         )}
       </div>

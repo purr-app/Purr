@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
+use hyper_util::client::legacy::connect::HttpInfo;
 use reqwest::{
     header::{HeaderName, HeaderValue},
     Client, Method, Url,
@@ -37,6 +38,11 @@ pub struct HttpResponse {
     headers: Vec<(String, String)>,
     body_base64: String,
     duration_ms: u128,
+    headers_duration_ms: u128,
+    download_duration_ms: u128,
+    http_version: String,
+    local_address: Option<String>,
+    remote_address: Option<String>,
 }
 
 pub fn http_url(value: &str) -> Result<Url, String> {
@@ -87,7 +93,22 @@ async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpRespo
             "Could not send the HTTP request."
         }
     })?;
+    let headers_duration = started.elapsed();
+    let remote_address = response.remote_addr().map(|address| address.to_string());
+    let local_address = response
+        .extensions()
+        .get::<HttpInfo>()
+        .map(|info| info.local_addr().to_string());
     let status = response.status();
+    let http_version = match response.version() {
+        reqwest::Version::HTTP_09 => "HTTP/0.9",
+        reqwest::Version::HTTP_10 => "HTTP/1.0",
+        reqwest::Version::HTTP_11 => "HTTP/1.1",
+        reqwest::Version::HTTP_2 => "HTTP/2",
+        reqwest::Version::HTTP_3 => "HTTP/3",
+        _ => "HTTP",
+    }
+    .to_string();
     let headers = response
         .headers()
         .iter()
@@ -109,12 +130,18 @@ async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpRespo
         }
         body.extend_from_slice(&chunk);
     }
+    let duration = started.elapsed();
     Ok(HttpResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").into(),
         headers,
         body_base64: STANDARD.encode(body),
-        duration_ms: started.elapsed().as_millis(),
+        duration_ms: duration.as_millis(),
+        headers_duration_ms: headers_duration.as_millis(),
+        download_duration_ms: duration.saturating_sub(headers_duration).as_millis(),
+        http_version,
+        local_address,
+        remote_address,
     })
 }
 
@@ -177,6 +204,14 @@ mod tests {
             STANDARD.decode(result.body_base64).unwrap(),
             [0, 1, 255, 128]
         );
+        assert_eq!(result.http_version, "HTTP/1.1");
+        assert_eq!(result.remote_address, Some(address.to_string()));
+        assert!(result
+            .local_address
+            .as_deref()
+            .is_some_and(|value| value.starts_with("127.0.0.1:")));
+        assert!(result.headers_duration_ms <= result.duration_ms);
+        assert!(result.download_duration_ms <= result.duration_ms);
         server.join().unwrap();
     }
 

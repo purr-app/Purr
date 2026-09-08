@@ -101,7 +101,7 @@ export function RequestSectionTabs({
                   <BodyTypeIndicator bodyType={bodyType} />
                 ) : null}
                 {section.id === "query" && queryCount > 0 ? (
-                  <span className="font-code text-accent-orange">
+                  <span className="font-code text-action-brand">
                     {queryCount}
                   </span>
                 ) : null}

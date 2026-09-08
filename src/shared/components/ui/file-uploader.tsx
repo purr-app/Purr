@@ -7,6 +7,7 @@ type FileUploaderProps = {
   file: File | null;
   onFileChange: (file: File | null) => void;
   compact?: boolean;
+  dense?: boolean;
   label?: string;
   muted?: boolean;
 };
@@ -15,6 +16,7 @@ export function FileUploader({
   file,
   onFileChange,
   compact = false,
+  dense = false,
   label = "Choose body file",
   muted = false,
 }: FileUploaderProps) {
@@ -26,7 +28,10 @@ export function FileUploader({
         "min-w-0 rounded-ui-md transition-colors duration-ui-fast",
         compact
           ? "flex items-center bg-purr-elevated"
-          : "flex min-h-panel flex-col items-center justify-center gap-ui-3 bg-purr-surface p-ui-6",
+          : cn(
+              "flex flex-col items-center justify-center bg-purr-surface",
+              dense ? "gap-ui-2 p-ui-3" : "min-h-panel gap-ui-3 p-ui-6",
+            ),
         dragActive && "bg-action-brand-surface",
         muted && "opacity-ui-inactive",
       )}
@@ -66,17 +71,27 @@ export function FileUploader({
         type="button"
         aria-label={file ? "Replace " + file.name : label}
         className={cn(
-          "ui-focus-ring min-w-0 rounded-ui-md font-ui text-ui-lg text-content-secondary",
+          "ui-focus-ring min-w-0 rounded-ui-md font-ui text-content-secondary",
           compact
             ? "flex h-control-md w-full items-center gap-ui-2 px-ui-2 text-left"
-            : "flex w-full flex-col items-center gap-ui-2 p-ui-4",
+            : cn(
+                "flex w-full flex-col items-center",
+                dense
+                  ? "gap-ui-1 p-ui-2 text-ui-md"
+                  : "gap-ui-2 p-ui-4 text-ui-lg",
+              ),
         )}
         onClick={() => inputRef.current?.click()}
       >
         {compact ? (
           <Paperclip className="size-ui-4 shrink-0 text-action-brand" />
         ) : (
-          <FileUp className="size-ui-6 text-action-brand" />
+          <FileUp
+            className={cn(
+              "text-action-brand",
+              dense ? "size-ui-5" : "size-ui-6",
+            )}
+          />
         )}
         <span
           className={cn(
