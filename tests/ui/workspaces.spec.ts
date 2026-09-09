@@ -121,20 +121,33 @@ test("command palette and shortcuts navigate, duplicate and recover closed draft
 test("document tabs can be reordered and keep their order after reload", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/first");
-  await saveDocument(page, "First");
+  await saveDocument(page, "First request with a long name");
   await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/second");
-  await saveDocument(page, "Second");
+  await saveDocument(page, "B");
 
-  const first = tabs(page).filter({ hasText: "First" });
-  const second = tabs(page).filter({ hasText: "Second" });
-  await second.locator("..").dragTo(first.locator(".."));
-  await expect(tabs(page).nth(0)).toContainText("Second");
-  await expect(tabs(page).nth(1)).toContainText("First");
+  const first = tabs(page).filter({ hasText: "First request with a long name" });
+  const second = tabs(page).filter({ hasText: "B" });
+  const firstBox = (await first.boundingBox())!;
+  const secondBox = (await second.boundingBox())!;
+  await page.mouse.move(secondBox.x + secondBox.width / 2, secondBox.y + secondBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(firstBox.x + firstBox.width * 0.9, firstBox.y + firstBox.height * 2, { steps: 8 });
+  await expect.poll(() => first.locator("..").getAttribute("style")).not.toContain("0px");
+  await expect.poll(() => first.locator("..").evaluate((element) => getComputedStyle(element).transitionProperty)).toContain("transform");
+  await expect.poll(() => second.locator("..").evaluate((element) => new DOMMatrix(getComputedStyle(element).transform).m42)).toBe(0);
+  await expect(second.locator("..")).toHaveCSS("opacity", "1");
+  const beforeDrop = { first: await first.locator("..").boundingBox(), second: await second.locator("..").boundingBox() };
+  await page.mouse.up();
+  const afterDrop = { first: await first.locator("..").boundingBox(), second: await second.locator("..").boundingBox() };
+  expect(Math.abs(afterDrop.first!.x - beforeDrop.first!.x)).toBeLessThan(firstBox.width / 10);
+  expect(Math.abs(afterDrop.second!.x - beforeDrop.second!.x)).toBeLessThan(secondBox.width / 10);
+  await expect(tabs(page).nth(0)).toContainText("B");
+  await expect(tabs(page).nth(1)).toContainText("First request with a long name");
   await saved(page);
   await page.reload();
-  await expect(tabs(page).nth(0)).toContainText("Second");
-  await expect(tabs(page).nth(1)).toContainText("First");
+  await expect(tabs(page).nth(0)).toContainText("B");
+  await expect(tabs(page).nth(1)).toContainText("First request with a long name");
 });
 
 test("sidebar opens one italic preview tab that pins itself after editing", async ({ page }) => {

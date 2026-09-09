@@ -177,6 +177,7 @@
     --workspace-menu-width: 14rem;
     --document-tab-max-width: 14rem;
     --document-method-optical-offset: 0.0625rem;
+    --document-tab-drag-threshold: 0.25rem;
     --dialog-width: 44rem;
     --name-dialog-width: 26rem;
     --variable-list-max-height: 20rem;
@@ -215,6 +216,7 @@
     --duration-fast: 120ms;
     --duration-normal: 200ms;
     --duration-layout: 350ms;
+    --easing-standard: cubic-bezier(0.2, 0, 0, 1);
     --opacity-hidden: 0;
     --opacity-disabled: 0.5;
     --opacity-inactive: 0.6;
@@ -344,6 +346,22 @@
 
   .ui-document-method {
     transform: translateY(var(--document-method-optical-offset));
+  }
+
+  .ui-sortable-tab {
+    transform: translateX(var(--document-tab-translate-x, 0));
+    transition-duration: var(--duration-normal);
+    transition-property: color, background-color, border-color, transform;
+    will-change: transform;
+  }
+
+  .ui-sortable-tab-dragging {
+    transition-duration: var(--duration-fast);
+    transition-property: color, background-color, border-color;
+  }
+
+  .ui-sortable-tab-settling {
+    transition-property: none;
   }
 
   .ui-modal {
