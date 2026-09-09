@@ -1,20 +1,16 @@
-import { useRef, useState } from "react";
-import { useHotkeys } from "react-hotkeys-hook";
+import { useEffect, useImperativeHandle, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
 
 import { SplitPane } from "../../shared/components/ui/split-pane";
-import { keyboardShortcuts } from "../../shared/config/keyboard-shortcuts";
 import { EmptyResponse } from "./components/empty-response";
 import { RequestComposer } from "./components/request-composer";
-import {
-  RequestTabBar,
-  type WorkbenchView,
-} from "./components/request-tab-bar";
+import { type WorkbenchView } from "./components/request-tab-bar";
+import { resolveRequestEnvironment } from "../workspaces/model/environment";
+import type { RequestEditorSection } from "./model/request-editor-section";
 import { ResponseViewer } from "./components/response-viewer";
 import {
   applyRequestQueryParamsToUrl,
   getRequestHeaders,
   getRequestQueryParams,
-  initialRequestDraft,
   type RequestDraft,
 } from "./model/request";
 import {
@@ -65,54 +61,53 @@ function ResponseArea({
   );
 }
 
-export function RequestWorkbench() {
-  const [draft, setDraft] = useState<RequestDraft>(initialRequestDraft);
-  const [authContext, setAuthContext] = useState<AuthContext>({});
-  const [cookieJar] = useState(() => new SessionCookieJar());
-  const [sending, setSending] = useState(false);
+export type RequestSession = {
+  response: HttpResult | null;
+  error: string;
+  sending: boolean;
+  canvasFocus: "request" | "response";
+};
+export const emptyRequestSession: RequestSession = { response: null, error: "", sending: false, canvasFocus: "request" };
+export type RequestActions = { send: () => void; focusUrl: () => void };
+
+export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, cookieJar, session, onSessionChange, actionsRef }: {
+  draft: RequestDraft;
+  setDraft: Dispatch<SetStateAction<RequestDraft>>;
+  view: WorkbenchView;
+  splitRatios: { horizontal: number; vertical: number };
+  onSplitRatioChange: (orientation: "horizontal" | "vertical", ratio: number) => void;
+  requestSection: RequestEditorSection;
+  onRequestSectionChange: (section: RequestEditorSection) => void;
+  variables: Record<string, string>;
+  cookieJar: SessionCookieJar;
+  session: RequestSession;
+  onSessionChange: (patch: Partial<RequestSession>) => void;
+  actionsRef: Ref<RequestActions>;
+}) {
+  const [authContext, setAuthContext] = useState<AuthContext>({ variables });
+  useEffect(() => setAuthContext((previous) => ({ ...previous, variables })), [variables]);
+  const { sending, response, error, canvasFocus } = session;
+  const setSending = (sending: boolean) => onSessionChange({ sending });
+  const setResponse = (response: HttpResult | null) => onSessionChange({ response });
+  const setError = (error: string) => onSessionChange({ error });
+  const setCanvasFocus = (canvasFocus: RequestSession["canvasFocus"]) => onSessionChange({ canvasFocus });
   const sendingRef = useRef(false);
-  const [response, setResponse] = useState<HttpResult | null>(null);
-  const [error, setError] = useState("");
-  const [view, setView] = useState<WorkbenchView>("canvas");
-  const [canvasFocus, setCanvasFocus] = useState<"request" | "response">(
-    "request",
-  );
   const authRuntime = useAuthRuntime(
     draft,
     setDraft,
     authContext,
     setAuthContext,
   );
-  const selectView = (nextView: WorkbenchView) => {
-    setView(nextView);
-    if (nextView === "canvas")
-      setCanvasFocus(response || error || sending ? "response" : "request");
-  };
-  useHotkeys(
-    keyboardShortcuts.canvasView.hotkey,
-    () => selectView("canvas"),
-    { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true },
-    [response, error, sending],
-  );
-  useHotkeys(
-    keyboardShortcuts.horizontalSplitView.hotkey,
-    () => selectView("horizontal"),
-    { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true },
-  );
-  useHotkeys(
-    keyboardShortcuts.verticalSplitView.hotkey,
-    () => selectView("vertical"),
-    { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true },
-  );
 
   const send = async () => {
-    if (sendingRef.current) return;
+    if (sendingRef.current || sending) return;
     setCanvasFocus("response");
     sendingRef.current = true;
     setSending(true);
     setError("");
     try {
-      const bodyError = getRequestBodyValidationMessage(draft.body);
+      const resolvedDraft = resolveRequestEnvironment(draft, variables);
+      const bodyError = getRequestBodyValidationMessage(resolvedDraft.body);
       if (bodyError) throw new Error(bodyError);
       let effective = resolveAuth(draft.auth, authContext);
       if (effective.error) throw new Error(effective.error);
@@ -142,10 +137,10 @@ export function RequestWorkbench() {
           auth: { ...effective.auth, oauth2: { ...config, token } },
         };
       }
-      const outgoing = { ...draft, auth: effective.auth };
+      const outgoing = { ...resolvedDraft, auth: effective.auth };
       const authResult = getAuthBindingForRequest(
         outgoing.auth,
-        draft.url,
+        outgoing.url,
         authContext,
       );
       if (authResult.error) throw new Error(authResult.error);
@@ -155,12 +150,12 @@ export function RequestWorkbench() {
       const result = await executeHttp(
         {
           url: applyRequestQueryParamsToUrl(
-            draft.url,
+            outgoing.url,
             getRequestQueryParams(outgoing, authContext),
           ),
           method: draft.method,
           headers,
-          bodyBase64: await encodeBody(serializeRequestBody(draft.body)),
+          bodyBase64: await encodeBody(serializeRequestBody(outgoing.body)),
         },
         {
           jar: draft.useCookieJar ? cookieJar : undefined,
@@ -218,6 +213,13 @@ export function RequestWorkbench() {
     }
   };
 
+  useImperativeHandle(actionsRef, () => ({
+    send: () => { void send(); },
+    focusUrl: () => {
+      document.querySelector<HTMLInputElement>('[aria-label="Request URL"]')?.focus();
+    },
+  }));
+
   const hasActivity = Boolean(response || error || sending);
   const canvasCollapsed = view === "canvas" && canvasFocus === "response";
   const canvasPreview = view === "canvas" && hasActivity && !canvasCollapsed;
@@ -232,7 +234,8 @@ export function RequestWorkbench() {
       sending={sending}
       authContext={authContext}
       authRuntime={authRuntime}
-      cookieJar={cookieJar}
+      activeSection={requestSection}
+      onSectionChange={onRequestSectionChange}
       detailsCollapsed={canvasCollapsed}
       onToggleDetails={
         view === "canvas"
@@ -246,11 +249,10 @@ export function RequestWorkbench() {
   );
 
   return (
-    <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-purr-base">
-      <main className="flex min-h-0 w-full flex-1 flex-col px-ui-3 pb-ui-2 pt-ui-6 sm:px-ui-4 sm:pt-ui-8">
-        <RequestTabBar view={view} onViewChange={selectView} />
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base">
+      <main className="flex min-h-0 w-full flex-1 flex-col p-ui-2">
         <div
-          className="mt-ui-3 min-h-0 flex-1"
+          className="min-h-0 flex-1"
           data-workbench-view={view}
         >
           <SplitPane
@@ -269,12 +271,11 @@ export function RequestWorkbench() {
             dimSecond={canvasPreview}
             onFocusSecond={() => setCanvasFocus("response")}
             animated={view === "canvas"}
+            ratio={splitRatios[view === "vertical" ? "vertical" : "horizontal"]}
+            onRatioChange={(ratio) => onSplitRatioChange(view === "vertical" ? "vertical" : "horizontal", ratio)}
           />
         </div>
       </main>
-      <footer className="pointer-events-none flex h-control-lg shrink-0 items-center justify-end px-ui-3 font-code text-ui-xs text-content-tertiary sm:px-ui-4">
-        Purr v0.0.0
-      </footer>
     </div>
   );
 }

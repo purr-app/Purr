@@ -15,6 +15,14 @@ export type KeyboardShortcut = {
 };
 
 export const defaultKeyboardShortcuts = {
+  commandPalette: { hotkey: "mod+k", keys: ["mod", "k"] },
+  newDocument: { hotkey: "mod+n", keys: ["mod", "n"] },
+  saveDocument: { hotkey: "mod+s", keys: ["mod", "s"] },
+  closeDocument: { hotkey: "mod+w", keys: ["mod", "w"] },
+  duplicateDocument: { hotkey: "mod+d", keys: ["mod", "d"] },
+  toggleSidebar: { hotkey: "mod+b", keys: ["mod", "b"] },
+  editEnvironment: { hotkey: "mod+e", keys: ["mod", "e"] },
+  focusUrl: { hotkey: "mod+l", keys: ["mod", "l"] },
   openMethodSelector: { hotkey: "mod+shift+m", keys: ["mod", "shift", "m"] },
   dismissPopover: { hotkey: "esc", keys: ["escape"] },
   sendRequest: { hotkey: "mod+enter", keys: ["mod", "enter"] },

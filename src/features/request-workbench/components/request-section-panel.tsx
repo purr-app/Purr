@@ -13,10 +13,8 @@ import { BodyEditor } from "./body-editor";
 import { HeadersEditor } from "./headers-editor";
 import { QueryParamsEditor } from "./query-params-editor";
 import { AuthEditor } from "./auth-editor";
-import { CookieJarEditor } from "./cookie-jar-editor";
 import type { AuthContext } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
-import type { SessionCookieJar } from "../model/cookie-jar";
 
 type RequestSectionPanelProps = {
   activeSection: RequestEditorSection;
@@ -24,7 +22,6 @@ type RequestSectionPanelProps = {
   onDraftChange: (draft: RequestDraft) => void;
   authContext: AuthContext;
   authRuntime: AuthRuntime;
-  cookieJar: SessionCookieJar;
 };
 
 export function RequestSectionPanel({
@@ -33,7 +30,6 @@ export function RequestSectionPanel({
   onDraftChange,
   authContext,
   authRuntime,
-  cookieJar,
 }: RequestSectionPanelProps) {
   const section = getRequestEditorSection(activeSection);
 
@@ -49,22 +45,6 @@ export function RequestSectionPanel({
       context={authContext}
       runtime={authRuntime}
     />
-  ) : section?.id === "cookies" ? (
-    <section
-      id="request-section-cookies"
-      role="region"
-      aria-labelledby="request-cookies-button"
-      className="h-full min-h-0 min-w-0 overflow-auto bg-purr-surface"
-    >
-      <CookieJarEditor
-        jar={cookieJar}
-        url={draft.url}
-        enabled={draft.useCookieJar}
-        onEnabledChange={(useCookieJar) =>
-          onDraftChange({ ...draft, useCookieJar })
-        }
-      />
-    </section>
   ) : section?.id === "query" ? (
     <section
       id="request-section-query"

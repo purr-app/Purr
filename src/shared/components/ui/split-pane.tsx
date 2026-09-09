@@ -15,6 +15,8 @@ type SplitPaneProps = {
   firstLabel: string;
   secondLabel: string;
   initialRatio?: number;
+  ratio?: number;
+  onRatioChange?: (ratio: number) => void;
   firstSize?: string;
   hideSecond?: boolean;
   dimSecond?: boolean;
@@ -37,6 +39,8 @@ export function SplitPane({
   firstLabel,
   secondLabel,
   initialRatio = 50,
+  ratio: controlledRatio,
+  onRatioChange,
   firstSize,
   hideSecond = false,
   dimSecond = false,
@@ -48,9 +52,11 @@ export function SplitPane({
     horizontal: clampRatio(initialRatio),
     vertical: clampRatio(initialRatio),
   }));
-  const ratio = ratios[orientation];
-  const setRatio = (value: number) =>
+  const ratio = controlledRatio ?? ratios[orientation];
+  const setRatio = (value: number) => {
     setRatios((current) => ({ ...current, [orientation]: clampRatio(value) }));
+    onRatioChange?.(clampRatio(value));
+  };
   const resizable = firstSize === undefined;
   const containerRef = useRef<HTMLDivElement>(null);
   const separatorRef = useRef<HTMLDivElement>(null);

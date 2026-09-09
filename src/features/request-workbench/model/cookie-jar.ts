@@ -16,7 +16,6 @@ export type SessionCookie = {
 const identity = (cookie: Cookie) =>
   JSON.stringify([cookie.domain, cookie.path, cookie.key]);
 
-// Session-only storage: secrets never enter localStorage or request history.
 export class SessionCookieJar {
   private store = new MemoryCookieStore();
   private jar = new CookieJar(this.store, {
@@ -26,6 +25,28 @@ export class SessionCookieJar {
   private disabled = new Set<string>();
   private listeners = new Set<() => void>();
   private version = 0;
+  constructor(cookies: SessionCookie[] = []) {
+    for (const value of cookies) {
+      try {
+        const domain = value.domain.replace(/^\./, "");
+        const url = `${value.secure ? "https" : "http"}://${domain}${value.path}`;
+        const cookie = new Cookie({
+          key: value.name,
+          value: value.value,
+          domain: value.hostOnly ? undefined : domain,
+          path: value.path,
+          secure: value.secure,
+          httpOnly: value.httpOnly,
+          sameSite: value.sameSite || undefined,
+          expires: value.expires ? new Date(value.expires) : "Infinity",
+        });
+        const restored = this.jar.setCookieSync(cookie, url);
+        if (restored && !value.enabled) this.disabled.add(identity(restored));
+      } catch {
+        /* A stale or invalid persisted cookie is ignored by the cookie policy. */
+      }
+    }
+  }
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {

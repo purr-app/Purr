@@ -2,7 +2,6 @@ export const requestEditorSections = [
   { id: "query", label: "Params", description: "Add query parameters to the request URL." },
   { id: "headers", label: "Headers", description: "Set HTTP request headers." },
   { id: "auth", label: "Auth", description: "Configure request authentication." },
-  { id: "cookies", label: "Cookies", description: "Manage session cookies." },
   { id: "body", label: "Body", description: "Configure the request payload." },
   { id: "settings", label: "Settings", description: "Adjust request execution settings." },
 ] as const;

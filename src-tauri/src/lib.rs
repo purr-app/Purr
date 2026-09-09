@@ -1,5 +1,6 @@
 mod http;
 mod oauth;
+mod workspaces;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -28,6 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(http::HttpClient::default())
         .manage(oauth::OAuthCallbacks::default())
+        .manage(workspaces::WorkspaceStorage::default())
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
@@ -38,7 +40,11 @@ pub fn run() {
             greet,
             http::send_http,
             oauth::authorize_oauth,
-            oauth::cancel_oauth
+            oauth::cancel_oauth,
+            workspaces::load_workspace_store,
+            workspaces::save_workspace,
+            workspaces::set_active_workspace,
+            workspaces::open_workspace_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

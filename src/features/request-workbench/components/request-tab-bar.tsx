@@ -43,20 +43,8 @@ export function RequestTabBar({
   onViewChange: (view: WorkbenchView) => void;
 }) {
   return (
-    <div className="flex min-h-control-md items-center justify-between gap-ui-3 px-ui-1">
-      <div className="flex min-w-0 items-center gap-ui-2 text-ui-sm">
-        <img
-          className="size-ui-6 rounded-ui-md"
-          src="/purr.svg"
-          alt=""
-          aria-hidden="true"
-        />
-        <span className="truncate font-medium text-content-primary">
-          Untitled Request
-        </span>
-      </div>
       <div
-        className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-surface p-ui-1"
+        className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-surface"
         role="group"
         aria-label="Workbench view"
       >
@@ -77,10 +65,9 @@ export function RequestTabBar({
             )}
             onClick={() => onViewChange(value)}
           >
-            <Icon className="size-ui-4" aria-hidden="true" />
+            <Icon className="size-ui-3-5" aria-hidden="true" />
           </Button>
         ))}
       </div>
-    </div>
   );
 }

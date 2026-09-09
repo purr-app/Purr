@@ -22,7 +22,9 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
     setOpen(false);
   };
 
-  useHotkeys(keyboardShortcuts.openMethodSelector.hotkey, () => setOpen(true), { enableOnFormTags: true, preventDefault: true });
+  useHotkeys(keyboardShortcuts.openMethodSelector.hotkey, () => {
+    if (!document.querySelector("dialog[open]")) setOpen(true);
+  }, { enableOnFormTags: true, preventDefault: true });
 
   useHotkeys(
     httpMethodShortcutKeys,
@@ -46,7 +48,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
       <PopoverTrigger asChild>
         <button
           className={cn(
-            "ui-focus-ring flex h-control-lg shrink-0 items-center gap-ui-1 rounded-ui-md px-ui-2 font-code text-ui-xl font-normal transition-colors duration-ui-fast hover:bg-purr-highlight",
+            "ui-focus-ring flex h-control-md shrink-0 items-center gap-ui-1 rounded-ui-md px-ui-2 font-code text-ui-md font-normal transition-colors duration-ui-fast hover:bg-purr-highlight",
             getHttpMethodStyle(value).text,
             className,
           )}

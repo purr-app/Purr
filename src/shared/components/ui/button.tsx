@@ -10,6 +10,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-action-emerald text-purr-base shadow-button hover:bg-action-emerald-hover",
+        brand: "bg-action-brand text-content-primary shadow-button hover:bg-action-brand-hover",
         secondary: "border border-border-subtle bg-purr-elevated text-content-secondary hover:bg-purr-highlight hover:text-content-primary",
         ghost: "text-content-secondary hover:bg-purr-highlight hover:text-content-primary",
       },

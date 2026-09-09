@@ -1,3 +1,5 @@
+import { resolveEnvironmentValue } from "../../../shared/lib/resolve-variables";
+
 export const authTypeOptions = [
   { value: "none", label: "None" },
   { value: "bearer", label: "Bearer Token" },
@@ -126,11 +128,7 @@ export function resolveAuthValue(
   value: string,
   context: AuthContext = {},
 ): string {
-  return value.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key: string) => {
-    if (!Object.prototype.hasOwnProperty.call(context.variables ?? {}, key))
-      throw new Error(`Environment variable “${key}” is not defined.`);
-    return context.variables![key];
-  });
+  return resolveEnvironmentValue(value, context.variables ?? {});
 }
 
 export function base64Bytes(bytes: Uint8Array): string {
@@ -333,7 +331,7 @@ export function getAuthBinding(
         if (!token) return { error: "Enter a bearer token." };
         if (/\s/.test(token))
           return { error: "A bearer token cannot contain whitespace." };
-        const prefix = current.bearer.prefix.trim();
+        const prefix = read(current.bearer.prefix).trim();
         if (prefix && !httpToken.test(prefix))
           return { error: "Enter a valid token prefix." };
         binding = {

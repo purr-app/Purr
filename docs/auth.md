@@ -29,13 +29,13 @@ The native browser flow follows [OAuth for Native Apps (RFC 8252)](https://www.r
 
 ## Session cookies
 
-Cookies are opened with the standalone **Cookies** button on the right side of the request-options row. **Use cookie jar** independently controls capture and sending on a request. The jar uses [tough-cookie](https://github.com/salesforce/tough-cookie) for domain/path, expiry, public suffix and cookie-prefix validation.
+Cookies are opened with the standalone cookie button in the workspace title bar. It opens a persistent workspace-level tab instead of replacing the active request configuration panel. **Use cookie jar** independently controls capture and sending for the currently selected request. The jar uses [tough-cookie](https://github.com/salesforce/tough-cookie) for domain/path, expiry, public suffix and cookie-prefix validation.
 
 Purr collects all `Set-Cookie` headers, including on intermediate redirects, and sends matching cookies. Secure cookies require HTTPS; HttpOnly is retained and permits HTTP transmission. SameSite=None requires Secure. A direct request is treated as same-site; a cross-site redirect chain excludes Strict/Lax and unspecified (Lax by default) cookies. Cross-origin redirects also drop explicit Authorization, API-key and Cookie credentials. HTTPS-to-HTTP redirects are rejected.
 
 Cookies can be added, edited, disabled and deleted, with domain, path, host-only, Secure, HttpOnly, SameSite and optional expiry controls. A disabled cookie remains disabled if the server updates it. Manually specified cookies override matching jar cookies by name.
 
-Tokens, cookie contents and credentials are **in memory for the current session only**. They are not persisted in localStorage, files or an OS vault. Restarting/reloading clears them; persistent encrypted storage will need a separate lifecycle and workspace design.
+Cookie contents are persisted in the local workspace file so a workspace can be resumed. Environment values, saved credentials, and cookies remain unencrypted local data rather than OS-vault secrets. Runtime OAuth and response-derived tokens still follow their existing request/environment lifecycle and are cleared when changing environments.
 
 ## Response-derived tokens
 

@@ -46,13 +46,13 @@ export function CookieJarEditor({
   };
   return (
     <div
-      aria-label="Session cookie jar"
+      aria-label="Workspace cookie jar"
       className="space-y-ui-4 bg-purr-surface p-ui-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-ui-3">
         <div className="flex items-center gap-ui-2 text-ui-md">
           <CookieIcon className="size-ui-4 text-action-brand" />
-          Session cookies
+          Workspace cookies
         </div>
         <div className="flex items-center gap-ui-4">
           <Checkbox
@@ -139,7 +139,7 @@ export function CookieJarEditor({
         </div>
       ) : (
         <p className="rounded-ui-lg bg-purr-elevated px-ui-4 py-ui-5 text-ui-sm text-content-secondary">
-          No session cookies yet. Send a login request or add a cookie.
+          No workspace cookies yet. Send a login request or add a cookie.
         </p>
       )}
       {editing ? (

@@ -1,5 +1,4 @@
 import { ChevronDown, LoaderCircle, SendHorizontal } from "lucide-react";
-import { useState, useSyncExternalStore } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
@@ -15,14 +14,10 @@ import {
   type RequestDraft,
 } from "../model/request";
 import { RequestSectionPanel } from "./request-section-panel";
-import {
-  RequestCookiesButton,
-  RequestSectionTabs,
-} from "./request-section-tabs";
+import { RequestSectionTabs } from "./request-section-tabs";
 import type { RequestEditorSection } from "../model/request-editor-section";
 import type { AuthContext } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
-import type { SessionCookieJar } from "../model/cookie-jar";
 
 type RequestComposerProps = {
   draft: RequestDraft;
@@ -31,9 +26,10 @@ type RequestComposerProps = {
   sending: boolean;
   authContext: AuthContext;
   authRuntime: AuthRuntime;
-  cookieJar: SessionCookieJar;
   detailsCollapsed?: boolean;
   onToggleDetails?: () => void;
+  activeSection: RequestEditorSection;
+  onSectionChange: (section: RequestEditorSection) => void;
 };
 
 export function RequestComposer({
@@ -43,24 +39,22 @@ export function RequestComposer({
   sending,
   authContext,
   authRuntime,
-  cookieJar,
   detailsCollapsed = false,
   onToggleDetails,
+  activeSection,
+  onSectionChange,
 }: RequestComposerProps) {
-  const [activeSection, setActiveSection] =
-    useState<RequestEditorSection>("query");
-  useSyncExternalStore(cookieJar.subscribe, cookieJar.getVersion);
   const headers = getRequestHeaders(draft, authContext);
 
-  const selectSection = (section: RequestEditorSection) => setActiveSection(section);
+  const selectSection = onSectionChange;
 
   return (
     <section
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-ui-xl border border-border-subtle shadow-panel"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-ui-xl border shadow-panel"
       aria-label="Request composer"
     >
       <div
-        className="flex h-request-toolbar shrink-0 items-center gap-ui-2 border-b border-border-subtle bg-purr-elevated p-ui-3"
+        className="flex h-request-toolbar shrink-0 items-center gap-ui-2 border-b border-border-subtle bg-purr-elevated p-ui-1"
         data-request-url-bar
       >
         <form
@@ -76,7 +70,7 @@ export function RequestComposer({
               onValueChange={(method) => onDraftChange({ ...draft, method })}
             />
             <Input
-              className="min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
+              className="h-control-md min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
               variant="transparent"
               value={draft.url}
               onChange={(event) => {
@@ -88,11 +82,12 @@ export function RequestComposer({
                 });
               }}
               aria-label="Request URL"
+              placeholder="Enter URL or use {{base_url}}"
               spellCheck="false"
             />
             <Button
               className="shadow-action"
-              size="lg"
+              size="default"
               type="submit"
               disabled={sending}
             >
@@ -145,14 +140,6 @@ export function RequestComposer({
           )}
           headerCount={getEnabledRequestHeaderCount(headers)}
           hasHeaderError={hasRequestHeaderValidationError(headers)}
-          trailing={
-            <RequestCookiesButton
-              active={activeSection === "cookies"}
-              cookieCount={cookieJar.list().length}
-              useCookieJar={draft.useCookieJar}
-              onClick={() => selectSection("cookies")}
-            />
-          }
         />
         <div className="min-h-0 flex-1 overflow-hidden">
             <RequestSectionPanel
@@ -161,7 +148,6 @@ export function RequestComposer({
               onDraftChange={onDraftChange}
               authContext={authContext}
               authRuntime={authRuntime}
-              cookieJar={cookieJar}
             />
         </div>
       </div>

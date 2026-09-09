@@ -292,7 +292,7 @@ export function getEnabledRequestHeaderCount(headers: RequestHeader[]) {
 }
 
 export function isRequestHeaderNameValid(name: string) {
-  return name.length === 0 || validHeaderName.test(name);
+  return name.length === 0 || validHeaderName.test(name.replace(/\{\{\s*[^{}]+?\s*\}\}/g, "variable"));
 }
 
 export function hasRequestHeaderValidationError(headers: RequestHeader[]) {

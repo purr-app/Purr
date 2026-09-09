@@ -11,6 +11,8 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
+        if (command === "load_workspace_store") return null;
+        if (command === "save_workspace" || command === "set_active_workspace") return;
         if (command !== "send_http") throw new Error("Unexpected command");
         return {
           status: 200,
@@ -32,6 +34,7 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
     };
   });
   await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
   await page.getByRole("tab", { name: "Auth", exact: true }).click();
   await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
   await page.getByLabel("Bearer token", { exact: true }).fill("private-token");

@@ -115,6 +115,7 @@ test("API key placement, OAuth fields, cookies and compact responsive layout", a
   page,
 }) => {
   await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
   await page.getByRole("tab", { name: "Auth", exact: true }).click();
   await page.getByRole("tab", { name: "API Key", exact: true }).click();
   await page.getByLabel("Key name", { exact: true }).fill("api_key");
@@ -186,6 +187,8 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
+        if (command === "load_workspace_store") return null;
+        if (command === "save_workspace" || command === "set_active_workspace") return;
         if (command !== "send_http") throw new Error("Unexpected command");
         calls.push(args.request);
         return {
@@ -203,6 +206,7 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
   await page.getByRole("tab", { name: "Basic Auth", exact: true }).click();
   await page.getByLabel("Username", { exact: true }).fill("user");
   await page.getByLabel("Password", { exact: true }).fill("pass");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(
     page.getByRole("region", { name: "HTTP response" }),

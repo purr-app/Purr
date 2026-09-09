@@ -5,6 +5,8 @@ async function mockSuccessfulRequest(page: Page) {
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
+        if (command === "load_workspace_store") return null;
+        if (command === "save_workspace" || command === "set_active_workspace") return;
         if (command !== "send_http") throw new Error("Unexpected command");
         return {
           status: 200,
@@ -24,6 +26,26 @@ test("canvas collapses to the URL and reopens request details beside a dimmed re
 }) => {
   await mockSuccessfulRequest(page);
   await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
+
+  const controlHeights = await Promise.all([
+    page.getByRole("button", { name: "Choose HTTP method", exact: true }).evaluate((element) => element.getBoundingClientRect().height),
+    page.getByLabel("Request URL", { exact: true }).evaluate((element) => element.getBoundingClientRect().height),
+    page.getByRole("button", { name: "Send", exact: true }).evaluate((element) => element.getBoundingClientRect().height),
+  ]);
+  expect(new Set(controlHeights).size).toBe(1);
+
+  const headerCenters = await Promise.all([
+    page.getByRole("button", { name: "Hide sidebar", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
+    page.getByRole("button", { name: "Select workspace", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
+    page.getByRole("button", { name: "Open command palette", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
+    page.getByRole("button", { name: "Canvas view", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
+  ]);
+  expect(Math.max(...headerCenters) - Math.min(...headerCenters)).toBeLessThan(1);
+
+  const activeDocumentTab = page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab", { selected: true });
+  const tabCenters = await activeDocumentTab.locator("span").evaluateAll((spans) => spans.slice(0, 2).map((span) => { const box = span.getBoundingClientRect(); return box.y + box.height / 2; }));
+  expect(Math.abs(tabCenters[0] - tabCenters[1])).toBeLessThan(2);
 
   await expect(page.getByRole("button", { name: "Canvas view" })).toHaveAttribute(
     "aria-pressed",
@@ -37,10 +59,10 @@ test("canvas collapses to the URL and reopens request details beside a dimmed re
   const urlBar = page.locator("[data-request-url-bar]");
   const request = page.getByRole("region", { name: "Request composer" });
   const details = page.locator("[data-request-details]");
-  const cookies = details.getByRole("button", { name: /^Cookies/ });
+  const cookies = page.locator("header").getByRole("button", { name: /^Cookies/ });
   const params = details.getByRole("tab", { name: "Params" });
   await expect(cookies).toBeVisible();
-  expect((await cookies.boundingBox())!.y).toBe((await params.boundingBox())!.y);
+  expect((await cookies.boundingBox())!.y).toBeLessThan((await params.boundingBox())!.y);
   await expect(urlBar.getByRole("button", { name: /^Cookies/ })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -131,7 +153,8 @@ test("body editors fill tall and split panes without losing the selected tab or 
   const codeScroller = panel.locator(".cm-scroller");
   await expect.poll(async () => Math.abs((await panel.boundingBox())!.height - (await codeScroller.boundingBox())!.height)).toBeLessThan(2);
   const requestBox = (await page.getByRole("region", { name: "Request composer" }).boundingBox())!;
-  expect(requestBox.width).toBeGreaterThan(1500);
+  const sidebarWidth = (await page.getByRole("complementary", { name: "Workspace documents" }).boundingBox())!.width;
+  expect(requestBox.width).toBeGreaterThan(1500 - sidebarWidth);
   await page.screenshot({ path: "test-results/layout-canvas-body.png", fullPage: true });
 
   await page.keyboard.press(process.platform === "darwin" ? "Meta+Shift+3" : "Control+Shift+3");
@@ -152,6 +175,7 @@ test("body editors fill tall and split panes without losing the selected tab or 
 test("response cookies empty state fills the response surface", async ({ page }) => {
   await mockSuccessfulRequest(page);
   await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByRole("tab", { name: /^Cookie/ }).click();
   const empty = page.getByText("This response did not set any cookies.");
