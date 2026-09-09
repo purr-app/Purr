@@ -167,6 +167,10 @@
     --auth-prefix-width: 9rem;
     --auth-grant-width: 14rem;
     --auth-preview-max-height: 18rem;
+    --request-toolbar-height: 4.5rem;
+    --request-collapsed-height: calc(var(--request-toolbar-height) + 2 * var(--border-width-hairline));
+    --splitter-gutter: 1.25rem;
+    --splitter-dot-size: 0.1875rem;
 
     --radius-sm: 0.25rem;
     --radius-md: 0.375rem;
@@ -200,6 +204,7 @@
 
     --duration-fast: 120ms;
     --duration-normal: 200ms;
+    --duration-layout: 350ms;
     --opacity-hidden: 0;
     --opacity-disabled: 0.5;
     --opacity-inactive: 0.6;
@@ -280,9 +285,20 @@
     border-radius: var(--radius-lg);
   }
 
+  .ui-code-editor .cm-editor,
+  .ui-code-editor .cm-scroller,
   .ui-response-code .cm-editor,
   .ui-response-code .cm-scroller {
     height: 100%;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .ui-code-editor .cm-content,
+  .ui-code-editor .cm-gutter,
+  .ui-response-code .cm-content,
+  .ui-response-code .cm-gutter {
+    min-height: 100%;
   }
 
   .ui-drop-indicator {

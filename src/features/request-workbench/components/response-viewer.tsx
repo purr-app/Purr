@@ -182,7 +182,7 @@ function ResponseBodyPanel({ response }: { response: HttpResult }) {
           : "text";
 
   return (
-    <div>
+    <div className="flex h-full min-h-0 flex-col">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-ui-2 border-b border-border-subtle bg-purr-surface p-ui-2">
         <div className="flex min-w-0 flex-wrap items-center gap-ui-2">
           <span className="rounded-ui-md bg-action-brand-surface px-ui-2 py-ui-1 font-code text-ui-xs font-medium text-action-brand">
@@ -262,7 +262,9 @@ function ResponseBodyPanel({ response }: { response: HttpResult }) {
           Showing filtered result.
         </p>
       ) : null}
-      <ResponseCodeViewer value={content} language={language} />
+      <div className="min-h-0 flex-1">
+        <ResponseCodeViewer value={content} language={language} />
+      </div>
     </div>
   );
 }
@@ -272,7 +274,7 @@ function ResponseHeadersPanel({ response }: { response: HttpResult }) {
     .map(([name, value]) => `${name}: ${value}`)
     .join("\n");
   return (
-    <div className="p-ui-3">
+    <div className="h-full overflow-auto p-ui-3">
       <div className="mb-ui-2 flex items-center justify-between">
         <span className="font-code text-ui-xs text-content-tertiary">
           {response.headers.length} response headers
@@ -356,7 +358,7 @@ function ResponseCookiesPanel({ response }: { response: HttpResult }) {
     [response.headers],
   );
   return (
-    <div className="p-ui-3">
+    <div className="h-full min-h-0 overflow-auto bg-purr-surface p-ui-3">
       {cookies.length ? (
         <div className="flex flex-col gap-ui-2">
           {cookies.map((cookie, index) => (
@@ -367,7 +369,7 @@ function ResponseCookiesPanel({ response }: { response: HttpResult }) {
           ))}
         </div>
       ) : (
-        <div className="rounded-ui-lg bg-purr-codefield px-ui-4 py-ui-6 text-center text-ui-sm text-content-tertiary">
+        <div className="flex h-full items-center justify-center px-ui-4 py-ui-6 text-center text-ui-sm text-content-tertiary">
           This response did not set any cookies.
         </div>
       )}
@@ -518,7 +520,7 @@ function ResponseTimelinePanel({ response }: { response: HttpResult }) {
     },
   ];
   return (
-    <div className="flex flex-col gap-ui-3 p-ui-3">
+    <div className="ui-focus-ring h-full min-h-0 space-y-ui-3 overflow-auto bg-purr-surface p-ui-3" aria-label="Response timeline" tabIndex={0}>
       <div className="rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-3">
         <div className="mb-ui-3 flex flex-wrap items-center justify-between gap-ui-2">
           <div className="flex flex-wrap items-center gap-x-ui-4 gap-y-ui-1">
@@ -611,7 +613,7 @@ function ResponseTimelinePanel({ response }: { response: HttpResult }) {
         ) : null}
       </div>
       <div
-        className="overflow-hidden rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-4 font-code text-ui-sm"
+        className="break-words rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-4 font-code text-ui-sm"
         aria-label="Network timeline log"
       >
         <div className="mb-ui-5 text-accent-orange">
@@ -795,9 +797,9 @@ export function ResponseViewer({ response }: { response: HttpResult }) {
   return (
     <section
       aria-label="HTTP response"
-      className="mt-ui-5 min-w-0 overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel"
     >
-      <div className="flex flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated p-ui-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated p-ui-2">
         <div
           className="flex min-w-0 flex-wrap items-center gap-ui-1"
           role="tablist"
@@ -863,7 +865,7 @@ export function ResponseViewer({ response }: { response: HttpResult }) {
         id="response-panel"
         role="tabpanel"
         aria-labelledby={`response-tab-${tab}`}
-        className="min-w-0"
+        className="min-h-0 min-w-0 flex-1 overflow-hidden"
       >
         {tab === "response" ? <ResponseBodyPanel response={response} /> : null}
         {tab === "headers" ? (

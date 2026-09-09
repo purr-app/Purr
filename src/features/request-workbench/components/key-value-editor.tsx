@@ -326,7 +326,7 @@ export function KeyValueEditor({
   return (
     <section
       className={cn(
-        "bg-purr-elevated px-ui-3 py-ui-2",
+        "min-h-full bg-purr-surface px-ui-3 py-ui-2",
         multipart && "ui-multipart-editor",
         className,
       )}

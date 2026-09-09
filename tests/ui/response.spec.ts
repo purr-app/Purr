@@ -138,6 +138,9 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
   await expect(
     response.getByText("set-cookie: sid=••••••••; Path=/; HttpOnly"),
   ).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 650 });
+  await response.getByText(/^Response body received/).scrollIntoViewIfNeeded();
+  await expect.poll(() => response.getByLabel("Response timeline", { exact: true }).evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(response.getByRole("tab", { name: "Trace", exact: true })).toBeDisabled();
   await expect(response.getByRole("tab", { name: "Bench", exact: true })).toBeDisabled();
   await response.getByRole("button", { name: "Network details" }).hover();

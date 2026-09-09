@@ -109,6 +109,8 @@ export default {
         content: "var(--content-max-width)",
         "method-popover": "var(--method-popover-width)",
         "auth-grant": "var(--auth-grant-width)",
+        "request-toolbar": "var(--request-toolbar-height)",
+        "splitter-dot": "var(--splitter-dot-size)",
       },
       maxWidth: {
         "validation-popover": "var(--validation-popover-width)",
@@ -172,9 +174,11 @@ export default {
       transitionDuration: {
         "ui-fast": "var(--duration-fast)",
         "ui-normal": "var(--duration-normal)",
+        "ui-layout": "var(--duration-layout)",
       },
       transitionProperty: {
         "ui-expand": "grid-template-rows, opacity",
+        "ui-layout": "grid-template-rows, grid-template-columns",
       },
       gridTemplateRows: {
         "ui-collapsed": "0fr",

@@ -33,9 +33,9 @@ export function AuthEditor({
       role="tabpanel"
       aria-labelledby="request-tab-auth"
       aria-label="Request authentication"
-      className="min-w-0 overflow-hidden rounded-ui-xl bg-purr-surface"
+      className="h-full min-h-0 min-w-0 overflow-auto bg-purr-surface"
     >
-      <div className="flex flex-wrap items-center gap-ui-2 bg-purr-elevated px-ui-3 py-ui-2">
+      <div className="flex flex-wrap items-center gap-ui-2 border-b border-border-subtle bg-purr-surface px-ui-3 py-ui-2">
         <SegmentedTabs
           id="auth-type"
           panelId="auth-type-panel"

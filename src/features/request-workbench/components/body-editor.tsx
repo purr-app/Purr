@@ -121,10 +121,10 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
       id="request-section-body"
       role="tabpanel"
       aria-labelledby="request-tab-body"
-      className="min-w-0 overflow-hidden rounded-ui-xl bg-purr-surface"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-purr-surface"
       aria-label="Request body"
     >
-      <div className="flex flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated px-ui-3 py-ui-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-ui-2 border-b border-border-subtle bg-purr-surface px-ui-3 py-ui-2">
         <div
           className="flex min-w-0 max-w-full overflow-x-auto rounded-ui-md bg-purr-surface p-ui-1 gap-ui-1"
           role="tablist"
@@ -217,7 +217,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
         id="body-format-panel"
         role="tabpanel"
         aria-labelledby={"body-format-" + body.type}
-        className="min-w-0"
+        className={cn("min-h-0 min-w-0 flex-1 bg-purr-surface", isCode ? "overflow-hidden" : "overflow-auto")}
       >
         {body.type === "json" || body.type === "xml" || body.type === "text" ? (
           <BodyCodeEditor
@@ -284,7 +284,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
         )}
       </div>
 
-      <footer className="flex flex-wrap items-center justify-between gap-x-ui-4 gap-y-ui-1 bg-purr-elevated px-ui-3 py-ui-1-5 font-code text-ui-xs text-content-tertiary">
+      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-ui-4 gap-y-ui-1 border-t border-border-subtle bg-purr-surface px-ui-3 py-ui-1-5 font-code text-ui-xs text-content-tertiary">
         <div
           className="flex min-w-0 flex-1 flex-wrap items-center gap-x-ui-3 gap-y-ui-1"
           role="status"

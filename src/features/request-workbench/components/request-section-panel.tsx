@@ -54,7 +54,7 @@ export function RequestSectionPanel({
       id="request-section-cookies"
       role="region"
       aria-labelledby="request-cookies-button"
-      className="min-w-0 overflow-hidden rounded-ui-xl bg-purr-surface"
+      className="h-full min-h-0 min-w-0 overflow-auto bg-purr-surface"
     >
       <CookieJarEditor
         jar={cookieJar}
@@ -70,7 +70,7 @@ export function RequestSectionPanel({
       id="request-section-query"
       role="tabpanel"
       aria-labelledby="request-tab-query"
-      className="overflow-hidden rounded-ui-xl bg-purr-elevated"
+      className="h-full min-h-0 overflow-auto bg-purr-surface"
     >
       <QueryParamsEditor
         params={getRequestQueryParams(draft, authContext)}
@@ -84,7 +84,7 @@ export function RequestSectionPanel({
       id="request-section-headers"
       role="tabpanel"
       aria-labelledby="request-tab-headers"
-      className="overflow-hidden rounded-ui-xl bg-purr-elevated"
+      className="h-full min-h-0 overflow-auto bg-purr-surface"
     >
       <HeadersEditor
         headers={getRequestHeaders(draft, authContext)}
@@ -97,7 +97,7 @@ export function RequestSectionPanel({
     <section
       id={`request-section-${section.id}`}
       role="tabpanel"
-      className="rounded-ui-xl bg-purr-elevated px-ui-4 py-ui-4 sm:px-ui-5"
+      className="h-full min-h-0 overflow-auto bg-purr-surface px-ui-4 py-ui-4 sm:px-ui-5"
     >
       <div className="flex items-baseline justify-between gap-ui-4">
         <h2 className="m-ui-0 text-ui-md font-medium text-content-primary">

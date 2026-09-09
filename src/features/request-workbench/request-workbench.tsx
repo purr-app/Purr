@@ -1,7 +1,14 @@
 import { useRef, useState } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 
+import { SplitPane } from "../../shared/components/ui/split-pane";
+import { keyboardShortcuts } from "../../shared/config/keyboard-shortcuts";
+import { EmptyResponse } from "./components/empty-response";
 import { RequestComposer } from "./components/request-composer";
-import { RequestTabBar } from "./components/request-tab-bar";
+import {
+  RequestTabBar,
+  type WorkbenchView,
+} from "./components/request-tab-bar";
 import { ResponseViewer } from "./components/response-viewer";
 import {
   applyRequestQueryParamsToUrl,
@@ -28,6 +35,36 @@ import {
   type HttpResult,
 } from "./services/http-client";
 
+function ResponseArea({
+  response,
+  error,
+  sending,
+}: {
+  response: HttpResult | null;
+  error: string;
+  sending: boolean;
+}) {
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-ui-2">
+      {error ? (
+        <p
+          role="alert"
+          className="m-ui-0 shrink-0 rounded-ui-lg bg-purr-elevated px-ui-4 py-ui-3 text-ui-md text-accent-red"
+        >
+          {error}
+        </p>
+      ) : null}
+      <div className="min-h-0 min-w-0 flex-1">
+        {response ? (
+          <ResponseViewer response={response} />
+        ) : (
+          <EmptyResponse sending={sending} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function RequestWorkbench() {
   const [draft, setDraft] = useState<RequestDraft>(initialRequestDraft);
   const [authContext, setAuthContext] = useState<AuthContext>({});
@@ -36,15 +73,41 @@ export function RequestWorkbench() {
   const sendingRef = useRef(false);
   const [response, setResponse] = useState<HttpResult | null>(null);
   const [error, setError] = useState("");
+  const [view, setView] = useState<WorkbenchView>("canvas");
+  const [canvasFocus, setCanvasFocus] = useState<"request" | "response">(
+    "request",
+  );
   const authRuntime = useAuthRuntime(
     draft,
     setDraft,
     authContext,
     setAuthContext,
   );
+  const selectView = (nextView: WorkbenchView) => {
+    setView(nextView);
+    if (nextView === "canvas")
+      setCanvasFocus(response || error || sending ? "response" : "request");
+  };
+  useHotkeys(
+    keyboardShortcuts.canvasView.hotkey,
+    () => selectView("canvas"),
+    { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true },
+    [response, error, sending],
+  );
+  useHotkeys(
+    keyboardShortcuts.horizontalSplitView.hotkey,
+    () => selectView("horizontal"),
+    { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true },
+  );
+  useHotkeys(
+    keyboardShortcuts.verticalSplitView.hotkey,
+    () => selectView("vertical"),
+    { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true },
+  );
 
   const send = async () => {
     if (sendingRef.current) return;
+    setCanvasFocus("response");
     sendingRef.current = true;
     setSending(true);
     setError("");
@@ -155,36 +218,61 @@ export function RequestWorkbench() {
     }
   };
 
+  const hasActivity = Boolean(response || error || sending);
+  const canvasCollapsed = view === "canvas" && canvasFocus === "response";
+  const canvasPreview = view === "canvas" && hasActivity && !canvasCollapsed;
+  const canvasCompose = view === "canvas" && !hasActivity && !canvasCollapsed;
+  const requestPane = (
+    <RequestComposer
+      draft={draft}
+      onDraftChange={setDraft}
+      onSend={() => {
+        void send();
+      }}
+      sending={sending}
+      authContext={authContext}
+      authRuntime={authRuntime}
+      cookieJar={cookieJar}
+      detailsCollapsed={canvasCollapsed}
+      onToggleDetails={
+        view === "canvas"
+          ? () => setCanvasFocus(canvasCollapsed ? "request" : "response")
+          : undefined
+      }
+    />
+  );
+  const responsePane = (
+    <ResponseArea response={response} error={error} sending={sending} />
+  );
+
   return (
-    <div className="flex min-h-screen flex-col bg-purr-base">
-      <main className="mx-auto flex w-full max-w-content flex-1 flex-col px-ui-4 pb-ui-6 pt-ui-6 sm:px-ui-7 sm:pt-ui-8">
-        <div className="shrink-0">
-          <RequestTabBar />
-          <div className="mt-ui-3">
-            <RequestComposer
-              draft={draft}
-              onDraftChange={setDraft}
-              onSend={() => {
-                void send();
-              }}
-              sending={sending}
-              authContext={authContext}
-              authRuntime={authRuntime}
-              cookieJar={cookieJar}
-            />
-          </div>
+    <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-purr-base">
+      <main className="flex min-h-0 w-full flex-1 flex-col px-ui-3 pb-ui-2 pt-ui-6 sm:px-ui-4 sm:pt-ui-8">
+        <RequestTabBar view={view} onViewChange={selectView} />
+        <div
+          className="mt-ui-3 min-h-0 flex-1"
+          data-workbench-view={view}
+        >
+          <SplitPane
+            orientation={view === "canvas" ? "horizontal" : view}
+            first={requestPane}
+            second={responsePane}
+            firstLabel="Request editor"
+            secondLabel="Response viewer"
+            firstSize={
+              canvasCompose ? "100%"
+                : canvasCollapsed ? "var(--request-collapsed-height)"
+                  : canvasPreview ? "calc((100% - var(--splitter-gutter)) * 0.5)"
+                    : undefined
+            }
+            hideSecond={canvasCompose}
+            dimSecond={canvasPreview}
+            onFocusSecond={() => setCanvasFocus("response")}
+            animated={view === "canvas"}
+          />
         </div>
-        {error ? (
-          <p
-            role="alert"
-            className="mt-ui-4 rounded-ui-lg bg-purr-elevated px-ui-4 py-ui-3 text-ui-md text-accent-red"
-          >
-            {error}
-          </p>
-        ) : null}
-        {response ? <ResponseViewer response={response} /> : null}
       </main>
-      <footer className="pointer-events-none flex h-control-lg items-center justify-end px-ui-7 font-code text-ui-xs text-content-tertiary">
+      <footer className="pointer-events-none flex h-control-lg shrink-0 items-center justify-end px-ui-3 font-code text-ui-xs text-content-tertiary sm:px-ui-4">
         Purr v0.0.0
       </footer>
     </div>

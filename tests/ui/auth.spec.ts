@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 test("empty authentication and body states stay compact", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByRole("tab", { name: "Auth", exact: true }).click();
+  await page.getByRole("tab", { name: /^Auth/ }).click();
   const noAuthentication = page.getByText("No authentication", { exact: true });
   await expect(noAuthentication).toBeVisible();
   expect(
@@ -217,6 +217,8 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
     "Basic dXNlcjpwYXNz",
   ]);
   expect(requests[1].headers).toContainEqual(["Cookie", "sid=one"]);
+  await page.getByRole("button", { name: "Expand request details" }).click();
+  await page.getByRole("tab", { name: /^Auth/ }).click();
   await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
   await page
     .getByRole("button", { name: "Use token from response", exact: true })

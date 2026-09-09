@@ -10,11 +10,6 @@ import {
   purrCodeTheme,
 } from "../../../shared/theme/code-editor-theme";
 
-const responsePreviewTheme = EditorView.theme({
-  ".cm-scroller": { maxHeight: "var(--response-viewer-max-height)" },
-  ".cm-content, .cm-gutter": { minHeight: "var(--response-viewer-min-height)" },
-});
-
 const setup = {
   lineNumbers: true,
   foldGutter: false,
@@ -48,11 +43,11 @@ export function ResponseCodeViewer({
 
   return (
     <CodeMirror
-      className="ui-response-code min-w-0 overflow-hidden"
+      className="ui-response-code h-full min-h-0 min-w-0 overflow-hidden"
       value={value}
       editable={false}
       readOnly
-      theme={[purrCodeTheme, responsePreviewTheme]}
+      theme={purrCodeTheme}
       extensions={extensions}
       basicSetup={setup}
     />

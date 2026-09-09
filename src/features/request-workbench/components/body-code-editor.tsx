@@ -112,7 +112,7 @@ export const BodyCodeEditor = forwardRef<
   return (
     <CodeMirror
       ref={editorRef}
-      className="ui-code-editor min-w-0"
+      className="ui-code-editor h-full min-h-0 min-w-0 overflow-hidden"
       value={value}
       theme={purrCodeTheme}
       extensions={extensions}

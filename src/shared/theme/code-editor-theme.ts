@@ -16,10 +16,10 @@ export const purrCodeTheme = EditorView.theme(
       fontFamily: "var(--font-family-code)",
       lineHeight: "var(--line-height-code)",
       overflow: "auto",
-      maxHeight: "var(--body-editor-max-height)",
+      maxHeight: "none",
       padding: "0 var(--space-2) 0 0",
     },
-    ".cm-content, .cm-gutter": { minHeight: "var(--body-editor-min-height)" },
+    ".cm-content, .cm-gutter": { minHeight: "100%" },
     ".cm-content": {
       padding: "var(--space-3) 0 var(--space-6)",
       caretColor: "var(--content-primary)",

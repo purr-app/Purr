@@ -1,5 +1,5 @@
 import { Cookie as CookieIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { cn } from "../../../shared/lib/cn";
 import { Button } from "../../../shared/components/ui/button";
 import {
@@ -22,8 +22,7 @@ type RequestSectionTabsProps = {
   queryCount: number;
   headerCount: number;
   hasHeaderError: boolean;
-  cookieCount: number;
-  useCookieJar: boolean;
+  trailing?: ReactNode;
 };
 
 function BodyTypeIndicator({ bodyType }: { bodyType: RequestBodyType }) {
@@ -64,15 +63,14 @@ export function RequestSectionTabs({
   queryCount,
   headerCount,
   hasHeaderError,
-  cookieCount,
-  useCookieJar,
+  trailing,
 }: RequestSectionTabsProps) {
   return (
     <div
-      className="flex min-h-control-md flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated px-ui-0 py-ui-1-5"
+      className="flex min-h-control-md shrink-0 items-center justify-between gap-ui-2 border-b border-border-subtle bg-purr-elevated px-ui-2 py-ui-1-5"
     >
       <div
-        className="flex min-w-0 flex-wrap items-center gap-ui-1"
+        className="flex min-w-0 items-center gap-ui-1 overflow-x-auto"
         role="tablist"
         aria-label="Request options"
       >
@@ -133,26 +131,42 @@ export function RequestSectionTabs({
             );
           })}
       </div>
-      <Button
-        id="request-cookies-button"
-        className={cn(
-          activeSection === "cookies"
-            ? "bg-purr-highlight text-content-primary"
-            : "text-content-secondary opacity-ui-inactive",
-        )}
-        variant="ghost"
-        weight="normal"
-        type="button"
-        aria-pressed={activeSection === "cookies"}
-        aria-controls="request-section-cookies"
-        onClick={() => onSectionChange("cookies")}
-      >
-        <CookieIcon className="size-ui-3-5 text-action-brand" />
-        Cookies
-        <span className="font-code text-action-brand">
-          {useCookieJar ? cookieCount : "Off"}
-        </span>
-      </Button>
+      {trailing}
     </div>
+  );
+}
+
+export function RequestCookiesButton({
+  active,
+  cookieCount,
+  useCookieJar,
+  onClick,
+}: {
+  active: boolean;
+  cookieCount: number;
+  useCookieJar: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      id="request-cookies-button"
+      className={cn(
+        active
+          ? "bg-purr-highlight text-content-primary"
+          : "text-content-secondary opacity-ui-inactive",
+      )}
+      variant="ghost"
+      weight="normal"
+      type="button"
+      aria-pressed={active}
+      aria-controls="request-section-cookies"
+      onClick={onClick}
+    >
+      <CookieIcon className="size-ui-3-5 text-action-brand" aria-hidden="true" />
+      Cookies
+      <span className="font-code text-action-brand">
+        {useCookieJar ? cookieCount : "Off"}
+      </span>
+    </Button>
   );
 }
