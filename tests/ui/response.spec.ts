@@ -156,3 +156,55 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
     fullPage: true,
   });
 });
+
+test("HTML and simple media render safely while binary responses use the native save dialog", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).isTauri = true;
+    (window as any).__download = null;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
+      if (command === "load_workspace_store") return null;
+      if (command === "save_workspace" || command === "set_active_workspace") return;
+      if (command === "save_response_body") { (window as any).__download = args; return "/Users/test/quarterly report.pdf"; }
+      if (command !== "send_http") throw new Error(`Unexpected command: ${command}`);
+      const path = new URL(args.request.url).pathname;
+      if (path === "/page") return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "text/html; charset=utf-8"]], bodyBase64: btoa('<!doctype html><html><body><h1>Purr HTML</h1><script>document.body.textContent="unsafe"</script></body></html>') };
+      if (path === "/pixel.png") return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "image/png"]], bodyBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" };
+      if (path === "/sound.mp3") return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "audio/mpeg"]], bodyBase64: btoa("ID3") };
+      if (path === "/movie.mp4") return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "video/mp4"]], bodyBase64: btoa("media") };
+      return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "application/pdf"], ["content-disposition", "attachment; filename*=UTF-8''quarterly%20report.pdf"]], bodyBase64: btoa("%PDF-1.7 binary") };
+    } };
+  });
+  await page.goto("/");
+  const url = page.getByLabel("Request URL", { exact: true });
+  await url.fill("https://example.com/page");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const response = page.getByRole("region", { name: "HTTP response" });
+  await expect(response.getByRole("button", { name: "Preview", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const html = page.frameLocator('iframe[title="HTML response preview"]');
+  await expect(html.getByRole("heading", { name: "Purr HTML" })).toBeVisible();
+  await expect(html.getByText("unsafe", { exact: true })).toHaveCount(0);
+
+  await url.fill("https://example.com/pixel.png");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(response.getByRole("img", { name: "Response preview", exact: true })).toBeVisible();
+
+  await url.fill("https://example.com/sound.mp3");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(response.getByLabel("Audio response preview", { exact: true })).toBeVisible();
+
+  await url.fill("https://example.com/movie.mp4");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(response.getByLabel("Video response preview", { exact: true })).toBeVisible();
+
+  await url.fill("https://example.com/report");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(response.getByText("Binary response", { exact: true })).toBeVisible();
+  await expect(response.getByText("quarterly report.pdf", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/response-binary-download.png", fullPage: true });
+  await response.getByRole("button", { name: "Download…", exact: true }).click();
+  await expect(response.getByRole("status")).toContainText("Saved to /Users/test/quarterly report.pdf");
+  const download = await page.evaluate(() => (window as any).__download);
+  expect(download.suggestedName).toBe("quarterly report.pdf");
+  expect(download.extension).toBe("pdf");
+  expect(atob(download.bodyBase64)).toBe("%PDF-1.7 binary");
+});

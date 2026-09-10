@@ -1,7 +1,7 @@
 import { prettifyBodyCode } from "./request-body";
 import type { HttpResult } from "../services/http-client";
 
-export type ResponseBodyKind = "json" | "xml" | "html" | "text" | "binary";
+export type ResponseBodyKind = "json" | "xml" | "html" | "text" | "image" | "audio" | "video" | "binary";
 export type ResponseViewMode = "pretty" | "prettify" | "raw" | "hex" | "base64";
 export type ResponseQueryLanguage = "jq" | "jsonpath";
 
@@ -58,28 +58,80 @@ export function inspectResponseBody(
     }
   }
 
-  if (mediaType.includes("json") || mediaType.endsWith("+json") || validJson)
-    return { kind: "json", mediaType: mediaType || "application/json", label: "JSON", parsedJson };
-  if (mediaType === "text/html" || /^(?:<!doctype\s+html|<html\b)/i.test(trimmed))
-    return { kind: "html", mediaType: mediaType || "text/html", label: "HTML" };
-  if (
-    mediaType.includes("xml") ||
-    mediaType.endsWith("+xml") ||
-    /^(?:<\?xml\b|<[A-Za-z_][\w.:-]*(?:\s|>|\/))/i.test(trimmed)
-  )
-    return { kind: "xml", mediaType: mediaType || "application/xml", label: "XML" };
-  if (
-    mediaType.startsWith("text/") ||
-    mediaType.includes("javascript") ||
-    mediaType.includes("graphql") ||
-    (!text.includes("\u0000") && !text.includes("\ufffd"))
-  )
-    return { kind: "text", mediaType: mediaType || "text/plain", label: "Text" };
+  if (mediaType.includes("json") || mediaType.endsWith("+json"))
+    return { kind: "json", mediaType, label: "JSON", parsedJson };
+  if (mediaType.startsWith("image/"))
+    return { kind: "image", mediaType, label: "Image" };
+  if (mediaType.startsWith("audio/"))
+    return { kind: "audio", mediaType, label: "Audio" };
+  if (mediaType.startsWith("video/"))
+    return { kind: "video", mediaType, label: "Video" };
+  if (mediaType === "text/html")
+    return { kind: "html", mediaType, label: "HTML" };
+  if (mediaType.includes("xml") || mediaType.endsWith("+xml"))
+    return { kind: "xml", mediaType, label: "XML" };
+  if (mediaType.startsWith("text/") || mediaType.includes("javascript") || mediaType.includes("graphql") || mediaType.includes("yaml"))
+    return { kind: "text", mediaType, label: "Text" };
+  if (mediaType)
+    return { kind: "binary", mediaType, label: "Binary" };
+  if (validJson)
+    return { kind: "json", mediaType: "application/json", label: "JSON", parsedJson };
+  if (/^(?:<!doctype\s+html|<html\b)/i.test(trimmed))
+    return { kind: "html", mediaType: "text/html", label: "HTML" };
+  if (/^(?:<\?xml\b|<[A-Za-z_][\w.:-]*(?:\s|>|\/))/i.test(trimmed))
+    return { kind: "xml", mediaType: "application/xml", label: "XML" };
+  if (!text.includes("\u0000") && !text.includes("\ufffd"))
+    return { kind: "text", mediaType: "text/plain", label: "Text" };
   return {
     kind: "binary",
     mediaType: mediaType || "application/octet-stream",
     label: "Binary",
   };
+}
+
+const responseExtensions: Readonly<Record<string, string>> = {
+  "application/json": "json",
+  "application/pdf": "pdf",
+  "application/zip": "zip",
+  "application/gzip": "gz",
+  "application/octet-stream": "bin",
+  "text/html": "html",
+  "text/plain": "txt",
+  "text/css": "css",
+  "text/csv": "csv",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+  "audio/mpeg": "mp3",
+  "audio/ogg": "ogg",
+  "audio/wav": "wav",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+};
+
+export function getResponseFileExtension(mediaType: string) {
+  return responseExtensions[mediaType] ?? (mediaType.split("/", 2)[1]?.split("+", 1)[0]?.replace(/[^a-z0-9]/gi, "").toLowerCase() || "bin");
+}
+
+function safeResponseFileName(value: string) {
+  const cleaned = value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-").replace(/^\.+|\.+$/g, "").trim();
+  return cleaned.slice(0, 180) || "response";
+}
+
+export function getResponseFileName(headers: [string, string][], url: string, mediaType: string) {
+  const disposition = responseHeaderValues(headers, "content-disposition")[0] ?? "";
+  const encoded = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition)?.[1];
+  const regular = /filename\s*=\s*(?:"([^"]+)"|([^;]+))/i.exec(disposition);
+  let candidate = encoded ? (() => { try { return decodeURIComponent(encoded); } catch { return encoded; } })() : regular?.[1] ?? regular?.[2]?.trim();
+  if (!candidate) {
+    try { candidate = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() ?? ""); }
+    catch { candidate = ""; }
+  }
+  candidate = safeResponseFileName(candidate || "response");
+  if (!/\.[a-z0-9]{1,12}$/i.test(candidate)) candidate += `.${getResponseFileExtension(mediaType)}`;
+  return candidate;
 }
 
 function decodeBase64(value: string) {

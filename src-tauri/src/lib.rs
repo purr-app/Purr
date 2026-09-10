@@ -1,3 +1,4 @@
+mod downloads;
 mod http;
 mod oauth;
 mod workspaces;
@@ -27,6 +28,7 @@ fn set_macos_app_icon() {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(http::HttpClient::default())
         .manage(oauth::OAuthCallbacks::default())
         .manage(workspaces::WorkspaceStorage::default())
@@ -38,6 +40,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            downloads::save_response_body,
             http::send_http,
             oauth::authorize_oauth,
             oauth::cancel_oauth,

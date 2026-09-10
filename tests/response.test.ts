@@ -5,6 +5,7 @@ import {
   formatHexResponse,
   formatResponseBody,
   getResponseCookies,
+  getResponseFileName,
   getResponseQuerySuggestions,
   inspectResponseBody,
   queryResponseJson,
@@ -25,8 +26,18 @@ test("response body detection respects content types and safe content sniffing",
     inspectResponseBody([["content-type", "text/html"]], "<!doctype html>").kind,
     "html",
   );
+  assert.equal(inspectResponseBody([["content-type", "image/png"]], "binary").kind, "image");
+  assert.equal(inspectResponseBody([["content-type", "audio/mpeg"]], "binary").kind, "audio");
+  assert.equal(inspectResponseBody([["content-type", "video/mp4"]], "binary").kind, "video");
+  assert.equal(inspectResponseBody([["content-type", "application/pdf"]], "%PDF-1.7").kind, "binary");
   assert.equal(inspectResponseBody([], "plain text").kind, "text");
   assert.equal(inspectResponseBody([], "\u0000\ufffd").kind, "binary");
+});
+
+test("response filenames prefer Content-Disposition and safely fall back to URL and media type", () => {
+  assert.equal(getResponseFileName([["content-disposition", "attachment; filename*=UTF-8''quarterly%20report.pdf"]], "https://example.com/export", "application/pdf"), "quarterly report.pdf");
+  assert.equal(getResponseFileName([], "https://example.com/assets/avatar", "image/png"), "avatar.png");
+  assert.equal(getResponseFileName([["content-disposition", 'attachment; filename="../unsafe?.zip"']], "https://example.com", "application/zip"), "-unsafe-.zip");
 });
 
 test("pretty, raw, hex and base64 response representations preserve payload data", () => {

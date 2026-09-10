@@ -5,8 +5,10 @@ import {
   Clock3,
   Cookie as CookieIcon,
   Copy,
+  Download,
   Eye,
   EyeOff,
+  FileArchive,
   FlaskConical,
   GitBranch,
   Globe2,
@@ -30,13 +32,17 @@ import { formatPayloadSize } from "../model/request-body";
 import { base64Bytes } from "../model/request-auth";
 import {
   formatResponseBody,
+  getResponseFileName,
   getResponseCookies,
   getResponseQuerySuggestions,
   inspectResponseBody,
   queryResponseJson,
   type ResponseQueryLanguage,
+  type ResponseBodyInfo,
+  type ResponseBodyKind,
   type ResponseViewMode,
 } from "../model/response";
+import { downloadResponseBody } from "../services/download-response";
 import type { HttpResult } from "../services/http-client";
 import { ResponseCodeViewer } from "./response-code-viewer";
 
@@ -113,6 +119,12 @@ const graphqlResponseViewModes: typeof responseViewModes = [
   { value: "base64", label: "Base64" },
 ];
 
+const binaryResponseViewModes: typeof responseViewModes = [
+  { value: "pretty", label: "File" },
+  { value: "hex", label: "Hex" },
+  { value: "base64", label: "Base64" },
+];
+
 const queryLanguages: readonly {
   value: ResponseQueryLanguage;
   label: string;
@@ -166,6 +178,69 @@ function CopyResponseButton({
   );
 }
 
+function responseCanPreview(kind: ResponseBodyKind) {
+  return kind === "html" || kind === "image" || kind === "audio" || kind === "video";
+}
+
+function responseDataUrl(response: HttpResult, mediaType: string) {
+  return `data:${mediaType || "application/octet-stream"};base64,${response.bodyBase64}`;
+}
+
+function safeHtmlPreview(value: string) {
+  const policy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; media-src data: blob:; font-src data:; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">`;
+  return /<head(?:\s[^>]*)?>/i.test(value)
+    ? value.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${policy}`)
+    : `${policy}${value}`;
+}
+
+function ResponseDownloadButton({ response, info, compact = false }: { response: HttpResult; info: ResponseBodyInfo; compact?: boolean }) {
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState("");
+  const [error, setError] = useState("");
+  const fileName = useMemo(() => getResponseFileName(response.headers, response.url, info.mediaType), [info.mediaType, response.headers, response.url]);
+  useEffect(() => { setResult(""); setError(""); }, [response.bodyBase64]);
+  return <div className={cn("flex items-center gap-ui-2", !compact && "flex-col")}>
+    <Button type="button" size={compact ? "sm" : "default"} variant="brand" disabled={saving} onClick={async () => {
+      setSaving(true); setError(""); setResult("");
+      try {
+        const path = await downloadResponseBody(response.bodyBase64, fileName, info.mediaType);
+        if (path) setResult(`Saved to ${path}`);
+      } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save the response."); }
+      finally { setSaving(false); }
+    }}><Download className="size-ui-4" />{saving ? "Saving…" : compact ? "Download" : "Download…"}</Button>
+    {result && <span role="status" className="max-w-validation-popover truncate font-code text-ui-xs text-status-success" title={result}>{result}</span>}
+    {error && <span role="alert" className="max-w-validation-popover font-code text-ui-xs text-accent-red">{error}</span>}
+  </div>;
+}
+
+function ResponsePreview({ response, info }: { response: HttpResult; info: ResponseBodyInfo }) {
+  const source = responseDataUrl(response, info.mediaType);
+  if (info.kind === "html") return <iframe title="HTML response preview" sandbox="" referrerPolicy="no-referrer"
+    className="h-full w-full border-0 bg-content-primary" srcDoc={safeHtmlPreview(response.text)} />;
+  if (info.kind === "image") return <div className="flex h-full items-center justify-center overflow-auto bg-purr-codefield p-ui-3">
+    <img src={source} alt="Response preview" className="max-h-full max-w-full object-contain" />
+  </div>;
+  if (info.kind === "audio") return <div className="flex h-full items-center justify-center bg-purr-codefield p-ui-4">
+    <audio aria-label="Audio response preview" className="w-full max-w-validation-popover" controls preload="metadata" src={source} />
+  </div>;
+  return <div className="flex h-full items-center justify-center bg-purr-codefield p-ui-3">
+    <video aria-label="Video response preview" className="max-h-full max-w-full" controls preload="metadata" src={source} />
+  </div>;
+}
+
+function BinaryResponsePanel({ response, info }: { response: HttpResult; info: ResponseBodyInfo }) {
+  const fileName = getResponseFileName(response.headers, response.url, info.mediaType);
+  return <div className="flex h-full items-center justify-center bg-purr-codefield p-ui-4">
+    <div className="flex max-w-ui-dialog flex-col items-center gap-ui-3 text-center">
+      <span className="flex size-control-xl items-center justify-center rounded-ui-xl bg-action-brand-surface text-action-brand"><FileArchive className="size-ui-6" /></span>
+      <div><h3 className="m-ui-0 text-ui-md font-medium text-content-primary">Binary response</h3>
+        <p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">This format cannot be previewed safely. Choose where to save the original response.</p></div>
+      <div className="font-code text-ui-xs text-content-secondary"><span>{fileName}</span><span aria-hidden="true"> · </span><span>{info.mediaType}</span><span aria-hidden="true"> · </span><span>{formatPayloadSize(response.size)}</span></div>
+      <ResponseDownloadButton response={response} info={info} />
+    </div>
+  </div>;
+}
+
 function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string }) {
   const rawInfo = useMemo(
     () => inspectResponseBody(response.headers, response.text),
@@ -177,13 +252,13 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
     [presentation.headers, presentation.text],
   );
   const [mode, setMode] = useState<ResponseViewMode>(
-    rawInfo.kind === "binary" ? "hex" : "pretty",
+    "pretty",
   );
   const [queryLanguage, setQueryLanguage] =
     useState<ResponseQueryLanguage>("jq");
   const [query, setQuery] = useState("");
   useEffect(() => {
-    setMode(rawInfo.kind === "binary" ? "hex" : "pretty");
+    setMode("pretty");
     setQuery("");
   }, [rawInfo.kind, response.bodyBase64, response.timeline.startedAtMs]);
 
@@ -217,6 +292,9 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
     [mode, presentation, prettyInfo, queryResult.error, queryResult.value, rawInfo, response],
   );
   const info = mode === "pretty" ? prettyInfo : rawInfo;
+  const visualPreview = mode === "pretty" && responseCanPreview(rawInfo.kind);
+  const binaryOverview = mode === "pretty" && rawInfo.kind === "binary";
+  const viewModes = prettyResponse ? graphqlResponseViewModes : rawInfo.kind === "binary" ? binaryResponseViewModes : responseViewModes;
   const language =
     mode === "raw" || mode === "hex" || mode === "base64"
       ? "text"
@@ -237,7 +315,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
             {info.mediaType}
           </span>
           <div className="flex items-center gap-ui-1 rounded-ui-md bg-purr-elevated p-ui-1">
-            {(prettyResponse ? graphqlResponseViewModes : responseViewModes).map((option) => (
+            {viewModes.map((option) => (
               <Button
                 key={option.value}
                 type="button"
@@ -252,7 +330,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
                 )}
                 onClick={() => setMode(option.value)}
               >
-                {option.value === "pretty" ? prettyLabel : option.label}
+                {option.value === "pretty" && responseCanPreview(rawInfo.kind) ? "Preview" : option.value === "pretty" && rawInfo.kind !== "binary" ? prettyLabel : option.label}
               </Button>
             ))}
           </div>
@@ -289,7 +367,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
               />
             </>
           ) : null}
-          <CopyResponseButton value={content} label="Copy response body" />
+          {visualPreview ? <ResponseDownloadButton response={response} info={rawInfo} compact /> : !binaryOverview ? <CopyResponseButton value={content} label="Copy response body" /> : null}
         </div>
       </div>
       {queryResult.error ? (
@@ -308,7 +386,9 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
         </p>
       ) : null}
       <div className="min-h-0 flex-1">
-        <ResponseCodeViewer value={content} language={language} />
+        {binaryOverview ? <BinaryResponsePanel response={response} info={rawInfo} />
+          : visualPreview ? <ResponsePreview response={response} info={rawInfo} />
+            : <ResponseCodeViewer value={content} language={language} />}
       </div>
     </div>
   );
