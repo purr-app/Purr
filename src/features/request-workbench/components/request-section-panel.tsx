@@ -13,7 +13,7 @@ import { BodyEditor } from "./body-editor";
 import { HeadersEditor } from "./headers-editor";
 import { QueryParamsEditor } from "./query-params-editor";
 import { AuthEditor } from "./auth-editor";
-import type { AuthContext } from "../model/request-auth";
+import type { AuthContext, AuthSourceDocumentOption } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import type { GraphQLSchema } from "graphql";
 import { GraphqlQueryEditor } from "../../graphql/components/graphql-query-editor";
@@ -24,9 +24,11 @@ type RequestSectionPanelProps = {
   onRunGraphqlOperation?: (name: string) => void;
   activeSection: RequestEditorSection;
   draft: RequestDraft;
+  effectiveDraft: RequestDraft;
   onDraftChange: (draft: RequestDraft) => void;
   authContext: AuthContext;
   authRuntime: AuthRuntime;
+  responseSourceDocuments: readonly AuthSourceDocumentOption[];
 };
 
 export function RequestSectionPanel({
@@ -38,6 +40,8 @@ export function RequestSectionPanel({
   schema,
   onOpenGraphqlType,
   onRunGraphqlOperation,
+  effectiveDraft,
+  responseSourceDocuments,
 }: RequestSectionPanelProps) {
   const section = getRequestEditorSection(activeSection);
 
@@ -52,10 +56,22 @@ export function RequestSectionPanel({
     />
   ) : section?.id === "auth" ? (
     <AuthEditor
-      auth={draft.auth}
-      onAuthChange={(auth) => onDraftChange({ ...draft, auth })}
+      auth={effectiveDraft.auth}
+      onAuthChange={(auth) => onDraftChange({
+        ...draft,
+        auth,
+        workspace: {
+          ...draft.workspace,
+          authEnabled: auth.type === "none"
+            ? false
+            : auth.type === "inherit"
+              ? true
+              : draft.workspace.authEnabled,
+        },
+      })}
       context={authContext}
       runtime={authRuntime}
+      responseSourceDocuments={responseSourceDocuments}
     />
   ) : section?.id === "query" ? (
     <section
@@ -79,7 +95,20 @@ export function RequestSectionPanel({
       className="h-full min-h-0 overflow-auto bg-purr-surface"
     >
       <HeadersEditor
-        headers={getRequestHeaders(draft, authContext)}
+        headers={getRequestHeaders(effectiveDraft, authContext)}
+        onWorkspaceHeaderEnabledChange={(id, enabled) =>
+          onDraftChange({
+            ...draft,
+            workspace: {
+              ...draft.workspace,
+              headersEnabled: enabled ? true : draft.workspace.headersEnabled,
+              headerOverrides: {
+                ...draft.workspace.headerOverrides,
+                [id]: enabled,
+              },
+            },
+          })
+        }
         onHeadersChange={(headers) =>
           onDraftChange(updateRequestHeaders(draft, headers, authContext))
         }

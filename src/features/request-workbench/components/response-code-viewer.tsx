@@ -23,9 +23,11 @@ const setup = {
 export function ResponseCodeViewer({
   value,
   language,
+  ariaLabel = "Response body viewer",
 }: {
   value: string;
   language: "json" | "xml" | "text";
+  ariaLabel?: string;
 }) {
   const extensions = useMemo(
     () => [
@@ -34,11 +36,11 @@ export function ResponseCodeViewer({
       purrFoldGutter,
       EditorView.lineWrapping,
       EditorView.contentAttributes.of({
-        "aria-label": "Response body viewer",
+        "aria-label": ariaLabel,
         spellcheck: "false",
       }),
     ],
-    [language],
+    [ariaLabel, language],
   );
 
   return (

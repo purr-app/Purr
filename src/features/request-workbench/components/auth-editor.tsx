@@ -6,6 +6,7 @@ import {
   authTypeOptions,
   resolveAuth,
   type AuthContext,
+  type AuthSourceDocumentOption,
   type RequestAuth,
 } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
@@ -17,6 +18,10 @@ type Props = {
   onAuthChange: (auth: RequestAuth) => void;
   context: AuthContext;
   runtime: AuthRuntime;
+  allowInherit?: boolean;
+  idPrefix?: string;
+  ariaLabel?: string;
+  responseSourceDocuments?: readonly AuthSourceDocumentOption[];
 };
 
 export function AuthEditor({
@@ -24,24 +29,31 @@ export function AuthEditor({
   onAuthChange,
   context,
   runtime,
+  allowInherit = true,
+  idPrefix = "request",
+  ariaLabel,
+  responseSourceDocuments = [],
 }: Props) {
   const resolved = resolveAuth(auth, context);
+  const typeOptions = allowInherit
+    ? authTypeOptions
+    : authTypeOptions.filter((option) => option.value !== "inherit");
 
   return (
     <section
-      id="request-section-auth"
+      id={`${idPrefix}-section-auth`}
       role="tabpanel"
-      aria-labelledby="request-tab-auth"
-      aria-label="Request authentication"
+      aria-labelledby={ariaLabel ? undefined : "request-tab-auth"}
+      aria-label={ariaLabel ?? "Request authentication"}
       className="h-full min-h-0 min-w-0 overflow-auto bg-purr-surface"
     >
       <div className="flex flex-wrap items-center gap-ui-2 border-b border-border-subtle bg-purr-surface px-ui-3 py-ui-2">
         <SegmentedTabs
-          id="auth-type"
-          panelId="auth-type-panel"
+          id={`${idPrefix}-auth-type`}
+          panelId={`${idPrefix}-auth-type-panel`}
           label="Authentication type"
           value={auth.type}
-          options={authTypeOptions}
+          options={typeOptions}
           onValueChange={(type) => {
             onAuthChange({ ...auth, type });
             runtime.clearError();
@@ -49,9 +61,9 @@ export function AuthEditor({
         />
       </div>
       <div
-        id="auth-type-panel"
+        id={`${idPrefix}-auth-type-panel`}
         role="tabpanel"
-        aria-labelledby={`auth-type-${auth.type}`}
+        aria-labelledby={`${idPrefix}-auth-type-${auth.type}`}
         className={
           auth.type === "none" ? "p-ui-3 sm:p-ui-4" : "p-ui-4 sm:p-ui-5"
         }
@@ -69,6 +81,7 @@ export function AuthEditor({
             onAuthChange={onAuthChange}
             context={context}
             now={runtime.now}
+            responseSourceDocuments={responseSourceDocuments}
           />
         ) : null}
 
@@ -161,36 +174,16 @@ export function AuthEditor({
         ) : null}
 
         {auth.type === "inherit" ? (
-          <div className="space-y-ui-4">
-            <div className="flex items-center gap-ui-2 text-ui-md">
-              <GitBranch className="size-ui-4 text-action-brand" />
-              Inherit authentication
-            </div>
-            <SelectField
-              label="Inherit authentication from"
-              size="lg"
-              value={auth.inherit.source}
-              options={[
-                { value: "auto", label: "Environment → Workspace" },
-                {
-                  value: "workspace",
-                  label: context.workspace?.name ?? "Workspace",
-                },
-                {
-                  value: "environment",
-                  label: context.environment?.name ?? "Environment",
-                },
-              ]}
-              onValueChange={(source) =>
-                onAuthChange({ ...auth, inherit: { source } })
-              }
-              className="w-full"
-            />
+          <div className="flex items-center gap-ui-2 text-ui-sm">
+            <GitBranch className="size-ui-4 shrink-0 text-action-brand" />
             {resolved.error ? (
-              <p role="alert" className="text-ui-sm text-accent-red">
-                No workspace or environment authentication is configured.
-              </p>
-            ) : null}
+              <span role="alert" className="text-accent-red">No workspace authentication is configured for this request type.</span>
+            ) : (
+              <span role="status" className="text-content-tertiary">
+                Authentication inherited from <span className="text-content-secondary">{resolved.source?.name ?? "workspace"}</span>
+                {resolved.auth.type !== "inherit" ? <> · <span className="text-content-secondary">{authTypeOptions.find((option) => option.value === resolved.auth.type)?.label ?? resolved.auth.type}</span></> : null}
+              </span>
+            )}
           </div>
         ) : null}
       </div>

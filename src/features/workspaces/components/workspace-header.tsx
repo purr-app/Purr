@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { Check, ChevronDown, ChevronRight, Cookie as CookieIcon, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Cookie as CookieIcon, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2 } from "lucide-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
@@ -12,12 +12,13 @@ import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar"
 const menuClass = "mt-ui-2 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
 const rowClass = "w-full justify-start font-normal";
 
-export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, onCookies, onWorkspace, onNewWorkspace, onRenameWorkspace, onEnvironment, onEditEnvironment, onNewEnvironment, onToggleSidebar, onPalette, onView }: {
+export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, settingsActive, onCookies, onWorkspace, onNewWorkspace, onRequestSettings, onEnvironment, onEditEnvironment, onNewEnvironment, onToggleSidebar, onPalette, onView }: {
   store: WorkspaceStore; workspace: Workspace;
   cookieJar: SessionCookieJar;
   cookiesActive: boolean;
+  settingsActive: boolean;
   onCookies: () => void;
-  onWorkspace: (id: string) => void; onNewWorkspace: () => void; onRenameWorkspace: () => void;
+  onWorkspace: (id: string) => void; onNewWorkspace: () => void; onRequestSettings: () => void;
   onEnvironment: (id: string | null) => void; onEditEnvironment: () => void; onNewEnvironment: () => void;
   onToggleSidebar: () => void; onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
 }) {
@@ -42,7 +43,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, on
               <Check className={cn("size-ui-4 text-action-brand", item.id !== workspace.id && "invisible")} /><span className="max-w-ui-document-tab truncate">{item.name}</span>
             </Button>)}
           </div>
-          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onRenameWorkspace(); }}><Pencil className="size-ui-4" />Rename workspace</Button>
+          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
         </PopoverContent>
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />
@@ -65,7 +66,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, on
       </Button>
     </div>
     <Button variant="secondary" size="sm" className="min-w-0 justify-between" onClick={onPalette} aria-label="Open command palette" title="Search documents and commands · Mod+K">
-      <Search className="size-ui-3-5 shrink-0 text-content-tertiary" /><span className="truncate">{cookiesActive ? "Cookies" : document ? getDocumentDisplayName(document) : "Search documents and commands"}</span><KbdGroup keys={["mod", "k"]} />
+      <Search className="size-ui-3-5 shrink-0 text-content-tertiary" /><span className="truncate">{settingsActive ? "Workspace settings" : cookiesActive ? "Cookies" : document ? getDocumentDisplayName(document) : "Search documents and commands"}</span><KbdGroup keys={["mod", "k"]} />
     </Button>
     <div data-tauri-drag-region className="flex justify-end"><RequestTabBar view={workspace.ui.view} onViewChange={onView} /></div>
   </header>;

@@ -13,6 +13,7 @@ import {
 } from "../model/request-editor-section";
 import { bodyTypeOptions, type RequestBodyType } from "../model/request-body";
 import { authTypeOptions, type AuthType } from "../model/request-auth";
+import { Code2 } from "lucide-react";
 
 type RequestSectionTabsProps = {
   graphql?: boolean;
@@ -23,6 +24,7 @@ type RequestSectionTabsProps = {
   queryCount: number;
   headerCount: number;
   hasHeaderError: boolean;
+  onOpenCode: () => void;
 };
 
 function BodyTypeIndicator({ bodyType }: { bodyType: RequestBodyType }) {
@@ -64,6 +66,7 @@ export function RequestSectionTabs({
   headerCount,
   hasHeaderError,
   graphql = false,
+  onOpenCode,
 }: RequestSectionTabsProps) {
   return (
     <div
@@ -129,6 +132,9 @@ export function RequestSectionTabs({
             );
           })}
       </div>
+      <Button type="button" variant="ghost" size="icon" className="shrink-0 text-content-tertiary" aria-label="Open request code" title="Request code" onClick={onOpenCode}>
+        <Code2 className="size-ui-4" aria-hidden="true" />
+      </Button>
     </div>
   );
 }

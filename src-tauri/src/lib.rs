@@ -9,6 +9,11 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg(target_os = "macos")]
 fn set_macos_app_icon() {
     use objc2::{AllocAnyThread, MainThreadMarker};
@@ -40,6 +45,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            exit_app,
             downloads::save_response_body,
             http::send_http,
             oauth::authorize_oauth,

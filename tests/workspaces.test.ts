@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
+import { applyWorkspaceRequestConfig, cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
 import { resolveEnvironmentValue } from "../src/shared/lib/resolve-variables";
 import { resolveRequestEnvironment } from "../src/features/workspaces/model/environment";
 import { applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParamsFromUrl } from "../src/features/request-workbench/model/request";
 import { serializeRequestBody } from "../src/features/request-workbench/model/request-body";
+import { createRequestAuth } from "../src/features/request-workbench/model/request-auth";
 
 test("new workspaces have independent blank documents and layout state", () => {
   const first = createWorkspace(); const second = createWorkspace("Team");
@@ -117,6 +118,52 @@ test("workspace validation refuses unsupported versions and repairs dangling tab
   assert.equal(repaired.ui.activeDocumentId, workspace.documents[0].id);
   assert.throws(() => validateWorkspace({ ...workspace, schemaVersion: 2 }), /Unsupported/);
   assert.throws(() => validateWorkspace({ ...workspace, documents: [{ ...workspace.documents[0], request: { ...workspace.documents[0].request, headers: "not-an-array" } }] }), /Invalid document/);
+});
+
+test("old workspaces gain shared-request defaults and scoped values remain request-overridable", () => {
+  const configuredLegacy = createWorkspace() as unknown as Record<string, any>;
+  const legacyAuth = createRequestAuth();
+  legacyAuth.type = "bearer";
+  delete (legacyAuth.bearer as Record<string, unknown>).endpointDocumentId;
+  configuredLegacy.requestConfig.auth = { enabled: true, scope: "http", value: legacyAuth };
+  const migratedConfig = validateWorkspace(configuredLegacy).requestConfig;
+  assert.equal(migratedConfig.auth[0].value.bearer.endpointDocumentId, "");
+  assert.equal(migratedConfig.auth[0].scope, "http");
+
+  const legacy = createWorkspace() as unknown as Record<string, any>;
+  delete legacy.documents[0].request.auth.bearer.endpointDocumentId;
+  delete legacy.requestConfig;
+  delete legacy.documents[0].request.workspace;
+  const restored = validateWorkspace(legacy);
+  assert.deepEqual(restored.requestConfig.headers, []);
+  assert.equal(restored.documents[0].request.workspace.headersEnabled, true);
+  assert.equal(restored.documents[0].request.auth.bearer.endpointDocumentId, "");
+
+  const document = restored.documents[0];
+  restored.requestConfig.headers = [
+    { id: "all", name: "X-Workspace", value: "shared", enabled: true, scope: "all" },
+    { id: "gql", name: "X-GraphQL", value: "only", enabled: true, scope: "graphql" },
+  ];
+  const sharedAuth = createRequestAuth();
+  sharedAuth.type = "bearer";
+  sharedAuth.bearer.token = "workspace-token";
+  restored.requestConfig.auth = [{ id: "http-auth", name: "HTTP auth", enabled: true, scope: "http", value: sharedAuth }];
+  let effective = applyWorkspaceRequestConfig(document.request, "http", restored.requestConfig);
+  assert.equal(effective.headers.some((header) => header.name === "X-Workspace" && header.readOnly), true);
+  assert.equal(effective.headers.some((header) => header.name === "X-GraphQL"), false);
+  assert.equal(effective.auth.type, "inherit");
+  assert.equal(effective.auth.inherit.source, "workspace");
+
+  document.request.workspace.headerOverrides.all = false;
+  document.request.workspace.authEnabled = false;
+  effective = applyWorkspaceRequestConfig(document.request, "http", restored.requestConfig);
+  assert.equal(effective.headers.find((header) => header.name === "X-Workspace")?.enabled, false);
+  assert.equal(effective.auth.type, "none");
+
+  document.request.workspace.headerOverrides.all = true;
+  document.request.headers = [{ id: "local", name: "X-Workspace", value: "local", enabled: true }];
+  effective = applyWorkspaceRequestConfig(document.request, "http", restored.requestConfig);
+  assert.deepEqual(effective.headers.filter((header) => header.name === "X-Workspace").map((header) => header.value), ["local"]);
 });
 
 test("environments are scoped and disabled variables are excluded", () => {

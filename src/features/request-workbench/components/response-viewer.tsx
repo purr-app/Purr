@@ -9,10 +9,10 @@ import {
   Eye,
   EyeOff,
   FileArchive,
-  FlaskConical,
   GitBranch,
   Globe2,
   CircleAlert,
+  Code2,
   Search,
   type LucideIcon,
 } from "lucide-react";
@@ -45,16 +45,17 @@ import {
 import { downloadResponseBody } from "../services/download-response";
 import type { HttpResult } from "../services/http-client";
 import { ResponseCodeViewer } from "./response-code-viewer";
+import { formatHttpRequest } from "../model/request-code";
 
 type ResponseTab =
   | "response"
+  | "request"
   | "errors"
   | "extensions"
   | "headers"
   | "cookie"
   | "timeline"
-  | "trace"
-  | "bench";
+  | "trace";
 
 const responseTabs: readonly {
   value: ResponseTab;
@@ -67,7 +68,7 @@ const responseTabs: readonly {
   { value: "cookie", label: "Cookie", icon: CookieIcon },
   { value: "timeline", label: "Timeline", icon: Clock3 },
   { value: "trace", label: "Trace", icon: GitBranch, disabled: true },
-  { value: "bench", label: "Bench", icon: FlaskConical, disabled: true },
+  { value: "request", label: "Request", icon: Code2 },
 ];
 
 type GraphqlError = { message: string; path?: Array<string | number>; locations?: Array<{ line: number; column: number }>; extensions?: Record<string, unknown> };
@@ -427,6 +428,17 @@ function ResponseHeadersPanel({ response }: { response: HttpResult }) {
       </div>
     </div>
   );
+}
+
+function ResponseRequestPanel({ response }: { response: HttpResult }) {
+  const value = useMemo(() => formatHttpRequest(response.timeline.request), [response.timeline.request]);
+  return <div className="flex h-full min-h-0 flex-col bg-purr-codefield">
+    <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-ui-3 py-ui-2">
+      <span className="font-code text-ui-xs text-content-tertiary">HTTP/1.1 message</span>
+      <CopyResponseButton value={value} label="Copy HTTP request" />
+    </div>
+    <div className="min-h-0 flex-1"><ResponseCodeViewer value={value} language="text" ariaLabel="HTTP request viewer" /></div>
+  </div>;
 }
 
 function ResponseHeaderValue({ name, value }: { name: string; value: string }) {
@@ -919,7 +931,7 @@ export function ResponseViewer({ response, graphql = false }: { response: HttpRe
     { value: "response" as const, label: "Response" },
     ...(graphqlResult?.errors.length ? [{ value: "errors" as const, label: "Errors" }] : []),
     ...(graphqlResult?.extensions !== undefined ? [{ value: "extensions" as const, label: "Extensions" }] : []),
-    ...responseTabs.filter((item) => item.value !== "response" && item.value !== "bench"),
+    ...responseTabs.filter((item) => item.value !== "response"),
   ] : responseTabs;
   const cookieCount = useMemo(
     () => getResponseCookies(response.headers).length,
@@ -1004,6 +1016,7 @@ export function ResponseViewer({ response, graphql = false }: { response: HttpRe
         className="min-h-0 min-w-0 flex-1 overflow-hidden"
       >
         {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} /> : null}
+        {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}
         {tab === "headers" ? (

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import { Columns2, Cookie as CookieIcon, Copy, FilePlus2, Globe2, Network, PanelLeft, RotateCcw, Rows2, Save, SendHorizontal, Square, TextCursorInput, Trash2, Waypoints } from "lucide-react";
+import { Columns2, Cookie as CookieIcon, Copy, FilePlus2, Globe2, Network, PanelLeft, RotateCcw, Rows2, Save, SendHorizontal, Settings2, Square, TextCursorInput, Trash2, Waypoints } from "lucide-react";
 import { SchemaExplorer } from "../graphql/components/schema-explorer";
 import { parseGraphqlSchema } from "../graphql/model/graphql";
 import { Button } from "../../shared/components/ui/button";
@@ -8,6 +8,7 @@ import { keyboardShortcuts } from "../../shared/config/keyboard-shortcuts";
 import { RequestWorkbench, emptyRequestSession, type RequestActions, type RequestSession } from "../request-workbench/request-workbench";
 import { SessionCookieJar } from "../request-workbench/model/cookie-jar";
 import type { RequestDraft } from "../request-workbench/model/request";
+import { withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
 import { CommandPalette, type PaletteAction } from "./components/command-palette";
 import { DocumentTabs } from "./components/document-tabs";
@@ -15,6 +16,8 @@ import { EnvironmentEditor } from "./components/environment-editor";
 import { NameDialog } from "./components/name-dialog";
 import { WorkspaceHeader } from "./components/workspace-header";
 import { WorkspaceSidebar } from "./components/workspace-sidebar";
+import { WorkspaceSettings } from "./components/workspace-request-settings";
+import { Collapsible } from "../../shared/components/ui/collapsible";
 import { useWorkspaces } from "./hooks/use-workspaces";
 import { openWorkspaceFolder } from "./services/workspace-storage";
 import {
@@ -43,7 +46,8 @@ import {
   type Workspace,
 } from "./model/workspace";
 
-type Dialog = "palette" | "new-workspace" | "rename-workspace" | "save-document" | { environment: Environment } | null;
+type Dialog = "palette" | "new-workspace" | "save-document"
+  | { environment: Environment } | { renameDocument: string } | null;
 
 export function WorkspaceWorkbench() {
   const { store, setStore, updateWorkspace, loadError, saveError, saving, retry, flush } = useWorkspaces();
@@ -55,6 +59,9 @@ export function WorkspaceWorkbench() {
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
   const activeDocument = workspace?.documents.find((item) => item.id === workspace.ui.activeDocumentId);
   const currentDocument = activeDocument && isRequestDocument(activeDocument) ? activeDocument : undefined;
+  const responseSourceDocuments = useMemo(() => workspace?.documents
+    .filter((document): document is RequestDocument => isRequestDocument(document) && document.saved)
+    .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
   const schemaSource = activeDocument?.kind === "schema" ? workspace?.documents.find((item): item is RequestDocument => isRequestDocument(item) && item.id === activeDocument.sourceRequestId) : undefined;
   const linkedSchema = workspace?.documents.find((item): item is SchemaDocument => item.kind === "schema" && (item.id === currentDocument?.request.graphql?.schemaId || item.sourceRequestId === currentDocument?.id));
   const schemaSdl = linkedSchema?.sdl;
@@ -121,6 +128,8 @@ export function WorkspaceWorkbench() {
       return;
     }
     let document: RequestDocument = kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
+    if (!duplicate && workspace)
+      document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
     if (duplicate && currentDocument) document = { ...document, kind: currentDocument.kind, name: `${getDocumentDisplayName(currentDocument)} copy`, request: cloneRequestDraft(currentDocument.request), ui: { ...currentDocument.ui } };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
@@ -162,12 +171,13 @@ export function WorkspaceWorkbench() {
     if (workspace) setSessions((current) => { const next = { ...current }; delete next[`${workspace.id}:${id}`]; return next; });
   };
   const createRequestFromSchema = (operation: { name: string; query: string; variables: string }) => {
-    if (activeDocument?.kind !== "schema") return;
+    if (!workspace || activeDocument?.kind !== "schema") return;
     const created = createGraphqlDocument();
     const base = schemaSource?.request ?? { ...created.request, url: activeDocument.endpoint || (activeDocument.source === "introspection" ? activeDocument.sourceLabel : "") };
-    const document: RequestDocument = { ...created, name: operation.name, request: { ...cloneRequestDraft(base), method: "POST", graphql: {
+    const request = withWorkspaceAuthDefault({ ...cloneRequestDraft(base), method: "POST", graphql: {
       query: operation.query, variables: operation.variables, operationName: operation.name, schemaId: activeDocument.id,
-    } }, ui: { requestSection: "gql-query" } };
+    } }, "graphql", workspace.requestConfig);
+    const document: RequestDocument = { ...created, name: operation.name, request, ui: { requestSection: "gql-query" } };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
   const selectView = (view: Workspace["ui"]["view"]) => {
@@ -175,8 +185,10 @@ export function WorkspaceWorkbench() {
     if (view === "canvas") changeSession({ canvasFocus: session.response || session.error || session.sending ? "response" : "request" });
   };
   const toggleSidebar = () => update((current) => ({ ...current, ui: { ...current.ui, sidebarOpen: !current.ui.sidebarOpen } }));
-  const openCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true } }));
+  const openCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false } }));
   const closeCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: false, cookiesTabActive: false } }));
+  const openSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false } }));
+  const closeSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: false, settingsTabActive: false } }));
   const showEnvironment = (create = false) => {
     const existing = workspace?.environments.find((item) => item.id === workspace.activeEnvironmentId);
     setDialog({ environment: !create && existing ? existing : { id: crypto.randomUUID(), name: "", variables: [] } });
@@ -188,7 +200,7 @@ export function WorkspaceWorkbench() {
     updateDocument((document) => ({ ...document, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() }));
   };
   const actions: PaletteAction[] = [
-    ...(currentDocument && !workspace?.ui.cookiesTabActive ? [
+    ...(currentDocument && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive ? [
       { id: "send", title: "Run request", icon: <SendHorizontal className="size-ui-4" />, shortcut: keyboardShortcuts.sendRequest, run: () => requestActions.current?.send() },
       ...(!currentDocument.saved || isDocumentDirty(currentDocument) ? [{ id: "save", title: currentDocument.saved ? "Save document changes" : "Save document", icon: <Save className="size-ui-4" />, shortcut: keyboardShortcuts.saveDocument, run: saveCurrentDocument }] : []),
       ...(isDocumentDirty(currentDocument) ? [{
@@ -205,6 +217,7 @@ export function WorkspaceWorkbench() {
     { id: "new-other", title: `New ${workspace?.ui.lastRequestKind === "graphql" ? "HTTP" : "GraphQL"} request`, icon: <FilePlus2 className="size-ui-4" />, run: () => addDocument(workspace?.ui.lastRequestKind === "graphql" ? "http" : "graphql") },
     { id: "new-schema", title: "New GraphQL schema", icon: <Waypoints className="size-ui-4 text-action-graphql" />, run: () => addDocument("schema") },
     { id: "cookies", title: "Open workspace cookies", icon: <CookieIcon className="size-ui-4" />, run: openCookies },
+    { id: "workspace-settings", title: "Open workspace settings", icon: <Settings2 className="size-ui-4" />, run: openSettings },
     { id: "environment", title: "Edit environment variables", icon: <Globe2 className="size-ui-4" />, shortcut: keyboardShortcuts.editEnvironment, run: () => showEnvironment() },
     { id: "sidebar", title: "Toggle sidebar", icon: <PanelLeft className="size-ui-4" />, shortcut: keyboardShortcuts.toggleSidebar, run: toggleSidebar },
     { id: "canvas", title: "Canvas view", icon: <Square className="size-ui-4" />, shortcut: keyboardShortcuts.canvasView, run: () => selectView("canvas") },
@@ -217,7 +230,8 @@ export function WorkspaceWorkbench() {
   }, shortcutOptions, [actions]);
   useHotkeys(`${keyboardShortcuts.commandPalette.hotkey},${keyboardShortcuts.openRecentRequest.hotkey}`, () => setDialog((current) => current === "palette" ? null : "palette"), { ...shortcutOptions, enabled: Boolean(workspace) && (!dialog || dialog === "palette") });
   useHotkeys(keyboardShortcuts.closeDocument.hotkey, () => {
-    if (workspace?.ui.cookiesTabActive) closeCookies();
+    if (workspace?.ui.settingsTabActive) closeSettings();
+    else if (workspace?.ui.cookiesTabActive) closeCookies();
     else if (activeDocument) closeById(activeDocument.id);
   }, shortcutOptions, [activeDocument, workspace]);
 
@@ -233,30 +247,46 @@ export function WorkspaceWorkbench() {
   }));
   return <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
-      cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} onCookies={openCookies}
-      onNewWorkspace={() => setDialog("new-workspace")} onRenameWorkspace={() => setDialog("rename-workspace")}
+      cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} onCookies={openCookies}
+      onNewWorkspace={() => setDialog("new-workspace")}
+      onRequestSettings={openSettings}
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
       onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
-      {workspace.ui.sidebarOpen && <WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onNew={addDocument} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onOpenFolder={() => {
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className="h-full shrink-0"><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onNew={addDocument} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onOpenFolder={() => {
         setActionError("");
         void openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
-      }} />}
+      }} /></Collapsible>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
-          onOpenCookies={openCookies} onCloseCookies={closeCookies} onNew={addDocument} onSave={saveCurrentDocument} />
-        <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
-          {workspace.ui.cookiesTabActive ? <section aria-label="Workspace cookies" className="h-full min-h-0 overflow-auto bg-purr-base p-ui-2">
+          onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onNew={addDocument} onSave={saveCurrentDocument} />
+        <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
+          {workspace.ui.settingsTabActive ? <WorkspaceSettings name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+            variables={variables} responseSourceDocuments={responseSourceDocuments}
+            onNameChange={(name) => update((current) => ({ ...current, name }))}
+            onDescriptionChange={(description) => update((current) => ({ ...current, description }))}
+            onConfigChange={(requestConfig) => update((current) => ({ ...current, requestConfig,
+              documents: current.documents.map((document) => !document.saved && isRequestDocument(document)
+                ? { ...document, request: withWorkspaceAuthDefault(document.request, document.kind, requestConfig) }
+                : document),
+            }))} />
+          : workspace.ui.cookiesTabActive ? <section aria-label="Workspace cookies" className="h-full min-h-0 overflow-auto bg-purr-base p-ui-2">
             <div className="min-h-full rounded-ui-xl border border-border-subtle bg-purr-surface">
               <CookieJarEditor jar={cookieJar!} url={currentDocument?.request.url ?? ""} enabled={currentDocument?.request.useCookieJar ?? true}
                 onEnabledChange={(useCookieJar) => setDraft((request) => ({ ...request, useCookieJar }))} />
             </div>
           </section> : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
-            source={schemaSource} variables={variables} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
+            source={schemaSource} variables={variables} workspaceConfig={workspace.requestConfig} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${contextKey}`} draft={currentDocument.request} setDraft={setDraft}
+            requestKind={currentDocument.kind} workspaceConfig={workspace.requestConfig}
+            workspaceName={workspace.name} documentId={currentDocument.id} responseSourceDocuments={responseSourceDocuments}
+            onWorkspaceAuthChange={(id, auth) => update((current) => ({ ...current, requestConfig: {
+              ...current.requestConfig,
+              auth: current.requestConfig.auth.map((entry) => entry.id === id ? { ...entry, value: auth } : entry),
+            } }))}
             schema={schema} onOpenSchema={() => openSchema()} onOpenGraphqlType={(name) => openSchema(name)}
             view={workspace.ui.view} splitRatios={workspace.ui.splitRatios} onSplitRatioChange={(orientation, ratio) => update((current) => ({ ...current, ui: { ...current.ui, splitRatios: { ...current.ui.splitRatios, [orientation]: ratio } } }))}
             requestSection={currentDocument.ui.requestSection} onRequestSectionChange={(requestSection) => updateDocument((document) => ({ ...document, ui: { ...document.ui, requestSection } }))}
@@ -275,11 +305,16 @@ export function WorkspaceWorkbench() {
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
-    {dialog === "rename-workspace" && <NameDialog title="Rename workspace" label="Workspace name" initial={workspace.name} onClose={() => setDialog(null)} onSave={(name) => { update((current) => ({ ...current, name })); setDialog(null); }} />}
     {dialog === "save-document" && currentDocument && <NameDialog title="Save document" label="Document name" initial={getDocumentDisplayName(currentDocument)} onClose={() => setDialog(null)} onSave={(name) => {
       updateDocument((document) => ({ ...document, name, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() })); setDialog(null);
     }} />}
-    {dialog && typeof dialog === "object" && <EnvironmentEditor initial={dialog.environment} onClose={() => setDialog(null)} onSave={(environment) => {
+    {dialog && typeof dialog === "object" && "renameDocument" in dialog && (() => {
+      const document = workspace.documents.find((item) => item.id === dialog.renameDocument);
+      return document ? <NameDialog title="Rename document" label="Document name" initial={getDocumentDisplayName(document)} onClose={() => setDialog(null)} onSave={(name) => {
+        update((current) => ({ ...current, documents: current.documents.map((item) => item.id === document.id ? { ...item, name, updatedAt: new Date().toISOString() } : item) })); setDialog(null);
+      }} /> : null;
+    })()}
+    {dialog && typeof dialog === "object" && "environment" in dialog && <EnvironmentEditor initial={dialog.environment} onClose={() => setDialog(null)} onSave={(environment) => {
       const environments = workspace.environments.some((item) => item.id === environment.id) ? workspace.environments.map((item) => item.id === environment.id ? environment : item) : [...workspace.environments, environment];
       changeEnvironment(environment.id, environments); setDialog(null);
     }} />}

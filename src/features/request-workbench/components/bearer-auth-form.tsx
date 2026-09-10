@@ -10,6 +10,7 @@ import {
   inspectJwt,
   tokenExpiryLabel,
   type AuthContext,
+  type AuthSourceDocumentOption,
   type RequestAuth,
 } from "../model/request-auth";
 
@@ -18,11 +19,13 @@ export function BearerAuthForm({
   onAuthChange,
   context,
   now,
+  responseSourceDocuments,
 }: {
   auth: RequestAuth;
   onAuthChange: (auth: RequestAuth) => void;
   context: AuthContext;
   now: number;
+  responseSourceDocuments: readonly AuthSourceDocumentOption[];
 }) {
   const [inspect, setInspect] = useState(false);
   let bearer = "";
@@ -109,22 +112,41 @@ export function BearerAuthForm({
           />
         ) : (
           <>
-            <FormField
-              label="Token endpoint path"
-              value={auth.bearer.endpointPath}
-              placeholder="/auth/token"
-              onChange={(event) =>
-                onAuthChange({
-                  ...auth,
-                  bearer: {
-                    ...auth.bearer,
-                    endpointPath: event.target.value,
-                    receivedToken: "",
-                    responseError: "",
-                  },
-                })
-              }
-            />
+            <div className="space-y-ui-2">
+              <span className="block text-ui-xs font-medium text-content-secondary">
+                Token request document
+              </span>
+              <SelectField
+                label="Token request document"
+                size="lg"
+                value={auth.bearer.endpointDocumentId}
+                options={[
+                  { value: "", label: "Select a saved request…" },
+                  ...responseSourceDocuments.map((document) => ({
+                    value: document.id,
+                    label: document.name,
+                  })),
+                ]}
+                className="w-full font-code"
+                onValueChange={(endpointDocumentId) =>
+                  onAuthChange({
+                    ...auth,
+                    bearer: {
+                      ...auth.bearer,
+                      endpointDocumentId,
+                      endpointPath: "",
+                      receivedToken: "",
+                      responseError: "",
+                    },
+                  })
+                }
+              />
+              {!responseSourceDocuments.length ? (
+                <p className="m-ui-0 text-ui-xs text-content-tertiary">
+                  Save the token request first so its headers and body can be reused.
+                </p>
+              ) : null}
+            </div>
             <FormField
               label="Response token path"
               value={auth.bearer.expression}

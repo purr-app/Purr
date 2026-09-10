@@ -319,7 +319,7 @@ test("empty schema tabs stay out of the sidebar and explorer fields create linke
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/graphql");
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
   await expect(tabs(page)).toHaveCount(3);
-  await expect(page.getByRole("region", { name: "GraphQL", exact: true })).not.toContainText("SDL");
+  await expect(page.getByRole("region", { name: "GraphQL", exact: true })).toHaveCount(0);
   await tabs(page).filter({ hasText: "GQL" }).click();
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
   await expect(tabs(page)).toHaveCount(3);

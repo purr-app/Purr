@@ -1,4 +1,4 @@
-import { Cookie as CookieIcon, Save, X } from "lucide-react";
+import { Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { cn } from "../../../shared/lib/cn";
@@ -6,6 +6,7 @@ import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningful
 import { NewDocumentButton } from "./new-document-button";
 
 const cookiesTabId = "workspace-cookies-tab";
+const settingsTabId = "workspace-settings-tab";
 type TabGeometry = { id: string; left: number; right: number; width: number };
 type TabDrag = {
   id: string;
@@ -21,7 +22,7 @@ type TabDrag = {
   moved: boolean;
 };
 
-export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onReorder, onOpenCookies, onCloseCookies, onNew, onSave }: {
+export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onNew, onSave }: {
   workspace: Workspace;
   cookieCount: number;
   onOpen: (id: string) => void;
@@ -30,6 +31,8 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   onReorder: (sourceId: string, targetId: string) => void;
   onOpenCookies: () => void;
   onCloseCookies: () => void;
+  onOpenSettings: () => void;
+  onCloseSettings: () => void;
   onNew: (kind: CreatableDocumentKind) => void;
   onSave: () => void;
 }) {
@@ -40,11 +43,11 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const [settling, setSettling] = useState(false);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const showSave = Boolean(!workspace.ui.cookiesTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
-  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : [])];
-  const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : onOpen(id);
+  const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
+  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : [])];
+  const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : id === settingsTabId ? onOpenSettings() : onOpen(id);
   const onTabKeyDown = (event: KeyboardEvent, id: string) => {
-    if (event.altKey && event.shiftKey && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+    if (event.altKey && event.shiftKey && workspace.ui.openDocumentIds.includes(id) && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
       event.preventDefault();
       const index = workspace.ui.openDocumentIds.indexOf(id);
       const target = Math.max(0, Math.min(workspace.ui.openDocumentIds.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
@@ -59,7 +62,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   };
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive]);
+  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive]);
   useEffect(() => {
     dragState.current = null;
     dropPositions.current = null;
@@ -174,7 +177,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
       {workspace.ui.openDocumentIds.map((id, index) => {
         const document = workspace.documents.find((item) => item.id === id)!;
         const name = getDocumentDisplayName(document);
-        const active = !workspace.ui.cookiesTabActive && workspace.ui.activeDocumentId === id;
+        const active = !workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && workspace.ui.activeDocumentId === id;
         const preview = workspace.ui.previewDocumentId === id;
         const dirty = isDocumentDirty(document);
         const translateX = tabTranslateX(id, index);
@@ -205,6 +208,14 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
           <CookieIcon className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Cookies</span><span className="font-code text-ui-2xs text-action-brand">{cookieCount}</span>
         </button>
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5" aria-label="Close workspace cookies" onClick={onCloseCookies}><X className="size-ui-3" /></Button>
+      </div> : null}
+      {workspace.ui.settingsTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.settingsTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
+        <button type="button" role="tab" aria-selected={workspace.ui.settingsTabActive} aria-controls="active-document-panel" id={`document-tab-${settingsTabId}`}
+          className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
+          onClick={onOpenSettings} onKeyDown={(event) => onTabKeyDown(event, settingsTabId)} tabIndex={workspace.ui.settingsTabActive ? 0 : -1}>
+          <Settings2 className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Workspace settings</span>
+        </button>
+        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5" aria-label="Close workspace settings" onClick={onCloseSettings}><X className="size-ui-3" /></Button>
       </div> : null}
     </div>
     <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} />

@@ -27,7 +27,7 @@ export type HttpTimeline = {
   waitingMs: number;
   downloadMs: number;
   completedAtMs: number;
-  request: Pick<WireRequest, "url" | "method" | "headers">;
+  request: WireRequest;
   followRedirects: boolean;
   usesCookieJar: boolean;
   timeoutMs: number;
@@ -197,7 +197,7 @@ export async function executeHttp(
         waitingMs,
         downloadMs,
         completedAtMs: started + totalMs,
-        request: { url: current.url, method: current.method, headers },
+        request: { url: current.url, method: current.method, headers, bodyBase64: current.bodyBase64 },
         followRedirects: options.followRedirects !== false,
         usesCookieJar: Boolean(options.jar),
         timeoutMs: 60_000,

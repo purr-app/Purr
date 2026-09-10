@@ -11,7 +11,7 @@ test("empty authentication and body states stay compact", async ({ page }) => {
       .locator("..")
       .evaluate((element) => getComputedStyle(element).flexDirection),
   ).toBe("row");
-  expect((await page.locator("#auth-type-panel").boundingBox())!.height).toBeLessThan(
+  expect((await page.locator("#request-auth-type-panel").boundingBox())!.height).toBeLessThan(
     100,
   );
 
@@ -221,29 +221,23 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
     "Basic dXNlcjpwYXNz",
   ]);
   expect(requests[1].headers).toContainEqual(["Cookie", "sid=one"]);
-  await page.getByRole("button", { name: "Expand request details" }).click();
+  await page.getByRole("button", { name: "Save document", exact: true }).click();
+  await page.getByLabel("Document name", { exact: true }).fill("Token request");
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/profile");
   await page.getByRole("tab", { name: /^Auth/ }).click();
   await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
   await page
     .getByRole("button", { name: "Use token from response", exact: true })
     .click();
-  await page
-    .getByLabel("Token endpoint path", { exact: true })
-    .fill("/users/42");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => (window as any).__testRequests.length))
-    .toBe(3);
-  expect(
-    (await page.evaluate(() => (window as any).__testRequests))[2].headers,
-  ).not.toContainEqual(["Authorization", "Bearer response-token"]);
-  await page
-    .getByLabel("Request URL", { exact: true })
-    .fill("https://api.example.com/profile");
+  await page.getByRole("combobox", { name: "Token request document", exact: true }).click();
+  await page.getByRole("option", { name: "Token request", exact: true }).click();
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => (window as any).__testRequests.length))
     .toBe(4);
+  expect((await page.evaluate(() => (window as any).__testRequests))[2].url).toBe("https://api.example.com/users/42");
   expect(
     (await page.evaluate(() => (window as any).__testRequests))[3].headers,
   ).toContainEqual(["Authorization", "Bearer response-token"]);

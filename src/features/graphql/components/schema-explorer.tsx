@@ -11,6 +11,7 @@ import type { AuthContext } from "../../request-workbench/model/request-auth";
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
 import { useAuthRuntime } from "../../request-workbench/hooks/use-auth-runtime";
 import { executeRequest } from "../../request-workbench/services/execute-request";
+import { applyWorkspaceRequestConfig, getWorkspaceAuth, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { normalizeSchema, parseGraphqlSchema } from "../model/graphql";
 import { GraphqlCodeEditor } from "./graphql-code-editor";
 
@@ -62,8 +63,9 @@ function analysis(type: GraphQLNamedType) {
   return { fields: fields.length, deprecated: deprecatedPaths.length, lists: listPaths.length, depth: depthPath.length, depthPath, listPaths, deprecatedPaths };
 }
 
-export function SchemaExplorer({ document, source, variables, cookieJar, setSourceDraft, onChange, onCreateRequest }: {
+export function SchemaExplorer({ document, source, variables, workspaceConfig, cookieJar, setSourceDraft, onChange, onCreateRequest }: {
   document: SchemaDocument; source?: RequestDocument; variables: Record<string, string>; cookieJar: SessionCookieJar;
+  workspaceConfig: WorkspaceRequestConfig;
   setSourceDraft: Dispatch<SetStateAction<RequestDraft>>; onChange: (patch: Partial<SchemaDocument>) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
@@ -72,7 +74,12 @@ export function SchemaExplorer({ document, source, variables, cookieJar, setSour
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [format, setFormat] = useState<"sdl" | "json">("sdl");
-  const [context, setContext] = useState<AuthContext>({ variables });
+  const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, "graphql"), [workspaceConfig]);
+  const workspaceAuth = useMemo(() => (source?.request.workspace.authEnabled ?? true) && workspaceAuthEntry
+    ? { id: `workspace-auth-${workspaceAuthEntry.id}`, name: workspaceAuthEntry.name || "Workspace", auth: workspaceAuthEntry.value } : undefined,
+  [source?.request.workspace.authEnabled, workspaceAuthEntry]);
+  const [context, setContext] = useState<AuthContext>({ variables, workspace: workspaceAuth });
+  useEffect(() => setContext((current) => ({ ...current, variables, workspace: workspaceAuth })), [variables, workspaceAuth]);
   const upload = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   const mounted = useRef(true);
@@ -106,7 +113,8 @@ export function SchemaExplorer({ document, source, variables, cookieJar, setSour
   const introspect = async () => {
     if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError("");
     try {
-      const result = await executeRequest({ ...schemaDraft, url: endpoint, graphql: { ...schemaDraft.graphql!, query: getIntrospectionQuery(), variables: "", operationName: "IntrospectionQuery" } }, context, cookieJar, runtime);
+      const request = applyWorkspaceRequestConfig({ ...schemaDraft, url: endpoint, graphql: { ...schemaDraft.graphql!, query: getIntrospectionQuery(), variables: "", operationName: "IntrospectionQuery" } }, "graphql", workspaceConfig);
+      const result = await executeRequest(request, context, cookieJar, runtime);
       if (result.status < 200 || result.status >= 300) throw new Error(`Introspection failed: HTTP ${result.status} ${result.statusText}`);
       install(result.text, "introspection", result.url);
     } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }

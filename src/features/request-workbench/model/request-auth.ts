@@ -36,6 +36,7 @@ export type RequestAuth = {
     prefix: string;
     source: "manual" | "response";
     endpointPath: string;
+    endpointDocumentId: string;
     expression: string;
     receivedToken: string;
     responseError: string;
@@ -50,10 +51,12 @@ export type RequestAuth = {
   inherit: { source: "auto" | "workspace" | "environment" };
 };
 export type AuthProfile = { id: string; name: string; auth: RequestAuth };
+export type AuthSourceDocumentOption = { id: string; name: string };
 export type AuthContext = {
   workspace?: AuthProfile;
   environment?: AuthProfile;
   variables?: Record<string, string>;
+  requestDocumentId?: string;
 };
 export type AuthBinding = {
   target: "header" | "query" | "cookie";
@@ -69,6 +72,7 @@ export function createRequestAuth(): RequestAuth {
       prefix: "Bearer",
       source: "manual",
       endpointPath: "/auth/token",
+      endpointDocumentId: "",
       expression: ".access_token",
       receivedToken: "",
       responseError: "",
@@ -88,6 +92,19 @@ export function createRequestAuth(): RequestAuth {
       token: null,
     },
     inherit: { source: "auto" },
+  };
+}
+
+export function normalizeRequestAuth(auth: RequestAuth): RequestAuth {
+  const defaults = createRequestAuth();
+  return {
+    ...defaults,
+    ...auth,
+    bearer: { ...defaults.bearer, ...auth?.bearer },
+    basic: { ...defaults.basic, ...auth?.basic },
+    apiKey: { ...defaults.apiKey, ...auth?.apiKey },
+    oauth2: { ...defaults.oauth2, ...auth?.oauth2 },
+    inherit: { ...defaults.inherit, ...auth?.inherit },
   };
 }
 
@@ -225,9 +242,12 @@ export function readResponseTokenExpression(
 export function isBearerResponseEndpoint(
   auth: RequestAuth,
   responseUrl: string,
+  responseDocumentId?: string,
 ): boolean {
   if (auth.type !== "bearer" || auth.bearer.source !== "response")
     return false;
+  if (auth.bearer.endpointDocumentId)
+    return Boolean(responseDocumentId && auth.bearer.endpointDocumentId === responseDocumentId);
   const configured = auth.bearer.endpointPath.trim();
   if (!configured) return false;
   try {
@@ -252,8 +272,9 @@ export function captureBearerResponseToken(
   auth: RequestAuth,
   responseUrl: string,
   body: unknown,
+  responseDocumentId?: string,
 ): RequestAuth {
-  if (!isBearerResponseEndpoint(auth, responseUrl)) return auth;
+  if (!isBearerResponseEndpoint(auth, responseUrl, responseDocumentId)) return auth;
   try {
     return {
       ...auth,
@@ -283,14 +304,14 @@ export function captureBearerResponseToken(
 
 export function getBearerToken(auth: RequestAuth, context: AuthContext = {}) {
   if (auth.bearer.source === "response") {
-    if (!auth.bearer.endpointPath.trim())
-      throw new Error("Enter the endpoint path that returns the token.");
+    if (!auth.bearer.endpointDocumentId && !auth.bearer.endpointPath.trim())
+      throw new Error("Select the saved request that returns the token.");
     if (!auth.bearer.expression.trim())
       throw new Error("Enter the response path for the token.");
     if (!auth.bearer.receivedToken)
       throw new Error(
         auth.bearer.responseError ||
-          `No token received from ${auth.bearer.endpointPath.trim()} yet.`,
+          "No token has been received from the selected request yet.",
       );
     return auth.bearer.receivedToken
       .trim()
@@ -308,7 +329,7 @@ export function getAuthBindingForRequest(
 ) {
   const resolved = resolveAuth(auth, context);
   if (resolved.error) return { error: resolved.error };
-  if (isBearerResponseEndpoint(resolved.auth, requestUrl)) return {};
+  if (isBearerResponseEndpoint(resolved.auth, requestUrl, context.requestDocumentId)) return {};
   return getAuthBinding(auth, context);
 }
 

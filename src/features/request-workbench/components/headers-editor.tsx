@@ -1,10 +1,15 @@
+import { ChevronDown } from "lucide-react";
+import { useState } from "react";
 import { commonHttpHeaders } from "../../../shared/config/http-headers";
+import { Collapsible } from "../../../shared/components/ui/collapsible";
+import { cn } from "../../../shared/lib/cn";
 import { isRequestHeaderNameValid, type RequestHeader } from "../model/request";
 import { KeyValueEditor, type KeyValueEntry } from "./key-value-editor";
 
 type HeadersEditorProps = {
   headers: RequestHeader[];
   onHeadersChange: (headers: RequestHeader[]) => void;
+  onWorkspaceHeaderEnabledChange?: (id: string, enabled: boolean) => void;
 };
 
 const headerValidationMessage =
@@ -22,8 +27,12 @@ function createEmptyHeader(entries: KeyValueEntry[]): KeyValueEntry {
 export function HeadersEditor({
   headers,
   onHeadersChange,
+  onWorkspaceHeaderEnabledChange,
 }: HeadersEditorProps) {
-  const entries: KeyValueEntry[] = headers.map((header) => ({
+  const [inheritedOpen, setInheritedOpen] = useState(true);
+  const inherited = headers.filter((header) => header.workspaceHeaderId);
+  const local = headers.filter((header) => !header.workspaceHeaderId);
+  const toEntry = (header: RequestHeader): KeyValueEntry => ({
     id: header.id,
     key: header.name,
     value: header.value,
@@ -31,33 +40,53 @@ export function HeadersEditor({
     readOnly: header.readOnly,
     readOnlyReason: header.readOnlyReason,
     secret: header.secret,
-  }));
+    hideReadOnlyIndicator: Boolean(header.workspaceHeaderId),
+  });
+  const editor = (source: RequestHeader[]) => <KeyValueEditor
+    entries={source.map(toEntry)}
+    onEntriesChange={(nextEntries) =>
+      onHeadersChange(
+        nextEntries.map((entry) => ({
+          id: entry.id,
+          name: entry.key,
+          value: entry.value,
+          enabled: entry.enabled,
+          readOnly: entry.readOnly,
+          readOnlyReason: entry.readOnlyReason,
+          secret: entry.secret,
+        })),
+      )
+    }
+    createEmptyEntry={createEmptyHeader}
+    onReadOnlyEnabledChange={(entry, enabled) => {
+      const header = headers.find((item) => item.id === entry.id);
+      if (header?.workspaceHeaderId)
+        onWorkspaceHeaderEnabledChange?.(header.workspaceHeaderId, enabled);
+    }}
+    keyLabel="header"
+    keyPlaceholder="Header-name"
+    valuePlaceholder="value"
+    keyTextClassName="text-syntax-property"
+    keySuggestions={commonHttpHeaders}
+    isKeyValid={isRequestHeaderNameValid}
+    validationMessage={headerValidationMessage}
+    valueFont="code"
+  />;
 
   return (
-    <KeyValueEditor
-      entries={entries}
-      onEntriesChange={(nextEntries) =>
-        onHeadersChange(
-          nextEntries.map((entry) => ({
-            id: entry.id,
-            name: entry.key,
-            value: entry.value,
-            enabled: entry.enabled,
-            readOnly: entry.readOnly,
-            readOnlyReason: entry.readOnlyReason,
-            secret: entry.secret,
-          })),
-        )
-      }
-      createEmptyEntry={createEmptyHeader}
-      keyLabel="header"
-      keyPlaceholder="Header-name"
-      valuePlaceholder="value"
-      keyTextClassName="text-syntax-property"
-      keySuggestions={commonHttpHeaders}
-      isKeyValid={isRequestHeaderNameValid}
-      validationMessage={headerValidationMessage}
-      valueFont="code"
-    />
+    <div className="min-h-full bg-purr-surface">
+      {inherited.length ? (
+        <section className="m-ui-3 rounded-ui-lg border border-dashed border-border-subtle bg-purr-codefield">
+          <button type="button" className="ui-focus-ring flex w-full items-center gap-ui-2 rounded-ui-md px-ui-3 py-ui-2 text-left text-ui-sm text-content-tertiary"
+            aria-expanded={inheritedOpen} onClick={() => setInheritedOpen((open) => !open)}>
+            <ChevronDown className={cn("size-ui-3 transition-transform duration-ui-fast", !inheritedOpen && "-rotate-90")} />
+            Inherited <span className="font-code text-action-brand">{inherited.length}</span>
+          </button>
+          <Collapsible open={inheritedOpen}>{editor(inherited)}</Collapsible>
+        </section>
+      ) : null}
+      {inherited.length ? <p className="m-ui-0 px-ui-4 pb-ui-1 font-ui text-ui-xs text-content-tertiary">Local</p> : null}
+      {editor(local)}
+    </div>
   );
 }

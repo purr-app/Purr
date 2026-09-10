@@ -36,6 +36,9 @@ export type KeyValueEntry = {
   fieldType?: "text" | "file";
   attachment?: File | null;
   contentType?: string;
+  badge?: string;
+  scope?: string;
+  hideReadOnlyIndicator?: boolean;
 };
 
 type KeyValueEditorProps = {
@@ -53,6 +56,9 @@ type KeyValueEditorProps = {
   valueFont?: "code" | "ui";
   className?: string;
   multipart?: boolean;
+  onReadOnlyEnabledChange?: (entry: KeyValueEntry, enabled: boolean) => void;
+  scopeOptions?: readonly { value: string; label: string }[];
+  scopeLabel?: (entry: KeyValueEntry) => string;
 };
 
 type KeyValueFieldProps = {
@@ -140,6 +146,9 @@ export function KeyValueEditor({
   valueFont = "ui",
   className,
   multipart = false,
+  onReadOnlyEnabledChange,
+  scopeOptions,
+  scopeLabel,
 }: KeyValueEditorProps) {
   const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
   const [dropTargetEntryId, setDropTargetEntryId] = useState<string | null>(
@@ -155,7 +164,11 @@ export function KeyValueEditor({
 
   const updateEntry = (entryId: string, update: Partial<KeyValueEntry>) => {
     const previousEntry = entries.find((entry) => entry.id === entryId);
-    if (previousEntry?.readOnly) return;
+    if (previousEntry?.readOnly) {
+      if (Object.keys(update).length === 1 && typeof update.enabled === "boolean")
+        onReadOnlyEnabledChange?.(previousEntry, update.enabled);
+      return;
+    }
     const nextEntries = entries.map((entry) => {
       if (entry.id !== entryId) return entry;
 
@@ -375,6 +388,9 @@ export function KeyValueEditor({
             onDragOver={(event) => markDropTarget(entry.id, event)}
             onDrop={(event) => dropOnRow(entry.id, event)}
             onDragEnd={clearDrag}
+            canToggleReadOnly={Boolean(entry.readOnly && onReadOnlyEnabledChange)}
+            scopeOptions={scopeOptions}
+            scopeLabel={scopeLabel}
           />
         ))}
       </div>
@@ -404,6 +420,9 @@ type KeyValueRowProps = {
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  canToggleReadOnly: boolean;
+  scopeOptions?: readonly { value: string; label: string }[];
+  scopeLabel?: (entry: KeyValueEntry) => string;
 };
 
 function KeyValueRow({
@@ -428,6 +447,9 @@ function KeyValueRow({
   onDragOver,
   onDragEnd,
   onDrop,
+  canToggleReadOnly,
+  scopeOptions,
+  scopeLabel,
 }: KeyValueRowProps) {
   const valueInputRef = useRef<HTMLInputElement>(null);
   const hasContent = hasEntryContent(entry);
@@ -453,10 +475,15 @@ function KeyValueRow({
     >
       <EntryCheckbox
         checked={entry.enabled}
-        disabled={!hasContent || Boolean(entry.readOnly)}
+        disabled={!hasContent || (Boolean(entry.readOnly) && !canToggleReadOnly)}
         onCheckedChange={(enabled) => onChange({ enabled })}
         label={entry.key ? `Include ${entry.key}` : `Include ${keyLabel}`}
       />
+      {entry.badge ? (
+        <span className="shrink-0 rounded-ui-sm bg-purr-highlight px-ui-1-5 py-ui-0-5 font-ui text-ui-2xs text-content-tertiary">
+          {entry.badge}
+        </span>
+      ) : null}
       <EntryKeyField
         readOnly={entry.readOnly}
         value={entry.key}
@@ -528,7 +555,17 @@ function KeyValueRow({
           }}
         />
       )}
-      {entry.readOnly ? (
+      {scopeOptions && entry.scope ? (
+        <SelectField
+          className="w-method-popover shrink-0"
+          label={scopeLabel?.(entry) ?? `Scope for ${entry.key || keyLabel}`}
+          value={entry.scope}
+          options={scopeOptions}
+          muted={!entry.enabled}
+          onValueChange={(scope) => onChange({ scope })}
+        />
+      ) : null}
+      {entry.readOnly && !entry.hideReadOnlyIndicator ? (
         <span
           className="flex size-control-xs items-center justify-center text-content-tertiary"
           title={entry.readOnlyReason}
@@ -536,7 +573,7 @@ function KeyValueRow({
         >
           <LockKeyhole className="size-ui-3" aria-hidden="true" />
         </span>
-      ) : hasContent ? (
+      ) : hasContent && !entry.readOnly ? (
         <DragHandle onDragStart={onDragStart} onDragEnd={onDragEnd} />
       ) : (
         <span className="size-control-xs shrink-0" aria-hidden="true" />

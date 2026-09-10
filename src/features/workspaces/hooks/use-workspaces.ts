@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { loadWorkspaceStore, saveWorkspaceStore } from "../services/workspace-storage";
 import type { Workspace, WorkspaceStore } from "../model/workspace";
@@ -37,9 +37,10 @@ export function useWorkspaces() {
     let unlisten: (() => void) | undefined;
     let closing = false;
     void Promise.resolve().then(() => getCurrentWindow().onCloseRequested(async (event) => {
-      if (closing || !latest.current) return;
+      if (closing) return;
+      if (!latest.current) return;
       event.preventDefault();
-      try { await flush(); closing = true; await getCurrentWindow().close(); }
+      try { await flush(); closing = true; await invoke("exit_app"); }
       catch { closing = false; /* The save error remains visible; the window stays open. */ }
     })).then((listener) => { if (disposed) listener(); else unlisten = listener; }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };

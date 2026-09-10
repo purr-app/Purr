@@ -32,6 +32,7 @@ export type RequestHeader = {
   readOnly?: boolean;
   readOnlyReason?: string;
   secret?: boolean;
+  workspaceHeaderId?: string;
 };
 
 export type RequestQueryParam = {
@@ -55,7 +56,18 @@ export type RequestDraft = {
   body: RequestBody;
   auth: RequestAuth;
   useCookieJar: boolean;
+  workspace: RequestWorkspaceOverrides;
 };
+
+export type RequestWorkspaceOverrides = {
+  headersEnabled: boolean;
+  authEnabled: boolean;
+  headerOverrides: Record<string, boolean>;
+};
+
+export function createRequestWorkspaceOverrides(): RequestWorkspaceOverrides {
+  return { headersEnabled: true, authEnabled: true, headerOverrides: {} };
+}
 
 export const initialRequestDraft: RequestDraft = {
   method: "GET",
@@ -65,6 +77,7 @@ export const initialRequestDraft: RequestDraft = {
   body: createRequestBody(),
   auth: createRequestAuth(),
   useCookieJar: true,
+  workspace: createRequestWorkspaceOverrides(),
 };
 
 const bodyContentTypeHeaderId = "body-content-type";

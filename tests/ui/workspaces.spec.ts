@@ -181,20 +181,20 @@ test("sidebar opens one italic preview tab that pins itself after editing", asyn
 test("blank tabs stay out of Drafts and real drafts can be discarded from the sidebar", async ({ page }) => {
   await page.goto("/");
   const draftGroup = page.getByRole("region", { name: "Drafts", exact: true });
-  await expect(draftGroup.getByRole("button")).toHaveCount(1);
+  await expect(draftGroup).toHaveCount(0);
 
   await page.getByRole("button", { name: "Create document", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "HTTP request", exact: true })).toBeVisible();
   await page.getByRole("menuitem", { name: "HTTP request", exact: true }).click();
   await expect(tabs(page)).toHaveCount(2);
-  await expect(draftGroup.getByRole("button")).toHaveCount(1);
+  await expect(draftGroup).toHaveCount(0);
 
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/discard-me");
   await expect(draftGroup.getByRole("button", { name: "GET example.com/discard-me", exact: true })).toBeVisible();
   await draftGroup.getByRole("button", { name: "Document actions for example.com/discard-me", exact: true }).click();
   await page.getByRole("menuitem", { name: "Discard draft", exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
-  await expect(draftGroup.getByRole("button")).toHaveCount(1);
+  await expect(draftGroup).toHaveCount(0);
 
   await page.getByRole("button", { name: "Create document", exact: true }).click();
   await page.getByRole("menuitem", { name: "HTTP request", exact: true }).click();
@@ -240,6 +240,90 @@ test("saved documents can be deleted from the sidebar context menu", async ({ pa
   await page.getByRole("menuitem", { name: "Delete document", exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect(tabs(page)).toHaveCount(0);
+});
+
+test("workspace settings tab manages identity, shared headers and scoped auth", async ({ page }) => {
+  await mockDesktop(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const settings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await expect(page.getByRole("tab", { name: "Workspace settings", exact: true })).toHaveAttribute("aria-selected", "true");
+  await settings.getByLabel("Workspace name", { exact: true }).fill("Personal API");
+  await settings.getByLabel("Workspace description", { exact: true }).fill("Shared API defaults");
+  await settings.getByRole("tab", { name: "Shared headers", exact: true }).click();
+  await settings.getByPlaceholder("Header-name", { exact: true }).fill("X-Workspace");
+  await settings.getByRole("textbox", { name: "Value for X-Workspace", exact: true }).fill("shared-value");
+  await settings.getByRole("combobox", { name: "Requests for X-Workspace", exact: true }).click();
+  await expect(page.getByRole("option", { name: "GraphQL", exact: true })).toBeVisible();
+  await page.getByRole("option", { name: "All requests", exact: true }).click();
+  await settings.getByRole("tab", { name: "Shared auth", exact: true }).click();
+  await settings.getByRole("button", { name: "Add shared auth", exact: true }).click();
+  await settings.getByLabel("Auth name", { exact: true }).fill("Main API auth");
+  await settings.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  await settings.getByLabel("Bearer token", { exact: true }).fill("workspace-token");
+  await settings.getByRole("button", { name: "Save authentication", exact: true }).click();
+  await expect(settings.getByText("Main API auth", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Bearer Token · All requests", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("button", { name: "Add shared auth", exact: true })).toBeDisabled();
+  await settings.getByRole("button", { name: "Edit Main API auth", exact: true }).click();
+  await settings.getByRole("combobox", { name: "Requests using this authentication", exact: true }).click();
+  await page.getByRole("option", { name: "HTTP", exact: true }).click();
+  await settings.getByRole("button", { name: "Save authentication", exact: true }).click();
+  await settings.getByRole("button", { name: "Add shared auth", exact: true }).click();
+  await expect(settings.getByRole("combobox", { name: "Requests using this authentication", exact: true })).toContainText("GraphQL");
+  await settings.getByLabel("Auth name", { exact: true }).fill("GraphQL auth");
+  await settings.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  await settings.getByLabel("Bearer token", { exact: true }).fill("graphql-token");
+  await settings.getByRole("button", { name: "Save authentication", exact: true }).click();
+  await expect(settings.getByText("Bearer Token · HTTP requests", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Bearer Token · GraphQL requests", { exact: true })).toBeVisible();
+
+  await page.getByRole("tab", { name: /Untitled Request/, exact: true }).click();
+
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
+  await page.getByRole("tab", { name: /^Headers/ }).click();
+  await expect(page.getByRole("button", { name: "Inherited 1", exact: true })).toBeVisible();
+  const sharedHeaderToggle = page.getByRole("checkbox", { name: "Include X-Workspace", exact: true });
+  await sharedHeaderToggle.click();
+  await expect(sharedHeaderToggle).toHaveAttribute("aria-checked", "false");
+  await sharedHeaderToggle.click();
+  await expect(sharedHeaderToggle).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("tab", { name: /^Auth/ }).click();
+  await expect(page.getByRole("tab", { name: "Inherit", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText(/Authentication inherited from Main API auth/)).toContainText("Bearer Token");
+  await expect(page.getByRole("combobox", { name: "Inherit authentication from", exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await expect(page.locator("#request-section-settings").getByRole("checkbox")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Open request code", exact: true }).click();
+  const code = page.getByRole("dialog", { name: "Request code" });
+  await expect(code.getByLabel("Request code viewer")).toContainText("curl");
+  await expect(code.getByLabel("Request code viewer")).toContainText("X-Workspace: shared-value");
+  await code.getByRole("tab", { name: "HTTP/1.1", exact: true }).click();
+  await expect(code.getByLabel("Request code viewer")).toContainText("GET /users/42 HTTP/1.1");
+  await code.getByRole("button", { name: "Close dialog", exact: true }).click();
+
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const sent = await page.evaluate(() => (window as any).__requests.at(-1));
+  expect(sent.headers).toContainEqual(["X-Workspace", "shared-value"]);
+  expect(sent.headers).toContainEqual(["Authorization", "Bearer workspace-token"]);
+  const response = page.getByRole("region", { name: "HTTP response", exact: true });
+  await response.getByRole("tab", { name: "Request", exact: true }).click();
+  await expect(response.getByLabel("HTTP request viewer")).toContainText("GET /users/42 HTTP/1.1");
+  await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer workspace-token");
+});
+
+test("sidebar context menu renames saved documents", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/original");
+  await saveDocument(page, "Original name");
+  const row = page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Original name", exact: true });
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Rename document", exact: true }).click();
+  await page.getByLabel("Document name", { exact: true }).fill("Renamed request");
+  await page.getByRole("dialog", { name: "Rename document" }).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Renamed request", exact: true })).toBeVisible();
 });
 
 test("response and workspace cookies survive persistence and the workspace folder opens natively", async ({ page }) => {

@@ -1,8 +1,11 @@
-import { createRequestAuth } from "../../request-workbench/model/request-auth";
+import { createRequestAuth, normalizeRequestAuth } from "../../request-workbench/model/request-auth";
 import { authTypeOptions } from "../../request-workbench/model/request-auth";
 import { createRequestBody } from "../../request-workbench/model/request-body";
 import { bodyTypeOptions } from "../../request-workbench/model/request-body";
-import type { RequestDraft } from "../../request-workbench/model/request";
+import { createRequestWorkspaceOverrides, type RequestDraft } from "../../request-workbench/model/request";
+import { createWorkspaceRequestConfig, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
+export { applyWorkspaceRequestConfig, createWorkspaceRequestConfig, requestScopeApplies, requestScopeOptions } from "../../request-workbench/model/request-workspace-config";
+export type { RequestScope, WorkspaceRequestConfig, WorkspaceSharedAuth, WorkspaceSharedHeader } from "../../request-workbench/model/request-workspace-config";
 import { graphqlEditorSections, requestEditorSections, type RequestEditorSection } from "../../request-workbench/model/request-editor-section";
 import { getHttpMethodStyle } from "../../../shared/model/http-method";
 import { httpMethods } from "../../../shared/model/http-method";
@@ -57,10 +60,12 @@ export type Workspace = {
   schemaVersion: 1;
   id: string;
   name: string;
+  description: string;
   documents: WorkspaceDocument[];
   environments: Environment[];
   cookies: SessionCookie[];
   activeEnvironmentId: string | null;
+  requestConfig: WorkspaceRequestConfig;
   ui: {
     openDocumentIds: string[];
     activeDocumentId: string | null;
@@ -68,6 +73,8 @@ export type Workspace = {
     lastRequestKind: RequestDocumentKind;
     cookiesTabOpen: boolean;
     cookiesTabActive: boolean;
+    settingsTabOpen: boolean;
+    settingsTabActive: boolean;
     sidebarOpen: boolean;
     view: WorkbenchView;
     splitRatios: { horizontal: number; vertical: number };
@@ -84,6 +91,7 @@ export function createHttpDocument(): HttpDocument {
       params: [{ id: "param-1", key: "", value: "", enabled: false }],
       headers: [{ id: "header-1", name: "", value: "", enabled: false }],
       body: createRequestBody(), auth: createRequestAuth(), useCookieJar: true,
+      workspace: createRequestWorkspaceOverrides(),
     },
     savedRequest: null,
     lastResponse: null,
@@ -106,9 +114,11 @@ export function createSchemaDocument(request?: RequestDocument): SchemaDocument 
 export function createWorkspace(name = "Personal", id: string = crypto.randomUUID()): Workspace {
   const document = createHttpDocument();
   return {
-    schemaVersion: 1, id, name, documents: [document], environments: [], cookies: [], activeEnvironmentId: null,
+    schemaVersion: 1, id, name, description: "", documents: [document], environments: [], cookies: [], activeEnvironmentId: null,
+    requestConfig: createWorkspaceRequestConfig(),
     ui: {
-      openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false, sidebarOpen: true,
+      openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false,
+      settingsTabOpen: false, settingsTabActive: false, sidebarOpen: true,
       view: "canvas", lastRequestKind: "http", splitRatios: { horizontal: 50, vertical: 50 },
     },
   };
@@ -119,7 +129,7 @@ export function openDocument(workspace: Workspace, id: string): Workspace {
   if (!document) return workspace;
   return { ...workspace, ui: { ...workspace.ui,
     openDocumentIds: workspace.ui.openDocumentIds.includes(id) ? workspace.ui.openDocumentIds : [...workspace.ui.openDocumentIds, id],
-    activeDocumentId: id, cookiesTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
+    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
   } };
 }
 
@@ -134,7 +144,7 @@ export function previewDocument(workspace: Workspace, id: string): Workspace {
   const openDocumentIds = canReplace
     ? workspace.ui.openDocumentIds.map((value) => value === preview!.id ? id : value)
     : [...workspace.ui.openDocumentIds, id];
-  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false,
+  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false, settingsTabActive: false,
     lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind } };
 }
 
@@ -197,7 +207,7 @@ export function isMeaningfulDraft(document: WorkspaceDocument): boolean {
     request.params.some((param) => param.key || param.value) ||
     request.headers.some((header) => header.name || header.value) ||
     request.body.type !== "none" ||
-    request.auth.type !== "none" ||
+    (request.auth.type !== "none" && request.auth.type !== "inherit") ||
     document.sentAt,
   );
 }
@@ -291,10 +301,58 @@ export function validateWorkspace(value: unknown): Workspace {
   if (workspace.documents.some((document) => !document || !["http", "graphql", "schema"].includes(document.kind) || !document.ui))
     throw new Error("This workspace contains an unsupported document. Open it with a compatible version of Purr.");
   const requestShape = createHttpDocument().request;
-  const validRequest = (request: RequestDraft, kind: RequestDocumentKind) => matchesShape(request, requestShape)
+  const normalizeRequest = (request: RequestDraft): RequestDraft => ({
+    ...request,
+    auth: normalizeRequestAuth(request.auth),
+    workspace: request?.workspace && typeof request.workspace === "object"
+      ? {
+          headersEnabled: request.workspace.headersEnabled !== false,
+          authEnabled: request.workspace.authEnabled !== false,
+          headerOverrides: request.workspace.headerOverrides && typeof request.workspace.headerOverrides === "object"
+            ? Object.fromEntries(Object.entries(request.workspace.headerOverrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean")) : {},
+        }
+      : createRequestWorkspaceOverrides(),
+  });
+  const validRequest = (source: RequestDraft, kind: RequestDocumentKind) => {
+    const request = normalizeRequest(source);
+    return matchesShape(request, requestShape)
     && httpMethods.includes(request.method) && bodyTypeOptions.some((option) => option.value === request.body.type)
     && authTypeOptions.some((option) => option.value === request.auth.type)
     && (kind === "graphql" ? matchesShape(request.graphql, { query: "", variables: "", operationName: "" }) : request.graphql === undefined);
+  };
+  const rawConfig = workspace.requestConfig;
+  const legacyAuth = rawConfig && !Array.isArray(rawConfig.auth)
+    ? rawConfig.auth as unknown as { enabled?: boolean; scope?: string; value?: ReturnType<typeof createRequestAuth> }
+    : undefined;
+  const requestConfig = rawConfig === undefined
+    ? createWorkspaceRequestConfig()
+    : {
+        ...rawConfig,
+        auth: Array.isArray(rawConfig.auth)
+          ? rawConfig.auth.map((auth) => ({ ...auth, value: normalizeRequestAuth(auth.value) }))
+          : legacyAuth?.value && legacyAuth.value.type !== "none"
+            ? [{
+                id: "legacy-shared-auth",
+                name: "Shared auth",
+                enabled: legacyAuth.enabled !== false,
+                scope: ["all", "http", "graphql"].includes(legacyAuth.scope ?? "") ? legacyAuth.scope as "all" | "http" | "graphql" : "all",
+                value: normalizeRequestAuth(legacyAuth.value),
+              }]
+            : [],
+      };
+  const scopes = ["all", "http", "graphql"];
+  if (!requestConfig || !Array.isArray(requestConfig.headers) || !Array.isArray(requestConfig.auth)
+    || requestConfig.auth.some((auth) => !auth || typeof auth.id !== "string" || typeof auth.name !== "string"
+      || typeof auth.enabled !== "boolean" || !scopes.includes(auth.scope)
+      || !matchesShape(auth.value, createRequestAuth())
+      || !authTypeOptions.some((option) => option.value === auth.value.type) || auth.value.type === "inherit")
+    || new Set(requestConfig.auth.map((auth) => auth.id)).size !== requestConfig.auth.length
+    || requestConfig.auth.some((auth, index) => requestConfig.auth.some((other, otherIndex) => index !== otherIndex
+      && (auth.scope === "all" || other.scope === "all" || auth.scope === other.scope)))
+    || requestConfig.headers.some((header) => !header || typeof header.id !== "string" || typeof header.name !== "string"
+      || typeof header.value !== "string" || typeof header.enabled !== "boolean" || !scopes.includes(header.scope))
+    || new Set(requestConfig.headers.map((header) => header.id)).size !== requestConfig.headers.length)
+    throw new Error("Invalid workspace request configuration. The original file has not been changed.");
   if (workspace.documents.some((document) => typeof document.id !== "string" || typeof document.name !== "string" || (isRequestDocument(document)
     ? !validRequest(document.request, document.kind)
     : typeof document.sdl !== "string" || typeof document.sourceRequestId !== "string" || typeof document.sourceLabel !== "string"
@@ -311,11 +369,14 @@ export function validateWorkspace(value: unknown): Workspace {
     ? workspace.ui.previewDocumentId
     : null;
   return { ...workspace,
+    description: typeof workspace.description === "string" ? workspace.description : "",
     cookies: Array.isArray(workspace.cookies) ? workspace.cookies : [],
+    requestConfig,
     documents: workspace.documents.map((document) => isRequestDocument(document) ? ({
       ...document,
+      request: normalizeRequest(document.request),
       savedRequest: document.saved
-        ? cloneRequestDraft(document.savedRequest && validRequest(document.savedRequest, document.kind) ? document.savedRequest : document.request)
+        ? cloneRequestDraft(normalizeRequest(document.savedRequest && validRequest(document.savedRequest, document.kind) ? document.savedRequest : document.request))
         : null,
       lastResponse: document.lastResponse ?? null,
       sentAt: typeof document.sentAt === "string" ? document.sentAt : null,
@@ -334,7 +395,9 @@ export function validateWorkspace(value: unknown): Workspace {
       lastRequestKind: workspace.ui.lastRequestKind === "graphql" ? "graphql" : "http",
       activeDocumentId: openDocumentIds.includes(workspace.ui.activeDocumentId ?? "") ? workspace.ui.activeDocumentId : openDocumentIds[0] ?? null,
       cookiesTabOpen: workspace.ui.cookiesTabOpen === true,
-      cookiesTabActive: workspace.ui.cookiesTabOpen === true && workspace.ui.cookiesTabActive === true,
+      cookiesTabActive: workspace.ui.cookiesTabOpen === true && workspace.ui.cookiesTabActive === true && workspace.ui.settingsTabActive !== true,
+      settingsTabOpen: workspace.ui.settingsTabOpen === true,
+      settingsTabActive: workspace.ui.settingsTabOpen === true && workspace.ui.settingsTabActive === true,
       view: ["canvas", "horizontal", "vertical"].includes(workspace.ui.view) ? workspace.ui.view : "canvas",
       sidebarOpen: workspace.ui.sidebarOpen !== false,
       splitRatios: {

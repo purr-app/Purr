@@ -275,6 +275,23 @@ test("response token automation matches an endpoint and reads a jq-style path", 
     { auth: { token: "fresh" } },
   );
   assert.equal(getAuthBinding(captured).binding?.value, "Bearer fresh");
+
+  auth.bearer.endpointDocumentId = "token-request";
+  auth.bearer.receivedToken = "";
+  const wrongDocument = captureBearerResponseToken(
+    auth,
+    "https://api.example.com/oauth/token",
+    { auth: { token: "wrong" } },
+    "another-request",
+  );
+  assert.equal(wrongDocument, auth);
+  const capturedByDocument = captureBearerResponseToken(
+    auth,
+    "https://api.example.com/any-path",
+    { auth: { token: "document-token" } },
+    "token-request",
+  );
+  assert.equal(getAuthBinding(capturedByDocument).binding?.value, "Bearer document-token");
 });
 test("JWT inspection decodes Unicode and never claims signature verification", () => {
   const token = [

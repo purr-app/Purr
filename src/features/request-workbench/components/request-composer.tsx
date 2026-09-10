@@ -17,8 +17,9 @@ import {
 import { RequestSectionPanel } from "./request-section-panel";
 import { RequestSectionTabs } from "./request-section-tabs";
 import type { RequestEditorSection } from "../model/request-editor-section";
-import type { AuthContext } from "../model/request-auth";
+import type { AuthContext, AuthSourceDocumentOption } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
+import { applyWorkspaceRequestConfig, type RequestKind, type WorkspaceRequestConfig } from "../model/request-workspace-config";
 
 type RequestComposerProps = {
   schema?: GraphQLSchema;
@@ -35,6 +36,10 @@ type RequestComposerProps = {
   onToggleDetails?: () => void;
   activeSection: RequestEditorSection;
   onSectionChange: (section: RequestEditorSection) => void;
+  onOpenCode: () => void;
+  requestKind: RequestKind;
+  workspaceConfig: WorkspaceRequestConfig;
+  responseSourceDocuments: readonly AuthSourceDocumentOption[];
 };
 
 export function RequestComposer({
@@ -52,8 +57,13 @@ export function RequestComposer({
   onOpenSchema,
   onOpenGraphqlType,
   onRunGraphqlOperation,
+  onOpenCode,
+  requestKind,
+  workspaceConfig,
+  responseSourceDocuments,
 }: RequestComposerProps) {
-  const headers = getRequestHeaders(draft, authContext);
+  const effectiveDraft = applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig);
+  const headers = getRequestHeaders(effectiveDraft, authContext);
 
   const selectSection = onSectionChange;
 
@@ -148,12 +158,13 @@ export function RequestComposer({
           activeSection={activeSection}
           onSectionChange={selectSection}
           bodyType={draft.body.type}
-          authType={draft.auth.type}
+          authType={effectiveDraft.auth.type}
           queryCount={getEnabledRequestQueryParamCount(
             getRequestQueryParams(draft, authContext),
           )}
           headerCount={getEnabledRequestHeaderCount(headers)}
           hasHeaderError={hasRequestHeaderValidationError(headers)}
+          onOpenCode={onOpenCode}
         />
         <div className="min-h-0 flex-1 overflow-hidden">
             <RequestSectionPanel
@@ -165,6 +176,8 @@ export function RequestComposer({
               onDraftChange={onDraftChange}
               authContext={authContext}
               authRuntime={authRuntime}
+              effectiveDraft={effectiveDraft}
+              responseSourceDocuments={responseSourceDocuments}
             />
         </div>
       </div>
