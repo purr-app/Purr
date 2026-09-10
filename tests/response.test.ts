@@ -39,6 +39,10 @@ test("pretty, raw, hex and base64 response representations preserve payload data
   );
   assert.equal(formatResponseBody({ text, bodyBase64 }, info, "raw"), text);
   assert.equal(
+    formatResponseBody({ text, bodyBase64 }, info, "prettify"),
+    JSON.stringify(JSON.parse(text), null, 2),
+  );
+  assert.equal(
     formatResponseBody({ text, bodyBase64 }, info, "base64"),
     bodyBase64,
   );

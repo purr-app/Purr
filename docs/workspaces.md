@@ -4,12 +4,15 @@ Purr creates **Personal** on first launch. Each workspace has its own documents,
 environments, open/active document and workspace-cookie tabs, request-editor tabs, sidebar visibility,
 layout mode, and horizontal/vertical splitter ratios.
 
-`+` / `Mod+N` creates a blank HTTP document. A blank, never-sent document is not
+The sidebar `+` lets you choose **HTTP** or **GraphQL**. The tab-bar `+` / `Mod+N`
+creates the last-used request type (remembered per workspace); right-click the
+tab-bar `+` to choose a different type. A blank, never-sent document is not
 listed in **Drafts** and is removed automatically when its tab closes. Once it has
 a URL, parameter, header, body, authentication, or send attempt, it becomes a
 recoverable draft with an explicit discard action.
 
-`Mod+S` names a draft and adds it to **HTTP requests**. A saved request keeps an
+`Mod+S` names a draft and adds it to **HTTP** or **GraphQL**. GraphQL request and
+schema documents share the GraphQL group. A saved request keeps an
 explicit saved snapshot: editing and sending use a working copy, and closing the
 tab without saving restores the snapshot. Saving again commits that working copy.
 The most recent response is stored with its document, while the cookie jar is
@@ -45,16 +48,18 @@ unsupported workspace files are reported without replacing them with defaults.
 
 `workspace.json` has `schemaVersion: 1`, `id`, `name`, `documents`, `environments`,
 workspace cookies, `activeEnvironmentId`, and `ui`. Documents have stable IDs, a
-`kind` discriminant (`http` today), names, timestamps, saved/draft status, working
-and saved request data, their latest response, and editor UI state. Attached
+`kind` discriminant (`http`, `graphql`, or `schema`), names and timestamps. Request
+documents contain saved/draft status, working and saved request data, their latest
+response, and editor UI state. Schema documents contain SDL, their source request
+ID, import/introspection source, last update time and selected type. Attached
 `File` objects are encoded as tagged `__purrFile` records with
 their bytes (base64), name, MIME type, and last-modified timestamp, and restored
 as Files when loaded.
 
 This schema is the persistence boundary. Future Postman/other importers should
 convert source data to versioned workspace/document records, assign stable IDs,
-and then use the storage service. Additional document kinds (GraphQL, schemas,
-trace/benchmark setups and results, integrations) should add their own typed
+and then use the storage service. Additional document kinds (trace/benchmark
+setups and results, integrations) should add their own typed
 payloads and editors. They must not be flattened into HTTP request drafts.
 Older versions refuse unsupported document kinds rather than discarding them.
 There is no importer or cloud synchronization yet.
@@ -69,7 +74,8 @@ Variables are workspace-scoped and support `{{name}}` (including nested variable
 values). Only enabled variables in the selected environment are available.
 Templates are resolved immediately before sending, while editor drafts retain
 the original templates. Resolution applies to URL/query/header names and values,
-active JSON/XML/text/form bodies and auth credentials/OAuth configuration.
+active JSON/XML/text/form bodies, GraphQL queries/variables/operation names,
+and auth credentials/OAuth configuration.
 Binary attachment bytes are never interpolated. Missing/circular variables stop
 the request with an explicit error. Values are inserted literally in body text;
 use the appropriate quoting/escaping for the target body format.
@@ -78,6 +84,44 @@ use the appropriate quoting/escaping for the target body format.
 stored unencrypted. The eye toggle masks a value on screen only. Switching an
 environment clears acquired OAuth/response tokens so credentials are not reused
 in another environment. Imported secrets will need an explicit future policy.
+
+## GraphQL
+
+GraphQL documents use the shared HTTP transport, authentication, headers,
+environment resolution, cookie jar and response viewer. **Query** is a full-height
+editor. Parsed operation variables appear as a resizable dock inside it, with a
+typed Form mode (including enum selectors) and a raw JSON mode. The dock remains
+hidden when the operation has no variables. Variables must serialize to a JSON object;
+an empty value means `{}`. A selector appears only when a document contains
+multiple named queries/mutations. Requests are sent as POST
+with an `application/json` envelope containing `query`, `variables` and optional
+`operationName`. Editor text is not replaced by the generated envelope.
+
+The labelled schema control beside the URL opens a separate **Schema** document.
+An empty schema document remains ephemeral and is not added to the sidebar; a
+successful import or introspection makes it a saved GraphQL document. Load SDL
+(`.graphql`, `.gql`, `.graphqls`, `.sdl`) or introspection JSON (bare or wrapped in
+`data`), or use **Reload introspection**. Introspection uses the source request's
+current URL, auth, headers, environment and cookies without replacing its query
+or response. Failed imports/refreshes leave the previous schema intact.
+
+The compact explorer provides searchable operation/type groups, field paths and
+linked return types, enum/input/interface/union information, deprecation messages,
+depth/field/list analysis, and an optional SDL/JSON pane. Query and mutation fields
+can create linked request drafts. Imported SDL preserves custom directives and type
+extensions. The schema, source-pane state and selected type persist with the
+workspace and supply completion, hover documentation, validation, deprecation
+warnings and type navigation to every linked request.
+
+GraphQL responses split `data`, `errors`, and `extensions` into dedicated views.
+The HTTP status remains visible alongside a GraphQL error count; each error exposes
+its message, path, source locations, extension code and copy action.
+
+Query and mutation operations are supported over HTTP. Subscriptions require a
+streaming transport and currently produce an explicit unsupported-operation error.
+Introspection must be enabled by the server; file import remains available when
+it is disabled. Refresh the schema after switching to a different endpoint or
+environment; cached schema data is not silently replaced.
 
 ## Shortcuts
 

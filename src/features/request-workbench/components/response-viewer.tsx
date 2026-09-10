@@ -10,6 +10,7 @@ import {
   FlaskConical,
   GitBranch,
   Globe2,
+  CircleAlert,
   Search,
   type LucideIcon,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import {
 import { SelectField } from "../../../shared/components/ui/select-field";
 import { cn } from "../../../shared/lib/cn";
 import { formatPayloadSize } from "../model/request-body";
+import { base64Bytes } from "../model/request-auth";
 import {
   formatResponseBody,
   getResponseCookies,
@@ -40,6 +42,8 @@ import { ResponseCodeViewer } from "./response-code-viewer";
 
 type ResponseTab =
   | "response"
+  | "errors"
+  | "extensions"
   | "headers"
   | "cookie"
   | "timeline"
@@ -60,11 +64,50 @@ const responseTabs: readonly {
   { value: "bench", label: "Bench", icon: FlaskConical, disabled: true },
 ];
 
+type GraphqlError = { message: string; path?: Array<string | number>; locations?: Array<{ line: number; column: number }>; extensions?: Record<string, unknown> };
+function inspectGraphqlResponse(response: HttpResult) {
+  try {
+    const parsed: unknown = JSON.parse(response.text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const result = parsed as { data?: unknown; errors?: unknown; extensions?: unknown };
+    return { data: result.data, errors: Array.isArray(result.errors) ? result.errors.filter((item): item is GraphqlError => Boolean(item && typeof item === "object" && typeof (item as GraphqlError).message === "string")) : [], extensions: result.extensions };
+  } catch { return undefined; }
+}
+
+function responseWithJson(response: HttpResult, value: unknown): HttpResult {
+  const text = JSON.stringify(value ?? null, null, 2);
+  return { ...response, text, bodyBase64: base64Bytes(new TextEncoder().encode(text)), size: new TextEncoder().encode(text).length };
+}
+
+function GraphqlErrorsPanel({ errors }: { errors: GraphqlError[] }) {
+  if (!errors.length) return <div className="flex h-full items-center justify-center text-ui-sm text-content-tertiary">No GraphQL errors.</div>;
+  return <div className="h-full space-y-ui-2 overflow-auto bg-purr-surface p-ui-3">{errors.map((error, index) => {
+    const details = JSON.stringify(error, null, 2);
+    return <article key={`${error.message}-${index}`} className="rounded-ui-lg border border-action-graphql-border bg-purr-codefield p-ui-3">
+      <div className="flex items-center gap-ui-2"><CircleAlert className="size-ui-4 shrink-0 text-accent-orange" /><p className="m-ui-0 min-w-0 flex-1 font-code text-ui-sm text-content-primary">{error.message}</p><CopyResponseButton value={details} label={`Copy GraphQL error ${index + 1}`} /></div>
+      <dl className="mt-ui-3 grid gap-ui-2 text-ui-xs sm:grid-cols-3">
+        <div><dt className="text-content-tertiary">Path</dt><dd className="m-ui-0 mt-ui-1 font-code text-content-secondary">{error.path?.join(".") || "—"}</dd></div>
+        <div><dt className="text-content-tertiary">Location</dt><dd className="m-ui-0 mt-ui-1 font-code text-content-secondary">{error.locations?.map((location) => `${location.line}:${location.column}`).join(", ") || "—"}</dd></div>
+        <div><dt className="text-content-tertiary">Code</dt><dd className="m-ui-0 mt-ui-1 font-code text-content-secondary">{typeof error.extensions?.code === "string" ? error.extensions.code : "—"}</dd></div>
+      </dl>
+      {error.extensions && <details className="mt-ui-3"><summary className="ui-focus-ring cursor-pointer text-ui-xs text-content-tertiary">Extensions</summary><pre className="overflow-auto whitespace-pre-wrap font-code text-ui-xs text-content-secondary">{JSON.stringify(error.extensions, null, 2)}</pre></details>}
+    </article>;
+  })}</div>;
+}
+
 const responseViewModes: readonly {
   value: ResponseViewMode;
   label: string;
 }[] = [
   { value: "pretty", label: "Pretty" },
+  { value: "raw", label: "Raw" },
+  { value: "hex", label: "Hex" },
+  { value: "base64", label: "Base64" },
+];
+
+const graphqlResponseViewModes: typeof responseViewModes = [
+  { value: "pretty", label: "Data" },
+  { value: "prettify", label: "Prettify" },
   { value: "raw", label: "Raw" },
   { value: "hex", label: "Hex" },
   { value: "base64", label: "Base64" },
@@ -123,28 +166,33 @@ function CopyResponseButton({
   );
 }
 
-function ResponseBodyPanel({ response }: { response: HttpResult }) {
-  const info = useMemo(
+function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string }) {
+  const rawInfo = useMemo(
     () => inspectResponseBody(response.headers, response.text),
     [response.headers, response.text],
   );
+  const presentation = prettyResponse ?? response;
+  const prettyInfo = useMemo(
+    () => inspectResponseBody(presentation.headers, presentation.text),
+    [presentation.headers, presentation.text],
+  );
   const [mode, setMode] = useState<ResponseViewMode>(
-    info.kind === "binary" ? "hex" : "pretty",
+    rawInfo.kind === "binary" ? "hex" : "pretty",
   );
   const [queryLanguage, setQueryLanguage] =
     useState<ResponseQueryLanguage>("jq");
   const [query, setQuery] = useState("");
   useEffect(() => {
-    setMode(info.kind === "binary" ? "hex" : "pretty");
+    setMode(rawInfo.kind === "binary" ? "hex" : "pretty");
     setQuery("");
-  }, [info.kind, response]);
+  }, [rawInfo.kind, response.bodyBase64, response.timeline.startedAtMs]);
 
   const queryResult = useMemo(() => {
-    if (!query.trim() || info.parsedJson === undefined)
+    if (!query.trim() || prettyInfo.parsedJson === undefined)
       return { value: undefined, error: "" };
     try {
       return {
-        value: queryResponseJson(info.parsedJson, query, queryLanguage),
+        value: queryResponseJson(prettyInfo.parsedJson, query, queryLanguage),
         error: "",
       };
     } catch (cause) {
@@ -154,24 +202,21 @@ function ResponseBodyPanel({ response }: { response: HttpResult }) {
           cause instanceof Error ? cause.message : "Invalid response query.",
       };
     }
-  }, [info.parsedJson, query, queryLanguage]);
+  }, [prettyInfo.parsedJson, query, queryLanguage]);
   const querySuggestions = useMemo(
     () =>
-      info.parsedJson === undefined
+      prettyInfo.parsedJson === undefined
         ? []
-        : getResponseQuerySuggestions(info.parsedJson, queryLanguage),
-    [info.parsedJson, queryLanguage],
+        : getResponseQuerySuggestions(prettyInfo.parsedJson, queryLanguage),
+    [prettyInfo.parsedJson, queryLanguage],
   );
   const content = useMemo(
-    () =>
-      formatResponseBody(
-        response,
-        info,
-        mode,
-        queryResult.error ? undefined : queryResult.value,
-      ),
-    [info, mode, queryResult.error, queryResult.value, response],
+    () => mode === "pretty"
+      ? formatResponseBody(presentation, prettyInfo, mode, queryResult.error ? undefined : queryResult.value)
+      : formatResponseBody(response, rawInfo, mode),
+    [mode, presentation, prettyInfo, queryResult.error, queryResult.value, rawInfo, response],
   );
+  const info = mode === "pretty" ? prettyInfo : rawInfo;
   const language =
     mode === "raw" || mode === "hex" || mode === "base64"
       ? "text"
@@ -192,7 +237,7 @@ function ResponseBodyPanel({ response }: { response: HttpResult }) {
             {info.mediaType}
           </span>
           <div className="flex items-center gap-ui-1 rounded-ui-md bg-purr-elevated p-ui-1">
-            {responseViewModes.map((option) => (
+            {(prettyResponse ? graphqlResponseViewModes : responseViewModes).map((option) => (
               <Button
                 key={option.value}
                 type="button"
@@ -207,13 +252,13 @@ function ResponseBodyPanel({ response }: { response: HttpResult }) {
                 )}
                 onClick={() => setMode(option.value)}
               >
-                {option.label}
+                {option.value === "pretty" ? prettyLabel : option.label}
               </Button>
             ))}
           </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-ui-2">
-          {info.parsedJson !== undefined ? (
+          {prettyInfo.parsedJson !== undefined ? (
             <>
               <SelectField
                 value={queryLanguage}
@@ -786,13 +831,21 @@ function NetworkDetailsPopover({ response }: { response: HttpResult }) {
   );
 }
 
-export function ResponseViewer({ response }: { response: HttpResult }) {
+export function ResponseViewer({ response, graphql = false }: { response: HttpResult; graphql?: boolean }) {
   const [tab, setTab] = useState<ResponseTab>("response");
+  const graphqlResult = useMemo(() => graphql ? inspectGraphqlResponse(response) : undefined, [graphql, response]);
+  const graphqlDataResponse = useMemo(() => graphqlResult && "data" in graphqlResult ? responseWithJson(response, graphqlResult.data) : undefined, [graphqlResult, response]);
+  const tabs: readonly { value: ResponseTab; label: string; icon?: LucideIcon; disabled?: boolean }[] = graphql ? [
+    { value: "response" as const, label: "Response" },
+    ...(graphqlResult?.errors.length ? [{ value: "errors" as const, label: "Errors" }] : []),
+    ...(graphqlResult?.extensions !== undefined ? [{ value: "extensions" as const, label: "Extensions" }] : []),
+    ...responseTabs.filter((item) => item.value !== "response" && item.value !== "bench"),
+  ] : responseTabs;
   const cookieCount = useMemo(
     () => getResponseCookies(response.headers).length,
     [response.headers],
   );
-  useEffect(() => setTab("response"), [response]);
+  useEffect(() => setTab("response"), [response.bodyBase64, response.timeline.startedAtMs]);
 
   return (
     <section
@@ -805,13 +858,15 @@ export function ResponseViewer({ response }: { response: HttpResult }) {
           role="tablist"
           aria-label="Response details"
         >
-          {responseTabs.map((option) => {
+          {tabs.map((option) => {
             const Icon = option.icon;
             const count =
               option.value === "headers"
                 ? response.headers.length
                 : option.value === "cookie"
                   ? cookieCount
+                  : option.value === "errors"
+                    ? graphqlResult?.errors.length ?? 0
                   : null;
             return (
               <Button
@@ -838,7 +893,7 @@ export function ResponseViewer({ response }: { response: HttpResult }) {
                 ) : null}
                 {option.label}
                 {count !== null ? (
-                  <span className="font-code text-ui-xs text-action-brand">
+                  <span className={cn("font-code text-ui-xs", option.value === "errors" && count ? "text-accent-orange" : "text-action-brand")}>
                     {count}
                   </span>
                 ) : null}
@@ -853,6 +908,7 @@ export function ResponseViewer({ response }: { response: HttpResult }) {
           <span className={cn("font-medium", statusClass(response.status))}>
             {response.status} {response.statusText}
           </span>
+          {graphqlResult?.errors.length ? <span className="text-accent-orange">GraphQL errors {graphqlResult.errors.length}</span> : null}
           <span>{response.httpVersion || "HTTP"}</span>
           <NetworkDetailsPopover response={response} />
           <span aria-hidden="true">•</span>
@@ -867,7 +923,9 @@ export function ResponseViewer({ response }: { response: HttpResult }) {
         aria-labelledby={`response-tab-${tab}`}
         className="min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        {tab === "response" ? <ResponseBodyPanel response={response} /> : null}
+        {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} /> : null}
+        {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
+        {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}
         {tab === "headers" ? (
           <ResponseHeadersPanel response={response} />
         ) : null}

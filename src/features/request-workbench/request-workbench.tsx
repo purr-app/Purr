@@ -4,30 +4,18 @@ import { SplitPane } from "../../shared/components/ui/split-pane";
 import { EmptyResponse } from "./components/empty-response";
 import { RequestComposer } from "./components/request-composer";
 import { type WorkbenchView } from "./components/request-tab-bar";
-import { resolveRequestEnvironment } from "../workspaces/model/environment";
+import type { GraphQLSchema } from "graphql";
+import { executeRequest } from "./services/execute-request";
 import type { RequestEditorSection } from "./model/request-editor-section";
 import { ResponseViewer } from "./components/response-viewer";
-import {
-  applyRequestQueryParamsToUrl,
-  getRequestHeaders,
-  getRequestQueryParams,
-  type RequestDraft,
-} from "./model/request";
-import {
-  getRequestBodyValidationMessage,
-  serializeRequestBody,
-} from "./model/request-body";
+import { type RequestDraft } from "./model/request";
 import {
   captureBearerResponseToken,
-  getAuthBindingForRequest,
-  resolveAuth,
   type AuthContext,
 } from "./model/request-auth";
 import { SessionCookieJar } from "./model/cookie-jar";
 import { useAuthRuntime } from "./hooks/use-auth-runtime";
 import {
-  encodeBody,
-  executeHttp,
   type HttpResult,
 } from "./services/http-client";
 
@@ -35,10 +23,12 @@ function ResponseArea({
   response,
   error,
   sending,
+  graphql,
 }: {
   response: HttpResult | null;
   error: string;
   sending: boolean;
+  graphql: boolean;
 }) {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-ui-2">
@@ -52,7 +42,7 @@ function ResponseArea({
       ) : null}
       <div className="min-h-0 min-w-0 flex-1">
         {response ? (
-          <ResponseViewer response={response} />
+          <ResponseViewer response={response} graphql={graphql} />
         ) : (
           <EmptyResponse sending={sending} />
         )}
@@ -70,7 +60,10 @@ export type RequestSession = {
 export const emptyRequestSession: RequestSession = { response: null, error: "", sending: false, canvasFocus: "request" };
 export type RequestActions = { send: () => void; focusUrl: () => void };
 
-export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, cookieJar, session, onSessionChange, actionsRef }: {
+export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+  schema?: GraphQLSchema;
+  onOpenSchema?: () => void;
+  onOpenGraphqlType?: (name: string) => void;
   draft: RequestDraft;
   setDraft: Dispatch<SetStateAction<RequestDraft>>;
   view: WorkbenchView;
@@ -99,76 +92,17 @@ export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRa
     setAuthContext,
   );
 
-  const send = async () => {
+  const send = async (graphqlOperationName?: string) => {
     if (sendingRef.current || sending) return;
     setCanvasFocus("response");
     sendingRef.current = true;
     setSending(true);
     setError("");
     try {
-      const resolvedDraft = resolveRequestEnvironment(draft, variables);
-      const bodyError = getRequestBodyValidationMessage(resolvedDraft.body);
-      if (bodyError) throw new Error(bodyError);
-      let effective = resolveAuth(draft.auth, authContext);
-      if (effective.error) throw new Error(effective.error);
-      if (effective.auth.type === "oauth2") {
-        const config = effective.auth.oauth2;
-        let token = config.token;
-        if (
-          !token ||
-          (config.autoRefresh &&
-            token.expiresAt !== undefined &&
-            token.expiresAt <= Date.now())
-        ) {
-          if (!token && config.grantType === "authorization_code")
-            throw new Error("Open Auth and authorize in your browser first.");
-          token = await authRuntime.run(token ? "refresh" : "initial");
-          if (!token)
-            throw new Error(
-              "Could not obtain an access token. See Auth for details.",
-            );
-        }
-        if (token.expiresAt !== undefined && token.expiresAt <= Date.now())
-          throw new Error(
-            "Access token expired. Refresh it in Auth before sending.",
-          );
-        effective = {
-          ...effective,
-          auth: { ...effective.auth, oauth2: { ...config, token } },
-        };
-      }
-      const outgoing = { ...resolvedDraft, auth: effective.auth };
-      const authResult = getAuthBindingForRequest(
-        outgoing.auth,
-        outgoing.url,
-        authContext,
-      );
-      if (authResult.error) throw new Error(authResult.error);
-      const headers = getRequestHeaders(outgoing, authContext)
-        .filter((header) => header.enabled && header.name.trim())
-        .map((header) => [header.name, header.value] as [string, string]);
-      const result = await executeHttp(
-        {
-          url: applyRequestQueryParamsToUrl(
-            outgoing.url,
-            getRequestQueryParams(outgoing, authContext),
-          ),
-          method: draft.method,
-          headers,
-          bodyBase64: await encodeBody(serializeRequestBody(outgoing.body)),
-        },
-        {
-          jar: draft.useCookieJar ? cookieJar : undefined,
-          sensitiveHeaders:
-            authResult.binding?.target === "header"
-              ? [authResult.binding.name]
-              : [],
-          sensitiveQueryParams:
-            authResult.binding?.target === "query"
-              ? [authResult.binding.name]
-              : [],
-        },
-      );
+      const outgoing = graphqlOperationName && draft.graphql
+        ? { ...draft, graphql: { ...draft.graphql, operationName: graphqlOperationName } }
+        : draft;
+      const result = await executeRequest(outgoing, authContext, cookieJar, authRuntime);
       setResponse(result);
       let body: unknown = result.text;
       try {
@@ -226,6 +160,10 @@ export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRa
   const canvasCompose = view === "canvas" && !hasActivity && !canvasCollapsed;
   const requestPane = (
     <RequestComposer
+      schema={schema}
+      onOpenSchema={onOpenSchema}
+      onOpenGraphqlType={onOpenGraphqlType}
+      onRunGraphqlOperation={(name) => { void send(name); }}
       draft={draft}
       onDraftChange={setDraft}
       onSend={() => {
@@ -245,7 +183,7 @@ export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRa
     />
   );
   const responsePane = (
-    <ResponseArea response={response} error={error} sending={sending} />
+    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} />
   );
 
   return (
@@ -264,7 +202,7 @@ export function RequestWorkbench({ draft, setDraft, view, splitRatios, onSplitRa
             firstSize={
               canvasCompose ? "100%"
                 : canvasCollapsed ? "var(--request-collapsed-height)"
-                  : canvasPreview ? "calc((100% - var(--splitter-gutter)) * 0.5)"
+                  : canvasPreview ? "calc((100% - var(--splitter-gutter)) * var(--request-focus-expanded-ratio))"
                     : undefined
             }
             hideSecond={canvasCompose}

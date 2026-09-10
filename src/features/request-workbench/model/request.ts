@@ -47,6 +47,7 @@ export type RequestQueryParam = {
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export type RequestDraft = {
+  graphql?: { query: string; variables: string; operationName: string; schemaId?: string };
   method: HttpMethod;
   url: string;
   params: RequestQueryParam[];
@@ -76,7 +77,7 @@ export function getRequestHeaders(
   draft: RequestDraft,
   context: AuthContext = {},
 ): RequestHeader[] {
-  const contentType = getBodyContentType(draft.body);
+  const contentType = draft.graphql ? "application/json" : getBodyContentType(draft.body);
   let headers = draft.headers;
   if (contentType)
     headers = [

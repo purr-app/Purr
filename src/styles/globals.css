@@ -169,6 +169,7 @@
     --auth-preview-max-height: 18rem;
     --request-toolbar-height: 3rem;
     --request-collapsed-height: calc(var(--request-toolbar-height) + 2 * var(--border-width-hairline));
+    --request-focus-expanded-ratio: 0.85;
     --splitter-gutter: 1.25rem;
     --splitter-dot-size: 0.1875rem;
     --workspace-sidebar-width: 15rem;
@@ -176,6 +177,13 @@
     --workspace-traffic-lights-width: 4.25rem;
     --workspace-menu-width: 14rem;
     --document-tab-max-width: 14rem;
+    --schema-registry-width: 16.5rem;
+    --schema-details-min-width: 18rem;
+    --schema-source-min-width: 20rem;
+    --schema-field-name-width: 1.2fr;
+    --schema-field-type-width: 0.65fr;
+    --schema-field-arguments-width: 1.2fr;
+    --diagnostics-max-height: 8rem;
     --document-method-optical-offset: 0.0625rem;
     --document-tab-drag-threshold: 0.25rem;
     --dialog-width: 44rem;
@@ -221,6 +229,8 @@
     --opacity-disabled: 0.5;
     --opacity-inactive: 0.6;
     --opacity-visible: 1;
+    --layer-editor-overlay: 20;
+    --layer-tooltip: 100;
     --shadow-panel: 0 0.75rem 1.75rem rgb(11 13 19 / 48%);
     --shadow-popover: 0 1rem 2.5rem rgb(11 13 19 / 60%);
     --shadow-button: inset 0 0.0625rem 0 rgb(244 244 245 / 8%);
@@ -344,6 +354,10 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1fr);
   }
 
+  .ui-graphql-editor-pane {
+    z-index: var(--layer-editor-overlay);
+  }
+
   .ui-document-method {
     transform: translateY(var(--document-method-optical-offset));
   }
@@ -378,5 +392,11 @@
   .ui-focus-ring:focus-visible {
     outline: var(--focus-ring-width) solid var(--border-focus);
     outline-offset: var(--focus-ring-offset);
+  }
+
+  input.ui-focus-ring:focus-visible,
+  textarea.ui-focus-ring:focus-visible {
+    border-color: var(--border-focus);
+    outline-offset: calc(var(--focus-ring-width) * -1);
   }
 }

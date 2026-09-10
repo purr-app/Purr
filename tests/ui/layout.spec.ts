@@ -78,7 +78,11 @@ test("canvas collapses to the URL and reopens request details beside a dimmed re
   await page.getByRole("button", { name: "Expand request details" }).click();
   await expect(params).toBeVisible();
   const panes = page.locator('[data-split-orientation="horizontal"] > section');
-  await expect.poll(async () => Math.abs((await panes.nth(0).boundingBox())!.height - (await panes.nth(1).boundingBox())!.height)).toBeLessThan(2);
+  await expect.poll(async () => {
+    const requestPane = (await panes.nth(0).boundingBox())!;
+    const responsePane = (await panes.nth(1).boundingBox())!;
+    return requestPane.height / (requestPane.height + responsePane.height);
+  }).toBeGreaterThan(0.84);
   await expect(page.getByRole("button", { name: "Focus Response viewer" })).toBeVisible();
   await page.screenshot({ path: "test-results/layout-canvas-edit.png", fullPage: true });
 

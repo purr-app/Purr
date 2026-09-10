@@ -5,7 +5,7 @@ import { KbdGroup } from "../../../shared/components/ui/kbd";
 import { Modal } from "../../../shared/components/ui/modal";
 import { cn } from "../../../shared/lib/cn";
 import type { KeyboardShortcut } from "../../../shared/config/keyboard-shortcuts";
-import { getDocumentDisplayName, isMeaningfulDraft, type Workspace } from "../model/workspace";
+import { getDocumentDisplayName, getDocumentBadge, getDocumentGroup, isRequestDocument, isMeaningfulDraft, type Workspace } from "../model/workspace";
 
 export type PaletteAction = { id: string; title: string; icon: ReactNode; shortcut?: KeyboardShortcut; run: () => void };
 export function CommandPalette({ workspace, actions, onOpenDocument, onClose }: {
@@ -16,8 +16,8 @@ export function CommandPalette({ workspace, actions, onOpenDocument, onClose }: 
   const list = useRef<HTMLDivElement>(null);
   const items = [
     ...actions.map((action) => ({ ...action, group: "Quick actions", search: action.title })),
-    ...workspace.documents.filter((document) => document.saved || isMeaningfulDraft(document)).sort((a, b) => Number(b.saved) - Number(a.saved)).map((document) => ({ id: document.id, title: getDocumentDisplayName(document), group: document.saved ? "HTTP requests" : "Drafts", search: `${getDocumentDisplayName(document)} ${document.request.method} ${document.request.url}`,
-      icon: <FileCode2 className="size-ui-4" />, shortcut: undefined, run: () => onOpenDocument(document.id),
+    ...workspace.documents.filter((document) => document.saved || isMeaningfulDraft(document)).sort((a, b) => getDocumentGroup(a).localeCompare(getDocumentGroup(b))).map((document) => ({ id: document.id, title: getDocumentDisplayName(document), group: getDocumentGroup(document), search: `${getDocumentDisplayName(document)} ${getDocumentBadge(document).label} ${isRequestDocument(document) ? document.request.url : "schema"}`,
+      icon: <FileCode2 className={cn("size-ui-4", getDocumentBadge(document).color)} />, shortcut: undefined, run: () => onOpenDocument(document.id),
     })),
   ].filter((item) => item.search.toLowerCase().includes(query.toLowerCase()));
   useEffect(() => { list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }); }, [selected]);

@@ -15,8 +15,13 @@ import { QueryParamsEditor } from "./query-params-editor";
 import { AuthEditor } from "./auth-editor";
 import type { AuthContext } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
+import type { GraphQLSchema } from "graphql";
+import { GraphqlQueryEditor } from "../../graphql/components/graphql-query-editor";
 
 type RequestSectionPanelProps = {
+  schema?: GraphQLSchema;
+  onOpenGraphqlType?: (name: string) => void;
+  onRunGraphqlOperation?: (name: string) => void;
   activeSection: RequestEditorSection;
   draft: RequestDraft;
   onDraftChange: (draft: RequestDraft) => void;
@@ -30,8 +35,15 @@ export function RequestSectionPanel({
   onDraftChange,
   authContext,
   authRuntime,
+  schema,
+  onOpenGraphqlType,
+  onRunGraphqlOperation,
 }: RequestSectionPanelProps) {
   const section = getRequestEditorSection(activeSection);
+
+  if (draft.graphql && (activeSection === "gql-query" || activeSection === "gql-variables")) return <GraphqlQueryEditor
+    value={draft.graphql} schema={schema} onOpenType={onOpenGraphqlType} onRunOperation={onRunGraphqlOperation}
+    onChange={(graphql) => onDraftChange({ ...draft, graphql })} />;
 
   return section?.id === "body" ? (
     <BodyEditor

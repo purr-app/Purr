@@ -105,6 +105,7 @@ export const purrCodeTheme = EditorView.theme(
       borderRadius: "var(--radius-sm)",
     },
     ".cm-tooltip": {
+      zIndex: "var(--layer-tooltip)",
       fontFamily: "var(--font-family-ui)",
       fontSize: "var(--font-size-sm)",
       lineHeight: "var(--line-height-lg)",
@@ -116,17 +117,41 @@ export const purrCodeTheme = EditorView.theme(
       maxWidth: "var(--validation-popover-width)",
     },
     ".cm-tooltip-autocomplete > ul": {
+      display: "grid",
+      gap: "var(--space-1)",
       fontFamily: "var(--font-family-code)",
-      padding: "var(--space-1)",
+      fontSize: "var(--font-size-md)",
+      lineHeight: "var(--line-height-lg)",
+      padding: "var(--space-2)",
+    },
+    ".cm-tooltip-autocomplete.cm-tooltip-below": {
+      marginTop: "var(--space-2)",
+      transform: "translateY(var(--space-1))",
+    },
+    ".cm-tooltip-autocomplete.cm-tooltip-above": {
+      marginBottom: "var(--space-2)",
+      transform: "translateY(calc(var(--space-1) * -1))",
     },
     ".cm-tooltip-autocomplete > ul > li": {
-      padding: "var(--space-1) var(--space-2)",
+      display: "flex",
+      alignItems: "center",
+      minHeight: "var(--control-height-md)",
+      padding: "var(--space-1-5) var(--space-3)",
       borderRadius: "var(--radius-sm)",
     },
-    ".cm-tooltip-autocomplete > ul > li[aria-selected]": {
+    ".cm-tooltip-autocomplete > ul > li:hover": {
+      backgroundColor: "var(--purr-elevated)",
+      color: "var(--content-primary)",
+    },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected=true]": {
       backgroundColor: "var(--purr-highlight)",
       color: "var(--content-primary)",
     },
+    ".cm-completionLabel": { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", color: "var(--syntax-property)" },
+    ".cm-completionMatchedText": { color: "var(--action-graphql)", textDecoration: "none" },
+    ".cm-completionDetail": { marginLeft: "var(--space-4)", color: "var(--syntax-string)", fontStyle: "normal" },
+    ".cm-completionInfo": { padding: "var(--space-3)", color: "var(--content-secondary)" },
+    ".ui-graphql-completion-info": { maxWidth: "var(--validation-popover-width)", whiteSpace: "pre-wrap" },
     ".cm-tooltip-lint": { padding: "var(--space-1)" },
     ".cm-diagnostic": {
       padding: "var(--space-2)",
@@ -171,6 +196,10 @@ export const purrCodeTheme = EditorView.theme(
       color: "var(--content-tertiary)",
       borderRadius: "var(--radius-sm)",
     },
+    ".ui-graphql-hover": { minWidth: "var(--method-popover-width)", maxWidth: "var(--validation-popover-width)", padding: "var(--space-3)" },
+    ".ui-graphql-hover-signature": { fontFamily: "var(--font-family-code)", color: "var(--syntax-property)" },
+    ".ui-graphql-hover-docs": { marginTop: "var(--space-2)", whiteSpace: "pre-wrap", color: "var(--content-secondary)" },
+    ".ui-graphql-hover-link": { marginTop: "var(--space-2)", color: "var(--action-graphql)", cursor: "pointer" },
   },
   { dark: true },
 );
@@ -178,6 +207,8 @@ export const purrCodeTheme = EditorView.theme(
 export const purrCodeHighlighting = syntaxHighlighting(
   HighlightStyle.define([
     { tag: tags.propertyName, color: "var(--syntax-property)" },
+    { tag: [tags.typeName, tags.atom], color: "var(--syntax-property)", fontWeight: "var(--font-weight-normal)" },
+    { tag: tags.variableName, color: "var(--syntax-attribute)" },
     { tag: tags.tagName, color: "var(--syntax-tag)" },
     { tag: tags.attributeName, color: "var(--syntax-attribute)" },
     { tag: [tags.string, tags.attributeValue], color: "var(--syntax-string)" },

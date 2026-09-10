@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
+import { cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
 import { resolveEnvironmentValue } from "../src/shared/lib/resolve-variables";
 import { resolveRequestEnvironment } from "../src/features/workspaces/model/environment";
 import { applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParamsFromUrl } from "../src/features/request-workbench/model/request";
@@ -64,6 +64,15 @@ test("saved documents keep an explicit snapshot until Save and drafts can be dis
   assert.equal(isMeaningfulDraft(draft), true);
   workspace = discardDocument(workspace, draft.id);
   assert.equal(workspace.documents.some((document) => document.id === draft.id), false);
+
+  const firstDraft = createHttpDocument(); firstDraft.request.url = "https://example.com/one";
+  const secondDraft = createHttpDocument(); secondDraft.request.url = "https://example.com/two";
+  const blank = createHttpDocument();
+  workspace.documents.push(firstDraft, secondDraft, blank);
+  workspace = openDocument(openDocument(workspace, firstDraft.id), secondDraft.id);
+  workspace = discardAllDrafts(workspace);
+  assert.equal(workspace.documents.some((document) => document.id === firstDraft.id || document.id === secondDraft.id), false);
+  assert.equal(workspace.documents.some((document) => document.id === blank.id), true);
 });
 
 test("clean saved documents use one replaceable preview tab and ordered tabs can be pinned", () => {

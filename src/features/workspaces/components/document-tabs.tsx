@@ -1,9 +1,9 @@
-import { Cookie as CookieIcon, Plus, Save, X } from "lucide-react";
+import { Cookie as CookieIcon, Save, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { cn } from "../../../shared/lib/cn";
-import { getHttpMethodStyle } from "../../../shared/model/http-method";
-import { getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, type Workspace } from "../model/workspace";
+import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, isRequestDocument, type CreatableDocumentKind, type Workspace } from "../model/workspace";
+import { NewDocumentButton } from "./new-document-button";
 
 const cookiesTabId = "workspace-cookies-tab";
 type TabGeometry = { id: string; left: number; right: number; width: number };
@@ -30,7 +30,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   onReorder: (sourceId: string, targetId: string) => void;
   onOpenCookies: () => void;
   onCloseCookies: () => void;
-  onNew: () => void;
+  onNew: (kind: CreatableDocumentKind) => void;
   onSave: () => void;
 }) {
   const list = useRef<HTMLDivElement>(null);
@@ -40,7 +40,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const [settling, setSettling] = useState(false);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const showSave = Boolean(!workspace.ui.cookiesTabActive && activeDocument && (!activeDocument.saved || isDocumentDirty(activeDocument)));
+  const showSave = Boolean(!workspace.ui.cookiesTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
   const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : [])];
   const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : onOpen(id);
   const onTabKeyDown = (event: KeyboardEvent, id: string) => {
@@ -190,7 +190,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
             onClick={() => { if (!drag?.moved) onOpen(id); }} onDoubleClick={() => onPin(id)} onKeyDown={(event) => onTabKeyDown(event, id)}
             onPointerDown={(event) => startTabDrag(event, id)} onPointerMove={moveTab} onPointerUp={finishTabDrag} onPointerCancel={cancelTabDrag}
             tabIndex={active ? 0 : -1}>
-            <span className={cn("ui-document-method inline-flex h-full items-center font-code text-ui-2xs leading-none", getHttpMethodStyle(document.request.method).text)}>{document.request.method}</span>
+            <span className={cn("ui-document-method inline-flex h-full items-center font-code text-ui-2xs leading-none", getDocumentBadge(document).color)}>{getDocumentBadge(document).label}</span>
             <span className={cn("inline-flex h-full min-w-0 items-center truncate leading-none", preview && "italic")}>{name}</span>
             {dirty && <span className="size-ui-1-5 shrink-0 rounded-full bg-action-brand" title={document.saved ? "Unsaved changes" : "Draft"} />}
             {!document.saved && !isMeaningfulDraft(document) ? <span className="sr-only">Blank request</span> : null}
@@ -207,7 +207,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5" aria-label="Close workspace cookies" onClick={onCloseCookies}><X className="size-ui-3" /></Button>
       </div> : null}
     </div>
-    <Button variant="ghost" size="icon" aria-label="New HTTP request" title="New HTTP request · Mod+N" onClick={onNew}><Plus className="size-ui-4" /></Button>
+    <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} />
     <div className="flex-1" />
     {showSave ? <Button variant="ghost" size="icon" aria-label="Save document" title={`${activeDocument?.saved ? "Save changes" : "Save document"} · Mod+S`} onClick={onSave}><Save className="size-ui-4 text-action-brand" /></Button> : null}
   </div>;

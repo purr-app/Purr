@@ -2,7 +2,7 @@ import { prettifyBodyCode } from "./request-body";
 import type { HttpResult } from "../services/http-client";
 
 export type ResponseBodyKind = "json" | "xml" | "html" | "text" | "binary";
-export type ResponseViewMode = "pretty" | "raw" | "hex" | "base64";
+export type ResponseViewMode = "pretty" | "prettify" | "raw" | "hex" | "base64";
 export type ResponseQueryLanguage = "jq" | "jsonpath";
 
 export type ResponseBodyInfo = {
@@ -117,9 +117,9 @@ export function formatResponseBody(
       ? JSON.stringify(queriedJson, null, 2)
       : JSON.stringify(queriedJson);
   if (mode === "raw") return response.text;
-  if (info.kind === "json" && info.parsedJson !== undefined)
+  if ((mode === "pretty" || mode === "prettify") && info.kind === "json" && info.parsedJson !== undefined)
     return JSON.stringify(info.parsedJson, null, 2);
-  if (info.kind === "xml") return prettifyBodyCode("xml", response.text);
+  if ((mode === "pretty" || mode === "prettify") && info.kind === "xml") return prettifyBodyCode("xml", response.text);
   return response.text;
 }
 

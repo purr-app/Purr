@@ -6,8 +6,13 @@ export const requestEditorSections = [
   { id: "settings", label: "Settings", description: "Adjust request execution settings." },
 ] as const;
 
-export type RequestEditorSection = (typeof requestEditorSections)[number]["id"];
+export const graphqlEditorSections = [
+  { id: "gql-query", label: "Query", description: "Write a GraphQL query or mutation." },
+  ...requestEditorSections.filter((section) => section.id === "headers" || section.id === "auth" || section.id === "settings"),
+] as const;
+
+export type RequestEditorSection = (typeof requestEditorSections)[number]["id"] | "gql-query" | "gql-variables";
 
 export function getRequestEditorSection(section: RequestEditorSection) {
-  return requestEditorSections.find((item) => item.id === section);
+  return [...requestEditorSections, ...graphqlEditorSections].find((item) => item.id === section);
 }

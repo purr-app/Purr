@@ -1,67 +1,77 @@
 import { useState } from "react";
-import { ChevronDown, FileCode2, FilePlus2, FolderOpen, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronDown, FileCode2, FilePlus2, FolderOpen, MoreHorizontal, Network, Search, Trash2 } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "../../../shared/components/ui/popover";
 import { cn } from "../../../shared/lib/cn";
-import { getHttpMethodStyle } from "../../../shared/model/http-method";
-import { Popover, PopoverContent, PopoverTrigger } from "../../../shared/components/ui/popover";
-import { getDocumentDisplayName, isMeaningfulDraft, type HttpDocument, type Workspace } from "../model/workspace";
+import { getDocumentBadge, getDocumentDisplayName, isMeaningfulDraft, isRequestDocument, type CreatableDocumentKind, type WorkspaceDocument, type Workspace } from "../model/workspace";
+import { NewDocumentButton } from "./new-document-button";
 
-export function WorkspaceSidebar({ workspace, onOpen, onNew, onDiscard, onOpenFolder }: {
-  workspace: Workspace;
-  onOpen: (id: string) => void;
-  onNew: () => void;
-  onDiscard: (id: string) => void;
-  onOpenFolder: () => void;
+export function WorkspaceSidebar({ workspace, onOpen, onNew, onDiscard, onDiscardAll, onDelete, onOpenFolder }: {
+  workspace: Workspace; onOpen: (id: string) => void; onNew: (kind: CreatableDocumentKind) => void;
+  onDiscard: (id: string) => void; onDiscardAll: () => void; onDelete: (id: string) => void; onOpenFolder: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [createOpen, setCreateOpen] = useState(false);
-  const matching = workspace.documents.filter((document) => `${document.name} ${document.request.method} ${document.request.url}`.toLowerCase().includes(query.toLowerCase()));
+  const matching = workspace.documents.filter((document) => `${getDocumentDisplayName(document)} ${getDocumentBadge(document).label} ${isRequestDocument(document) ? document.request.url : ""}`.toLowerCase().includes(query.toLowerCase()));
+  const savedHttp = matching.filter((document) => document.saved && document.kind === "http");
+  const savedGraphql = matching.filter((document) => document.saved && (document.kind === "graphql" || (document.kind === "schema" && Boolean(document.sdl))));
+  const drafts = matching.filter((document) => !document.saved && isMeaningfulDraft(document));
+  const hasDrafts = workspace.documents.some((document) => !document.saved && isMeaningfulDraft(document));
   return <aside aria-label="Workspace documents" className="flex h-full w-ui-sidebar shrink-0 flex-col border-r border-border-subtle bg-purr-surface">
-    <div className="flex shrink-0 items-center gap-ui-1 p-ui-3">
+    <div className="flex shrink-0 items-center gap-ui-1 px-ui-2 py-ui-2">
       <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-ui-2 top-1/2 size-ui-3-5 -translate-y-1/2 text-content-tertiary" />
         <Input aria-label="Search documents" placeholder="Search documents…" className="ui-focus-ring h-control-md pl-ui-7 text-ui-sm" value={query} onChange={(event) => setQuery(event.target.value)} />
       </div>
-      <Popover open={createOpen} onOpenChange={setCreateOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="Create document" title="Create document"><Plus className="size-ui-4" /></Button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="mt-ui-2 w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
-          <Button variant="ghost" className="w-full justify-start font-normal" onClick={() => { setCreateOpen(false); onNew(); }}>
-            <FileCode2 className="size-ui-4 text-method-get" />HTTP request
-          </Button>
-        </PopoverContent>
-      </Popover>
+      <NewDocumentButton onNew={onNew} />
     </div>
-    <div className="min-h-0 flex-1 space-y-ui-4 overflow-y-auto px-ui-2 pb-ui-3">
-      <DocumentGroup label="HTTP requests" icon="http" documents={matching.filter((document) => document.saved)} activeId={workspace.ui.cookiesTabActive ? null : workspace.ui.activeDocumentId} onOpen={onOpen} onDiscard={onDiscard} />
-      <DocumentGroup label="Drafts" icon="draft" documents={matching.filter((document) => !document.saved && isMeaningfulDraft(document))} activeId={workspace.ui.cookiesTabActive ? null : workspace.ui.activeDocumentId} onOpen={onOpen} onDiscard={onDiscard} />
-      {!matching.length && <p className="px-ui-2 py-ui-5 text-ui-sm text-content-tertiary">{query ? "No matching documents." : "Create your first request with +."}</p>}
+    <div className="min-h-0 flex-1 space-y-ui-0 overflow-y-auto px-ui-2 pb-ui-2">
+      <DocumentGroup label="HTTP" icon="http" documents={savedHttp} activeId={workspace.ui.cookiesTabActive ? null : workspace.ui.activeDocumentId} onOpen={onOpen} onDiscard={onDiscard} onDelete={onDelete} />
+      <DocumentGroup label="GraphQL" icon="graphql" documents={savedGraphql} activeId={workspace.ui.cookiesTabActive ? null : workspace.ui.activeDocumentId} onOpen={onOpen} onDiscard={onDiscard} onDelete={onDelete} />
+      <DocumentGroup label="Drafts" icon="draft" documents={drafts} activeId={workspace.ui.cookiesTabActive ? null : workspace.ui.activeDocumentId} onOpen={onOpen} onDiscard={onDiscard} onDiscardAll={onDiscardAll} showDiscardAll={hasDrafts} onDelete={onDelete} />
+      {!matching.length && <p className="px-ui-2 py-ui-3 text-ui-sm text-content-tertiary">{query ? "No matching documents." : "Create your first request with +."}</p>}
     </div>
-    <button type="button" className="ui-focus-ring flex items-center gap-ui-2 border-t border-border-subtle px-ui-3 py-ui-3 text-left text-ui-xs text-content-tertiary hover:bg-purr-elevated hover:text-content-secondary" onClick={onOpenFolder}>
+    <button type="button" className="ui-focus-ring flex items-center gap-ui-2 border-t border-border-subtle px-ui-3 py-ui-2 text-left text-ui-xs text-content-tertiary hover:bg-purr-elevated hover:text-content-secondary" onClick={onOpenFolder}>
       <FolderOpen className="size-ui-3-5" /><span className="truncate">{workspace.name} · Local workspace</span>
     </button>
   </aside>;
 }
 
-function DocumentGroup({ label, icon, documents, activeId, onOpen, onDiscard }: { label: string; icon: "http" | "draft"; documents: HttpDocument[]; activeId: string | null; onOpen: (id: string) => void; onDiscard: (id: string) => void }) {
+function DocumentGroup({ label, icon, documents, activeId, onOpen, onDiscard, onDiscardAll, showDiscardAll = false, onDelete }: {
+  label: string; icon: "http" | "graphql" | "draft"; documents: WorkspaceDocument[]; activeId: string | null;
+  onOpen: (id: string) => void; onDiscard: (id: string) => void; onDiscardAll?: () => void; showDiscardAll?: boolean; onDelete: (id: string) => void;
+}) {
   const [open, setOpen] = useState(true);
   return <section aria-label={label}>
-    <button type="button" className="ui-focus-ring mb-ui-1 flex w-full items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-2 text-ui-xs text-content-tertiary hover:text-content-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>
-      <ChevronDown className={cn("size-ui-3 transition-transform duration-ui-fast", !open && "-rotate-90")} />
-      {icon === "http" ? <FileCode2 className="size-ui-3-5" /> : <FilePlus2 className="size-ui-3-5" />}
-      {label}<span className="ml-auto font-code">{documents.length}</span>
-    </button>
-    {open && documents.map((document) => {
-      const name = getDocumentDisplayName(document);
-      return <div key={document.id} className="group flex items-center rounded-ui-md hover:bg-purr-elevated">
-      <button type="button" title={document.request.url || name} aria-current={document.id === activeId ? "page" : undefined}
-        className={cn("ui-focus-ring flex min-w-0 flex-1 items-center gap-ui-2 rounded-ui-md px-ui-3 py-ui-2 text-ui-sm", document.id === activeId ? "bg-purr-highlight text-content-primary" : "text-content-secondary")}
-        onClick={() => onOpen(document.id)}>
-        <span className={cn("w-ui-10 shrink-0 text-left font-code text-ui-2xs", getHttpMethodStyle(document.request.method).text)}>{document.request.method}</span><span className="truncate">{name}</span>
+    <div className="flex items-center rounded-ui-md hover:bg-purr-elevated">
+      <button type="button" className="ui-focus-ring flex min-w-0 flex-1 items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 text-ui-sm text-content-tertiary hover:text-content-secondary" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <ChevronDown className={cn("size-ui-3 transition-transform duration-ui-fast", !open && "-rotate-90")} />
+        {icon === "http" ? <FileCode2 className="size-ui-3-5" /> : icon === "graphql" ? <Network className="size-ui-3-5" /> : <FilePlus2 className="size-ui-3-5" />}
+        {label}<span className="ml-auto font-code text-ui-xs">{documents.length}</span>
       </button>
-      {icon === "draft" ? <Button variant="ghost" size="icon" className="mr-ui-1 size-control-xs opacity-ui-hidden group-hover:opacity-ui-visible focus-visible:opacity-ui-visible" aria-label={`Discard draft ${name}`} title="Discard draft" onClick={() => onDiscard(document.id)}><Trash2 className="size-ui-3" /></Button> : null}
-    </div>})}
-    {open && !documents.length && <p className="px-ui-3 py-ui-2 text-ui-xs text-content-quaternary">{icon === "http" ? "Save a request to add it here." : "No drafts"}</p>}
+      {icon === "draft" && showDiscardAll && <Button variant="ghost" size="icon" className="mr-ui-1 size-control-xs text-accent-red" aria-label="Discard all drafts" title="Discard all drafts" onClick={onDiscardAll}><Trash2 className="size-ui-3" /></Button>}
+    </div>
+    {open && <div>{documents.map((document) => <DocumentRow key={document.id} document={document} active={document.id === activeId}
+      draft={icon === "draft"} onOpen={onOpen} onDiscard={onDiscard} onDelete={onDelete} />)}</div>}
   </section>;
+}
+
+function DocumentRow({ document, active, draft, onOpen, onDiscard, onDelete }: {
+  document: WorkspaceDocument; active: boolean; draft: boolean; onOpen: (id: string) => void;
+  onDiscard: (id: string) => void; onDelete: (id: string) => void;
+}) {
+  const [menu, setMenu] = useState(false);
+  const name = getDocumentDisplayName(document);
+  const remove = () => { setMenu(false); draft ? onDiscard(document.id) : onDelete(document.id); };
+  return <Popover open={menu} onOpenChange={setMenu}>
+    <PopoverAnchor asChild><div className="group flex items-center rounded-ui-md hover:bg-purr-elevated" onContextMenu={(event) => { event.preventDefault(); setMenu(true); }}>
+      <button type="button" title={isRequestDocument(document) ? document.request.url || name : name} aria-current={active ? "page" : undefined}
+        className={cn("ui-focus-ring flex min-w-0 flex-1 items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 text-ui-sm", active ? "bg-purr-highlight text-content-primary" : "text-content-secondary")} onClick={() => onOpen(document.id)}>
+        <span className={cn("w-ui-10 shrink-0 text-left font-code text-ui-2xs", getDocumentBadge(document).color)}>{getDocumentBadge(document).label}</span><span className="truncate">{name}</span>
+      </button>
+      <Button variant="ghost" size="icon" className="mr-ui-1 size-control-xs opacity-ui-hidden group-hover:opacity-ui-visible focus-visible:opacity-ui-visible" aria-label={`Document actions for ${name}`} onClick={() => setMenu(true)}><MoreHorizontal className="size-ui-3" /></Button>
+    </div></PopoverAnchor>
+    <PopoverContent role="menu" aria-label={`Actions for ${name}`} align="end" sideOffset={4} className="w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover" onOpenAutoFocus={(event) => event.preventDefault()}>
+      <Button role="menuitem" variant="ghost" className="w-full justify-start text-accent-red" onClick={remove}><Trash2 className="size-ui-4" />{draft ? "Discard draft" : "Delete document"}</Button>
+    </PopoverContent>
+  </Popover>;
 }

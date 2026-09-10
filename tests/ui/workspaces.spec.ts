@@ -56,7 +56,7 @@ test("documents, workspace selection, environments and independent layouts survi
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("");
   await page.getByLabel("Request URL", { exact: true }).fill("{{base}}/users");
   await saveDocument(page, "List users");
-  await expect(page.getByRole("region", { name: "HTTP requests", exact: true }).getByRole("button", { name: "GET List users" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET List users" })).toBeVisible();
   await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
   await expect(tabs(page)).toHaveCount(2);
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/draft");
@@ -161,7 +161,7 @@ test("sidebar opens one italic preview tab that pins itself after editing", asyn
   await page.getByRole("button", { name: "Close First", exact: true }).click();
   await expect(tabs(page)).toHaveCount(0);
 
-  const requests = page.getByRole("region", { name: "HTTP requests", exact: true });
+  const requests = page.getByRole("region", { name: "HTTP", exact: true });
   await requests.getByRole("button", { name: "GET First", exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
   await expect(tabs(page).locator("span").nth(1)).toHaveClass(/italic/);
@@ -181,19 +181,30 @@ test("sidebar opens one italic preview tab that pins itself after editing", asyn
 test("blank tabs stay out of Drafts and real drafts can be discarded from the sidebar", async ({ page }) => {
   await page.goto("/");
   const draftGroup = page.getByRole("region", { name: "Drafts", exact: true });
-  await expect(draftGroup.getByText("No drafts", { exact: true })).toBeVisible();
+  await expect(draftGroup.getByRole("button")).toHaveCount(1);
 
   await page.getByRole("button", { name: "Create document", exact: true }).click();
-  await expect(page.getByRole("button", { name: "HTTP request", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "HTTP request", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "HTTP request", exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "HTTP request", exact: true }).click();
   await expect(tabs(page)).toHaveCount(2);
-  await expect(draftGroup.getByText("No drafts", { exact: true })).toBeVisible();
+  await expect(draftGroup.getByRole("button")).toHaveCount(1);
 
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/discard-me");
   await expect(draftGroup.getByRole("button", { name: "GET example.com/discard-me", exact: true })).toBeVisible();
-  await draftGroup.getByRole("button", { name: "Discard draft example.com/discard-me", exact: true }).click();
+  await draftGroup.getByRole("button", { name: "Document actions for example.com/discard-me", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Discard draft", exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
-  await expect(draftGroup.getByText("No drafts", { exact: true })).toBeVisible();
+  await expect(draftGroup.getByRole("button")).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Create document", exact: true }).click();
+  await page.getByRole("menuitem", { name: "HTTP request", exact: true }).click();
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/first-draft");
+  await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/second-draft");
+  await expect(page.getByRole("button", { name: "Discard all drafts", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Discard all drafts", exact: true }).click();
+  await expect(tabs(page)).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Discard all drafts", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Open command palette" }).click();
   await expect(page.getByRole("dialog", { name: "Search documents and commands" })).toBeVisible();
@@ -209,15 +220,26 @@ test("saved requests use a working copy until changes are explicitly saved", asy
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/temporary");
   await expect(page.getByRole("button", { name: "Save document", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close Stable request", exact: true }).click();
-  await page.getByRole("region", { name: "HTTP requests", exact: true }).getByRole("button", { name: "GET Stable request", exact: true }).click();
+  await page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Stable request", exact: true }).click();
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://example.com/saved");
 
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/explicit-save");
   await page.getByRole("button", { name: "Save document", exact: true }).click();
   await expect(page.getByRole("button", { name: "Save document", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Close Stable request", exact: true }).click();
-  await page.getByRole("region", { name: "HTTP requests", exact: true }).getByRole("button", { name: "GET Stable request", exact: true }).click();
+  await page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Stable request", exact: true }).click();
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://example.com/explicit-save");
+});
+
+test("saved documents can be deleted from the sidebar context menu", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/remove");
+  await saveDocument(page, "Remove me");
+  const row = page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Remove me", exact: true });
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete document", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await expect(tabs(page)).toHaveCount(0);
 });
 
 test("response and workspace cookies survive persistence and the workspace folder opens natively", async ({ page }) => {

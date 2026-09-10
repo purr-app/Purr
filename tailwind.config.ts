@@ -120,11 +120,15 @@ export default {
         "ui-name-dialog": "var(--name-dialog-width)",
         "ui-variable-list": "var(--variable-list-max-height)",
         "ui-palette": "var(--palette-max-height)",
+        "ui-diagnostics": "var(--diagnostics-max-height)",
       },
       maxWidth: {
         "validation-popover": "var(--validation-popover-width)",
         "ui-document-tab": "var(--document-tab-max-width)",
         "ui-dialog": "var(--dialog-width)",
+      },
+      maxHeight: {
+        "ui-diagnostics": "var(--diagnostics-max-height)",
       },
       borderRadius: {
         DEFAULT: "var(--radius-md)",
@@ -194,6 +198,11 @@ export default {
       gridTemplateRows: {
         "ui-collapsed": "0fr",
         "ui-expanded": "1fr",
+      },
+      gridTemplateColumns: {
+        "ui-schema": "var(--schema-registry-width) minmax(var(--schema-details-min-width), 1fr) minmax(var(--schema-source-min-width), 1fr)",
+        "ui-schema-compact": "var(--schema-registry-width) minmax(var(--schema-details-min-width), 1fr)",
+        "ui-schema-field": "minmax(0, var(--schema-field-name-width)) minmax(0, var(--schema-field-type-width)) minmax(0, var(--schema-field-arguments-width)) auto",
       },
       opacity: {
         "ui-hidden": "var(--opacity-hidden)",

@@ -1,4 +1,5 @@
-import { ChevronDown, LoaderCircle, SendHorizontal } from "lucide-react";
+import { ChevronDown, LoaderCircle, Network, SendHorizontal } from "lucide-react";
+import type { GraphQLSchema } from "graphql";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
@@ -20,6 +21,10 @@ import type { AuthContext } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 
 type RequestComposerProps = {
+  schema?: GraphQLSchema;
+  onOpenSchema?: () => void;
+  onOpenGraphqlType?: (name: string) => void;
+  onRunGraphqlOperation?: (name: string) => void;
   draft: RequestDraft;
   onDraftChange: (draft: RequestDraft) => void;
   onSend: () => void;
@@ -43,6 +48,10 @@ export function RequestComposer({
   onToggleDetails,
   activeSection,
   onSectionChange,
+  schema,
+  onOpenSchema,
+  onOpenGraphqlType,
+  onRunGraphqlOperation,
 }: RequestComposerProps) {
   const headers = getRequestHeaders(draft, authContext);
 
@@ -65,10 +74,10 @@ export function RequestComposer({
           }}
         >
           <div className="flex items-center gap-ui-2">
-            <HttpMethodPicker
+            {draft.graphql ? <span className="inline-flex h-control-md shrink-0 items-center rounded-ui-md bg-action-graphql-surface px-ui-3 font-code text-ui-md text-action-graphql">GQL</span> : <HttpMethodPicker
               value={draft.method}
               onValueChange={(method) => onDraftChange({ ...draft, method })}
-            />
+            />}
             <Input
               className="h-control-md min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
               variant="transparent"
@@ -85,7 +94,11 @@ export function RequestComposer({
               placeholder="Enter URL or use {{base_url}}"
               spellCheck="false"
             />
+            {draft.graphql && <Button type="button" variant="ghost" size="sm" aria-label="Open GraphQL schema" title="Schema explorer · introspection or import" onClick={onOpenSchema}>
+              <Network className="size-ui-4 text-action-graphql" /><span className="hidden lg:inline">Schema</span>
+            </Button>}
             <Button
+              variant={draft.graphql ? "graphql" : "default"}
               className="shadow-action"
               size="default"
               type="submit"
@@ -131,6 +144,7 @@ export function RequestComposer({
         inert={detailsCollapsed}
       >
         <RequestSectionTabs
+          graphql={Boolean(draft.graphql)}
           activeSection={activeSection}
           onSectionChange={selectSection}
           bodyType={draft.body.type}
@@ -143,6 +157,9 @@ export function RequestComposer({
         />
         <div className="min-h-0 flex-1 overflow-hidden">
             <RequestSectionPanel
+              schema={schema}
+              onOpenGraphqlType={onOpenGraphqlType}
+              onRunGraphqlOperation={onRunGraphqlOperation}
               activeSection={activeSection}
               draft={draft}
               onDraftChange={onDraftChange}

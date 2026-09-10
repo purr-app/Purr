@@ -8,12 +8,14 @@ import {
 } from "../../../shared/components/ui/popover";
 import {
   requestEditorSections,
+  graphqlEditorSections,
   type RequestEditorSection,
 } from "../model/request-editor-section";
 import { bodyTypeOptions, type RequestBodyType } from "../model/request-body";
 import { authTypeOptions, type AuthType } from "../model/request-auth";
 
 type RequestSectionTabsProps = {
+  graphql?: boolean;
   activeSection: RequestEditorSection;
   onSectionChange: (section: RequestEditorSection) => void;
   bodyType: RequestBodyType;
@@ -61,6 +63,7 @@ export function RequestSectionTabs({
   queryCount,
   headerCount,
   hasHeaderError,
+  graphql = false,
 }: RequestSectionTabsProps) {
   return (
     <div
@@ -71,7 +74,7 @@ export function RequestSectionTabs({
         role="tablist"
         aria-label="Request options"
       >
-        {requestEditorSections.map((section) => {
+        {(graphql ? graphqlEditorSections : requestEditorSections).map((section) => {
             return (
               <Button
                 key={section.id}
