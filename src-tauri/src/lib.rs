@@ -1,6 +1,10 @@
 mod downloads;
 mod http;
+mod local_state;
 mod oauth;
+mod persistence;
+mod project_files;
+mod secure_store;
 mod workspaces;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -36,7 +40,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(http::HttpClient::default())
         .manage(oauth::OAuthCallbacks::default())
-        .manage(workspaces::WorkspaceStorage::default())
+        .manage(persistence::PersistenceState::default())
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
@@ -50,10 +54,19 @@ pub fn run() {
             http::send_http,
             oauth::authorize_oauth,
             oauth::cancel_oauth,
-            workspaces::load_workspace_store,
-            workspaces::save_workspace,
-            workspaces::set_active_workspace,
-            workspaces::open_workspace_folder
+            persistence::load_persistence,
+            persistence::load_project,
+            persistence::list_request_history,
+            persistence::reload_project_file,
+            persistence::commit_project,
+            persistence::set_local_active_workspace,
+            persistence::finish_legacy_migration,
+            persistence::open_project_folder,
+            persistence::attach_project_directory,
+            persistence::secure_get,
+            persistence::secure_set,
+            persistence::secure_delete,
+            persistence::secure_exists
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

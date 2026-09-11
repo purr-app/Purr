@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installPersistenceMock } from "./persistence-mock";
+test.beforeEach(async ({ page }) => installPersistenceMock(page));
 import { buildSchema, introspectionFromSchema } from "graphql";
 
 const sdl = `
@@ -48,16 +50,6 @@ async function mockDesktop(page: Page) {
     (window as any).__requests = [];
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
-        if (command === "load_workspace_store") return JSON.parse(localStorage.getItem("gql-native-store") ?? "null");
-        if (command === "save_workspace") {
-          const store = JSON.parse(localStorage.getItem("gql-native-store") ?? '{"activeWorkspaceId":"personal","workspaces":[]}');
-          store.workspaces = [...store.workspaces.filter((item: any) => item.id !== args.workspace.id), args.workspace];
-          localStorage.setItem("gql-native-store", JSON.stringify(store)); return;
-        }
-        if (command === "set_active_workspace") {
-          const store = JSON.parse(localStorage.getItem("gql-native-store")!); store.activeWorkspaceId = args.id;
-          localStorage.setItem("gql-native-store", JSON.stringify(store)); return;
-        }
         if (command !== "send_http") return;
         (window as any).__requests.push(args.request);
         const payload = JSON.parse(atob(args.request.bodyBase64));

@@ -1,0 +1,15 @@
+purr: 1
+kind: http
+id: get-user
+name: Get user
+url: "{{base_url}}/users/42"
+method: GET
+params:
+  - name: expand
+    value: profile
+    enabled: false
+headers:
+  - name: Accept
+    value: application/json
+auth:
+  type: inherit

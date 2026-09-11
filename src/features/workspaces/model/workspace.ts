@@ -8,21 +8,23 @@ export { applyWorkspaceRequestConfig, createWorkspaceRequestConfig, requestScope
 export type { RequestScope, WorkspaceRequestConfig, WorkspaceSharedAuth, WorkspaceSharedHeader } from "../../request-workbench/model/request-workspace-config";
 import { graphqlEditorSections, requestEditorSections, type RequestEditorSection } from "../../request-workbench/model/request-editor-section";
 import { getHttpMethodStyle } from "../../../shared/model/http-method";
-import { httpMethods } from "../../../shared/model/http-method";
 import type { WorkbenchView } from "../../request-workbench/components/request-tab-bar";
 import type { HttpResult } from "../../request-workbench/services/http-client";
 import type { SessionCookie } from "../../request-workbench/model/cookie-jar";
+import type { ProjectResource, SchemaDefinition, SecretRef } from "../../../domain/project";
 
 // Stable discriminants allow importers and future document editors to coexist.
 export type DocumentKind = "http" | "graphql" | "schema" | "trace" | "benchmark" | "integration";
-export type EnvironmentVariable = { id: string; name: string; value: string; enabled: boolean; secret: boolean };
-export type Environment = { id: string; name: string; variables: EnvironmentVariable[] };
+export type EnvironmentVariable = { id: string; name: string; value: string; enabled: boolean; secret: boolean; secretRef?: SecretRef; secretLoaded?: boolean };
+export type Environment = { id: string; name: string; description?: string; folderId?: string; variables: EnvironmentVariable[] };
 type DocumentBase = {
   id: string;
   name: string;
   saved: boolean;
   createdAt: string;
   updatedAt: string;
+  description?: string;
+  folderId?: string;
 };
 export type RequestDocumentKind = "http" | "graphql";
 export type CreatableDocumentKind = RequestDocumentKind | "schema";
@@ -44,6 +46,8 @@ export type SchemaDocument = DocumentBase & {
   source: "introspection" | "file" | null;
   sourceLabel: string;
   loadedAt: string | null;
+  schemaSource?: SchemaDefinition["source"];
+  pinned?: boolean;
   ui: { selectedType: string | null; selectedField: string | null; sourcePaneOpen: boolean };
 };
 export type WorkspaceDocument = RequestDocument | SchemaDocument;
@@ -61,6 +65,7 @@ export type Workspace = {
   id: string;
   name: string;
   description: string;
+  extraResources?: ProjectResource[];
   documents: WorkspaceDocument[];
   environments: Environment[];
   cookies: SessionCookie[];
@@ -316,7 +321,7 @@ export function validateWorkspace(value: unknown): Workspace {
   const validRequest = (source: RequestDraft, kind: RequestDocumentKind) => {
     const request = normalizeRequest(source);
     return matchesShape(request, requestShape)
-    && httpMethods.includes(request.method) && bodyTypeOptions.some((option) => option.value === request.body.type)
+    && /^[A-Z][A-Z0-9_-]*$/.test(request.method) && bodyTypeOptions.some((option) => option.value === request.body.type)
     && authTypeOptions.some((option) => option.value === request.auth.type)
     && (kind === "graphql" ? matchesShape(request.graphql, { query: "", variables: "", operationName: "" }) : request.graphql === undefined);
   };
@@ -385,7 +390,7 @@ export function validateWorkspace(value: unknown): Workspace {
         ? document.ui.requestSection : document.kind === "graphql" ? "gql-query" : "query",
     } }) : { ...document,
       endpoint: typeof document.endpoint === "string" ? document.endpoint : document.source === "introspection" ? document.sourceLabel : "",
-      saved: Boolean(document.sdl), ui: {
+      saved: document.saved || Boolean(document.sdl), ui: {
       selectedType: typeof document.ui.selectedType === "string" ? document.ui.selectedType : null,
       selectedField: typeof document.ui.selectedField === "string" ? document.ui.selectedField : null,
       sourcePaneOpen: document.ui.sourcePaneOpen !== false,

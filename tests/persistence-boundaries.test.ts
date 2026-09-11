@@ -1,0 +1,197 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { WorkspacePersistence } from "../src/application/workspace-persistence";
+import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { persistImport } from "../src/application/import-project";
+import { resolveEnvironmentSecrets } from "../src/application/environment-secrets";
+import { validateProject } from "../src/domain/project";
+import { createWorkspace, createSchemaDocument, cloneRequestDraft, isRequestDocument, type WorkspaceStore } from "../src/features/workspaces/model/workspace";
+import { deserializeManifest, deserializeResource, serializeManifest, serializeResource } from "../src/storage/yaml";
+import { MemorySecureStore } from "../src/storage/secrets";
+import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
+import { executeHttp } from "../src/features/request-workbench/services/http-client";
+
+function savedWorkspace() {
+  const workspace = createWorkspace("Backend", "backend"); const document = workspace.documents[0];
+  assert.ok(isRequestDocument(document)); document.request.url = "https://example.com/users";
+  document.saved = true; document.savedRequest = cloneRequestDraft(document.request);
+  return { workspace, document };
+}
+
+test("JSON payload whitespace, repeated disabled rows and inactive body drafts survive the real YAML boundary", async () => {
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore();
+  document.request.body.type = "json";
+  document.request.body.json = ' {\r\n\t"duplicate": 1, "duplicate": 2\r\n}\n\n';
+  document.request.body.xml = "<inactive>retained locally</inactive>";
+  document.request.headers = [{ id: "ui-1", name: "X-Test", value: "one", enabled: false }, { id: "ui-2", name: "X-Test", value: "two", enabled: true }];
+  document.savedRequest = cloneRequestDraft(document.request);
+  const projected = await projectWorkspace(workspace, secure);
+  const yaml = serializeResource(projected.project.resources[0]);
+  assert.ok(!yaml.includes("ui-1")); assert.ok(!yaml.includes("retained locally"));
+  const resource = deserializeResource(yaml);
+  assert.ok(resource.kind === "http"); assert.equal(resource.body.type, "json");
+  assert.deepEqual(resource.body, { type: "json", data: document.request.body.json });
+  assert.deepEqual(resource.headers.map((row) => row.enabled), [false, true]);
+  const restored = await restoreWorkspace({ ...projected.project, resources: [resource] }, projected.local, secure, {});
+  assert.ok(isRequestDocument(restored.documents[0])); assert.equal(restored.documents[0].request.body.xml, document.request.body.xml);
+});
+
+test("every auth credential and runtime OAuth token uses SecureStore; explicit plain bearer remains supported", async () => {
+  for (const type of ["bearer", "basic", "api-key", "oauth2"] as const) {
+    const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore();
+    const auth = document.request.auth; auth.type = type;
+    auth.bearer.token = "secret-bearer"; auth.bearer.receivedToken = "secret-response";
+    auth.basic.password = "secret-password"; auth.apiKey.value = "secret-api-key";
+    auth.oauth2.clientSecret = "secret-client";
+    auth.oauth2.token = { tokenType: "Bearer", accessToken: "secret-access", refreshToken: "secret-refresh", obtainedAt: 1 };
+    document.savedRequest = cloneRequestDraft(document.request);
+    const projected = await projectWorkspace(workspace, secure);
+    const serialized = serializeResource(projected.project.resources[0]) + JSON.stringify(projected.local);
+    for (const secret of ["secret-bearer", "secret-response", "secret-password", "secret-api-key", "secret-client", "secret-access", "secret-refresh"]) assert.ok(!serialized.includes(secret), `${type}: ${secret}`);
+    const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
+    assert.ok(isRequestDocument(restored.documents[0]));
+    assert.equal(restored.documents[0].request.auth.oauth2.token?.refreshToken, "secret-refresh");
+    if (type === "bearer") {
+      auth.credentialStorage = { bearer: "plain" }; document.savedRequest = cloneRequestDraft(document.request);
+      assert.ok(serializeResource((await projectWorkspace(workspace, secure)).project.resources[0]).includes("secret-bearer"));
+    }
+  }
+});
+
+test("inactive environment secrets are resolved on demand and saving does not overwrite them with blanks", async () => {
+  const { workspace } = savedWorkspace(); const secure = new MemorySecureStore();
+  workspace.environments = [{ id: "staging", name: "Staging", variables: [{ id: "stable", name: "password", value: "retained-secret", secret: true, enabled: true }] }];
+  const projected = await projectWorkspace(workspace, secure);
+  const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
+  assert.equal(restored.environments[0].variables[0].value, "");
+  assert.equal(restored.environments[0].variables[0].secretLoaded, false);
+  await projectWorkspace(restored, secure);
+  const resolved = await resolveEnvironmentSecrets(restored.environments[0], secure);
+  assert.equal(resolved.variables[0].value, "retained-secret");
+});
+
+test("schema cache invalidates on external source changes and custom SDL sidecar paths remain stable", async () => {
+  const { workspace } = savedWorkspace(); const schema = createSchemaDocument();
+  Object.assign(schema, { saved: true, source: "introspection", endpoint: "https://old.example/graphql", sdl: "type Query { user: String }", pinned: true });
+  workspace.documents.push(schema); const secure = new MemorySecureStore();
+  const projection = await projectWorkspace(workspace, secure);
+  const resource = projection.project.resources.find((resource) => resource.id === schema.id)!; assert.ok(resource.kind === "schema");
+  const backend = new MemoryPersistenceBackend(); const sdlPath = "schemas/backend/pinned.graphql";
+  await backend.commit(workspace.id, [
+    { path: "purr.yaml", content: serializeManifest(projection.project.workspace), expectedRevision: null },
+    { path: "schemas/backend.yaml", content: serializeResource(resource, sdlPath), expectedRevision: null },
+    { path: sdlPath, content: schema.sdl, expectedRevision: null },
+  ], projection.local);
+  const persistence = new WorkspacePersistence(backend, secure); const loaded = await persistence.load();
+  assert.ok(backend.snapshot.workspaces[0].files[sdlPath]);
+  assert.equal(Object.keys(backend.snapshot.workspaces[0].files).filter((path) => path.endsWith(".graphql")).length, 1);
+  const changed = { ...resource, pinnedSdl: undefined, source: { type: "introspection" as const, endpoint: "https://new.example/graphql" } };
+  const restored = await restoreWorkspace({ ...projection.project, resources: [changed] }, projection.local, secure, {});
+  const fresh = restored.documents.find((document) => document.id === schema.id); assert.ok(fresh?.kind === "schema"); assert.equal(fresh.sdl, "");
+  await persistence.save(loaded);
+});
+
+test("binary attachments persist exact bytes through resource files, not UI file metadata", async () => {
+  const { workspace, document } = savedWorkspace(); const file = new File([new Uint8Array([0, 255, 13, 10, 42])], "sample.bin", { type: "application/octet-stream" });
+  document.request.body.type = "binary"; document.request.body.binary = { file, name: file.name, size: file.size, mimeType: file.type };
+  document.savedRequest = cloneRequestDraft(document.request); const secure = new MemorySecureStore();
+  const projected = await projectWorkspace(workspace, secure);
+  const restored = await restoreWorkspace(projected.project, [], secure, projected.assets);
+  assert.ok(isRequestDocument(restored.documents[0]));
+  assert.deepEqual(new Uint8Array(await restored.documents[0].request.body.binary!.file.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
+  await assert.rejects(restoreWorkspace(projected.project, [], secure, {}), /attachment is missing/);
+});
+
+test("file watching reconciles a moved YAML resource without renaming it back or orphaning credential references", async () => {
+  const { workspace } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const persistence = new WorkspacePersistence(backend, secure); let current: WorkspaceStore = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
+  await persistence.save(current);
+  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("requests/"))!;
+  const moved = "requests/users/get-user.yaml";
+  await backend.moveResource(workspace.id, path, moved, before.files[path].revision);
+  const reloaded = new Promise<void>((resolve, reject) => {
+    void persistence.watchChanges((workspace) => { current = { ...current, workspaces: [workspace] }; resolve(); }, reject, () => current)
+      .then(() => backend.listener?.(workspace.id, ["*"]));
+  });
+  await reloaded; await persistence.save(current);
+  assert.ok(backend.snapshot.workspaces[0].files[moved]); assert.ok(!backend.snapshot.workspaces[0].files[path]);
+});
+
+test("external valid edits conflict with dirty working copies instead of discarding them", async () => {
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const persistence = new WorkspacePersistence(backend, secure); const current = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
+  await persistence.save(current); document.request.url = "https://local.example/unsaved";
+  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("requests/"))!;
+  const resource = deserializeResource(before.files[path].content); assert.ok(resource.kind === "http"); resource.url = "https://external.example/changed";
+  await backend.saveResource(workspace.id, { path, content: serializeResource(resource), expectedRevision: before.files[path].revision });
+  const error = await new Promise<string>((resolve, reject) => {
+    void persistence.watchChanges(() => reject(new Error("Conflicting edits must not reload")), resolve, () => current).then(() => backend.listener?.(workspace.id, [path]));
+  });
+  assert.match(error, /could not be reconciled/); assert.equal(document.request.url, "https://local.example/unsaved");
+  assert.equal(deserializeResource(backend.snapshot.workspaces[0].files[path].content).id, document.id);
+});
+
+test("migration checkpoints resume after interruption and reject changed legacy originals", async () => {
+  const { workspace } = savedWorkspace(); const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore();
+  const legacy = { activeWorkspaceId: workspace.id, workspaces: [workspace] }; backend.snapshot.legacy = structuredClone(legacy);
+  backend.finishMigration = async () => { throw new Error("Simulated interruption before retirement"); };
+  await assert.rejects(new WorkspacePersistence(backend, secure).load(), /interruption/);
+  backend.finishMigration = async () => { delete backend.snapshot.legacy; };
+  await new WorkspacePersistence(backend, secure).load(); assert.equal(backend.snapshot.legacy, undefined);
+  legacy.workspaces[0].name = "Changed in old app"; backend.snapshot.legacy = legacy;
+  await assert.rejects(new WorkspacePersistence(backend, secure).load(), /Legacy data changed/);
+  assert.ok(backend.snapshot.legacy);
+});
+
+test("strict manifests upgrade omitted defaults but reject unknown keys; external formats never become the core model", () => {
+  const manifest = deserializeManifest("purr: 1\nworkspace:\n  id: project\n  name: Project\n");
+  assert.deepEqual(manifest.headers, []); assert.deepEqual(manifest.auth, []);
+  assert.deepEqual(deserializeManifest(serializeManifest(manifest)), manifest);
+  assert.throws(() => deserializeManifest("purr: 1\nworkspace:\n  id: project\n  name: Project\n  activeDocument: user\n"), /Invalid/);
+  assert.throws(() => validateProject({ workspace: manifest, resources: [{ kind: "environment", id: "env", name: "env", variables: [{ name: "bad", enabled: true, value: { kind: "secret", ref: "purr/other/credential" } }] }] }), /belong to this workspace/);
+});
+
+test("invalid importer credential scope is rejected before writing any secret or resource", async () => {
+  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  await assert.rejects(persistImport({ workspace: { id: "project", name: "Project", headers: [], auth: [] }, resources: [], diagnostics: [], secrets: [{ ref: "purr/other/token", value: "secret" }] }, persistence), /scoped/);
+  assert.equal(await secure.exists("purr/other/token"), false); assert.equal(backend.writes.length, 0);
+});
+
+test("response bodies and sent request credentials belong only to local executions, never Git files", async () => {
+  const { workspace, document } = savedWorkspace();
+  document.lastResponse = await executeHttp({ method: "GET", url: document.request.url, headers: [["Authorization", "Bearer execution-secret"]], bodyBase64: null }, {
+    transport: async () => ({ status: 200, statusText: "OK", durationMs: 1, headers: [["set-cookie", "session=response-cookie"]], bodyBase64: btoa("private-response") }),
+  });
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(); const persistence = new WorkspacePersistence(backend, secure);
+  await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+  const files = JSON.stringify(backend.snapshot.workspaces[0].files);
+  for (const value of ["execution-secret", "response-cookie", "private-response", "lastResponse", "timeline"]) assert.ok(!files.includes(value));
+  const restored = await new WorkspacePersistence(backend, secure).load(); assert.ok(isRequestDocument(restored.workspaces[0].documents[0]));
+  assert.equal(restored.workspaces[0].documents[0].lastResponse?.text, "private-response");
+});
+
+test("importing into an existing workspace is additive and rejects conflicting IDs", async () => {
+  const { workspace, document } = savedWorkspace(); const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+  const projected = await projectWorkspace(workspace, secure);
+  const imported = { ...projected.project.resources[0], id: "another-request" };
+  const result = { workspace: { ...projected.project.workspace, name: "Must not replace" }, resources: [imported], diagnostics: [], secrets: [] };
+  const restored = await persistImport(result, persistence);
+  assert.equal(restored.name, workspace.name); assert.ok(restored.documents.some((item) => item.id === document.id));
+  assert.ok(restored.documents.some((item) => item.id === imported.id));
+  await assert.rejects(persistImport(result, persistence), /conflict/);
+});
+
+test("clean editor snapshots cannot shadow a credential updated through SecureStore", async () => {
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  document.request.auth.type = "bearer"; document.request.auth.bearer.token = "old-value";
+  document.savedRequest = cloneRequestDraft(document.request);
+  await new WorkspacePersistence(backend, secure).save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+  const path = Object.keys(backend.snapshot.workspaces[0].files).find((path) => path.startsWith("requests/"))!;
+  const definition = deserializeResource(backend.snapshot.workspaces[0].files[path].content);
+  assert.ok(definition.kind === "http" && definition.auth.type === "bearer" && definition.auth.token.kind === "secret");
+  await secure.set(definition.auth.token.ref, "updated-value");
+  const restored = await new WorkspacePersistence(backend, secure).load(); const request = restored.workspaces[0].documents[0];
+  assert.ok(isRequestDocument(request)); assert.equal(request.request.auth.bearer.token, "updated-value");
+  assert.equal(request.request.auth.secretRefs?.bearer, definition.auth.token.ref);
+});

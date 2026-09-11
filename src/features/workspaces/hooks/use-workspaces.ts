@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadWorkspaceStore, saveWorkspaceStore } from "../services/workspace-storage";
+import { loadWorkspaceStore, saveWorkspaceStore, watchWorkspaceChanges } from "../services/workspace-storage";
 import type { Workspace, WorkspaceStore } from "../model/workspace";
 
 export function useWorkspaces() {
@@ -16,6 +16,13 @@ export function useWorkspaces() {
     void loadWorkspaceStore().then(setStore).catch((error) => setLoadError(String(error)));
   }, []);
   useEffect(load, [load]);
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void watchWorkspaceChanges((workspace) => setStore((current) => current ? { ...current, workspaces: current.workspaces.map((item) => item.id === workspace.id ? workspace : item) } : current), setSaveError, () => latest.current)
+      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => setSaveError("Project file watching is unavailable. Reload before editing external changes."));
+    return () => { disposed = true; stop?.(); };
+  }, []);
   const flush = useCallback(async () => {
     if (!latest.current) return;
     const snapshot = latest.current;

@@ -1,12 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installPersistenceMock } from "./persistence-mock";
+test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
 async function mockSuccessfulRequest(page: Page) {
   await page.addInitScript(() => {
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
-        if (command === "load_workspace_store") return null;
-        if (command === "save_workspace" || command === "set_active_workspace") return;
         if (command !== "send_http") throw new Error("Unexpected command");
         return {
           status: 200,

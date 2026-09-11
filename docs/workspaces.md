@@ -15,8 +15,9 @@ recoverable draft with an explicit discard action.
 schema documents share the GraphQL group. A saved request keeps an
 explicit saved snapshot: editing and sending use a working copy, and closing the
 tab without saving restores the snapshot. Saving again commits that working copy.
-The most recent response is stored with its document, while the cookie jar is
-stored at workspace scope, so both survive tab/workspace closure and app restart.
+The most recent response is associated with its document in local SQLite, while
+the cookie jar is local workspace state. Both survive app restart, but neither is
+included in shareable request files.
 
 Opening a clean saved request from the sidebar or command palette creates one
 italic preview tab. Opening another clean request replaces that preview. Editing,
@@ -26,46 +27,28 @@ The resulting order and preview state are stored with the workspace.
 
 ## On-disk format (desktop)
 
-The root is Tauri's application data directory, followed by `workspaces/`.
-On macOS this is normally
-`~/Library/Application Support/com.ihorpolishchuk.purr/workspaces/`.
+See [Persistence architecture](persistence-architecture.md) for the canonical model,
+storage contracts, migrations, security boundary and importer extension point.
+The default project root is Tauri's application data directory followed by `projects/`.
 
 ```text
-workspaces/
-  index.json                 # schemaVersion, activeWorkspaceId
-  personal/
-    workspace.json           # complete versioned workspace snapshot
-  <workspace-uuid>/
-    workspace.json
+projects/<workspace-id>/
+  purr.yaml                  # versioned workspace identity/defaults
+  requests/<name>-<id>.yaml   # one saved request per file
+  graphql/<name>-<id>.yaml
+  environments/<name>-<id>.yaml
+  schemas/<name>-<id>.yaml    # source, not introspection cache
+  schemas/<id>.graphql       # explicitly pinned SDL only
+local-state.sqlite3          # outside project: drafts/session/history/cookies/cache
 ```
 
-Workspace names are display values, never filesystem paths. IDs are validated by
-the native bridge. Writes are serialized and use a temporary file plus atomic
-rename, with file synchronization before replacement. Files are created with
-owner-only permissions on Unix. Closing the desktop window flushes pending writes;
-failed writes leave the window open with an error and retry action. Invalid or
-unsupported workspace files are reported without replacing them with defaults.
-
-`workspace.json` has `schemaVersion: 1`, `id`, `name`, `documents`, `environments`,
-workspace cookies, `activeEnvironmentId`, and `ui`. Documents have stable IDs, a
-`kind` discriminant (`http`, `graphql`, or `schema`), names and timestamps. Request
-documents contain saved/draft status, working and saved request data, their latest
-response, and editor UI state. Schema documents contain SDL, their source request
-ID, import/introspection source, last update time and selected type. Attached
-`File` objects are encoded as tagged `__purrFile` records with
-their bytes (base64), name, MIME type, and last-modified timestamp, and restored
-as Files when loaded.
-
-This schema is the persistence boundary. Future Postman/other importers should
-convert source data to versioned workspace/document records, assign stable IDs,
-and then use the storage service. Additional document kinds (trace/benchmark
-setups and results, integrations) should add their own typed
-payloads and editors. They must not be flattened into HTTP request drafts.
-Older versions refuse unsupported document kinds rather than discarding them.
-There is no importer or cloud synchronization yet.
-
-Browser development uses localStorage with the same schema, not the desktop
-filesystem. Storage errors (including browser quota failures) are visible.
+Writes are serialized, revision-checked and atomic per file. Unchanged resources
+are not rewritten. Saved binary attachments use content-addressed asset files.
+Closing the desktop window flushes pending writes; failures keep the window open.
+Malformed/external conflicting files are reported without resetting user data.
+The old JSON format is read only for a checkpointed migration, then retired after
+an encrypted recovery archive is verified. Browser development uses encrypted
+IndexedDB as a UI preview, not the native filesystem or OS credential vault.
 
 ## Environments
 
@@ -80,10 +63,12 @@ Binary attachment bytes are never interpolated. Missing/circular variables stop
 the request with an explicit error. Values are inserted literally in body text;
 use the appropriate quoting/escaping for the target body format.
 
-**Local storage is not a secrets vault.** Environment values and credentials are
-stored unencrypted. The eye toggle masks a value on screen only. Switching an
+**Secret and masking are independent.** The lock control stores a variable through
+SecureStore (the encrypted local SQLite vault backed by one macOS Keychain root),
+leaving only its stable reference in YAML. The eye control changes visibility only.
+Plain variables are shareable. Switching an
 environment clears acquired OAuth/response tokens so credentials are not reused
-in another environment. Imported secrets will need an explicit future policy.
+in another environment.
 
 ## GraphQL
 
@@ -109,8 +94,9 @@ The compact explorer provides searchable operation/type groups, field paths and
 linked return types, enum/input/interface/union information, deprecation messages,
 depth/field/list analysis, and an optional SDL/JSON pane. Query and mutation fields
 can create linked request drafts. Imported SDL preserves custom directives and type
-extensions. The schema, source-pane state and selected type persist with the
-workspace and supply completion, hover documentation, validation, deprecation
+extensions. Source definitions are shareable; cached schemas, source-pane state and
+selected type are local. Pin SDL explicitly to share it. Loaded schemas supply
+completion, hover documentation, validation, deprecation
 warnings and type navigation to every linked request.
 
 GraphQL responses split `data`, `errors`, and `extensions` into dedicated views.

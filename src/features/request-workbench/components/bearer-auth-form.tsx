@@ -2,6 +2,7 @@ import { Braces, Fingerprint, RadioTower } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { FormField } from "../../../shared/components/ui/form-field";
+import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { JsonCodePreview } from "../../../shared/components/ui/json-code-preview";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import { cn } from "../../../shared/lib/cn";
@@ -95,7 +96,7 @@ export function BearerAuthForm({
           />
         </div>
         {auth.bearer.source === "manual" ? (
-          <FormField
+          <div className="space-y-ui-2"><FormField
             label="Bearer token"
             secret
             placeholder="Paste your token"
@@ -109,7 +110,7 @@ export function BearerAuthForm({
                 },
               })
             }
-          />
+          /><Checkbox label="Store token as secret" checked={auth.credentialStorage?.bearer !== "plain"} onCheckedChange={(secret) => onAuthChange({ ...auth, credentialStorage: { ...auth.credentialStorage, bearer: secret ? "secret" : "plain" } })} /></div>
         ) : (
           <>
             <div className="space-y-ui-2">

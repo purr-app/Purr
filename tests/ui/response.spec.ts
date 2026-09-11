@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { installPersistenceMock } from "./persistence-mock";
+test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
 test("response tabs expose formatted body, query tools, cookies and timeline", async ({
   page,
@@ -11,8 +13,6 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
-        if (command === "load_workspace_store") return null;
-        if (command === "save_workspace" || command === "set_active_workspace") return;
         if (command !== "send_http") throw new Error("Unexpected command");
         return {
           status: 200,
@@ -164,8 +164,6 @@ test("HTML and simple media render safely while binary responses use the native 
     (window as any).isTauri = true;
     (window as any).__download = null;
     (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
-      if (command === "load_workspace_store") return null;
-      if (command === "save_workspace" || command === "set_active_workspace") return;
       if (command === "save_response_body") { (window as any).__download = args; return "/Users/test/quarterly report.pdf"; }
       if (command !== "send_http") throw new Error(`Unexpected command: ${command}`);
       const path = new URL(args.request.url).pathname;

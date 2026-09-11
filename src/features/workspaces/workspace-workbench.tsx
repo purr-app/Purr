@@ -19,7 +19,8 @@ import { WorkspaceSidebar } from "./components/workspace-sidebar";
 import { WorkspaceSettings } from "./components/workspace-request-settings";
 import { Collapsible } from "../../shared/components/ui/collapsible";
 import { useWorkspaces } from "./hooks/use-workspaces";
-import { openWorkspaceFolder } from "./services/workspace-storage";
+import { openWorkspaceFolder, workspacePersistence } from "./services/workspace-storage";
+import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
 import {
   cloneRequestDraft,
   closeDocument,
@@ -67,7 +68,7 @@ export function WorkspaceWorkbench() {
   const schemaSdl = linkedSchema?.sdl;
   const schema = useMemo(() => { try { return schemaSdl ? parseGraphqlSchema(schemaSdl) : undefined; } catch { return undefined; } }, [schemaSdl]);
   const variables = useMemo(() => workspace ? getEnvironmentVariables(workspace) : {}, [workspace?.activeEnvironmentId, workspace?.environments]);
-  const contextKey = JSON.stringify([workspace?.activeEnvironmentId, variables]);
+  const contextKey = useMemo(() => crypto.randomUUID(), [workspace?.id, workspace?.activeEnvironmentId, workspace?.environments]);
   const sessionKey = `${workspace?.id}:${currentDocument?.id}`;
   const restoredSession: RequestSession = currentDocument?.lastResponse
     ? { ...emptyRequestSession, response: currentDocument.lastResponse, canvasFocus: "response" }
@@ -109,7 +110,7 @@ export function WorkspaceWorkbench() {
   const setRequestDraft = (id: string | undefined, change: SetStateAction<RequestDraft>) => update((current) => {
     // An old in-flight request may finish after switching environments. Its
     // response remains attached to its document, but cannot change new credentials.
-    if (JSON.stringify([current.activeEnvironmentId, getEnvironmentVariables(current)]) !== contextKey) return current;
+    if (current.activeEnvironmentId !== workspace?.activeEnvironmentId || current.environments !== workspace?.environments) return current;
     if (!id || (!current.ui.openDocumentIds.includes(id) && id !== schemaSource?.id)) return current;
     let pinPreview = false;
     const documents = current.documents.map((document) => {
@@ -131,6 +132,7 @@ export function WorkspaceWorkbench() {
     if (!duplicate && workspace)
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
     if (duplicate && currentDocument) document = { ...document, kind: currentDocument.kind, name: `${getDocumentDisplayName(currentDocument)} copy`, request: cloneRequestDraft(currentDocument.request), ui: { ...currentDocument.ui } };
+    if (duplicate) document.request.auth.secretRefs = undefined;
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
   const openSchema = (selectedType?: string) => {
@@ -189,9 +191,10 @@ export function WorkspaceWorkbench() {
   const closeCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: false, cookiesTabActive: false } }));
   const openSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false } }));
   const closeSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: false, settingsTabActive: false } }));
-  const showEnvironment = (create = false) => {
+  const showEnvironment = async (create = false) => {
     const existing = workspace?.environments.find((item) => item.id === workspace.activeEnvironmentId);
-    setDialog({ environment: !create && existing ? existing : { id: crypto.randomUUID(), name: "", variables: [] } });
+    try { setDialog({ environment: !create && existing ? await resolveEnvironmentSecrets(existing, workspacePersistence().secure) : { id: crypto.randomUUID(), name: "", variables: [] } }); }
+    catch { setActionError("Could not unlock environment secrets."); }
   };
   const saveCurrentDocument = () => {
     if (!currentDocument) return;
@@ -238,13 +241,19 @@ export function WorkspaceWorkbench() {
   if (!store || !workspace) return <div className="flex h-screen items-center justify-center bg-purr-base p-ui-6 font-ui text-ui-md text-content-secondary">
     {loadError ? <div className="max-w-ui-dialog space-y-ui-4"><p role="alert">{loadError}</p><Button onClick={retry}>Retry loading workspaces</Button></div> : <p>Opening workspace…</p>}
   </div>;
-  const changeEnvironment = (id: string | null, environments = workspace.environments) => update((current) => ({ ...current,
-    activeEnvironmentId: id, environments,
+  const changeEnvironment = async (id: string | null, environments = workspace.environments) => {
+    try {
+      const selected = environments.find((item) => item.id === id);
+      const resolved = selected ? await resolveEnvironmentSecrets(selected, workspacePersistence().secure) : undefined;
+      update((current) => ({ ...current,
+    activeEnvironmentId: id, environments: environments.map((item) => item.id === resolved?.id ? resolved : item),
     documents: current.documents.map((document) => isRequestDocument(document) ? ({ ...document, request: { ...document.request, auth: {
       ...document.request.auth, oauth2: { ...document.request.auth.oauth2, token: null },
       bearer: { ...document.request.auth.bearer, receivedToken: "", responseError: "" },
     } } }) : document),
   }));
+    } catch { setActionError("Could not unlock environment secrets."); }
+  };
   return <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} onCookies={openCookies}

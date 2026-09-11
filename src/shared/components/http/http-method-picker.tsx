@@ -29,7 +29,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
   useHotkeys(
     httpMethodShortcutKeys,
     (event) => {
-      const method = httpMethodDefinitions.find((item) => getHttpMethodShortcut(item.value).hotkey === event.key.toLowerCase());
+      const method = httpMethodDefinitions.find((item) => getHttpMethodShortcut(item.value)?.hotkey === event.key.toLowerCase());
       if (method) selectMethod(method.value);
     },
     { enabled: open, enableOnFormTags: true, preventDefault: true },
@@ -89,7 +89,7 @@ export function HttpMethodPicker({ value, onValueChange, onCustomMethod, classNa
                 )}
                 <span className={cn("font-code text-ui-xl font-normal", methodStyle.text)}>{method.value}</span>
                 <span className="font-code text-ui-xs font-normal leading-none text-content-tertiary" aria-hidden="true">
-                  {getHttpMethodShortcut(method.value).keys[0]}
+                  {getHttpMethodShortcut(method.value)?.keys[0]}
                 </span>
               </button>
             );

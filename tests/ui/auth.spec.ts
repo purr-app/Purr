@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { installPersistenceMock } from "./persistence-mock";
+test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
 test("empty authentication and body states stay compact", async ({ page }) => {
   await page.goto("/");
@@ -187,8 +189,6 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
-        if (command === "load_workspace_store") return null;
-        if (command === "save_workspace" || command === "set_active_workspace") return;
         if (command !== "send_http") throw new Error("Unexpected command");
         calls.push(args.request);
         return {

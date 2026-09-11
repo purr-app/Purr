@@ -1,0 +1,19 @@
+purr: 1
+kind: graphql
+id: get-customer
+name: Get customer
+url: "{{base_url}}/graphql"
+method: POST
+auth:
+  type: inherit
+graphql:
+  query: |-
+    query GetCustomer($id: ID!) {
+      customer(id: $id) {
+        id
+        name
+      }
+    }
+  operation: GetCustomer
+  schemaId: backend
+  variables: '{"id":"42"}'

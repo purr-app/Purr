@@ -48,6 +48,7 @@ export type RequestQueryParam = {
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export type RequestDraft = {
+  environmentId?: string;
   graphql?: { query: string; variables: string; operationName: string; schemaId?: string };
   method: HttpMethod;
   url: string;

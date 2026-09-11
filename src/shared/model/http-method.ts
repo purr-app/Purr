@@ -2,7 +2,7 @@ import { httpMethodShortcutIds, keyboardShortcuts } from "../config/keyboard-sho
 
 export const httpMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"] as const;
 
-export type HttpMethod = (typeof httpMethods)[number];
+export type HttpMethod = (typeof httpMethods)[number] | (string & {});
 
 export type HttpMethodDefinition = {
   value: HttpMethod;
@@ -23,10 +23,11 @@ export const httpMethodDefinitions: HttpMethodDefinition[] = [
 ];
 
 export function getHttpMethodShortcut(method: HttpMethod) {
-  return keyboardShortcuts[httpMethodShortcutIds[method]];
+  const id = httpMethodShortcutIds[method as keyof typeof httpMethodShortcutIds];
+  return id ? keyboardShortcuts[id] : undefined;
 }
 
-export const httpMethodShortcutKeys = httpMethods.map((method) => getHttpMethodShortcut(method).hotkey).join(",");
+export const httpMethodShortcutKeys = httpMethods.map((method) => getHttpMethodShortcut(method)?.hotkey).filter(Boolean).join(",");
 
 const methodStyles: Record<HttpMethod, { text: string }> = {
   GET: {
@@ -46,5 +47,5 @@ const methodStyles: Record<HttpMethod, { text: string }> = {
 };
 
 export function getHttpMethodStyle(method: HttpMethod) {
-  return methodStyles[method];
+  return methodStyles[method] ?? { text: "text-content-secondary" };
 }

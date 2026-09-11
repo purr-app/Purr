@@ -95,7 +95,7 @@ export async function executeHttp(
     followRedirects?: boolean;
   } = {},
 ): Promise<HttpResult> {
-  let current = { ...request, headers: [...request.headers] };
+  const current = { ...request, headers: [...request.headers] };
   const initial = requireHttpUrl(current.url);
   const started = Date.now();
   let crossedOrigin = false;

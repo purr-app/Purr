@@ -3,7 +3,6 @@ import { test } from "node:test";
 import {
   createEmptyRequestBodyField,
   createRequestBody,
-  getActiveBodyFields,
   getBodyContentType,
   getBodyDiagnostics,
   getRequestBodyValidationMessage,

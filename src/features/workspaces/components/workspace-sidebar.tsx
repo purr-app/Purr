@@ -63,7 +63,7 @@ function DocumentRow({ document, active, draft, onOpen, onDiscard, onDelete, onR
 }) {
   const [menu, setMenu] = useState(false);
   const name = getDocumentDisplayName(document);
-  const remove = () => { setMenu(false); draft ? onDiscard(document.id) : onDelete(document.id); };
+  const remove = () => { setMenu(false); if (draft) onDiscard(document.id); else onDelete(document.id); };
   return <Popover open={menu} onOpenChange={setMenu}>
     <PopoverAnchor asChild><div className="group flex items-center rounded-ui-md hover:bg-purr-elevated" onContextMenu={(event) => { event.preventDefault(); setMenu(true); }}>
       <button type="button" title={isRequestDocument(document) ? document.request.url || name : name} aria-current={active ? "page" : undefined}

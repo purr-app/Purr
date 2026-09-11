@@ -30,6 +30,8 @@ export type OAuthConfig = {
   token: OAuthToken | null;
 };
 export type RequestAuth = {
+  credentialStorage?: { bearer?: "plain" | "secret" };
+  secretRefs?: Record<string, string>;
   type: AuthType;
   bearer: {
     token: string;

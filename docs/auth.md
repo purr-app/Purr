@@ -9,11 +9,11 @@ Run `yarn tauri dev` (or `npm run tauri dev`) for HTTP requests and OAuth. `yarn
 - **Basic Auth** generates `Authorization: Basic base64(UTF-8(username:password))`. The password supports reveal/copy. Colons in usernames are rejected.
 - **API Key** uses a single form with **Add to: Header / Query param / Cookie**. Query and cookie values are encoded for their target. Transport-owned headers cannot be used as API key destinations.
 - **OAuth 2.0** supports Client Credentials and Authorization Code + PKCE (S256). Refresh Token is a behavior of OAuth, not another auth type.
-- **Inherit** resolves the active environment before the workspace, or explicitly chooses either. Credentials are resolved at send time without copying. Missing sources and cycles are reported. `AuthContext` accepts profiles today; a workspace/environment management UI is not part of this implementation.
+- **Inherit** uses the applicable workspace shared-auth profile. Workspace settings supports separate HTTP/GraphQL profiles or one all-request profile. Missing sources and cycles are reported. The runtime resolver also supports explicit environment profiles for future adapters.
 
 Auth-generated headers and query parameters are read-only in their editors. Secret values are masked and can be revealed explicitly. Manual values are retained underneath and return when the auth type changes. API key query parameters are applied to the outgoing URL at send time.
 
-Credential fields support `{{VARIABLE_NAME}}` references through `AuthContext.variables`. Missing variables fail visibly instead of being sent literally. The environment editor is future work.
+Credential fields support `{{VARIABLE_NAME}}` references through `AuthContext.variables`. Missing variables fail visibly instead of being sent literally. The environment editor distinguishes Secret storage from reveal/hide.
 
 ## OAuth setup and lifecycle
 
@@ -35,11 +35,19 @@ Purr collects all `Set-Cookie` headers, including on intermediate redirects, and
 
 Cookies can be added, edited, disabled and deleted, with domain, path, host-only, Secure, HttpOnly, SameSite and optional expiry controls. A disabled cookie remains disabled if the server updates it. Manually specified cookies override matching jar cookies by name.
 
-Cookie contents are persisted in the local workspace file so a workspace can be resumed. Environment values, saved credentials, and cookies remain unencrypted local data rather than OS-vault secrets. Runtime OAuth and response-derived tokens still follow their existing request/environment lifecycle and are cleared when changing environments.
+Cookie contents and credential values are encrypted in local SQLite with separate
+HKDF-derived AES-256-GCM keys; one random root key lives in macOS Keychain.
+Environment secrets, saved auth credentials and runtime tokens use the SecureStore
+abstraction. Plain environment values and explicitly plain bearer tokens remain
+shareable. Runtime tokens retain their request/environment lifecycle and are
+cleared when changing environments. See [storage/security details](persistence-architecture.md).
 
 ## Response-derived tokens
 
-Bearer's **Use token from response** mode watches one endpoint path, such as `/auth/token`, and extracts a string using a jq-style property path such as `.access_token`, `.auth.token`, or `.items[0].token`. `$response.auth.token` is accepted as a friendly equivalent. Quoted bracket keys are also supported.
+Bearer’s **Use token from response** mode selects a saved request document (including
+its configured headers/body) and extracts a string using a jq-style property path
+such as `.access_token`, `.auth.token`, or `.items[0].token`. `$response.auth.token`
+is accepted as a friendly equivalent. Quoted bracket keys are also supported.
 
 Every matching response replaces the previous in-memory token. Requests to the configured token endpoint are sent without the generated Bearer header, allowing that request to acquire the first token; other endpoints use the latest captured token. This is response chaining, not a background request scheduler.
 
