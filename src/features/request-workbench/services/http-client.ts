@@ -28,6 +28,7 @@ export type HttpTimeline = {
   downloadMs: number;
   completedAtMs: number;
   request: WireRequest;
+  displayRequest?: WireRequest;
   followRedirects: boolean;
   usesCookieJar: boolean;
   timeoutMs: number;
@@ -85,6 +86,10 @@ export function mergeCookieHeader(manual: string, jar: string) {
     .join("; ");
 }
 
+export function maskCookieHeader(value: string) {
+  return value.replace(/(^|;\s*)([^=;]+)=([^;]*)/g, "$1$2=********");
+}
+
 export async function executeHttp(
   request: WireRequest,
   options: {
@@ -92,6 +97,7 @@ export async function executeHttp(
     transport?: HttpTransport;
     sensitiveHeaders?: string[];
     sensitiveQueryParams?: string[];
+    displayRequest?: WireRequest;
     followRedirects?: boolean;
   } = {},
 ): Promise<HttpResult> {
@@ -185,6 +191,18 @@ export async function executeHttp(
       ),
     );
     const totalMs = Math.max(transportMs, completedAtMs - started);
+    const displayRequest = options.displayRequest ? {
+      ...options.displayRequest,
+      // Never replace the already-redacted URL with the request that actually
+      // went over the wire. Redirects may make the displayed URL less exact,
+      // but exposing a secret query variable is a much worse failure mode.
+      url: options.displayRequest.url,
+      method: current.method,
+      headers: [
+        ...options.displayRequest.headers.filter(([name]) => name.toLowerCase() !== "cookie"),
+        ...headers.filter(([name]) => name.toLowerCase() === "cookie").map(([name, value]): [string, string] => [name, maskCookieHeader(value)]),
+      ],
+    } : undefined;
     return {
       ...response,
       url: current.url || initial.toString(),
@@ -198,6 +216,7 @@ export async function executeHttp(
         downloadMs,
         completedAtMs: started + totalMs,
         request: { url: current.url, method: current.method, headers, bodyBase64: current.bodyBase64 },
+        displayRequest,
         followRedirects: options.followRedirects !== false,
         usesCookieJar: Boolean(options.jar),
         timeoutMs: 60_000,

@@ -13,10 +13,11 @@ import { BodyEditor } from "./body-editor";
 import { HeadersEditor } from "./headers-editor";
 import { QueryParamsEditor } from "./query-params-editor";
 import { AuthEditor } from "./auth-editor";
-import type { AuthContext, AuthSourceDocumentOption } from "../model/request-auth";
+import type { AuthContext } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import type { GraphQLSchema } from "graphql";
 import { GraphqlQueryEditor } from "../../graphql/components/graphql-query-editor";
+import type { TemplateVariableActions } from "./template-variable-popover";
 
 type RequestSectionPanelProps = {
   schema?: GraphQLSchema;
@@ -28,7 +29,7 @@ type RequestSectionPanelProps = {
   onDraftChange: (draft: RequestDraft) => void;
   authContext: AuthContext;
   authRuntime: AuthRuntime;
-  responseSourceDocuments: readonly AuthSourceDocumentOption[];
+  variableActions: TemplateVariableActions;
 };
 
 export function RequestSectionPanel({
@@ -41,18 +42,20 @@ export function RequestSectionPanel({
   onOpenGraphqlType,
   onRunGraphqlOperation,
   effectiveDraft,
-  responseSourceDocuments,
+  variableActions,
 }: RequestSectionPanelProps) {
   const section = getRequestEditorSection(activeSection);
 
   if (draft.graphql && (activeSection === "gql-query" || activeSection === "gql-variables")) return <GraphqlQueryEditor
     value={draft.graphql} schema={schema} onOpenType={onOpenGraphqlType} onRunOperation={onRunGraphqlOperation}
+    templateVariableActions={variableActions}
     onChange={(graphql) => onDraftChange({ ...draft, graphql })} />;
 
   return section?.id === "body" ? (
     <BodyEditor
       body={draft.body}
       onBodyChange={(body) => onDraftChange({ ...draft, body })}
+      variableActions={variableActions}
     />
   ) : section?.id === "auth" ? (
     <AuthEditor
@@ -71,7 +74,6 @@ export function RequestSectionPanel({
       })}
       context={authContext}
       runtime={authRuntime}
-      responseSourceDocuments={responseSourceDocuments}
     />
   ) : section?.id === "query" ? (
     <section
@@ -82,6 +84,7 @@ export function RequestSectionPanel({
     >
       <QueryParamsEditor
         params={getRequestQueryParams(draft, authContext)}
+        variableActions={variableActions}
         onParamsChange={(params) =>
           onDraftChange(updateRequestQueryParams(draft, params, authContext))
         }
@@ -96,6 +99,7 @@ export function RequestSectionPanel({
     >
       <HeadersEditor
         headers={getRequestHeaders(effectiveDraft, authContext)}
+        variableActions={variableActions}
         onWorkspaceHeaderEnabledChange={(id, enabled) =>
           onDraftChange({
             ...draft,

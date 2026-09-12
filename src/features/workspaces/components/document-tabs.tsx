@@ -1,4 +1,4 @@
-import { Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
+import { Braces, Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { cn } from "../../../shared/lib/cn";
@@ -7,6 +7,7 @@ import { NewDocumentButton } from "./new-document-button";
 
 const cookiesTabId = "workspace-cookies-tab";
 const settingsTabId = "workspace-settings-tab";
+const variablesTabId = "workspace-variables-tab";
 type TabGeometry = { id: string; left: number; right: number; width: number };
 type TabDrag = {
   id: string;
@@ -22,7 +23,7 @@ type TabDrag = {
   moved: boolean;
 };
 
-export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onNew, onSave }: {
+export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onSave }: {
   workspace: Workspace;
   cookieCount: number;
   onOpen: (id: string) => void;
@@ -33,6 +34,8 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   onCloseCookies: () => void;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
+  onOpenVariables: () => void;
+  onCloseVariables: () => void;
   onNew: (kind: CreatableDocumentKind) => void;
   onSave: () => void;
 }) {
@@ -43,9 +46,9 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const [settling, setSettling] = useState(false);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
-  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : [])];
-  const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : id === settingsTabId ? onOpenSettings() : onOpen(id);
+  const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
+  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : [])];
+  const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : id === settingsTabId ? onOpenSettings() : id === variablesTabId ? onOpenVariables() : onOpen(id);
   const onTabKeyDown = (event: KeyboardEvent, id: string) => {
     if (event.altKey && event.shiftKey && workspace.ui.openDocumentIds.includes(id) && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
       event.preventDefault();
@@ -62,7 +65,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   };
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive]);
+  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive, workspace.ui.variablesTabActive]);
   useEffect(() => {
     dragState.current = null;
     dropPositions.current = null;
@@ -177,7 +180,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
       {workspace.ui.openDocumentIds.map((id, index) => {
         const document = workspace.documents.find((item) => item.id === id)!;
         const name = getDocumentDisplayName(document);
-        const active = !workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && workspace.ui.activeDocumentId === id;
+        const active = !workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && workspace.ui.activeDocumentId === id;
         const preview = workspace.ui.previewDocumentId === id;
         const dirty = isDocumentDirty(document);
         const translateX = tabTranslateX(id, index);
@@ -195,10 +198,12 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
             tabIndex={active ? 0 : -1}>
             <span className={cn("ui-document-method inline-flex h-full items-center font-code text-ui-2xs leading-none", getDocumentBadge(document).color)}>{getDocumentBadge(document).label}</span>
             <span className={cn("inline-flex h-full min-w-0 items-center truncate leading-none", preview && "italic")}>{name}</span>
-            {dirty && <span className="size-ui-1-5 shrink-0 rounded-full bg-action-brand" title={document.saved ? "Unsaved changes" : "Draft"} />}
             {!document.saved && !isMeaningfulDraft(document) ? <span className="sr-only">Blank request</span> : null}
           </button>
-          <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5" aria-label={`Close ${name}`} onClick={() => onClose(id)}><X className="size-ui-3" /></Button>
+          <span className="relative mr-ui-1 flex size-ui-5 shrink-0 items-center justify-center">
+            {dirty ? <span className="size-ui-1-5 rounded-full bg-action-brand transition-opacity duration-ui-fast group-hover:opacity-ui-hidden group-focus-within:opacity-ui-hidden" title={document.saved ? "Unsaved changes" : "Draft"} /> : null}
+            <Button variant="ghost" size="icon" className={cn("absolute inset-0 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible", dirty && "group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible")} aria-label={`Close ${name}`} onClick={() => onClose(id)}><X className="size-ui-3" /></Button>
+          </span>
         </div>;
       })}
       {workspace.ui.cookiesTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.cookiesTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
@@ -207,7 +212,15 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
           onClick={onOpenCookies} onKeyDown={(event) => onTabKeyDown(event, cookiesTabId)} tabIndex={workspace.ui.cookiesTabActive ? 0 : -1}>
           <CookieIcon className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Cookies</span><span className="font-code text-ui-2xs text-action-brand">{cookieCount}</span>
         </button>
-        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5" aria-label="Close workspace cookies" onClick={onCloseCookies}><X className="size-ui-3" /></Button>
+        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close workspace cookies" onClick={onCloseCookies}><X className="size-ui-3" /></Button>
+      </div> : null}
+      {workspace.ui.variablesTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.variablesTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
+        <button type="button" role="tab" aria-selected={workspace.ui.variablesTabActive} aria-controls="active-document-panel" id={`document-tab-${variablesTabId}`}
+          className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
+          onClick={onOpenVariables} onKeyDown={(event) => onTabKeyDown(event, variablesTabId)} tabIndex={workspace.ui.variablesTabActive ? 0 : -1}>
+          <Braces className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Variables</span>
+        </button>
+        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close variables" onClick={onCloseVariables}><X className="size-ui-3" /></Button>
       </div> : null}
       {workspace.ui.settingsTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.settingsTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
         <button type="button" role="tab" aria-selected={workspace.ui.settingsTabActive} aria-controls="active-document-panel" id={`document-tab-${settingsTabId}`}
@@ -215,7 +228,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
           onClick={onOpenSettings} onKeyDown={(event) => onTabKeyDown(event, settingsTabId)} tabIndex={workspace.ui.settingsTabActive ? 0 : -1}>
           <Settings2 className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Workspace settings</span>
         </button>
-        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5" aria-label="Close workspace settings" onClick={onCloseSettings}><X className="size-ui-3" /></Button>
+        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close workspace settings" onClick={onCloseSettings}><X className="size-ui-3" /></Button>
       </div> : null}
     </div>
     <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} />

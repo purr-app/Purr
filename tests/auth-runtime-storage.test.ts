@@ -10,7 +10,7 @@ import { deserializeManifest, serializeManifest } from "../src/storage/yaml";
 async function fixture() {
   const workspace = createWorkspace("Auth migration", "auth-migration");
   const bearer = createRequestAuth(); bearer.type = "bearer";
-  bearer.bearer.token = "saved-bearer"; bearer.bearer.receivedToken = "received-bearer";
+  bearer.bearer.token = "saved-bearer";
   const oauth = createRequestAuth(); oauth.type = "oauth2";
   oauth.oauth2.clientId = "client"; oauth.oauth2.clientSecret = "client-secret";
   oauth.oauth2.tokenUrl = "https://example.com/token";
@@ -32,7 +32,6 @@ test("pre-canonical auth runtime is discarded without losing saved credentials o
   const restored = await new WorkspacePersistence(backend, secure).load();
   const auth = restored.workspaces[0].requestConfig.auth;
   assert.equal(auth[0].value.bearer.token, "saved-bearer");
-  assert.equal(auth[0].value.bearer.receivedToken, "");
   assert.equal(auth[1].value.oauth2.clientSecret, "client-secret");
   assert.equal(auth[1].value.oauth2.token, null);
   assert.equal(restored.workspaces[0].documents[0].id, workspace.documents[0].id);
@@ -40,7 +39,7 @@ test("pre-canonical auth runtime is discarded without losing saved credentials o
   assert.equal(migrated.version, 1); assert.deepEqual(migrated.entries, []);
   assert.deepEqual(backend.snapshot.workspaces[0].files, files);
   const local = JSON.stringify(backend.snapshot.workspaces[0].local);
-  for (const value of ["saved-bearer", "received-bearer", "client-secret", "access-token", "refresh-token"]) assert.ok(!local.includes(`"${value}"`));
+  for (const value of ["saved-bearer", "client-secret", "access-token", "refresh-token"]) assert.ok(!local.includes(`"${value}"`));
   const reloaded = await new WorkspacePersistence(backend, secure).load();
   assert.equal(reloaded.workspaces[0].requestConfig.auth[0].value.bearer.token, "saved-bearer");
 });
@@ -66,7 +65,6 @@ test("discarded runtime tokens are not reused after canonical auth configuration
   const restored = await new WorkspacePersistence(backend, secure).load();
   assert.equal(restored.workspaces[0].requestConfig.auth[1].value.oauth2.clientId, "different-client");
   assert.equal(restored.workspaces[0].requestConfig.auth[1].value.oauth2.token, null);
-  assert.equal(restored.workspaces[0].requestConfig.auth[0].value.bearer.receivedToken, "");
 });
 
 test("missing and empty pre-migration auth runtime do not prevent configured workspaces from loading", async () => {
@@ -80,7 +78,7 @@ test("missing and empty pre-migration auth runtime do not prevent configured wor
 
 test("malformed or future auth runtime is reset without touching saved project data", async () => {
   for (const value of [{ entries: {}, definitions: [] }, { entries: [], definitions: {} }, { version: 99, entries: [], definitions: [] },
-    { version: 1, entries: [{ id: "http-auth", definitionHash: "hash", bearerReceivedToken: { kind: "secret", ref: "purr/another-workspace/token" } }] }]) {
+    { version: 1, entries: [{ id: "http-auth", definitionHash: "hash", unknownToken: { kind: "secret", ref: "purr/another-workspace/token" } }] }]) {
     const { workspace, backend, secure } = await fixture();
     await backend.writeLocal(workspace.id, [{ table: "workspace_local_state", id: "auth-runtime", value }]);
     const files = structuredClone(backend.snapshot.workspaces[0].files);

@@ -56,6 +56,22 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
     fullPage: true,
   });
 
+  const activeLine = response.locator(".cm-line").filter({ hasText: '"active": true' });
+  await activeLine.hover();
+  const hoverRadii = await activeLine.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return [style.borderTopLeftRadius, style.borderTopRightRadius];
+  });
+  expect(hoverRadii[0]).toBe(hoverRadii[1]);
+  await activeLine.click();
+  await expect(page.getByRole("menu", { name: "Response field actions", exact: true })).toHaveCount(0);
+  await activeLine.click({ button: "right" });
+  const fieldMenu = page.getByRole("menu", { name: "Response field actions", exact: true });
+  await expect(fieldMenu).toBeVisible();
+  await expect(fieldMenu.getByRole("separator")).toHaveCount(1);
+  await expect(fieldMenu.getByRole("menuitem", { name: /JSONPath/ })).toContainText("$.data.users[0].active");
+  await page.keyboard.press("Escape");
+
   expect(await response.locator(".cm-line span").count()).toBeGreaterThan(0);
   await response.getByRole("button", { name: "Raw", exact: true }).click();
   await expect(

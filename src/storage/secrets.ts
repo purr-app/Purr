@@ -41,13 +41,12 @@ export async function protectRuntime(value: unknown, store: SecureStore, workspa
   const auth = "bearer" in object && "oauth2" in object && "inherit" in object;
   if (auth) {
     const copy = structuredClone(object) as Record<string, Record<string, unknown>>;
-    for (const [group, keys] of Object.entries({ bearer: ["token", "receivedToken"], basic: ["password"], apiKey: ["value"], oauth2: ["clientSecret"] })) {
+    for (const [group, keys] of Object.entries({ bearer: ["token"], basic: ["password"], apiKey: ["value"], oauth2: ["clientSecret"] })) {
       for (const key of keys) {
         const text = copy[group]?.[key];
         if (typeof text === "string" && text) copy[group][key] = { __purrSecret: (await storeCredential(store, secretRef(workspace, owner, `${group}/${key}`), text)) };
       }
     }
-    copy.bearer.responseError = "";
     const token = copy.oauth2.token as Record<string, unknown> | null;
     if (token) for (const key of ["accessToken", "refreshToken"]) if (typeof token[key] === "string")
       token[key] = { __purrSecret: await storeCredential(store, secretRef(workspace, owner, `oauth2/${key}`), token[key]) };

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { loadWorkspaceStore, saveWorkspaceStore, watchWorkspaceChanges } from "../services/workspace-storage";
-import type { Workspace, WorkspaceStore } from "../model/workspace";
+import { loadWorkspaceStore, saveWorkspaceStore, watchWorkspaceChanges, workspacePersistence } from "../services/workspace-storage";
+import { createWorkspace, type Workspace, type WorkspaceStore } from "../model/workspace";
 
 export function useWorkspaces() {
   const [store, setStore] = useState<WorkspaceStore | null>(null);
@@ -55,5 +55,14 @@ export function useWorkspaces() {
   const updateWorkspace = useCallback((id: string, update: (workspace: Workspace) => Workspace) => {
     setStore((current) => current ? { ...current, workspaces: current.workspaces.map((workspace) => workspace.id === id ? update(workspace) : workspace) } : current);
   }, []);
-  return { store, setStore, updateWorkspace, loadError, saveError, saving, retry: load, flush };
+  const deleteWorkspace = useCallback(async (id: string) => {
+    await workspacePersistence().deleteWorkspace(id);
+    setStore((current) => {
+      if (!current) return current;
+      let workspaces = current.workspaces.filter((workspace) => workspace.id !== id);
+      if (!workspaces.length) workspaces = [createWorkspace("Personal")];
+      return { ...current, workspaces, activeWorkspaceId: current.activeWorkspaceId === id ? workspaces[0].id : current.activeWorkspaceId };
+    });
+  }, []);
+  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry: load, flush };
 }

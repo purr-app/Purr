@@ -6,7 +6,6 @@ import {
   authTypeOptions,
   resolveAuth,
   type AuthContext,
-  type AuthSourceDocumentOption,
   type RequestAuth,
 } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
@@ -21,7 +20,6 @@ type Props = {
   allowInherit?: boolean;
   idPrefix?: string;
   ariaLabel?: string;
-  responseSourceDocuments?: readonly AuthSourceDocumentOption[];
 };
 
 export function AuthEditor({
@@ -32,7 +30,6 @@ export function AuthEditor({
   allowInherit = true,
   idPrefix = "request",
   ariaLabel,
-  responseSourceDocuments = [],
 }: Props) {
   const resolved = resolveAuth(auth, context);
   const typeOptions = allowInherit
@@ -81,7 +78,6 @@ export function AuthEditor({
             onAuthChange={onAuthChange}
             context={context}
             now={runtime.now}
-            responseSourceDocuments={responseSourceDocuments}
           />
         ) : null}
 

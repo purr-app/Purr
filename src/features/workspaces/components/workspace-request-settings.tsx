@@ -4,7 +4,7 @@ import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { AuthEditor } from "../../request-workbench/components/auth-editor";
 import { KeyValueEditor, type KeyValueEntry } from "../../request-workbench/components/key-value-editor";
 import { useAuthRuntime } from "../../request-workbench/hooks/use-auth-runtime";
-import { authTypeOptions, createRequestAuth, type AuthContext, type AuthSourceDocumentOption } from "../../request-workbench/model/request-auth";
+import { authTypeOptions, createRequestAuth, type AuthContext } from "../../request-workbench/model/request-auth";
 import { initialRequestDraft, isRequestHeaderNameValid, type RequestDraft } from "../../request-workbench/model/request";
 import {
   requestScopeOptions,
@@ -39,24 +39,26 @@ export function WorkspaceSettings({
   description,
   config,
   variables,
-  responseSourceDocuments,
   onNameChange,
   onDescriptionChange,
   onConfigChange,
+  onDelete,
 }: {
   name: string;
   description: string;
   config: WorkspaceRequestConfig;
   variables: Record<string, string>;
-  responseSourceDocuments: readonly AuthSourceDocumentOption[];
   onNameChange: (name: string) => void;
   onDescriptionChange: (description: string) => void;
   onConfigChange: (config: WorkspaceRequestConfig) => void;
+  onDelete: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [editingAuth, setEditingAuth] = useState<WorkspaceSharedAuth | null>(null);
   const [authContext, setAuthContext] = useState<AuthContext>({ variables });
   const [emptyHeaderId, setEmptyHeaderId] = useState(() => crypto.randomUUID());
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   useEffect(() => setAuthContext((current) => ({ ...current, variables })), [variables]);
   const authDraft: RequestDraft = {
     ...initialRequestDraft,
@@ -111,6 +113,12 @@ export function WorkspaceSettings({
                 <textarea id="workspace-description" aria-label="Workspace description" className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 font-ui text-ui-md text-content-primary outline-none placeholder:text-content-tertiary"
                   value={description} placeholder="What is this workspace used for?" onChange={(event) => onDescriptionChange(event.target.value)} />
               </div>
+              <div className="border-t border-border-subtle pt-ui-5">
+                <h2 className="m-ui-0 text-ui-md font-medium text-accent-red">Delete workspace</h2>
+                <p className="mb-ui-3 mt-ui-1 text-ui-xs text-content-tertiary">Removes Purr’s local state and managed project directory. An attached external directory is left on disk.</p>
+                {!confirmDelete ? <Button variant="secondary" className="text-accent-red" onClick={() => setConfirmDelete(true)}><Trash2 className="size-ui-4" />Delete workspace</Button>
+                  : <div className="flex items-center gap-ui-2"><span className="text-ui-sm text-accent-red">Delete “{name}”?</span><Button variant="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Button><Button variant="secondary" className="text-accent-red" disabled={deleting} onClick={async () => { setDeleting(true); try { await onDelete(); } finally { setDeleting(false); } }}>{deleting ? "Deleting…" : "Delete permanently"}</Button></div>}
+              </div>
             </div>
           ) : tab === "headers" ? (
             <div className="space-y-ui-3">
@@ -161,8 +169,7 @@ export function WorkspaceSettings({
                   </div>
                   <div className="overflow-hidden rounded-ui-lg border border-border-subtle">
                     <AuthEditor auth={editingAuth.value} onAuthChange={(value) => setEditingAuth((current) => current ? { ...current, value } : current)}
-                      context={authContext} runtime={authRuntime} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication"
-                      responseSourceDocuments={responseSourceDocuments} />
+                      context={authContext} runtime={authRuntime} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication" />
                   </div>
                   <div className="flex justify-end gap-ui-2">
                     <Button variant="ghost" onClick={() => setEditingAuth(null)}>Cancel</Button>

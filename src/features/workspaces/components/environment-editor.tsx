@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Eye, EyeOff, LockKeyhole, Plus, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
@@ -28,25 +28,25 @@ export function EnvironmentEditor({ initial, onSave, onClose }: {
         <p className="text-ui-sm text-content-secondary">Use <code className="font-code text-action-brand">{"{{variable}}"}</code> in URLs, headers, parameters, authentication, or request bodies.</p>
         <div className="max-h-ui-variable-list space-y-ui-2 overflow-auto p-ui-1">
           {environment.variables.map((variable, index) => {
-            const update = (patch: Partial<typeof variable>) => setEnvironment((current) => ({ ...current,
-              variables: current.variables.map((row) => row.id === variable.id ? { ...row, ...patch, ...(patch.value !== undefined ? { secretLoaded: true } : {}) } : row),
+            const update = (next: typeof variable) => setEnvironment((current) => ({ ...current,
+              variables: current.variables.map((row) => row.id === variable.id ? next : row),
             }));
+            const secret = variable.sensitive;
+            const value = variable.kind === "static" ? variable.value : "";
+            const updateValue = (next: string) => variable.kind === "static" && update({ ...variable, value: next, loaded: true });
             return <div key={variable.id} className="flex items-center gap-ui-2">
-              <Checkbox checked={variable.enabled} onCheckedChange={(enabled) => update({ enabled })} label={`Enable variable ${index + 1}`} hideLabel />
-              <Input className="ui-focus-ring min-w-0 flex-1 font-code" aria-label={`Variable ${index + 1} name`} placeholder="variable_name" value={variable.name} onChange={(event) => update({ name: event.target.value })} spellCheck={false} />
-              <Input className="ui-focus-ring min-w-0 flex-1 font-code" type={(revealed[variable.id] ?? !variable.secret) ? "text" : "password"} aria-label={`Variable ${index + 1} value`} placeholder="value" value={variable.value} onChange={(event) => update({ value: event.target.value })} spellCheck={false} autoComplete="off" />
-              <Button type="button" variant="ghost" size="icon" aria-label={`Secret variable ${index + 1}`} aria-pressed={variable.secret} title="Store value securely on this device" className={variable.secret ? "text-action-brand" : "text-content-tertiary"} onClick={() => update({ secret: !variable.secret })}>
-                <LockKeyhole className="size-ui-4" />
-              </Button>
-              <Button type="button" variant="ghost" size="icon" aria-label={`Reveal variable ${index + 1}`} aria-pressed={revealed[variable.id] ?? !variable.secret} title="Show or hide value" onClick={() => setRevealed((current) => ({ ...current, [variable.id]: !(current[variable.id] ?? !variable.secret) }))}>
-                {(revealed[variable.id] ?? !variable.secret) ? <Eye className="size-ui-4" /> : <EyeOff className="size-ui-4" />}
-              </Button>
+              <Checkbox checked={variable.enabled} onCheckedChange={(enabled) => update({ ...variable, enabled })} label={`Enable variable ${index + 1}`} hideLabel />
+              <Input className="ui-focus-ring min-w-0 flex-1 font-code" aria-label={`Variable ${index + 1} name`} placeholder="variable_name" value={variable.name} onChange={(event) => update({ ...variable, name: event.target.value })} spellCheck={false} />
+              <Input className="ui-focus-ring min-w-0 flex-1 font-code" type={(revealed[variable.id] ?? !secret) ? "text" : "password"} aria-label={`Variable ${index + 1} value`} placeholder="value" value={value} onChange={(event) => updateValue(event.target.value)} spellCheck={false} autoComplete="off" />
+              {secret ? <Button type="button" variant="ghost" size="icon" aria-label={`Reveal variable ${index + 1}`} aria-pressed={revealed[variable.id] ?? false} title="Show or hide value" onClick={() => setRevealed((current) => ({ ...current, [variable.id]: !current[variable.id] }))}>
+                {revealed[variable.id] ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}
+              </Button> : null}
               <Button type="button" variant="ghost" size="icon" aria-label={`Remove variable ${index + 1}`} onClick={() => setEnvironment({ ...environment, variables: environment.variables.filter((row) => row.id !== variable.id) })}><Trash2 className="size-ui-4" /></Button>
             </div>;
           })}
           {!environment.variables.length && <p className="py-ui-6 text-center text-ui-sm text-content-tertiary">No variables yet. Add your first variable below.</p>}
         </div>
-        <Button type="button" variant="secondary" size="sm" onClick={() => setEnvironment({ ...environment, variables: [...environment.variables, { id: crypto.randomUUID(), name: "", value: "", enabled: true, secret: false }] })}><Plus className="size-ui-4" />Add variable</Button>
+        <Button type="button" variant="secondary" size="sm" onClick={() => setEnvironment({ ...environment, variables: [...environment.variables, { id: crypto.randomUUID(), name: "", enabled: true, sensitive: false, kind: "static", value: "" }] })}><Plus className="size-ui-4" />Add variable</Button>
         {error && <p role="alert" className="text-ui-sm text-accent-red">{error}</p>}
         <p className="text-ui-xs text-content-tertiary">Plain values are shared in the workspace. Secret values stay in this device’s secure store; only their references are shared.</p>
       </div>

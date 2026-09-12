@@ -328,6 +328,45 @@ impl LocalStateStore {
         self.db.execute("INSERT INTO workspaces(id,directory) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET directory=excluded.directory", params![id, directory.to_string_lossy()]).map_err(db_error)?;
         Ok(())
     }
+    pub fn delete_workspace(&mut self, workspace: &str) -> Result<(), String> {
+        let tx = self.db.transaction().map_err(db_error)?;
+        for table in TABLES {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE workspace_id=?1"),
+                [workspace],
+            )
+            .map_err(db_error)?;
+        }
+        tx.execute(
+            "DELETE FROM response_bodies WHERE workspace_id=?1",
+            [workspace],
+        )
+        .map_err(db_error)?;
+        tx.execute(
+            "DELETE FROM cookie_metadata WHERE workspace_id=?1",
+            [workspace],
+        )
+        .map_err(db_error)?;
+        tx.execute(
+            "DELETE FROM pending_commits WHERE workspace_id=?1",
+            [workspace],
+        )
+        .map_err(db_error)?;
+        let secret_prefix = format!("purr/{workspace}/");
+        tx.execute(
+            "DELETE FROM secret_values WHERE substr(reference,1,length(?1))=?1",
+            [secret_prefix],
+        )
+        .map_err(db_error)?;
+        tx.execute("DELETE FROM workspaces WHERE id=?1", [workspace])
+            .map_err(db_error)?;
+        tx.execute(
+            "DELETE FROM app_state WHERE key='active-workspace' AND value=?1",
+            [workspace],
+        )
+        .map_err(db_error)?;
+        tx.commit().map_err(db_error)
+    }
     pub fn app(&self, key: &str) -> Result<Option<String>, String> {
         self.db
             .query_row("SELECT value FROM app_state WHERE key=?1", [key], |row| {
@@ -635,6 +674,25 @@ mod tests {
         store.delete_secret(reference).unwrap();
         assert!(!store.secret_exists(reference).unwrap());
         assert_eq!(store.get_secret(reference).unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_workspace_removes_only_its_scoped_secrets() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&directory.path().join("state.db"), &root).unwrap();
+        let removed = "purr/work_space/auth/token";
+        let retained = "purr/workXspace/auth/token";
+        store.set_secret(removed, &sample_value("removed")).unwrap();
+        store
+            .set_secret(retained, &sample_value("retained"))
+            .unwrap();
+        store
+            .register("work_space", &directory.path().join("work_space"))
+            .unwrap();
+        store.delete_workspace("work_space").unwrap();
+        assert!(!store.secret_exists(removed).unwrap());
+        assert!(store.secret_exists(retained).unwrap());
     }
 
     #[test]

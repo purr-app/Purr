@@ -13,6 +13,14 @@ async function read<T>(store: string, key: string): Promise<T | undefined> {
     const request = db.transaction(store).objectStore(store).get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(new Error("Cannot read browser preview storage"));
   }); } finally { db.close(); }
 }
+async function keys(store: string): Promise<string[]> {
+  const db = await database();
+  try { return await new Promise<string[]>((resolve, reject) => {
+    const request = db.transaction(store).objectStore(store).getAllKeys();
+    request.onsuccess = () => resolve(request.result.filter((value): value is string => typeof value === "string"));
+    request.onerror = () => reject(new Error("Cannot read browser preview storage"));
+  }); } finally { db.close(); }
+}
 async function writeMany(changes: Array<{ store: string; key: string; value?: unknown }>) {
   const db = await database();
   try { await new Promise<void>((resolve, reject) => {
@@ -49,7 +57,7 @@ export class BrowserPersistenceBackend implements PersistenceBackend {
     if (raw && !await read("app", "migrated")) {
       try { legacy = JSON.parse(raw); } catch { throw new Error("Unsupported or damaged workspace index. The original data has not been changed."); }
     }
-    return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces: await Promise.all(ids.map((id) => this.loadWorkspace(id))), legacy };
+    return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces: await Promise.all(ids.map((id) => this.loadWorkspace(id))), global: await this.readLocal("__global__"), legacy };
   }
   async loadWorkspace(id: string): Promise<StoredWorkspace> { return { id, files: await read<Record<string, ProjectFile>>("projects", id) ?? {}, local: await this.readLocal(id) }; }
   async readLocal(id: string): Promise<LocalRecord[]> { const data = await read<Awaited<ReturnType<typeof seal>>>("local", id); return data ? unseal(data, id) : []; }
@@ -72,6 +80,14 @@ export class BrowserPersistenceBackend implements PersistenceBackend {
   async reloadResource(id: string, path: string) { return (await this.loadWorkspace(id)).files[path] ?? null; }
   async writeLocal(id: string, local: LocalChange[]) { await this.commit(id, [], local); }
   async setActiveWorkspace(id: string) { await writeMany([{ store: "app", key: "active", value: id }]); }
+  async writeGlobal(local: LocalChange[]) { await this.writeLocal("__global__", local); }
+  async deleteWorkspace(id: string) {
+    const ids = (await read<string[]>("app", "workspaces") ?? []).filter((candidate) => candidate !== id);
+    const prefix = `purr/${id}/`;
+    const secrets = (await keys("secrets")).filter((reference) => reference.startsWith(prefix));
+    await writeMany([{ store: "projects", key: id }, { store: "local", key: id }, { store: "app", key: "workspaces", value: ids },
+      ...secrets.map((reference) => ({ store: "secrets", key: reference }))]);
+  }
   async finishMigration() {
     const legacy = localStorage.getItem("purr.workspaces.v1");
     await writeMany([{ store: "app", key: "migrated", value: true }, ...(legacy ? [{ store: "app", key: "legacy-archive", value: await seal(legacy, "legacy") }] : [])]);

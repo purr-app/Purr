@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { graphql, graphqlLanguageSupport } from "cm6-graphql";
-import { acceptCompletion, autocompletion, closeCompletion, completionKeymap, completionStatus, selectedCompletionIndex, setSelectedCompletion, snippet, startCompletion, type Completion, type CompletionContext, type CompletionSource } from "@codemirror/autocomplete";
+import { acceptCompletion, autocompletion, closeCompletion, completionKeymap, completionStatus, CompletionContext, selectedCompletionIndex, setSelectedCompletion, snippet, startCompletion, type Completion, type CompletionSource } from "@codemirror/autocomplete";
 import { Prec } from "@codemirror/state";
 import { json } from "@codemirror/lang-json";
 import { syntaxTree } from "@codemirror/language";
@@ -13,6 +13,8 @@ import { getNamedType, isCompositeType, Kind, parse, type GraphQLSchema, type Op
 import { purrCodeTheme, purrCodeHighlighting } from "../../../shared/theme/code-editor-theme";
 import { purrFoldGutter } from "../../../shared/theme/code-fold-gutter";
 import { getBodyDiagnostics } from "../../request-workbench/model/request-body";
+import { templateVariableCompletion, templateVariableHover } from "../../request-workbench/components/template-variable-code-editor";
+import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
 
 export type GraphqlOperation = {
   name: string;
@@ -35,11 +37,12 @@ export type GraphqlVariableHint = {
 };
 
 const noVariableHints: GraphqlVariableHint[] = [];
-const jsonVariablesCompletionKeymap = completionKeymap.filter((binding) => binding.key !== "Enter" && binding.key !== "Tab");
+const jsonVariablesCompletionKeymap = completionKeymap.filter((binding) => binding.key !== "Enter" && binding.key !== "Tab" && binding.key !== "Ctrl-Space");
 function acceptVisibleCompletion(view: EditorView) {
   if (completionStatus(view.state) !== "active") return false;
-  if (selectedCompletionIndex(view.state) === null)
+  if (selectedCompletionIndex(view.state) === null) {
     view.dispatch({ effects: setSelectedCompletion(0) });
+  }
   return acceptCompletion(view);
 }
 
@@ -78,8 +81,13 @@ function insertJsonNewline(view: EditorView) {
   return true;
 }
 
-function handleJsonEnter(view: EditorView) {
-  return acceptVisibleCompletion(view) || insertJsonNewline(view);
+function startExplicitJsonCompletion(view: EditorView) {
+  const position = view.state.selection.main.head;
+  closeCompletion(view);
+  globalThis.setTimeout(() => {
+    if (view.hasFocus && view.state.selection.main.head === position) startCompletion(view);
+  }, 0);
+  return true;
 }
 
 function reopenAtCurrentSelection(view: EditorView) {
@@ -166,6 +174,20 @@ function jsonObjectValue(view: EditorView, _completion: Completion, from: number
   reopenAtCurrentSelection(view);
 }
 
+function jsonObjectKey(label: string, quoted: boolean): NonNullable<Completion["apply"]> {
+  return (view, _completion, from, to) => {
+    // CodeMirror pairs quotes while typing. When completion starts inside that
+    // pair, consume the existing closing quote instead of leaving it behind as
+    // the first character of the value.
+    const pairedQuote = quoted && view.state.doc.sliceString(to, to + 1) === '"';
+    const insert = quoted ? `${label}": ` : `"${label}": `;
+    view.dispatch({
+      changes: { from, to: pairedQuote ? to + 1 : to, insert },
+      selection: { anchor: from + insert.length },
+    });
+  };
+}
+
 function leafFieldAndReopen(label: string): NonNullable<Completion["apply"]> {
   return (view, _completion, from, to) => {
     const line = view.state.doc.lineAt(from);
@@ -250,6 +272,14 @@ function jsonObjectScope(context: CompletionContext, hints: GraphqlVariableHint[
   return { fields, used };
 }
 
+function findVariableHint(hints: GraphqlVariableHint[], name: string): GraphqlVariableHint | undefined {
+  for (const hint of hints) {
+    if (hint.name === name) return hint;
+    const nested = findVariableHint(hint.fields ?? hint.item?.fields ?? [], name);
+    if (nested) return nested;
+  }
+}
+
 function jsonVariablesCompletion(hints: GraphqlVariableHint[]): CompletionSource {
   return (context) => {
     const text = context.state.doc.toString();
@@ -275,13 +305,18 @@ function jsonVariablesCompletion(hints: GraphqlVariableHint[]): CompletionSource
         label: hint.name,
         detail: hint.type,
         type: "property",
-        apply: quoted ? `${hint.name}": ` : `"${hint.name}": `,
+        apply: jsonObjectKey(hint.name, quoted),
       }));
       return options.length ? { from, options } : null;
     }
     const valueMatch = /"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*("?)([^"\s,}\]]*)$/.exec(before);
     if (!valueMatch || !context.explicit) return null;
-    const hint = jsonObjectScope(context, hints).fields.find((item) => item.name === valueMatch[1]);
+    // While the user is between a colon and a value the JSON tree is
+    // intentionally incomplete. Prefer its structural scope, but fall back to
+    // the known GraphQL input shape so an incremental parser recovery node
+    // cannot make explicit value completion disappear.
+    const hint = jsonObjectScope(context, hints).fields.find((item) => item.name === valueMatch[1])
+      ?? findVariableHint(hints, valueMatch[1]);
     const typed = valueMatch[3] ?? "";
     const from = context.pos - typed.length - valueMatch[2].length;
     const options: Completion[] = [];
@@ -294,6 +329,34 @@ function jsonVariablesCompletion(hints: GraphqlVariableHint[]): CompletionSource
     if (hint?.defaultValue !== undefined) options.unshift({ label: String(hint.defaultValue), detail: "default", type: "constant", apply: JSON.stringify(hint.defaultValue) });
     return options.length ? { from, options } : null;
   };
+}
+
+function acceptVisibleJsonCompletion(view: EditorView, hints: GraphqlVariableHint[]) {
+  const menus = [...view.dom.ownerDocument.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete")]
+    .filter((element) => element.getClientRects().length > 0);
+  const option = menus.flatMap((menu) => [...menu.querySelectorAll<HTMLElement>("[role=option]")])
+    .find((element) => element.getAttribute("aria-selected") === "true")
+    ?? menus[0]?.querySelector<HTMLElement>("[role=option]");
+  if (!option) return false;
+  const source = jsonVariablesCompletion(hints);
+  const position = view.state.selection.main.head;
+  const result = source(new CompletionContext(view.state, position, true));
+  if (!result || result instanceof Promise) return false;
+  const selectedLabel = option.querySelector<HTMLElement>(".cm-completionLabel")?.textContent;
+  const completion = result.options.find((candidate) => candidate.label === selectedLabel) ?? result.options[0];
+  if (!completion) return false;
+  closeCompletion(view);
+  const to = result.to ?? position;
+  if (typeof completion.apply === "function") completion.apply(view, completion, result.from, to);
+  else {
+    const insert = completion.apply ?? completion.label;
+    view.dispatch({ changes: { from: result.from, to, insert }, selection: { anchor: result.from + insert.length } });
+  }
+  return true;
+}
+
+function handleJsonEnter(view: EditorView, hints: GraphqlVariableHint[]) {
+  return acceptVisibleCompletion(view) || acceptVisibleJsonCompletion(view, hints) || insertJsonNewline(view);
 }
 
 function graphqlHover(schema: GraphQLSchema, onOpenType?: (name: string) => void) {
@@ -347,9 +410,10 @@ function operationAtCursor(update: ViewUpdate) {
   return operations.find((operation) => cursor >= operation.from && cursor <= operation.to);
 }
 
-export function GraphqlCodeEditor({ value, onChange, schema, variables = false, variableHints = noVariableHints, readOnly = false, label, onOpenType, onRunOperation, onCursorOperationChange, focusOperation }: {
+export function GraphqlCodeEditor({ value, onChange, schema, variables = false, variableHints = noVariableHints, templateVariableActions, readOnly = false, label, onOpenType, onRunOperation, onCursorOperationChange, focusOperation }: {
   value: string; onChange?: (value: string) => void; schema?: GraphQLSchema; onOpenType?: (name: string) => void;
   variables?: boolean; variableHints?: GraphqlVariableHint[]; readOnly?: boolean; label: string;
+  templateVariableActions?: TemplateVariableActions;
   onRunOperation?: (operation: GraphqlOperation) => void;
   onCursorOperationChange?: (operation: GraphqlOperation) => void;
   focusOperation?: OperationFocus;
@@ -364,17 +428,18 @@ export function GraphqlCodeEditor({ value, onChange, schema, variables = false, 
   const extensions = useMemo(() => [
     tooltips({ parent: document.body, position: "fixed" }),
     variables ? [json(), linter((view) => getBodyDiagnostics("json", view.state.doc.toString())), autocompletion({
-      override: [jsonVariablesCompletion(variableHints)], activateOnTyping: true, activateOnTypingDelay: 50,
+      override: [...(templateVariableActions ? [templateVariableCompletion(templateVariableActions)] : []), jsonVariablesCompletion(variableHints)], activateOnTyping: true, activateOnTypingDelay: 50,
       interactionDelay: 0, icons: false, defaultKeymap: false,
-    })]
+    }), ...(templateVariableActions ? [templateVariableHover(templateVariableActions)] : [])]
       : readOnly ? graphqlLanguageSupport() : [graphql(schema, { onShowInDocs: (_field, type) => { const name = type?.match(/[A-Za-z_][A-Za-z0-9_]*/)?.[0]; if (name) openType.current?.(name); } }),
         ...(schema ? [graphqlHover(schema, (name) => openType.current?.(name))] : []),
         autocompletion({ override: [graphqlCompletionSource(schema)], activateOnTyping: true, activateOnTypingDelay: 50,
           interactionDelay: 0, icons: false }),
         operationActions((operation) => runOperation.current?.(operation))],
     Prec.highest(keymap.of(variables ? [
-      { key: "Enter", run: handleJsonEnter },
-      { key: "Tab", run: acceptVisibleCompletion },
+      { key: "Enter", run: (view) => handleJsonEnter(view, variableHints) },
+      { key: "Tab", run: (view) => acceptVisibleCompletion(view) || acceptVisibleJsonCompletion(view, variableHints) },
+      { key: "Ctrl-Space", run: startExplicitJsonCompletion },
       ...jsonVariablesCompletionKeymap,
     ] : [
       { key: "Enter", run: acceptVisibleCompletion },
@@ -382,7 +447,7 @@ export function GraphqlCodeEditor({ value, onChange, schema, variables = false, 
     ])),
     purrCodeHighlighting, purrFoldGutter, EditorView.lineWrapping,
     EditorView.contentAttributes.of({ "aria-label": label, spellcheck: "false" }),
-  ], [schema, variables, variableHints, readOnly, label]);
+  ], [schema, variables, variableHints, templateVariableActions, readOnly, label]);
   useEffect(() => {
     if (!focusOperation) return;
     const view = editor.current?.view;

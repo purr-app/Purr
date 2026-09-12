@@ -120,25 +120,8 @@ test("workspace validation refuses unsupported versions and repairs dangling tab
   assert.throws(() => validateWorkspace({ ...workspace, documents: [{ ...workspace.documents[0], request: { ...workspace.documents[0].request, headers: "not-an-array" } }] }), /Invalid document/);
 });
 
-test("old workspaces gain shared-request defaults and scoped values remain request-overridable", () => {
-  const configuredLegacy = createWorkspace() as unknown as Record<string, any>;
-  const legacyAuth = createRequestAuth();
-  legacyAuth.type = "bearer";
-  delete (legacyAuth.bearer as Record<string, unknown>).endpointDocumentId;
-  configuredLegacy.requestConfig.auth = { enabled: true, scope: "http", value: legacyAuth };
-  const migratedConfig = validateWorkspace(configuredLegacy).requestConfig;
-  assert.equal(migratedConfig.auth[0].value.bearer.endpointDocumentId, "");
-  assert.equal(migratedConfig.auth[0].scope, "http");
-
-  const legacy = createWorkspace() as unknown as Record<string, any>;
-  delete legacy.documents[0].request.auth.bearer.endpointDocumentId;
-  delete legacy.requestConfig;
-  delete legacy.documents[0].request.workspace;
-  const restored = validateWorkspace(legacy);
-  assert.deepEqual(restored.requestConfig.headers, []);
-  assert.equal(restored.documents[0].request.workspace.headersEnabled, true);
-  assert.equal(restored.documents[0].request.auth.bearer.endpointDocumentId, "");
-
+test("scoped shared values remain request-overridable", () => {
+  const restored = createWorkspace();
   const document = restored.documents[0];
   restored.requestConfig.headers = [
     { id: "all", name: "X-Workspace", value: "shared", enabled: true, scope: "all" },
@@ -169,14 +152,14 @@ test("old workspaces gain shared-request defaults and scoped values remain reque
 test("environments are scoped and disabled variables are excluded", () => {
   const workspace = createWorkspace();
   workspace.environments = [{ id: "local", name: "Local", variables: [
-    { id: "1", name: "host", value: "localhost", enabled: true, secret: false },
-    { id: "2", name: "token", value: "secret", enabled: false, secret: true },
+    { id: "1", name: "host", kind: "static", value: "localhost", sensitive: false, enabled: true },
+    { id: "2", name: "token", kind: "static", value: "secret", loaded: true, sensitive: true, enabled: false },
   ] }];
   assert.deepEqual(getEnvironmentVariables(workspace), {});
   workspace.activeEnvironmentId = "local";
   assert.deepEqual(getEnvironmentVariables(workspace), { host: "localhost" });
   assert.equal(validateEnvironment(workspace.environments[0]), null);
-  assert.match(validateEnvironment({ ...workspace.environments[0], variables: [...workspace.environments[0].variables, { id: "3", name: "host", value: "again", enabled: true, secret: false }] })!, /more than once/);
+  assert.match(validateEnvironment({ ...workspace.environments[0], variables: [...workspace.environments[0].variables, { id: "3", name: "host", kind: "static", value: "again", sensitive: false, enabled: true }] })!, /more than once/);
 });
 
 test("variables support nesting and Unicode, with visible missing/cyclic errors", () => {

@@ -5,11 +5,13 @@ import { Collapsible } from "../../../shared/components/ui/collapsible";
 import { cn } from "../../../shared/lib/cn";
 import { isRequestHeaderNameValid, type RequestHeader } from "../model/request";
 import { KeyValueEditor, type KeyValueEntry } from "./key-value-editor";
+import type { TemplateVariableActions } from "./template-variable-popover";
 
 type HeadersEditorProps = {
   headers: RequestHeader[];
   onHeadersChange: (headers: RequestHeader[]) => void;
   onWorkspaceHeaderEnabledChange?: (id: string, enabled: boolean) => void;
+  variableActions?: TemplateVariableActions;
 };
 
 const headerValidationMessage =
@@ -28,6 +30,7 @@ export function HeadersEditor({
   headers,
   onHeadersChange,
   onWorkspaceHeaderEnabledChange,
+  variableActions,
 }: HeadersEditorProps) {
   const [inheritedOpen, setInheritedOpen] = useState(true);
   const inherited = headers.filter((header) => header.workspaceHeaderId);
@@ -71,6 +74,7 @@ export function HeadersEditor({
     isKeyValid={isRequestHeaderNameValid}
     validationMessage={headerValidationMessage}
     valueFont="code"
+    variableActions={variableActions}
   />;
 
   return (

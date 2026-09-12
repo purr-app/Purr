@@ -19,10 +19,12 @@ import {
 } from "../model/request-body";
 import { KeyValueEditor } from "./key-value-editor";
 import { BodyCodeEditor, type BodyCodeEditorHandle } from "./body-code-editor";
+import type { TemplateVariableActions } from "./template-variable-popover";
 
 type BodyEditorProps = {
   body: RequestBody;
   onBodyChange: (body: RequestBody) => void;
+  variableActions?: TemplateVariableActions;
 };
 type ConversionNotice = {
   message: string;
@@ -33,7 +35,7 @@ const createEmptyFormDataField = (fields: RequestBodyField[]) =>
 const createEmptyUrlEncodedField = (fields: RequestBodyField[]) =>
   createEmptyRequestBodyField("url-encoded", fields);
 
-export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
+export function BodyEditor({ body, onBodyChange, variableActions }: BodyEditorProps) {
   const [conversionNotice, setConversionNotice] =
     useState<ConversionNotice | null>(null);
   const codeEditorRef = useRef<BodyCodeEditorHandle>(null);
@@ -225,6 +227,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
             ref={codeEditorRef}
             language={body.type}
             value={body[body.type]}
+            variableActions={variableActions}
             onChange={(value) => {
               setConversionNotice(null);
               onBodyChange({ ...body, [body.type]: value });
@@ -242,6 +245,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
             keyTextClassName="text-syntax-property"
             valueFont="ui"
             className="bg-purr-surface px-ui-3 py-ui-3"
+            variableActions={variableActions}
           />
         ) : body.type === "url-encoded" ? (
           <KeyValueEditor
@@ -257,6 +261,7 @@ export function BodyEditor({ body, onBodyChange }: BodyEditorProps) {
             keyTextClassName="text-syntax-property"
             valueFont="ui"
             className="bg-purr-surface px-ui-3 py-ui-3"
+            variableActions={variableActions}
           />
         ) : body.type === "binary" ? (
           <FileUploader

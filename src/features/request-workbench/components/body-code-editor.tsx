@@ -19,11 +19,14 @@ import {
   prettifyBodyCode,
   type CodeBodyLanguage,
 } from "../model/request-body";
+import { templateVariableCompletion, templateVariableHover } from "./template-variable-code-editor";
+import type { TemplateVariableActions } from "./template-variable-popover";
 
 type BodyCodeEditorProps = {
   language: CodeBodyLanguage;
   value: string;
   onChange: (value: string) => void;
+  variableActions?: TemplateVariableActions;
 };
 export type BodyCodeEditorHandle = {
   prettify: () => void;
@@ -48,7 +51,7 @@ const setup = {
 export const BodyCodeEditor = forwardRef<
   BodyCodeEditorHandle,
   BodyCodeEditorProps
->(function BodyCodeEditor({ language, value, onChange }, ref) {
+>(function BodyCodeEditor({ language, value, onChange, variableActions }, ref) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   useImperativeHandle(
     ref,
@@ -92,9 +95,10 @@ export const BodyCodeEditor = forwardRef<
       purrCodeHighlighting,
       purrFoldGutter,
       EditorView.lineWrapping,
-      autocompletion(
-        language === "text" ? { override: [completeAnyWord] } : {},
-      ),
+      autocompletion(variableActions
+        ? { override: [templateVariableCompletion(variableActions), language === "json" ? jsonKeywords : completeAnyWord] }
+        : language === "text" ? { override: [completeAnyWord] } : {}),
+      ...(variableActions ? [templateVariableHover(variableActions)] : []),
       linter(
         (view) => getBodyDiagnostics(language, view.state.doc.toString()),
         { delay: 250 },
@@ -106,7 +110,7 @@ export const BodyCodeEditor = forwardRef<
         spellcheck: "false",
       }),
     ],
-    [language],
+    [language, variableActions],
   );
 
   return (

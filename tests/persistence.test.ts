@@ -26,8 +26,8 @@ test("project projection excludes drafts, execution data, cookies and all creden
   request.request.auth.type = "basic"; request.request.auth.basic.password = "basic-password-secret";
   request.request.auth.bearer.token = "inactive-bearer-secret";
   workspace.environments.push({ id: "env", name: "Local", variables: [
-    { id: "secret-id", name: "token", value: "environment-secret", enabled: true, secret: true },
-    { id: "plain-id", name: "base_url", value: "https://example.com", enabled: false, secret: false },
+    { id: "secret-id", name: "token", kind: "static", value: "environment-secret", loaded: true, sensitive: true, enabled: true },
+    { id: "plain-id", name: "base_url", kind: "static", value: "https://example.com", sensitive: false, enabled: false },
   ] });
   workspace.activeEnvironmentId = "env";
   let projected = await projectWorkspace(workspace, secure);
@@ -48,7 +48,7 @@ test("project projection excludes drafts, execution data, cookies and all creden
   assert.equal(document.request.body.json, request.request.body.json);
   assert.equal(document.request.environmentId, "env");
   assert.equal(document.request.auth.basic.password, "basic-password-secret");
-  assert.equal(restored.environments[0].variables[0].value, "environment-secret");
+  assert.equal(restored.environments[0].variables[0].kind === "static" ? restored.environments[0].variables[0].value : "", "environment-secret");
   assert.equal(restored.environments[0].variables[1].enabled, false);
 });
 
@@ -60,18 +60,42 @@ test("schema sources are shareable, caches local and explicit pinned SDL is sepa
   workspace.documents = [schema, query];
   const secure = new MemorySecureStore(); let projected = await projectWorkspace(workspace, secure);
   const resource = projected.project.resources.find((item) => item.id === schema.id)!;
-  assert.ok(!serializeResource(resource).includes("type Query"));
+  assert.ok(resource.kind === "schema" && resource.pin && resource.pinnedSdl === schema.sdl);
   assert.ok(projected.local.some((record) => record.table === "schema_cache"));
   schema.pinned = true; projected = await projectWorkspace(workspace, secure);
   const pinned = projected.project.resources.find((item) => item.id === schema.id)!;
   assert.ok(serializeResource(pinned, `schemas/${schema.id}.graphql`).includes("pinned:"));
   assert.deepEqual(deserializeResource(serializeResource(pinned, `schemas/${schema.id}.graphql`), () => schema.sdl), pinned);
+  schema.pinned = false; projected = await projectWorkspace(workspace, secure);
+  const unpinned = projected.project.resources.find((item) => item.id === schema.id)!;
+  const unpinnedYaml = serializeResource(unpinned, `schemas/${schema.id}.graphql`);
+  assert.match(unpinnedYaml, /pin: false/);
+  assert.equal(deserializeResource(unpinnedYaml).kind === "schema" && deserializeResource(unpinnedYaml).pin, false);
+});
+
+test("first-class workspace variables are deterministic and secret values never enter YAML", async () => {
+  const workspace = createWorkspace("Variables", "variables");
+  const secure = new MemorySecureStore();
+  workspace.variables = [
+    { id: "base-url", name: "base_url", enabled: true, sensitive: false, kind: "static", value: "https://example.test" },
+    { id: "api-token", name: "api_token", enabled: true, sensitive: true, kind: "static", value: "local-only-value", loaded: true },
+    { id: "upload-url", name: "upload_url", enabled: true, sensitive: true, kind: "dynamic-request", documentId: "", expression: "$.media.url", language: "jsonpath", refresh: "cache", cacheTtlSeconds: 300, environment: { type: "current" } },
+  ];
+  const first = await projectWorkspace(workspace, secure);
+  const yaml = serializeManifest(first.project.workspace);
+  assert.equal(serializeManifest(first.project.workspace), yaml);
+  assert.match(yaml, /kind: dynamic-request/);
+  assert.match(yaml, /secretRef: purr\/variables\/variables\/api-token/);
+  assert.doesNotMatch(yaml, /local-only-value/);
+  const restored = await restoreWorkspace(first.project, first.local, secure, {});
+  assert.equal(restored.variables.find((variable) => variable.name === "api_token")?.kind === "static"
+    ? restored.variables.find((variable) => variable.name === "api_token")?.value : "", "local-only-value");
 });
 
 test("legacy workspace migrates once; UI saves do not rewrite project files, rename keeps paths and secret references", async () => {
   const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const workspace = createWorkspace("Legacy", "legacy");
   const request = workspace.documents[0]; assert.ok(isRequestDocument(request)); request.saved = true; request.savedRequest = cloneRequestDraft(request.request);
-  workspace.environments.push({ id: "env", name: "Staging", variables: [{ id: "stable", name: "password", value: "do-not-export", secret: true, enabled: true }] });
+  workspace.environments.push({ id: "env", name: "Staging", variables: [{ id: "stable", name: "password", kind: "static", value: "do-not-export", loaded: true, sensitive: true, enabled: true }] });
   workspace.activeEnvironmentId = "env";
   backend.snapshot.legacy = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
   const persistence = new WorkspacePersistence(backend, secure); const loaded = await persistence.load();
@@ -82,7 +106,7 @@ test("legacy workspace migrates once; UI saves do not rewrite project files, ren
   loaded.workspaces[0].documents[0].name = "Renamed request"; await persistence.save(loaded);
   assert.deepEqual(Object.keys(backend.snapshot.workspaces[0].files), paths);
   const reloaded = await new WorkspacePersistence(backend, secure).load();
-  assert.equal(reloaded.workspaces[0].environments[0].variables[0].value, "do-not-export");
+  assert.equal(reloaded.workspaces[0].environments[0].variables[0].kind === "static" ? reloaded.workspaces[0].environments[0].variables[0].value : "", "do-not-export");
   assert.equal(reloaded.workspaces[0].environments[0].variables[0].name, "renamed_password");
 });
 

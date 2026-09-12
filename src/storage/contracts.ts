@@ -12,7 +12,7 @@ export type LocalTable = "workspace_local_state" | "drafts" | "document_session_
 export type LocalRecord = { table: LocalTable; id: string; value: unknown };
 export type LocalChange = { table: LocalTable; id: string; value: unknown | null };
 export type StoredWorkspace = { id: string; files: Record<string, ProjectFile>; local: LocalRecord[] };
-export type StorageSnapshot = { activeWorkspaceId: string; workspaces: StoredWorkspace[]; legacy?: unknown };
+export type StorageSnapshot = { activeWorkspaceId: string; workspaces: StoredWorkspace[]; global?: LocalRecord[]; legacy?: unknown };
 
 export interface FilesystemWorkspaceStore {
   loadWorkspace(id: string): Promise<StoredWorkspace>;
@@ -33,6 +33,8 @@ export interface PersistenceBackend extends FilesystemWorkspaceStore, LocalState
   load(): Promise<StorageSnapshot>;
   commit(id: string, files: FileChange[], local: LocalChange[]): Promise<Record<string, ProjectFile>>;
   setActiveWorkspace(id: string): Promise<void>;
+  writeGlobal(changes: LocalChange[]): Promise<void>;
+  deleteWorkspace(id: string): Promise<void>;
   finishMigration(): Promise<void>;
   attachDirectory?(id: string, directory: string): Promise<StoredWorkspace>;
 }

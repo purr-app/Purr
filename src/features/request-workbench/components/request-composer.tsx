@@ -1,5 +1,6 @@
 import { ChevronDown, LoaderCircle, Network, SendHorizontal } from "lucide-react";
 import type { GraphQLSchema } from "graphql";
+import { useMemo, useRef } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
@@ -17,9 +18,11 @@ import {
 import { RequestSectionPanel } from "./request-section-panel";
 import { RequestSectionTabs } from "./request-section-tabs";
 import type { RequestEditorSection } from "../model/request-editor-section";
-import type { AuthContext, AuthSourceDocumentOption } from "../model/request-auth";
+import type { AuthContext } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import { applyWorkspaceRequestConfig, type RequestKind, type WorkspaceRequestConfig } from "../model/request-workspace-config";
+import type { Variable } from "../../workspaces/model/workspace";
+import { TemplateVariablePopover, type TemplateVariableActions } from "./template-variable-popover";
 
 type RequestComposerProps = {
   schema?: GraphQLSchema;
@@ -39,7 +42,9 @@ type RequestComposerProps = {
   onOpenCode: () => void;
   requestKind: RequestKind;
   workspaceConfig: WorkspaceRequestConfig;
-  responseSourceDocuments: readonly AuthSourceDocumentOption[];
+  variableDefinitions: readonly Variable[];
+  onOpenVariable: (id: string) => void;
+  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") => void;
 };
 
 export function RequestComposer({
@@ -60,12 +65,21 @@ export function RequestComposer({
   onOpenCode,
   requestKind,
   workspaceConfig,
-  responseSourceDocuments,
+  variableDefinitions,
+  onOpenVariable,
+  onCreateMissingVariable,
 }: RequestComposerProps) {
   const effectiveDraft = applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig);
   const headers = getRequestHeaders(effectiveDraft, authContext);
 
   const selectSection = onSectionChange;
+  const variableActionsRef = useRef<TemplateVariableActions>({ definitions: variableDefinitions, onOpenVariable, onCreateMissingVariable });
+  variableActionsRef.current = { definitions: variableDefinitions, onOpenVariable, onCreateMissingVariable };
+  const variableActions = useMemo<TemplateVariableActions>(() => ({
+    get definitions() { return variableActionsRef.current.definitions; },
+    onOpenVariable: (id) => variableActionsRef.current.onOpenVariable(id),
+    onCreateMissingVariable: (name, kind) => variableActionsRef.current.onCreateMissingVariable(name, kind),
+  }), []);
 
   return (
     <section
@@ -88,22 +102,15 @@ export function RequestComposer({
               value={draft.method}
               onValueChange={(method) => onDraftChange({ ...draft, method })}
             />}
-            <Input
+            <div className="min-w-0 flex-1"><TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params) })}>{(bindings) => <Input
               className="h-control-md min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
               variant="transparent"
               value={draft.url}
-              onChange={(event) => {
-                const url = event.target.value;
-                onDraftChange({
-                  ...draft,
-                  url,
-                  params: getRequestQueryParamsFromUrl(url, draft.params),
-                });
-              }}
+              {...bindings}
               aria-label="Request URL"
               placeholder="Enter URL or use {{base_url}}"
               spellCheck="false"
-            />
+            />}</TemplateVariablePopover></div>
             {draft.graphql && <Button type="button" variant="ghost" size="sm" aria-label="Open GraphQL schema" title="Schema explorer · introspection or import" onClick={onOpenSchema}>
               <Network className="size-ui-4 text-action-graphql" /><span className="hidden lg:inline">Schema</span>
             </Button>}
@@ -177,7 +184,7 @@ export function RequestComposer({
               authContext={authContext}
               authRuntime={authRuntime}
               effectiveDraft={effectiveDraft}
-              responseSourceDocuments={responseSourceDocuments}
+              variableActions={variableActions}
             />
         </div>
       </div>

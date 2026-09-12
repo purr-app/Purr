@@ -36,12 +36,6 @@ export type RequestAuth = {
   bearer: {
     token: string;
     prefix: string;
-    source: "manual" | "response";
-    endpointPath: string;
-    endpointDocumentId: string;
-    expression: string;
-    receivedToken: string;
-    responseError: string;
   };
   basic: { username: string; password: string };
   apiKey: {
@@ -53,11 +47,11 @@ export type RequestAuth = {
   inherit: { source: "auto" | "workspace" | "environment" };
 };
 export type AuthProfile = { id: string; name: string; auth: RequestAuth };
-export type AuthSourceDocumentOption = { id: string; name: string };
 export type AuthContext = {
   workspace?: AuthProfile;
   environment?: AuthProfile;
   variables?: Record<string, string>;
+  sensitiveVariableNames?: readonly string[];
   requestDocumentId?: string;
 };
 export type AuthBinding = {
@@ -72,12 +66,6 @@ export function createRequestAuth(): RequestAuth {
     bearer: {
       token: "",
       prefix: "Bearer",
-      source: "manual",
-      endpointPath: "/auth/token",
-      endpointDocumentId: "",
-      expression: ".access_token",
-      receivedToken: "",
-      responseError: "",
     },
     basic: { username: "", password: "" },
     apiKey: { name: "", value: "", placement: "header" },
@@ -159,166 +147,7 @@ export function base64Bytes(bytes: Uint8Array): string {
 export const encodeBasicAuth = (username: string, password: string) =>
   base64Bytes(new TextEncoder().encode(username + ":" + password));
 
-export function readResponseToken(body: unknown, pointer: string): string {
-  if (pointer && !pointer.startsWith("/"))
-    throw new Error("Use a JSON Pointer, for example /data/access_token.");
-  let value = body;
-  for (const part of pointer ? pointer.slice(1).split("/") : []) {
-    const key = part.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !Object.prototype.hasOwnProperty.call(value, key)
-    )
-      throw new Error("No token exists at that response path.");
-    value = (value as Record<string, unknown>)[key];
-  }
-  if (typeof value !== "string" || !value)
-    throw new Error("The response token must be a non-empty string.");
-  return value;
-}
-
-function parseResponseExpression(expression: string): string[] {
-  let source = expression.trim();
-  if (source.startsWith("$response")) source = source.slice(9);
-  if (!source || source === ".") return [];
-
-  const path: string[] = [];
-  let offset = 0;
-  while (offset < source.length) {
-    if (source[offset] === ".") {
-      offset += 1;
-      if (source[offset] === "[") continue;
-      const start = offset;
-      while (offset < source.length && !".[]".includes(source[offset]))
-        offset += 1;
-      const key = source.slice(start, offset).trim();
-      if (!key)
-        throw new Error("Use a response path such as .auth.token.");
-      path.push(key);
-      continue;
-    }
-    if (source[offset] === "[") {
-      const end = source.indexOf("]", offset + 1);
-      if (end < 0) throw new Error("Close the bracket in the response path.");
-      const segment = source.slice(offset + 1, end).trim();
-      if (/^\d+$/.test(segment)) path.push(segment);
-      else {
-        try {
-          const key = JSON.parse(segment);
-          if (typeof key !== "string") throw new Error();
-          path.push(key);
-        } catch {
-          throw new Error(
-            'Use a numeric index or quoted key inside brackets, for example .items[0] or .["access-token"].',
-          );
-        }
-      }
-      offset = end + 1;
-      continue;
-    }
-    throw new Error("Use a response path such as .auth.token.");
-  }
-  return path;
-}
-
-export function readResponseTokenExpression(
-  body: unknown,
-  expression: string,
-): string {
-  let value = body;
-  for (const key of parseResponseExpression(expression)) {
-    if (
-      !value ||
-      typeof value !== "object" ||
-      !Object.prototype.hasOwnProperty.call(value, key)
-    )
-      throw new Error("No token exists at that response path.");
-    value = (value as Record<string, unknown>)[key];
-  }
-  if (typeof value !== "string" || !value)
-    throw new Error("The response token must be a non-empty string.");
-  return value;
-}
-
-export function isBearerResponseEndpoint(
-  auth: RequestAuth,
-  responseUrl: string,
-  responseDocumentId?: string,
-): boolean {
-  if (auth.type !== "bearer" || auth.bearer.source !== "response")
-    return false;
-  if (auth.bearer.endpointDocumentId)
-    return Boolean(responseDocumentId && auth.bearer.endpointDocumentId === responseDocumentId);
-  const configured = auth.bearer.endpointPath.trim();
-  if (!configured) return false;
-  try {
-    const actual = new URL(responseUrl);
-    if (/^https?:\/\//i.test(configured)) {
-      const expected = new URL(configured);
-      return (
-        actual.origin === expected.origin &&
-        actual.pathname === expected.pathname
-      );
-    }
-    const expectedPath = configured.startsWith("/")
-      ? configured
-      : `/${configured}`;
-    return actual.pathname === expectedPath;
-  } catch {
-    return false;
-  }
-}
-
-export function captureBearerResponseToken(
-  auth: RequestAuth,
-  responseUrl: string,
-  body: unknown,
-  responseDocumentId?: string,
-): RequestAuth {
-  if (!isBearerResponseEndpoint(auth, responseUrl, responseDocumentId)) return auth;
-  try {
-    return {
-      ...auth,
-      bearer: {
-        ...auth.bearer,
-        receivedToken: readResponseTokenExpression(
-          body,
-          auth.bearer.expression,
-        ),
-        responseError: "",
-      },
-    };
-  } catch (error) {
-    return {
-      ...auth,
-      bearer: {
-        ...auth.bearer,
-        receivedToken: "",
-        responseError:
-          error instanceof Error
-            ? error.message
-            : "Could not read a token from the response.",
-      },
-    };
-  }
-}
-
 export function getBearerToken(auth: RequestAuth, context: AuthContext = {}) {
-  if (auth.bearer.source === "response") {
-    if (!auth.bearer.endpointDocumentId && !auth.bearer.endpointPath.trim())
-      throw new Error("Select the saved request that returns the token.");
-    if (!auth.bearer.expression.trim())
-      throw new Error("Enter the response path for the token.");
-    if (!auth.bearer.receivedToken)
-      throw new Error(
-        auth.bearer.responseError ||
-          "No token has been received from the selected request yet.",
-      );
-    return auth.bearer.receivedToken
-      .trim()
-      .replace(/^Bearer\s+/i, "");
-  }
   return resolveAuthValue(auth.bearer.token, context)
     .trim()
     .replace(/^Bearer\s+/i, "");
@@ -329,9 +158,7 @@ export function getAuthBindingForRequest(
   requestUrl: string,
   context: AuthContext = {},
 ) {
-  const resolved = resolveAuth(auth, context);
-  if (resolved.error) return { error: resolved.error };
-  if (isBearerResponseEndpoint(resolved.auth, requestUrl, context.requestDocumentId)) return {};
+  void requestUrl;
   return getAuthBinding(auth, context);
 }
 

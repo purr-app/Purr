@@ -24,6 +24,7 @@ import {
 } from "../../../shared/components/ui/popover";
 import { FileUploader } from "../../../shared/components/ui/file-uploader";
 import { SelectField } from "../../../shared/components/ui/select-field";
+import { TemplateVariablePopover, type TemplateVariableActions } from "./template-variable-popover";
 
 export type KeyValueEntry = {
   id: string;
@@ -59,6 +60,7 @@ type KeyValueEditorProps = {
   onReadOnlyEnabledChange?: (entry: KeyValueEntry, enabled: boolean) => void;
   scopeOptions?: readonly { value: string; label: string }[];
   scopeLabel?: (entry: KeyValueEntry) => string;
+  variableActions?: TemplateVariableActions;
 };
 
 type KeyValueFieldProps = {
@@ -77,6 +79,7 @@ type KeyValueFieldProps = {
   readOnly?: boolean;
   label?: string;
   secret?: boolean;
+  variableActions?: TemplateVariableActions;
 };
 
 function hasEntryContent(entry: KeyValueEntry) {
@@ -149,6 +152,7 @@ export function KeyValueEditor({
   onReadOnlyEnabledChange,
   scopeOptions,
   scopeLabel,
+  variableActions,
 }: KeyValueEditorProps) {
   const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
   const [dropTargetEntryId, setDropTargetEntryId] = useState<string | null>(
@@ -391,6 +395,7 @@ export function KeyValueEditor({
             canToggleReadOnly={Boolean(entry.readOnly && onReadOnlyEnabledChange)}
             scopeOptions={scopeOptions}
             scopeLabel={scopeLabel}
+            variableActions={variableActions}
           />
         ))}
       </div>
@@ -423,6 +428,7 @@ type KeyValueRowProps = {
   canToggleReadOnly: boolean;
   scopeOptions?: readonly { value: string; label: string }[];
   scopeLabel?: (entry: KeyValueEntry) => string;
+  variableActions?: TemplateVariableActions;
 };
 
 function KeyValueRow({
@@ -450,6 +456,7 @@ function KeyValueRow({
   canToggleReadOnly,
   scopeOptions,
   scopeLabel,
+  variableActions,
 }: KeyValueRowProps) {
   const valueInputRef = useRef<HTMLInputElement>(null);
   const hasContent = hasEntryContent(entry);
@@ -553,6 +560,7 @@ function KeyValueRow({
               onValueCommit();
             }
           }}
+          variableActions={variableActions}
         />
       )}
       {scopeOptions && entry.scope ? (
@@ -823,6 +831,7 @@ function KeyValueField({
   readOnly,
   label,
   secret = false,
+  variableActions,
 }: KeyValueFieldProps) {
   const [revealed, setRevealed] = useState(false);
   if (secret)
@@ -871,8 +880,7 @@ function KeyValueField({
       </div>
     );
 
-  return (
-    <input
+  const input = (bindings?: Parameters<Parameters<typeof TemplateVariablePopover>[0]["children"]>[0]) => <input
       className={cn(
         "h-control-md min-w-0 rounded-ui-md border border-transparent bg-transparent px-ui-2 text-ui-md font-normal text-content-primary outline-none transition-colors duration-ui-fast placeholder:text-content-tertiary focus:border-action-brand focus:bg-purr-surface disabled:cursor-not-allowed disabled:border-transparent disabled:bg-purr-surface disabled:text-content-secondary disabled:opacity-ui-visible",
         font === "code" ? "font-code" : "font-ui",
@@ -884,16 +892,18 @@ function KeyValueField({
       disabled={readOnly}
       aria-readonly={readOnly || undefined}
       aria-label={label}
-      ref={inputRef}
+      ref={bindings?.ref ?? inputRef}
       value={value}
       placeholder={placeholder}
       spellCheck="false"
       aria-invalid={invalid || undefined}
       title={invalid ? validationMessage : undefined}
-      onChange={(event) => onChange(event.target.value)}
+      onChange={bindings?.onChange ?? ((event) => onChange(event.target.value))}
       onFocus={onFocus}
       onBlur={onBlur}
-      onKeyDown={onKeyDown}
-    />
-  );
+      onClick={bindings?.onClick}
+      onKeyUp={bindings?.onKeyUp}
+      onKeyDown={(event) => { bindings?.onKeyDown(event); if (!event.defaultPrevented) onKeyDown?.(event); }}
+    />;
+  return variableActions ? <TemplateVariablePopover value={value} onValueChange={onChange} actions={variableActions} inputRef={inputRef}>{(bindings) => input(bindings)}</TemplateVariablePopover> : input();
 }

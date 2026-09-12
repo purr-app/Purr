@@ -14,6 +14,7 @@ import {
   CircleAlert,
   Code2,
   Search,
+  RefreshCw,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -46,6 +47,8 @@ import { downloadResponseBody } from "../services/download-response";
 import type { HttpResult } from "../services/http-client";
 import { ResponseCodeViewer } from "./response-code-viewer";
 import { formatHttpRequest } from "../model/request-code";
+
+export type ResponseVariableCandidate = { name: string; value: string; jsonPath: string; jq: string; dynamic: boolean };
 
 type ResponseTab =
   | "response"
@@ -242,7 +245,22 @@ function BinaryResponsePanel({ response, info }: { response: HttpResult; info: R
   </div>;
 }
 
-function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string }) {
+function propertyPath(base: string, key: string) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? `${base}.${key}` : `${base}[${JSON.stringify(key)}]`;
+}
+
+function findResponseField(root: unknown, key: string, base = "$", seen = new Set<unknown>()): { path: string; value: unknown } | undefined {
+  if (!root || typeof root !== "object" || seen.has(root)) return undefined;
+  seen.add(root);
+  if (!Array.isArray(root) && Object.prototype.hasOwnProperty.call(root, key)) return { path: propertyPath(base, key), value: (root as Record<string, unknown>)[key] };
+  for (const [childKey, child] of Object.entries(root)) {
+    const found = findResponseField(child, key, Array.isArray(root) ? `${base}[${childKey}]` : propertyPath(base, childKey), seen);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", onCreateVariable }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
   const rawInfo = useMemo(
     () => inspectResponseBody(response.headers, response.text),
     [response.headers, response.text],
@@ -258,6 +276,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
   const [queryLanguage, setQueryLanguage] =
     useState<ResponseQueryLanguage>("jq");
   const [query, setQuery] = useState("");
+  const [fieldMenu, setFieldMenu] = useState<{ x: number; y: number; name: string; value: string; jsonPath: string; jq: string } | null>(null);
   useEffect(() => {
     setMode("pretty");
     setQuery("");
@@ -304,6 +323,15 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
         : info.kind === "xml" || info.kind === "html"
           ? "xml"
           : "text";
+  const openFieldMenu = language === "json" && rawInfo.parsedJson !== undefined ? ({ text, x, y }: { text: string; x: number; y: number }) => {
+    const match = text.trim().match(/^"((?:\\.|[^"\\])+)"\s*:/);
+    if (!match) return;
+    const name = JSON.parse(`"${match[1]}"`) as string;
+    const found = findResponseField(rawInfo.parsedJson, name);
+    if (!found) return;
+    const value = typeof found.value === "string" ? found.value : JSON.stringify(found.value) ?? String(found.value);
+    setFieldMenu({ x, y, name, value, jsonPath: found.path, jq: found.path.replace(/^\$/, "") || "." });
+  } : undefined;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -389,7 +417,15 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty" }:
       <div className="min-h-0 flex-1">
         {binaryOverview ? <BinaryResponsePanel response={response} info={rawInfo} />
           : visualPreview ? <ResponsePreview response={response} info={rawInfo} />
-            : <ResponseCodeViewer value={content} language={language} />}
+            : <><ResponseCodeViewer value={content} language={language} onLineContextMenu={openFieldMenu} />
+            {fieldMenu ? <Popover open onOpenChange={(open) => { if (!open) setFieldMenu(null); }}><PopoverAnchor asChild><span aria-hidden="true" className="fixed size-ui-0" style={{ left: fieldMenu.x, top: fieldMenu.y }} /></PopoverAnchor><PopoverContent role="menu" aria-label="Response field actions" align="start" className="w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
+              <Button role="menuitem" variant="ghost" className="w-full justify-start" onClick={() => { void navigator.clipboard.writeText(fieldMenu.value); setFieldMenu(null); }}><Copy className="size-ui-4" />Copy value</Button>
+              <Button role="menuitem" variant="ghost" className="w-full justify-start font-code" onClick={() => { void navigator.clipboard.writeText(fieldMenu.jsonPath); setFieldMenu(null); }}>JSONPath <span className="ml-auto truncate text-content-tertiary">{fieldMenu.jsonPath}</span></Button>
+              <Button role="menuitem" variant="ghost" className="w-full justify-start font-code" onClick={() => { void navigator.clipboard.writeText(fieldMenu.jq); setFieldMenu(null); }}>jq <span className="ml-auto truncate text-content-tertiary">{fieldMenu.jq}</span></Button>
+              <div role="separator" className="mx-ui-1 my-ui-1 border-t border-border-default" />
+              <Button role="menuitem" variant="ghost" className="w-full justify-start" onClick={() => { onCreateVariable?.({ ...fieldMenu, dynamic: false }); setFieldMenu(null); }}><Braces className="size-ui-4 text-action-brand" />Create variable from value</Button>
+              <Button role="menuitem" variant="ghost" className="w-full justify-start" onClick={() => { onCreateVariable?.({ ...fieldMenu, dynamic: true }); setFieldMenu(null); }}><RefreshCw className="size-ui-4 text-action-brand" />Create dynamic variable</Button>
+            </PopoverContent></Popover> : null}</>}
       </div>
     </div>
   );
@@ -431,11 +467,15 @@ function ResponseHeadersPanel({ response }: { response: HttpResult }) {
 }
 
 function ResponseRequestPanel({ response }: { response: HttpResult }) {
-  const value = useMemo(() => formatHttpRequest(response.timeline.request), [response.timeline.request]);
+  const [revealed, setRevealed] = useState(false);
+  const request = revealed ? response.timeline.request : response.timeline.displayRequest ?? response.timeline.request;
+  const value = useMemo(() => formatHttpRequest(request), [request]);
   return <div className="flex h-full min-h-0 flex-col bg-purr-codefield">
     <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-ui-3 py-ui-2">
       <span className="font-code text-ui-xs text-content-tertiary">HTTP/1.1 message</span>
-      <CopyResponseButton value={value} label="Copy HTTP request" />
+      <div className="flex items-center gap-ui-1"><Button type="button" variant="ghost" size="icon" aria-label={revealed ? "Hide request secrets" : "Reveal request secrets"} aria-pressed={revealed} title={revealed ? "Hide request secrets" : "Reveal request secrets"} onClick={() => setRevealed(!revealed)}>
+        {revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}
+      </Button><CopyResponseButton value={value} label="Copy HTTP request" /></div>
     </div>
     <div className="min-h-0 flex-1"><ResponseCodeViewer value={value} language="text" ariaLabel="HTTP request viewer" /></div>
   </div>;
@@ -923,7 +963,7 @@ function NetworkDetailsPopover({ response }: { response: HttpResult }) {
   );
 }
 
-export function ResponseViewer({ response, graphql = false }: { response: HttpResult; graphql?: boolean }) {
+export function ResponseViewer({ response, graphql = false, onCreateVariable }: { response: HttpResult; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
   const [tab, setTab] = useState<ResponseTab>("response");
   const graphqlResult = useMemo(() => graphql ? inspectGraphqlResponse(response) : undefined, [graphql, response]);
   const graphqlDataResponse = useMemo(() => graphqlResult && "data" in graphqlResult ? responseWithJson(response, graphqlResult.data) : undefined, [graphqlResult, response]);
@@ -1015,7 +1055,7 @@ export function ResponseViewer({ response, graphql = false }: { response: HttpRe
         aria-labelledby={`response-tab-${tab}`}
         className="min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} /> : null}
+        {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} /> : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}

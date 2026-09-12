@@ -40,14 +40,14 @@ test("every auth credential and runtime OAuth token uses SecureStore; explicit p
   for (const type of ["bearer", "basic", "api-key", "oauth2"] as const) {
     const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore();
     const auth = document.request.auth; auth.type = type;
-    auth.bearer.token = "secret-bearer"; auth.bearer.receivedToken = "secret-response";
+    auth.bearer.token = "secret-bearer";
     auth.basic.password = "secret-password"; auth.apiKey.value = "secret-api-key";
     auth.oauth2.clientSecret = "secret-client";
     auth.oauth2.token = { tokenType: "Bearer", accessToken: "secret-access", refreshToken: "secret-refresh", obtainedAt: 1 };
     document.savedRequest = cloneRequestDraft(document.request);
     const projected = await projectWorkspace(workspace, secure);
     const serialized = serializeResource(projected.project.resources[0]) + JSON.stringify(projected.local);
-    for (const secret of ["secret-bearer", "secret-response", "secret-password", "secret-api-key", "secret-client", "secret-access", "secret-refresh"]) assert.ok(!serialized.includes(secret), `${type}: ${secret}`);
+    for (const secret of ["secret-bearer", "secret-password", "secret-api-key", "secret-client", "secret-access", "secret-refresh"]) assert.ok(!serialized.includes(secret), `${type}: ${secret}`);
     const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
     assert.ok(isRequestDocument(restored.documents[0]));
     assert.equal(restored.documents[0].request.auth.oauth2.token?.refreshToken, "secret-refresh");
@@ -60,14 +60,25 @@ test("every auth credential and runtime OAuth token uses SecureStore; explicit p
 
 test("inactive environment secrets are resolved on demand and saving does not overwrite them with blanks", async () => {
   const { workspace } = savedWorkspace(); const secure = new MemorySecureStore();
-  workspace.environments = [{ id: "staging", name: "Staging", variables: [{ id: "stable", name: "password", value: "retained-secret", secret: true, enabled: true }] }];
+  workspace.environments = [{ id: "staging", name: "Staging", variables: [{ id: "stable", name: "password", kind: "static", value: "retained-secret", loaded: true, sensitive: true, enabled: true }] }];
   const projected = await projectWorkspace(workspace, secure);
   const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
-  assert.equal(restored.environments[0].variables[0].value, "");
-  assert.equal(restored.environments[0].variables[0].secretLoaded, false);
+  assert.deepEqual(restored.environments[0].variables[0], { id: "stable", name: "password", enabled: true, sensitive: true, kind: "static", secretRef: "purr/backend/environments/staging/stable", value: "", loaded: false });
   await projectWorkspace(restored, secure);
   const resolved = await resolveEnvironmentSecrets(restored.environments[0], secure);
-  assert.equal(resolved.variables[0].value, "retained-secret");
+  assert.equal(resolved.variables[0].kind === "static" ? resolved.variables[0].value : "", "retained-secret");
+});
+
+test("sensitive dynamic cache values use SecureStore instead of SQLite plaintext", async () => {
+  const { workspace } = savedWorkspace(); const secure = new MemorySecureStore();
+  workspace.variables = [{ id: "token", name: "access_token", enabled: true, sensitive: true, kind: "dynamic-request",
+    documentId: workspace.documents[0].id, expression: "$.token", language: "jsonpath", refresh: "session", environment: { type: "current" } }];
+  workspace.dynamicVariableCache["token:none"] = { status: "success", value: "runtime-token", resolvedAt: new Date(0).toISOString(), durationMs: 5,
+    environmentId: null, fingerprint: JSON.stringify(workspace.variables[0]) };
+  const projected = await projectWorkspace(workspace, secure);
+  assert.doesNotMatch(JSON.stringify(projected.local), /runtime-token/);
+  const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
+  assert.equal(restored.dynamicVariableCache["token:none"].value, "runtime-token");
 });
 
 test("schema cache invalidates on external source changes and custom SDL sidecar paths remain stable", async () => {
@@ -148,7 +159,82 @@ test("strict manifests upgrade omitted defaults but reject unknown keys; externa
   assert.deepEqual(manifest.headers, []); assert.deepEqual(manifest.auth, []);
   assert.deepEqual(deserializeManifest(serializeManifest(manifest)), manifest);
   assert.throws(() => deserializeManifest("purr: 1\nworkspace:\n  id: project\n  name: Project\n  activeDocument: user\n"), /Invalid/);
-  assert.throws(() => validateProject({ workspace: manifest, resources: [{ kind: "environment", id: "env", name: "env", variables: [{ name: "bad", enabled: true, value: { kind: "secret", ref: "purr/other/credential" } }] }] }), /belong to this workspace/);
+  assert.throws(() => validateProject({ workspace: manifest, resources: [{ kind: "environment", id: "env", name: "env", variables: [{ id: "bad", name: "bad", enabled: true, sensitive: true, kind: "static", secretRef: "purr/other/credential" }] }] }), /belong to this workspace/);
+});
+
+test("an empty environment survives compact YAML serialization", () => {
+  const environment = deserializeResource("purr: 1\nkind: environment\nid: local\nname: Local\n");
+  assert.equal(environment.kind, "environment");
+  if (environment.kind !== "environment") return;
+  assert.deepEqual(environment.variables, []);
+  assert.deepEqual(deserializeResource(serializeResource(environment)), environment);
+});
+
+test("known development-only variable and auth shapes are rewritten to canonical YAML during startup", async () => {
+  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore();
+  const manifest = `purr: 1
+workspace:
+  id: project
+  name: Project
+  variables:
+    - id: runtime
+      name: runtime_url
+      source:
+        type: dynamic-request
+        documentId: source
+        expression: $.url
+        language: jsonpath
+        execution: once
+        environment:
+          type: current
+defaults:
+  auth:
+    - id: auth
+      name: Shared auth
+      scope: all
+      config:
+        type: bearer
+        token:
+          kind: secret
+          ref: purr/project/auth/auth/bearer
+        prefix: Bearer
+        response:
+          documentId: source
+          expression: $.token
+`;
+  const request = `purr: 1
+kind: http
+id: source
+name: Source
+url: https://example.test/source
+method: GET
+`;
+  const environment = `purr: 1
+kind: environment
+id: local
+name: Local
+variables:
+  - id: base-url
+    name: base_url
+    source:
+      type: value
+      value: https://example.test
+`;
+  backend.snapshot = { activeWorkspaceId: "project", workspaces: [{ id: "project", local: [], files: {
+    "purr.yaml": { content: manifest, revision: "manifest" },
+    "requests/source.yaml": { content: request, revision: "request" },
+    "environments/local.yaml": { content: environment, revision: "environment" },
+  } }] };
+
+  const loaded = await new WorkspacePersistence(backend, secure).load();
+  assert.equal(loaded.workspaces[0].variables[0].kind, "dynamic-request");
+  const savedManifest = backend.snapshot.workspaces[0].files["purr.yaml"].content;
+  const savedEnvironment = backend.snapshot.workspaces[0].files["environments/local.yaml"].content;
+  assert.doesNotMatch(savedManifest, /\n\s+response:/); assert.doesNotMatch(savedManifest, /\n\s+source:/);
+  assert.match(savedManifest, /kind: dynamic-request/); assert.match(savedManifest, /refresh: session/);
+  assert.doesNotMatch(savedEnvironment, /\n\s+source:/); assert.match(savedEnvironment, /kind: static/);
+  assert.ok(backend.writes.some((write) => write.path === "purr.yaml"));
+  assert.ok(backend.writes.some((write) => write.path === "environments/local.yaml"));
 });
 
 test("invalid importer credential scope is rejected before writing any secret or resource", async () => {

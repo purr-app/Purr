@@ -95,7 +95,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
     const next = typeof change === "function" ? change(schemaDraft) : change;
     if (source) setSourceDraft(next);
     onChange({ endpoint: next.url, ...(document.schemaSource && "endpoint" in document.schemaSource ? { schemaSource: { ...document.schemaSource, endpoint: next.url } } : {}),
-      ...(next.url !== endpoint && !document.pinned ? { sdl: "", loadedAt: null } : {}) });
+      ...(next.url !== endpoint && document.pinned === false ? { sdl: "", loadedAt: null } : {}) });
   }, [document.pinned, document.schemaSource, endpoint, onChange, schemaDraft, setSourceDraft, source]);
   const runtime = useAuthRuntime(schemaDraft, setSchemaDraft, context, setContext);
   const parsed = useMemo(() => { try { return { schema: document.sdl ? parseGraphqlSchema(document.sdl) : undefined, error: "" }; } catch (cause) { return { schema: undefined, error: String(cause) }; } }, [document.sdl]);
@@ -164,7 +164,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
       <input ref={upload} type="file" accept=".graphql,.gql,.graphqls,.sdl,.json,text/plain,application/json" aria-label="Schema file" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
       <Button variant="ghost" size="icon" aria-label={document.ui.sourcePaneOpen ? "Hide SDL pane" : "Show SDL pane"} title={document.ui.sourcePaneOpen ? "Hide source pane" : "Show source pane"} aria-pressed={document.ui.sourcePaneOpen} onClick={() => onChange({ ui: { ...document.ui, sourcePaneOpen: !document.ui.sourcePaneOpen } })}>{document.ui.sourcePaneOpen ? <PanelRightClose className="size-ui-4" /> : <PanelRightOpen className="size-ui-4" />}</Button>
       <Button variant="ghost" size="icon" aria-label="Download schema" onClick={download} disabled={!schema}><Download className="size-ui-4" /></Button>
-      <Button variant="ghost" size="icon" aria-label="Pin schema SDL to project" title="Save a pinned SDL snapshot in the project directory" aria-pressed={Boolean(document.pinned)} className={document.pinned ? "text-action-brand" : undefined} onClick={() => onChange({ pinned: !document.pinned })} disabled={!schema}><Pin className="size-ui-4" /></Button>
+      <Button variant="ghost" size="icon" aria-label="Pin schema SDL to project" title="Pinned schemas are saved as SDL in the workspace and stay available after restarting Purr" aria-pressed={document.pinned !== false} className={document.pinned !== false ? "text-action-brand" : undefined} onClick={() => onChange({ pinned: document.pinned === false })} disabled={!schema}><Pin className="size-ui-4" /></Button>
     </div>
     {(error || parsed.error) && <p role="alert" className="shrink-0 whitespace-pre-wrap rounded-ui-md bg-purr-elevated px-ui-3 py-ui-2 text-ui-sm text-accent-red">{error || parsed.error}</p>}
     {!schema ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-ui-3 rounded-ui-xl border border-border-subtle bg-purr-surface p-ui-6 text-center"><Network className="size-ui-10 text-action-graphql" /><p className="text-ui-md text-content-secondary">No schema loaded</p><p className="text-ui-sm text-content-tertiary">Reload through introspection or choose an SDL / introspection JSON source.</p></div>

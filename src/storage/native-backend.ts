@@ -33,6 +33,8 @@ export class NativePersistenceBackend implements PersistenceBackend {
     this.cache.set(id, files); return file;
   }
   setActiveWorkspace(id: string) { return invoke<void>("set_local_active_workspace", { id }); }
+  writeGlobal(changes: LocalChange[]) { return invoke<void>("write_global_state", { local: changes }); }
+  async deleteWorkspace(id: string) { await invoke<void>("delete_project", { id }); this.cache.delete(id); }
   finishMigration() { return invoke<void>("finish_legacy_migration"); }
   async watchChanges(listener: (id: string, paths: string[]) => void) { return listen<Array<{ id: string; paths: string[] }>>("project-files-changed", (event) => { for (const change of event.payload) listener(change.id, change.paths); }); }
   async attachDirectory(id: string, directory: string) { const workspace = await invoke<StoredWorkspace>("attach_project_directory", { id, directory }); this.cache.set(id, workspace.files); return workspace; }

@@ -200,6 +200,9 @@ export default {
         "ui-expanded": "1fr",
       },
       gridTemplateColumns: {
+        "ui-variables": "var(--variables-navigation-width) minmax(0, 1fr) var(--variables-detail-width)",
+        "ui-variables-compact": "var(--variables-navigation-width) minmax(0, 1fr)",
+        "ui-variable-row": "var(--variable-enabled-width) minmax(0, 1fr) minmax(0, 1.3fr) var(--variable-kind-width) var(--variable-actions-width)",
         "ui-schema": "var(--schema-registry-width) minmax(var(--schema-details-min-width), 1fr) minmax(var(--schema-source-min-width), 1fr)",
         "ui-schema-compact": "var(--schema-registry-width) minmax(var(--schema-details-min-width), 1fr)",
         "ui-schema-field": "minmax(0, var(--schema-field-name-width)) minmax(0, var(--schema-field-type-width)) minmax(0, var(--schema-field-arguments-width)) auto",

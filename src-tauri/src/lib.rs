@@ -60,6 +60,8 @@ pub fn run() {
             persistence::reload_project_file,
             persistence::commit_project,
             persistence::set_local_active_workspace,
+            persistence::write_global_state,
+            persistence::delete_project,
             persistence::finish_legacy_migration,
             persistence::open_project_folder,
             persistence::attach_project_directory,

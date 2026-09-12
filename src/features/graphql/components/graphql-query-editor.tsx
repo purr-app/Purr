@@ -6,6 +6,7 @@ import { Button } from "../../../shared/components/ui/button";
 import type { RequestDraft } from "../../request-workbench/model/request";
 import { getGraphqlOperations, GraphqlCodeEditor, type GraphqlOperation, type OperationFocus } from "./graphql-code-editor";
 import { GraphqlVariablesDock } from "./graphql-variables-dock";
+import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
 
 const diagnosticsDelayMs = 1000;
 
@@ -20,9 +21,10 @@ function queryDiagnostics(query: string, schema?: GraphQLSchema) {
   }
 }
 
-export function GraphqlQueryEditor({ value, onChange, schema, onOpenType, onRunOperation }: {
+export function GraphqlQueryEditor({ value, onChange, schema, onOpenType, onRunOperation, templateVariableActions }: {
   value: NonNullable<RequestDraft["graphql"]>; onChange: (value: NonNullable<RequestDraft["graphql"]>) => void;
   schema?: GraphQLSchema; onOpenType?: (name: string) => void; onRunOperation?: (name: string) => void;
+  templateVariableActions?: TemplateVariableActions;
 }) {
   const [formatError, setFormatError] = useState("");
   const [validation, setValidation] = useState(() => ({ query: value.query, schema }));
@@ -67,6 +69,7 @@ export function GraphqlQueryEditor({ value, onChange, schema, onOpenType, onRunO
         onChange={(query) => { setFormatError(""); onChange({ ...value, query }); }} />
     </div>
     <GraphqlVariablesDock query={value.query} operationName={selectedOperation} value={value.variables} schema={schema}
+      templateVariableActions={templateVariableActions}
       onOperationChange={(name) => selectOperation(name, true)}
       onChange={(variables) => onChange({ ...value, variables })} />
     <footer className="flex shrink-0 justify-between gap-ui-3 border-t border-border-subtle bg-purr-surface px-ui-3 py-ui-1 font-code text-ui-2xs text-content-tertiary">

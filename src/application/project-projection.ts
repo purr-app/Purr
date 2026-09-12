@@ -1,10 +1,10 @@
-import { credentialSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition } from "../domain/project";
+import { credentialSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
 import { serializeResource } from "../storage/yaml";
 import { createRequestAuth, base64Bytes, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
 import type { RequestDraft } from "../features/request-workbench/model/request";
 import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isRequestDocument, validateWorkspace,
-  type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument } from "../features/workspaces/model/workspace";
+  type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
 import type { LocalRecord, SecureStore } from "../storage/contracts";
 import { decodeFiles, encodeFiles } from "../storage/file-codec";
 import { protectRuntime, resolveCredential, resolveRuntime, secretRef, storeCredential } from "../storage/secrets";
@@ -13,7 +13,6 @@ type StoredOAuthToken = Omit<OAuthToken, "accessToken" | "refreshToken"> & { acc
 type WorkspaceAuthRuntime = { version: 1; entries: Array<{
   id: string;
   definitionHash: string;
-  bearerReceivedToken?: Credential;
   oauthToken?: StoredOAuthToken;
 }> };
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -30,8 +29,7 @@ function parseWorkspaceAuthRuntime(value: unknown, workspace: string): Workspace
     || Object.keys(value).some((key) => !["version", "entries"].includes(key))) throw invalid();
   const entries = value.entries.map((entry) => {
     if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.definitionHash !== "string"
-      || Object.keys(entry).some((key) => !["id", "definitionHash", "bearerReceivedToken", "oauthToken"].includes(key))) throw invalid();
-    const bearer = entry.bearerReceivedToken === undefined ? undefined : credential(entry.bearerReceivedToken);
+      || Object.keys(entry).some((key) => !["id", "definitionHash", "oauthToken"].includes(key))) throw invalid();
     const oauth = entry.oauthToken;
     if (oauth !== undefined && (!isRecord(oauth)
       || Object.keys(oauth).some((key) => !["accessToken", "refreshToken", "tokenType", "obtainedAt", "expiresAt", "scope"].includes(key))
@@ -40,7 +38,7 @@ function parseWorkspaceAuthRuntime(value: unknown, workspace: string): Workspace
       || oauth.scope !== undefined && typeof oauth.scope !== "string")) throw invalid();
     const storedOauth = oauth as Record<string, unknown> | undefined;
     return { id: entry.id, definitionHash: entry.definitionHash,
-      ...(bearer ? { bearerReceivedToken: bearer } : {}), ...(storedOauth ? { oauthToken: {
+      ...(storedOauth ? { oauthToken: {
         accessToken: credential(storedOauth.accessToken), ...(storedOauth.refreshToken ? { refreshToken: credential(storedOauth.refreshToken) } : {}),
         tokenType: "Bearer" as const, obtainedAt: storedOauth.obtainedAt as number,
         ...(storedOauth.expiresAt !== undefined ? { expiresAt: storedOauth.expiresAt as number } : {}),
@@ -65,13 +63,11 @@ async function createWorkspaceAuthRuntime(entries: Workspace["requestConfig"]["a
     const tokenMetadata = token ? { tokenType: token.tokenType, obtainedAt: token.obtainedAt,
       ...(token.expiresAt !== undefined ? { expiresAt: token.expiresAt } : {}), ...(token.scope !== undefined ? { scope: token.scope } : {}) } : undefined;
     const runtime = { id: entry.id, definitionHash: await valueHash(definition),
-      ...(entry.value.bearer.receivedToken ? { bearerReceivedToken: await storeCredential(secure,
-        secretRef(workspace, `auth-runtime/${entry.id}`, "bearer/received-token"), entry.value.bearer.receivedToken) } : {}),
       ...(token && tokenMetadata ? { oauthToken: { ...tokenMetadata,
         accessToken: await storeCredential(secure, secretRef(workspace, `auth-runtime/${entry.id}`, "oauth2/access-token"), token.accessToken),
         ...(token.refreshToken ? { refreshToken: await storeCredential(secure,
           secretRef(workspace, `auth-runtime/${entry.id}`, "oauth2/refresh-token"), token.refreshToken) } : {}) } } : {}) };
-    return runtime.bearerReceivedToken || runtime.oauthToken ? runtime : null;
+    return runtime.oauthToken ? runtime : null;
   }));
   return { version: 1, entries: stored.filter((entry): entry is NonNullable<typeof entry> => entry !== null) };
 }
@@ -89,8 +85,7 @@ export async function authToDefinition(auth: RequestAuth, secure: SecureStore, w
   switch (auth.type) {
     case "none": return { type: "none" };
     case "inherit": return { type: "inherit" };
-    case "bearer": return { type: "bearer", token: await credential("bearer", auth.bearer.token, auth.credentialStorage?.bearer), prefix: auth.bearer.prefix,
-      ...(auth.bearer.source === "response" && auth.bearer.endpointDocumentId ? { response: { documentId: auth.bearer.endpointDocumentId, expression: auth.bearer.expression } } : {}) };
+    case "bearer": return { type: "bearer", token: await credential("bearer", auth.bearer.token, auth.credentialStorage?.bearer), prefix: auth.bearer.prefix };
     case "basic": return { type: "basic", username: auth.basic.username, password: await credential("password", auth.basic.password) };
     case "api-key": return { type: "api-key", name: auth.apiKey.name, placement: auth.apiKey.placement, value: await credential("api-key", auth.apiKey.value) };
     case "oauth2": return { type: "oauth2", grantType: auth.oauth2.grantType, tokenUrl: auth.oauth2.tokenUrl, clientId: auth.oauth2.clientId,
@@ -107,8 +102,7 @@ export async function authFromDefinition(value: AuthDefinition, secure: SecureSt
   };
   switch (value.type) {
     case "inherit": auth.inherit.source = "workspace"; break;
-    case "bearer": auth.bearer = { ...auth.bearer, token: await remember("bearer", value.token), prefix: value.prefix,
-      source: value.response ? "response" : "manual", endpointDocumentId: value.response?.documentId ?? "", expression: value.response?.expression ?? ".access_token" };
+    case "bearer": auth.bearer = { ...auth.bearer, token: await remember("bearer", value.token), prefix: value.prefix };
       auth.credentialStorage = { bearer: value.token.kind }; break;
     case "basic": auth.basic = { username: value.username, password: await remember("password", value.password) }; break;
     case "api-key": auth.apiKey = { name: value.name, placement: value.placement, value: await remember("api-key", value.value) }; break;
@@ -124,6 +118,50 @@ const pairs = (rows: Array<{ key?: string; name?: string; value: string; enabled
 function schemaSource(document: SchemaDocument): SchemaDefinition["source"] {
   return document.schemaSource ?? (document.source === "file" ? { type: "sdl-file", location: document.sourceLabel, endpoint: document.endpoint }
     : { type: "introspection", endpoint: document.endpoint || document.sourceLabel, ...(document.sourceRequestId ? { requestId: document.sourceRequestId } : {}) });
+}
+async function variableToDefinition(variable: Variable, secure: SecureStore, workspace: string, owner: string): Promise<VariableDefinition> {
+  const common = { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: variable.sensitive };
+  if (variable.kind === "static") {
+    if (!variable.sensitive) return { ...common, kind: "static", value: variable.value };
+    return { ...common, kind: "static", secretRef: variable.loaded === false && variable.secretRef
+      ? variable.secretRef
+      : (await storeCredential(secure, variable.secretRef ?? secretRef(workspace, owner, variable.id), variable.value, "secret") as { kind: "secret"; ref: string }).ref };
+  }
+  if (variable.kind === "dynamic-request") return { ...common, kind: variable.kind, documentId: variable.documentId,
+    expression: variable.expression, language: variable.language, refresh: variable.refresh,
+    ...(variable.cacheTtlSeconds ? { cacheTtlSeconds: variable.cacheTtlSeconds } : {}), environment: variable.environment };
+  return { ...common, kind: variable.kind, provider: variable.provider, key: variable.key, sensitive: true };
+}
+
+async function variableFromDefinition(variable: VariableDefinition, secure: SecureStore, loadSecret: boolean): Promise<Variable> {
+  if (variable.kind !== "static") return variable;
+  if (!variable.sensitive) return { ...variable, kind: "static", value: variable.value ?? "" };
+  return { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: true, kind: "static",
+    secretRef: variable.secretRef, value: loadSecret && variable.secretRef ? await secure.get(variable.secretRef) ?? "" : "", loaded: loadSecret };
+}
+
+async function protectDynamicVariableCache(cache: Workspace["dynamicVariableCache"], variables: readonly Variable[], secure: SecureStore, workspace: string) {
+  return Object.fromEntries(await Promise.all(Object.entries(cache).map(async ([key, entry]) => {
+    const variableId = key.split(":", 1)[0];
+    const variable = variables.find((candidate) => candidate.id === variableId);
+    if (!variable?.sensitive || entry.status !== "success" || entry.value === undefined) return [key, entry];
+    const credential = await storeCredential(secure, secretRef(workspace, `dynamic-variables/${variableId}`, `cache/${entry.environmentId ?? "none"}`), entry.value);
+    return [key, { ...entry, value: { __purrSecret: credential } }];
+  })));
+}
+
+export async function projectGlobalVariables(variables: readonly Variable[], secure: SecureStore): Promise<VariableDefinition[]> {
+  return Promise.all(variables.filter((variable) => variable.name.trim()).map((variable) => variableToDefinition(variable, secure, "global", "variables")));
+}
+
+export async function restoreGlobalVariables(value: unknown, secure: SecureStore): Promise<Variable[]> {
+  const definitions = variableDefinitionSchema.array().parse(value ?? []);
+  const names = definitions.map((variable) => variable.name.trim());
+  if (new Set(names).size !== names.length || new Set(definitions.map((variable) => variable.id)).size !== definitions.length)
+    throw new Error("Global variable names and identifiers must be unique.");
+  if (definitions.some((variable) => variable.kind !== "static"))
+    throw new Error("Global variables must be static.");
+  return Promise.all(definitions.map((variable) => variableFromDefinition(variable, secure, true)));
 }
 async function requestDefinition(document: RequestDocument, workspace: string, secure: SecureStore, assets: Record<string, string>): Promise<RequestDefinition> {
   const draft = document.savedRequest ?? document.request;
@@ -154,14 +192,14 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
 export async function projectWorkspace(workspace: Workspace, secure: SecureStore): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string> }> {
   const resources: ProjectResource[] = [...(workspace.extraResources ?? [])];
   const assets: Record<string, string> = {};
-  const local: LocalRecord[] = [{ table: "workspace_local_state", id: "state", value: { ui: workspace.ui, activeEnvironmentId: workspace.activeEnvironmentId } }];
+  const allVariables = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)];
+  const local: LocalRecord[] = [
+    { table: "workspace_local_state", id: "state", value: { ui: workspace.ui, activeEnvironmentId: workspace.activeEnvironmentId } },
+    { table: "workspace_local_state", id: "dynamic-variable-cache", value: await protectDynamicVariableCache(workspace.dynamicVariableCache, allVariables, secure, workspace.id) },
+  ];
   for (const environment of workspace.environments) resources.push({ id: environment.id, kind: "environment", name: environment.name,
     ...(environment.description ? { description: environment.description } : {}), ...(environment.folderId ? { folderId: environment.folderId } : {}),
-    variables: await Promise.all(environment.variables.filter((row) => row.name).map(async (row) => ({ name: row.name, enabled: row.enabled,
-      ...(row.secret ? { id: row.id } : {}), value: row.secret
-        ? row.secretLoaded === false && row.secretRef ? { kind: "secret" as const, ref: row.secretRef }
-          : await storeCredential(secure, row.secretRef ?? secretRef(workspace.id, `environments/${environment.id}`, row.id), row.value)
-        : { kind: "plain" as const, value: row.value } }))) });
+    variables: await Promise.all(environment.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, `environments/${environment.id}`))) });
   const auth = await Promise.all(workspace.requestConfig.auth.map(async (entry) => ({ id: entry.id, name: entry.name, scope: entry.scope, enabled: entry.enabled,
     config: await authToDefinition(entry.value, secure, workspace.id, `auth/${entry.id}`) })));
   // Only acquired tokens are runtime state. Saved credentials remain canonical
@@ -180,7 +218,8 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
     } else {
       if (document.saved) resources.push({ id: document.id, kind: "schema", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), source: schemaSource(document),
-        ...(document.pinned ? { pinnedSdl: document.sdl } : {}) });
+        pin: document.pinned !== false,
+        ...(document.pinned !== false ? { pinnedSdl: document.sdl } : {}) });
       else local.push({ table: "drafts", id: document.id, value: document });
       local.push({ table: "schema_cache", id: document.id, value: { sdl: document.sdl, loadedAt: document.loadedAt, source: schemaSource(document) } });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
@@ -188,6 +227,7 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
   }
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
   return { project: { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
+    variables: await Promise.all(workspace.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, "variables"))),
     headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets };
 }
 
@@ -223,11 +263,13 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
   const workspace = createWorkspace(project.workspace.name, project.workspace.id); workspace.documents = [];
   workspace.description = project.workspace.description ?? "";
   workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration");
+  workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, true)));
   workspace.requestConfig = { headers: project.workspace.headers, auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure) }))) };
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
   const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null } | undefined;
   if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; }
   else workspace.ui = { ...workspace.ui, openDocumentIds: [], activeDocumentId: null };
+  workspace.dynamicVariableCache = await resolveRuntime(get("workspace_local_state", "dynamic-variable-cache") ?? {}, secure) as Workspace["dynamicVariableCache"];
   const runtimeAuth = parseWorkspaceAuthRuntime(get("workspace_local_state", "auth-runtime"), workspace.id);
   workspace.requestConfig.auth = await Promise.all(workspace.requestConfig.auth.map(async (entry) => {
     const runtime = runtimeAuth.entries.find((item) => item.id === entry.id);
@@ -237,18 +279,14 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
       const oauthMetadata = oauth ? { tokenType: oauth.tokenType, obtainedAt: oauth.obtainedAt,
         ...(oauth.expiresAt !== undefined ? { expiresAt: oauth.expiresAt } : {}), ...(oauth.scope !== undefined ? { scope: oauth.scope } : {}) } : undefined;
       entry.value = { ...entry.value,
-        bearer: { ...entry.value.bearer, receivedToken: runtime.bearerReceivedToken ? await resolveCredential(secure, runtime.bearerReceivedToken) : "" },
         oauth2: { ...entry.value.oauth2, token: oauth && oauthMetadata ? { ...oauthMetadata, accessToken: await resolveCredential(secure, oauth.accessToken),
           ...(oauth.refreshToken ? { refreshToken: await resolveCredential(secure, oauth.refreshToken) } : {}) } : null } };
     }
     return entry;
   }));
   for (const resource of project.resources) {
-    if (resource.kind === "environment") workspace.environments.push({ id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, variables: await Promise.all(resource.variables.map(async (row, index) => ({
-      id: row.id ?? `${resource.id}-var-${index}`, name: row.name, enabled: row.enabled, secret: row.value.kind === "secret",
-      value: row.value.kind === "plain" ? row.value.value : workspace.activeEnvironmentId === resource.id ? await resolveCredential(secure, row.value) : "",
-      ...(row.value.kind === "secret" ? { secretRef: row.value.ref, secretLoaded: workspace.activeEnvironmentId === resource.id } : {}),
-    }))) });
+    if (resource.kind === "environment") workspace.environments.push({ id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId,
+      variables: await Promise.all(resource.variables.map((variable) => variableFromDefinition(variable, secure, workspace.activeEnvironmentId === resource.id))) });
     if (resource.kind === "http" || resource.kind === "graphql") workspace.documents.push(await requestFromDefinition(resource, secure, assets));
     if (resource.kind === "schema") {
       const storedCache = get("schema_cache", resource.id) as { sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"] } | undefined;
@@ -257,7 +295,7 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
       workspace.documents.push({ ...createSchemaDocument(), id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, saved: true,
         source: source.type === "introspection" ? "introspection" : "file", schemaSource: source,
         endpoint: "endpoint" in source ? source.endpoint ?? "" : "", sourceRequestId: source.type === "introspection" ? source.requestId ?? "" : "",
-        sourceLabel: source.type === "introspection" ? source.endpoint : "location" in source ? source.location ?? "" : "", pinned: resource.pinnedSdl !== undefined,
+        sourceLabel: source.type === "introspection" ? source.endpoint : "location" in source ? source.location ?? "" : "", pinned: resource.pin,
         sdl: resource.pinnedSdl ?? cache?.sdl ?? "", loadedAt: cache?.loadedAt ?? null });
     }
   }
@@ -285,7 +323,6 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
         const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[canonicalAuth.type] as "bearer" | "basic" | "apiKey" | "oauth2" | "inherit" | null;
         editor.auth = { ...editor.auth, type: canonicalAuth.type, secretRefs: canonicalAuth.secretRefs, credentialStorage: canonicalAuth.credentialStorage,
           ...(group ? { [group]: canonicalAuth[group] } : {}),
-          ...(canonicalAuth.type === "bearer" ? { bearer: { ...canonicalAuth.bearer, receivedToken: editor.auth.bearer.receivedToken } } : {}),
           ...(canonicalAuth.type === "oauth2" ? { oauth2: { ...canonicalAuth.oauth2, token: editor.auth.oauth2.token } } : {}) };
         result.request = editor;
         result.savedRequest = result.request;

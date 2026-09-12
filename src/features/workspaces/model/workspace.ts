@@ -15,8 +15,25 @@ import type { ProjectResource, SchemaDefinition, SecretRef } from "../../../doma
 
 // Stable discriminants allow importers and future document editors to coexist.
 export type DocumentKind = "http" | "graphql" | "schema" | "trace" | "benchmark" | "integration";
-export type EnvironmentVariable = { id: string; name: string; value: string; enabled: boolean; secret: boolean; secretRef?: SecretRef; secretLoaded?: boolean };
-export type Environment = { id: string; name: string; description?: string; folderId?: string; variables: EnvironmentVariable[] };
+export type DynamicVariableRefresh = "every-time" | "session" | "cache";
+type VariableBase = { id: string; name: string; enabled: boolean; sensitive: boolean };
+export type Variable = VariableBase & (
+  | { kind: "static"; value: string; secretRef?: SecretRef; loaded?: boolean }
+  | { kind: "dynamic-request"; documentId: string; expression: string; language: "jsonpath" | "jq"; refresh: DynamicVariableRefresh;
+      cacheTtlSeconds?: number; environment: { type: "current" } | { type: "specific"; environmentId: string } }
+  | { kind: "external-secret"; provider: string; key: string }
+);
+export type EnvironmentVariable = Variable;
+export type Environment = { id: string; name: string; description?: string; folderId?: string; variables: Variable[] };
+export type DynamicVariableCacheEntry = {
+  status: "success" | "error";
+  value?: string;
+  error?: string;
+  resolvedAt: string;
+  durationMs: number;
+  environmentId: string | null;
+  fingerprint: string;
+};
 type DocumentBase = {
   id: string;
   name: string;
@@ -67,10 +84,12 @@ export type Workspace = {
   description: string;
   extraResources?: ProjectResource[];
   documents: WorkspaceDocument[];
+  variables: Variable[];
   environments: Environment[];
   cookies: SessionCookie[];
   activeEnvironmentId: string | null;
   requestConfig: WorkspaceRequestConfig;
+  dynamicVariableCache: Record<string, DynamicVariableCacheEntry>;
   ui: {
     openDocumentIds: string[];
     activeDocumentId: string | null;
@@ -80,12 +99,14 @@ export type Workspace = {
     cookiesTabActive: boolean;
     settingsTabOpen: boolean;
     settingsTabActive: boolean;
+    variablesTabOpen: boolean;
+    variablesTabActive: boolean;
     sidebarOpen: boolean;
     view: WorkbenchView;
     splitRatios: { horizontal: number; vertical: number };
   };
 };
-export type WorkspaceStore = { activeWorkspaceId: string; workspaces: Workspace[] };
+export type WorkspaceStore = { activeWorkspaceId: string; workspaces: Workspace[]; globalVariables: Variable[] };
 
 export function createHttpDocument(): HttpDocument {
   return {
@@ -113,17 +134,18 @@ export function createGraphqlDocument(): GraphqlDocument {
 export function createSchemaDocument(request?: RequestDocument): SchemaDocument {
   return { id: crypto.randomUUID(), kind: "schema", name: request ? `${getDocumentDisplayName(request)} schema` : "Untitled GraphQL schema", saved: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), sourceRequestId: request?.id ?? "", endpoint: request?.request.url ?? "",
-    sdl: "", source: null, sourceLabel: "", loadedAt: null, ui: { selectedType: null, selectedField: null, sourcePaneOpen: true } };
+    sdl: "", source: null, sourceLabel: "", loadedAt: null, pinned: true, ui: { selectedType: null, selectedField: null, sourcePaneOpen: true } };
 }
 
 export function createWorkspace(name = "Personal", id: string = crypto.randomUUID()): Workspace {
   const document = createHttpDocument();
   return {
-    schemaVersion: 1, id, name, description: "", documents: [document], environments: [], cookies: [], activeEnvironmentId: null,
-    requestConfig: createWorkspaceRequestConfig(),
+    schemaVersion: 1, id, name, description: "", documents: [document], variables: [], environments: [], cookies: [], activeEnvironmentId: null,
+    requestConfig: createWorkspaceRequestConfig(), dynamicVariableCache: {},
     ui: {
       openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false,
       settingsTabOpen: false, settingsTabActive: false, sidebarOpen: true,
+      variablesTabOpen: false, variablesTabActive: false,
       view: "canvas", lastRequestKind: "http", splitRatios: { horizontal: 50, vertical: 50 },
     },
   };
@@ -134,7 +156,7 @@ export function openDocument(workspace: Workspace, id: string): Workspace {
   if (!document) return workspace;
   return { ...workspace, ui: { ...workspace.ui,
     openDocumentIds: workspace.ui.openDocumentIds.includes(id) ? workspace.ui.openDocumentIds : [...workspace.ui.openDocumentIds, id],
-    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
+    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
   } };
 }
 
@@ -149,7 +171,7 @@ export function previewDocument(workspace: Workspace, id: string): Workspace {
   const openDocumentIds = canReplace
     ? workspace.ui.openDocumentIds.map((value) => value === preview!.id ? id : value)
     : [...workspace.ui.openDocumentIds, id];
-  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false, settingsTabActive: false,
+  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false,
     lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind } };
 }
 
@@ -279,17 +301,36 @@ export function closeDocument(workspace: Workspace, id: string, keepDocument = f
 }
 
 export function getEnvironmentVariables(workspace: Workspace): Record<string, string> {
-  return Object.fromEntries((workspace.environments.find((environment) => environment.id === workspace.activeEnvironmentId)?.variables ?? [])
-    .filter((variable) => variable.enabled && variable.name.trim())
-    .map((variable) => [variable.name.trim(), variable.value]));
+  return getEffectiveVariableValues(workspace, [], workspace.activeEnvironmentId);
+}
+
+export function getVariableNamespace(workspace: Workspace, globalVariables: readonly Variable[], environmentId = workspace.activeEnvironmentId): Variable[] {
+  return [...globalVariables, ...workspace.variables, ...(workspace.environments.find((environment) => environment.id === environmentId)?.variables ?? [])]
+    .filter((variable) => variable.name.trim());
+}
+
+export function getEffectiveVariables(workspace: Workspace, globalVariables: readonly Variable[], environmentId = workspace.activeEnvironmentId): Variable[] {
+  const effective = new Map<string, Variable>();
+  for (const variable of getVariableNamespace(workspace, globalVariables, environmentId))
+    if (variable.enabled) effective.set(variable.name.trim(), variable);
+  return [...effective.values()];
+}
+
+export function getEffectiveVariableValues(workspace: Workspace, globalVariables: readonly Variable[], environmentId = workspace.activeEnvironmentId): Record<string, string> {
+  return Object.fromEntries(getEffectiveVariables(workspace, globalVariables, environmentId).flatMap((variable) => {
+    if (variable.kind === "static") return [[variable.name.trim(), variable.value]];
+    return [];
+  }));
 }
 
 export function validateEnvironment(environment: Environment): string | null {
   if (!environment.name.trim()) return "Enter an environment name.";
   const seen = new Set<string>();
   for (const variable of environment.variables) {
+    if (variable.kind !== "static") return "Environment variables must be static.";
     const name = variable.name.trim();
-    if (!name && !variable.value) continue;
+    const hasValue = Boolean(variable.value);
+    if (!name && !hasValue) continue;
     if (!name || /[{}]/.test(name)) return "Variable names must not be empty or contain braces.";
     if (seen.has(name)) return `The variable “${name}” is defined more than once.`;
     seen.add(name);
@@ -362,12 +403,30 @@ export function validateWorkspace(value: unknown): Workspace {
     ? !validRequest(document.request, document.kind)
     : typeof document.sdl !== "string" || typeof document.sourceRequestId !== "string" || typeof document.sourceLabel !== "string"
       || ![null, "file", "introspection"].includes(document.source)))
+    || !Array.isArray(workspace.variables)
     || workspace.environments.some((environment) => !environment || typeof environment.id !== "string" || typeof environment.name !== "string" || !Array.isArray(environment.variables)
-      || environment.variables.some((variable) => !variable || typeof variable.id !== "string" || typeof variable.name !== "string" || typeof variable.value !== "string" || typeof variable.enabled !== "boolean" || typeof variable.secret !== "boolean")))
+      || environment.variables.some((variable) => !isVariable(variable)))
+    || workspace.variables.some((variable) => !isVariable(variable)))
     throw new Error("Invalid document or environment data. The original file has not been changed.");
   const ids = new Set(workspace.documents.map((document) => document.id));
   if (ids.size !== workspace.documents.length || new Set(workspace.environments.map((environment) => environment.id)).size !== workspace.environments.length)
     throw new Error("Duplicate document or environment identifiers. The original file has not been changed.");
+  const environmentNames = workspace.environments.map((environment) => environment.name.trim()).filter(Boolean);
+  if (new Set(environmentNames).size !== environmentNames.length)
+    throw new Error("Environment names must be unique inside a workspace.");
+  const hasDuplicateVariableNames = (variables: readonly Variable[]) => {
+    const names = variables.map((variable) => variable.name.trim()).filter(Boolean);
+    return new Set(names).size !== names.length;
+  };
+  if (hasDuplicateVariableNames(workspace.variables) || workspace.environments.some((environment) => hasDuplicateVariableNames(environment.variables)))
+    throw new Error("Variable names must be unique inside their scope.");
+  if (workspace.environments.some((environment) => environment.variables.some((variable) => variable.kind !== "static")))
+    throw new Error("Environment variables must be static.");
+  const workspaceNames = new Set(workspace.variables.map((variable) => variable.name.trim()).filter(Boolean));
+  if (workspace.environments.some((environment) => environment.variables.some((variable) => workspaceNames.has(variable.name.trim()))))
+    throw new Error("Workspace and environment variable names must not overlap.");
+  const variableIds = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)].map((variable) => variable.id);
+  if (new Set(variableIds).size !== variableIds.length) throw new Error("Variable identifiers must be unique inside a workspace.");
   const openDocumentIds = [...new Set(workspace.ui.openDocumentIds)].filter((id) => ids.has(id));
   const previewDocumentId = openDocumentIds.includes(workspace.ui.previewDocumentId ?? "")
     && workspace.documents.some((document) => document.id === workspace.ui.previewDocumentId && document.saved && !isDocumentDirty(document))
@@ -375,7 +434,9 @@ export function validateWorkspace(value: unknown): Workspace {
     : null;
   return { ...workspace,
     description: typeof workspace.description === "string" ? workspace.description : "",
+    variables: workspace.variables,
     cookies: Array.isArray(workspace.cookies) ? workspace.cookies : [],
+    dynamicVariableCache: workspace.dynamicVariableCache && typeof workspace.dynamicVariableCache === "object" ? workspace.dynamicVariableCache : {},
     requestConfig,
     documents: workspace.documents.map((document) => isRequestDocument(document) ? ({
       ...document,
@@ -403,6 +464,9 @@ export function validateWorkspace(value: unknown): Workspace {
       cookiesTabActive: workspace.ui.cookiesTabOpen === true && workspace.ui.cookiesTabActive === true && workspace.ui.settingsTabActive !== true,
       settingsTabOpen: workspace.ui.settingsTabOpen === true,
       settingsTabActive: workspace.ui.settingsTabOpen === true && workspace.ui.settingsTabActive === true,
+      variablesTabOpen: workspace.ui.variablesTabOpen === true,
+      variablesTabActive: workspace.ui.variablesTabOpen === true && workspace.ui.variablesTabActive === true
+        && workspace.ui.cookiesTabActive !== true && workspace.ui.settingsTabActive !== true,
       view: ["canvas", "horizontal", "vertical"].includes(workspace.ui.view) ? workspace.ui.view : "canvas",
       sidebarOpen: workspace.ui.sidebarOpen !== false,
       splitRatios: {
@@ -411,6 +475,19 @@ export function validateWorkspace(value: unknown): Workspace {
       },
     },
   };
+}
+
+function isVariable(value: unknown): value is Variable {
+  if (!value || typeof value !== "object") return false;
+  const variable = value as Variable;
+  if (typeof variable.id !== "string" || typeof variable.name !== "string" || typeof variable.enabled !== "boolean" || typeof variable.sensitive !== "boolean") return false;
+  if (variable.kind === "static") return typeof variable.value === "string";
+  if (variable.kind === "external-secret") return variable.sensitive && typeof variable.provider === "string" && typeof variable.key === "string";
+  return variable.kind === "dynamic-request" && typeof variable.documentId === "string" && typeof variable.expression === "string"
+    && ["jsonpath", "jq"].includes(variable.language) && ["every-time", "session", "cache"].includes(variable.refresh)
+    && (variable.cacheTtlSeconds === undefined || typeof variable.cacheTtlSeconds === "number" && variable.cacheTtlSeconds > 0)
+    && Boolean(variable.environment)
+    && (variable.environment.type === "current" || variable.environment.type === "specific" && typeof variable.environment.environmentId === "string");
 }
 
 function matchesShape(value: unknown, shape: unknown): boolean {

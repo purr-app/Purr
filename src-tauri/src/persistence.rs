@@ -255,7 +255,7 @@ pub fn load_persistence(
         };
         storage.migration_snapshot = (!legacy.is_null()).then(|| legacy.clone());
         Ok(
-            json!({ "activeWorkspaceId": storage.local.app("active-workspace")?.unwrap_or_default(), "workspaces": workspaces, "legacy": legacy }),
+            json!({ "activeWorkspaceId": storage.local.app("active-workspace")?.unwrap_or_default(), "workspaces": workspaces, "global": storage.local.read("__global__")?, "legacy": legacy }),
         )
     })
 }
@@ -326,6 +326,39 @@ pub fn set_local_active_workspace(
     valid_id(&id)?;
     access(&app, &state, |storage| {
         storage.local.set_app("active-workspace", &id)
+    })
+}
+
+#[tauri::command]
+pub fn write_global_state(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    local: Vec<LocalRecord>,
+) -> Result<(), String> {
+    access(&app, &state, |storage| {
+        storage.local.write("__global__", &local)
+    })
+}
+
+#[tauri::command]
+pub fn delete_project(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    id: String,
+) -> Result<(), String> {
+    valid_id(&id)?;
+    access(&app, &state, |storage| {
+        let directory = storage
+            .roots
+            .remove(&id)
+            .unwrap_or_else(|| storage.projects.join(&id));
+        let managed_directory = directory == storage.projects.join(&id);
+        let _ = storage.watcher.unwatch(&directory);
+        storage.local.delete_workspace(&id)?;
+        if managed_directory && directory.exists() {
+            fs::remove_dir_all(&directory).map_err(|_| "Cannot delete workspace directory")?;
+        }
+        Ok(())
     })
 }
 #[tauri::command]

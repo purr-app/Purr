@@ -30,6 +30,12 @@ export class MemoryPersistenceBackend implements PersistenceBackend {
   async reloadResource(id: string, path: string) { return (await this.loadWorkspace(id)).files[path] ?? null; }
   async writeLocal(id: string, local: LocalChange[]) { await this.commit(id, [], local); }
   async setActiveWorkspace(id: string) { this.snapshot.activeWorkspaceId = id; }
+  async writeGlobal(local: LocalChange[]) {
+    const records = new Map((this.snapshot.global ?? []).map((record) => [`${record.table}/${record.id}`, record]));
+    for (const change of local) { const key = `${change.table}/${change.id}`; if (change.value === null) records.delete(key); else records.set(key, change as LocalRecord); }
+    this.snapshot.global = [...records.values()];
+  }
+  async deleteWorkspace(id: string) { this.snapshot.workspaces = this.snapshot.workspaces.filter((workspace) => workspace.id !== id); }
   async finishMigration() { delete this.snapshot.legacy; }
   async watchChanges(listener: (id: string, paths: string[]) => void) { this.listener = listener; return () => { this.listener = undefined; }; }
 }

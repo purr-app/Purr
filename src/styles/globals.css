@@ -188,7 +188,12 @@
     --document-tab-drag-threshold: 0.25rem;
     --dialog-width: 44rem;
     --name-dialog-width: 26rem;
-    --variable-list-max-height: 20rem;
+  --variable-list-max-height: 20rem;
+  --variables-navigation-width: 13rem;
+  --variables-detail-width: 30rem;
+  --variable-enabled-width: 3.5rem;
+  --variable-kind-width: 8rem;
+  --variable-actions-width: 6rem;
     --palette-max-height: 30rem;
 
     --radius-sm: 0.25rem;
@@ -321,6 +326,11 @@
   .ui-response-code .cm-content,
   .ui-response-code .cm-gutter {
     min-height: 100%;
+  }
+
+  .ui-response-context-lines .cm-line:hover {
+    background-color: var(--purr-highlight);
+    border-radius: var(--radius-md);
   }
 
   .ui-drop-indicator {

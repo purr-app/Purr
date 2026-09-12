@@ -10,22 +10,36 @@ import type { WireRequest } from "./http-client";
 
 export async function prepareWireRequest(draft: RequestDraft, context: AuthContext): Promise<{
   request: WireRequest;
+  displayRequest: WireRequest;
   sensitiveHeaders: string[];
   sensitiveQueryParams: string[];
 }> {
   const outgoing = prepareGraphqlRequest(resolveRequestEnvironment(draft, context.variables ?? {}));
+  const maskedVariables = Object.fromEntries(Object.entries(context.variables ?? {}).map(([name, value]) => [name,
+    context.sensitiveVariableNames?.includes(name) ? "********" : value]));
+  const maskedContext = { ...context, variables: maskedVariables };
+  const maskedOutgoing = prepareGraphqlRequest(resolveRequestEnvironment(draft, maskedVariables));
   const bodyError = getRequestBodyValidationMessage(outgoing.body);
   if (bodyError) throw new Error(bodyError);
   const authResult = getAuthBindingForRequest(outgoing.auth, outgoing.url, context);
   if (authResult.error) throw new Error(authResult.error);
   requireHttpUrl(outgoing.url);
+  const makeRequest = async (source: RequestDraft, sourceContext: AuthContext, maskCredentials: boolean): Promise<WireRequest> => {
+    const binding = getAuthBindingForRequest(source.auth, source.url, sourceContext).binding;
+    const sensitiveQuery = maskCredentials && binding?.target === "query" ? binding.name.toLowerCase() : "";
+    const url = new URL(applyRequestQueryParamsToUrl(source.url, getRequestQueryParams(source, sourceContext)));
+    if (sensitiveQuery) for (const [name] of url.searchParams) if (name.toLowerCase() === sensitiveQuery) url.searchParams.set(name, "********");
+    const headers = getRequestHeaders(source, sourceContext).filter((header) => header.enabled && header.name.trim()).map((header): [string, string] => {
+      if (!maskCredentials || !header.secret) return [header.name, header.value];
+      if (header.name.toLowerCase() === "authorization") return [header.name, `${header.value.split(/\s+/, 1)[0] || "Token"} ********`];
+      if (header.name.toLowerCase() === "cookie") return [header.name, header.value.replace(/(^|;\s*)([^=;]+)=([^;]*)/g, "$1$2=********")];
+      return [header.name, "********"];
+    });
+    return { url: url.toString(), method: source.method, headers, bodyBase64: await encodeBody(serializeRequestBody(source.body)) };
+  };
   return {
-    request: {
-      url: applyRequestQueryParamsToUrl(outgoing.url, getRequestQueryParams(outgoing, context)),
-      method: outgoing.method,
-      headers: getRequestHeaders(outgoing, context).filter((header) => header.enabled && header.name.trim()).map((header) => [header.name, header.value]),
-      bodyBase64: await encodeBody(serializeRequestBody(outgoing.body)),
-    },
+    request: await makeRequest(outgoing, context, false),
+    displayRequest: await makeRequest(maskedOutgoing, maskedContext, true),
     sensitiveHeaders: authResult.binding?.target === "header" ? [authResult.binding.name] : [],
     sensitiveQueryParams: authResult.binding?.target === "query" ? [authResult.binding.name] : [],
   };
@@ -52,5 +66,6 @@ export async function executeRequest(draft: RequestDraft, context: AuthContext, 
     jar: draft.useCookieJar ? jar : undefined,
     sensitiveHeaders: prepared.sensitiveHeaders,
     sensitiveQueryParams: prepared.sensitiveQueryParams,
+    displayRequest: prepared.displayRequest,
   });
 }

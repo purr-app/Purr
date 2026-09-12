@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  captureBearerResponseToken,
   createRequestAuth,
   encodeBasicAuth,
   getAuthBinding,
   inspectJwt,
-  readResponseToken,
-  readResponseTokenExpression,
   resolveAuth,
   type AuthContext,
 } from "../src/features/request-workbench/model/request-auth";
@@ -235,63 +232,6 @@ test("missing variables and inherited profiles fail visibly", () => {
   assert.match(getAuthBinding(auth).error!, /not defined/);
   auth.type = "inherit";
   assert.ok(getAuthBinding(auth).error);
-});
-test("response token chaining reads JSON Pointer without prototype traversal", () => {
-  assert.equal(
-    readResponseToken(
-      { data: { "access/token": "abc" } },
-      "/data/access~1token",
-    ),
-    "abc",
-  );
-  assert.throws(() => readResponseToken({}, "/constructor"));
-  assert.throws(() =>
-    readResponseToken({ access_token: 123 }, "/access_token"),
-  );
-});
-test("response token automation matches an endpoint and reads a jq-style path", () => {
-  assert.equal(
-    readResponseTokenExpression({ auth: { tokens: [{ value: "abc" }] } }, ".auth.tokens[0].value"),
-    "abc",
-  );
-  assert.equal(
-    readResponseTokenExpression({ auth: { token: "abc" } }, "$response.auth.token"),
-    "abc",
-  );
-  const auth = createRequestAuth();
-  auth.type = "bearer";
-  auth.bearer.source = "response";
-  auth.bearer.endpointPath = "/oauth/token";
-  auth.bearer.expression = ".auth.token";
-  const unchanged = captureBearerResponseToken(
-    auth,
-    "https://api.example.com/users",
-    { auth: { token: "wrong" } },
-  );
-  assert.equal(unchanged, auth);
-  const captured = captureBearerResponseToken(
-    auth,
-    "https://api.example.com/oauth/token?scope=read",
-    { auth: { token: "fresh" } },
-  );
-  assert.equal(getAuthBinding(captured).binding?.value, "Bearer fresh");
-
-  auth.bearer.endpointDocumentId = "token-request";
-  auth.bearer.receivedToken = "";
-  const wrongDocument = captureBearerResponseToken(
-    auth,
-    "https://api.example.com/oauth/token",
-    { auth: { token: "wrong" } },
-    "another-request",
-  );
-  assert.equal(wrongDocument, auth);
-  const capturedByDocument = captureBearerResponseToken(
-    auth,
-    "https://api.example.com/any-path",
-    { auth: { token: "document-token" } },
-    "token-request",
-  );
-  assert.equal(getAuthBinding(capturedByDocument).binding?.value, "Bearer document-token");
 });
 test("JWT inspection decodes Unicode and never claims signature verification", () => {
   const token = [

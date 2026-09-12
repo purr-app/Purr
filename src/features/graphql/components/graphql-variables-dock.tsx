@@ -6,6 +6,7 @@ import { Input } from "../../../shared/components/ui/input";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import { cn } from "../../../shared/lib/cn";
 import { getGraphqlOperations, GraphqlCodeEditor, type GraphqlVariableHint } from "./graphql-code-editor";
+import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
 
 type Definition = { name: string; type: TypeNode; defaultValue?: unknown };
 
@@ -116,9 +117,10 @@ function VariableFormField({ hint, path, value, onChange, nested = false }: {
   </label>;
 }
 
-export function GraphqlVariablesDock({ query, operationName, value, schema, onChange, onOperationChange }: {
+export function GraphqlVariablesDock({ query, operationName, value, schema, onChange, onOperationChange, templateVariableActions }: {
   query: string; operationName: string; value: string; schema?: GraphQLSchema; onChange: (value: string) => void;
   onOperationChange: (name: string) => void;
+  templateVariableActions?: TemplateVariableActions;
 }) {
   const operations = useMemo(() => getGraphqlOperations(query), [query]);
   const variables = useMemo(() => definitions(query, operationName), [query, operationName]);
@@ -173,7 +175,7 @@ export function GraphqlVariablesDock({ query, operationName, value, schema, onCh
     </div>
     {expanded && <div className="min-h-0 flex-1 overflow-auto border-t border-border-subtle bg-purr-codefield">
       {inspected.error && <p role="alert" className="m-ui-0 border-b border-border-subtle px-ui-3 py-ui-2 font-code text-ui-xs text-accent-red">{inspected.error}</p>}
-      {mode === "json" ? <GraphqlCodeEditor value={value} variables variableHints={variableHints} label="GraphQL variables" onChange={onChange} />
+      {mode === "json" ? <GraphqlCodeEditor value={value} variables variableHints={variableHints} templateVariableActions={templateVariableActions} label="GraphQL variables" onChange={onChange} />
         : <div className="grid gap-ui-2 p-ui-3 sm:grid-cols-2">{variableHints.map((hint) => <VariableFormField key={hint.name} hint={hint} path={[hint.name]} value={values[hint.name]} onChange={update} />)}</div>}
     </div>}
   </section>;

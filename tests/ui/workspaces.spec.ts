@@ -16,12 +16,14 @@ async function createEnvironment(page: Page, name: string, values: Record<string
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill(name);
-  for (const [index, [key, value]] of Object.entries(values).entries()) {
-    await page.getByRole("button", { name: "Add variable", exact: true }).click();
-    await page.getByLabel(`Variable ${index + 1} name`, { exact: true }).fill(key);
-    await page.getByLabel(`Variable ${index + 1} value`, { exact: true }).fill(value);
+  for (const [key, value] of Object.entries(values)) {
+    await page.getByRole("button", { name: "Variable", exact: true }).click();
+    await page.getByLabel("Variable name", { exact: true }).fill(key);
+    await page.getByLabel("Variable value", { exact: true }).fill(value);
+    await page.getByRole("button", { name: "Save variable", exact: true }).click();
   }
-  await page.getByRole("button", { name: "Save environment", exact: true }).click();
+  await page.getByRole("tab", { name: "Variables", exact: true }).hover();
+  await page.getByRole("button", { name: "Close variables", exact: true }).click();
 }
 
 async function mockDesktop(page: Page, delayed = false) {
@@ -302,6 +304,8 @@ test("workspace settings tab manages identity, shared headers and scoped auth", 
   const response = page.getByRole("region", { name: "HTTP response", exact: true });
   await response.getByRole("tab", { name: "Request", exact: true }).click();
   await expect(response.getByLabel("HTTP request viewer")).toContainText("GET /users/42 HTTP/1.1");
+  await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer ********");
+  await response.getByRole("button", { name: "Reveal request secrets", exact: true }).click();
   await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer workspace-token");
 });
 
@@ -356,20 +360,100 @@ test("dialogs focus their primary field instead of the close button", async ({ p
   await expect(page.getByRole("button", { name: "Close dialog", exact: true })).not.toBeFocused();
 });
 
+test("variables use explicit drafts, validate duplicate names without blocking typing, and toggle atomically", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toBeFocused();
+  await page.getByLabel("Variable name", { exact: true }).fill("test");
+  await page.getByLabel("Variable value", { exact: true }).fill("draft-only");
+  await saved(page); await page.reload();
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await expect(page.getByText("draft-only", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("test");
+  await page.getByLabel("Variable value", { exact: true }).fill("persisted");
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cancel variable changes", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  const name = page.getByLabel("Variable name", { exact: true });
+  await name.fill("test");
+  await expect(page.getByText("Variable “test” already exists.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save variable", exact: true })).toBeDisabled();
+  await name.press("End"); await name.type("2");
+  await expect(name).toHaveValue("test2");
+  await expect(page.getByText("Variable “test” already exists.", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel variable changes", exact: true }).click();
+
+  await page.getByRole("checkbox", { name: "Enable test", exact: true }).click();
+  await saved(page); await page.reload();
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Enable test", exact: true })).not.toBeChecked();
+  await page.getByRole("button", { name: "Effective", exact: true }).click();
+  await expect(page.getByText("test", { exact: true })).toHaveCount(0);
+});
+
+test("Static variables support the bottom quick row and a Dynamic form survives request navigation", async ({ page }) => {
+  await page.goto("/");
+  await saveDocument(page, "Source request");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await expect(page.getByText("Select a variable to inspect its definition and usage.", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add static variable", exact: true }).click();
+  await expect(page.getByLabel("New variable name", { exact: true })).toBeFocused();
+  await page.getByLabel("New variable name", { exact: true }).fill("discard-with-escape");
+  await page.getByLabel("New variable name", { exact: true }).press("Escape");
+  await expect(page.getByLabel("New variable name", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add static variable", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel static variable", exact: true }).click();
+  await expect(page.getByLabel("New variable name", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Add static variable", exact: true }).click();
+  await page.getByLabel("New variable name", { exact: true }).fill("inline_value");
+  await page.getByLabel("New variable value", { exact: true }).fill("from-row");
+  await page.getByRole("button", { name: "Save static variable", exact: true }).click();
+  await expect(page.getByLabel("Variable name inline_value", { exact: true })).toHaveValue("inline_value");
+  await expect(page.getByLabel("Variable value inline_value", { exact: true })).toHaveValue("from-row");
+
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("dynamic_value");
+  await page.getByRole("tab", { name: "Dynamic Request", exact: true }).click();
+  await page.getByRole("combobox", { name: "Dynamic variable source request", exact: true }).click();
+  await expect(page.getByRole("option", { name: "Source request", exact: true }).getByText("GET", { exact: true })).toBeVisible();
+  await page.getByRole("option", { name: "Source request", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Source dependency request", exact: true }).getByText("GET", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Jump to request/ }).click();
+  await expect(page.getByRole("tab", { name: /Source request/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "Variables", exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveValue("dynamic_value");
+  await expect(page.getByRole("tab", { name: "Dynamic Request", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByLabel("Search variables", { exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveCount(0);
+});
+
 test("Secret is independent of reveal; browser preview persists ciphertext and restores the environment", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
+  const environmentNameBox = await page.getByLabel("Environment name", { exact: true }).boundingBox();
+  const addVariableBox = await page.getByRole("button", { name: "Variable", exact: true }).boundingBox();
+  expect(addVariableBox?.height).toBe(environmentNameBox?.height);
   await page.getByLabel("Environment name", { exact: true }).fill("Secure staging");
-  await page.getByRole("button", { name: "Add variable", exact: true }).click();
-  await page.getByLabel("Variable 1 name", { exact: true }).fill("access_token");
-  await page.getByLabel("Variable 1 value", { exact: true }).fill("purr-test-secret-not-in-project");
-  await page.getByRole("button", { name: "Secret variable 1", exact: true }).click();
-  await expect(page.getByLabel("Variable 1 value", { exact: true })).toHaveAttribute("type", "password");
-  await page.getByRole("button", { name: "Reveal variable 1", exact: true }).click();
-  await expect(page.getByLabel("Variable 1 value", { exact: true })).toHaveAttribute("type", "text");
-  await expect(page.getByRole("button", { name: "Secret variable 1", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("button", { name: "Save environment", exact: true }).click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("access_token");
+  await page.getByLabel("Variable value", { exact: true }).fill("purr-test-secret-not-in-project");
+  await page.getByRole("switch", { name: "Sensitive & masked secret", exact: true }).click();
+  await expect(page.getByLabel("Variable value", { exact: true })).toHaveAttribute("type", "password");
+  await expect(page.getByRole("switch", { name: "Sensitive & masked secret", exact: true })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await page.getByRole("button", { name: "Reveal value", exact: true }).click();
+  await expect(page.getByLabel("Variable value", { exact: true })).toHaveAttribute("type", "text");
+  await page.getByRole("tab", { name: "Variables", exact: true }).hover();
+  await page.getByRole("button", { name: "Close variables", exact: true }).click();
   await saved(page); await page.reload();
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("Secure staging");
   const storage = await page.evaluate(async () => {

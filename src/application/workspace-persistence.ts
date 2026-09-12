@@ -2,9 +2,10 @@ import { validateProject, type Project, type ProjectResource } from "../domain/p
 import { createWorkspace, validateWorkspace, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
 import { decodeFiles } from "../storage/file-codec";
 import type { FileChange, LocalChange, LocalRecord, PersistenceBackend, SecureStore, StoredWorkspace } from "../storage/contracts";
-import { deserializeManifest, deserializeResource, pinnedSchemaPath, serializeManifest, serializeResource } from "../storage/yaml";
-import { migrateWorkspaceAuthRuntime, projectWorkspace, restoreWorkspace } from "./project-projection";
+import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource } from "../storage/yaml";
+import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, restoreGlobalVariables, restoreWorkspace } from "./project-projection";
 import { CachedSecureStore } from "../storage/secrets";
+import type { Variable } from "../features/workspaces/model/workspace";
 
 const resourceDirectory = (resource: ProjectResource) => ({ http: "requests", graphql: "graphql", schema: "schemas", environment: "environments", folder: "folders", integration: "integrations" })[resource.kind];
 const slug = (name: string) => name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "resource";
@@ -14,24 +15,33 @@ export class WorkspacePersistence {
   private projects = new Map<string, Project>();
   private paths = new Map<string, Map<string, string>>();
   private sdlPaths = new Map<string, Map<string, string>>();
+  private developmentRewrites = new Map<string, Set<string>>();
   private activeId = "";
+  private globalSnapshot = "";
+  private globalVariables: Variable[] = [];
+  private deleted = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
   constructor(readonly backend: PersistenceBackend, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
   private readProject(snapshot: StoredWorkspace, index = true): Project {
     if (!snapshot.files["purr.yaml"]) throw new Error("Workspace manifest is missing. Existing local data has not been changed.");
-    const workspace = deserializeManifest(snapshot.files["purr.yaml"].content);
+    const manifest = deserializeManifestFile(snapshot.files["purr.yaml"].content); const workspace = manifest.value;
     if (workspace.id !== snapshot.id) throw new Error("Workspace manifest identifier does not match its registered directory.");
-    const paths = new Map<string, string>(); const sdlPaths = new Map<string, string>();
+    const paths = new Map<string, string>(); const sdlPaths = new Map<string, string>(); const developmentRewrites = new Set<string>();
+    if (manifest.developmentRewrite) developmentRewrites.add("purr.yaml");
     const resources = Object.entries(snapshot.files).filter(([path]) => path !== "purr.yaml" && path.endsWith(".yaml")).map(([path, file]) => {
-      const resource = deserializeResource(file.content, (sdl) => { const value = snapshot.files[sdl]; if (!value) throw new Error(); return value.content; });
+      const decoded = deserializeResourceFile(file.content, (sdl) => { const value = snapshot.files[sdl]; if (!value) throw new Error(); return value.content; });
+      const resource = decoded.value; if (decoded.developmentRewrite) developmentRewrites.add(path);
       paths.set(resource.id, path); return resource;
     });
     for (const resource of resources) if (resource.kind === "schema") {
       const pinned = pinnedSchemaPath(snapshot.files[paths.get(resource.id)!].content); if (pinned) sdlPaths.set(resource.id, pinned);
     }
     const project = validateProject({ workspace, resources });
-    if (index) { this.paths.set(snapshot.id, paths); this.sdlPaths.set(snapshot.id, sdlPaths); } return project;
+    if (index) {
+      this.paths.set(snapshot.id, paths); this.sdlPaths.set(snapshot.id, sdlPaths);
+      if (developmentRewrites.size) this.developmentRewrites.set(snapshot.id, developmentRewrites); else this.developmentRewrites.delete(snapshot.id);
+    } return project;
   }
   async load(): Promise<WorkspaceStore> {
     this.secure.clear();
@@ -57,22 +67,47 @@ export class WorkspacePersistence {
     const candidate = stored.activeWorkspaceId || legacy?.activeWorkspaceId;
     const activeWorkspaceId = workspaces.some((item) => item.id === candidate) ? candidate! : workspaces[0].id;
     this.activeId = stored.activeWorkspaceId;
-    await this.save({ activeWorkspaceId, workspaces }); await this.backend.finishMigration();
-    return { activeWorkspaceId, workspaces };
+    const globalRecord = stored.global?.find((record) => record.table === "workspace_local_state" && record.id === "variables");
+    const globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure);
+    this.globalVariables = globalVariables;
+    this.globalSnapshot = JSON.stringify(globalRecord?.value ?? []);
+    await this.save({ activeWorkspaceId, workspaces, globalVariables }); await this.backend.finishMigration();
+    return { activeWorkspaceId, workspaces, globalVariables };
   }
   save(store: WorkspaceStore): Promise<void> {
     const work = async () => {
       for (const workspace of store.workspaces) await this.persist(workspace);
-      if (this.activeId !== store.activeWorkspaceId) { await this.backend.setActiveWorkspace(store.activeWorkspaceId); this.activeId = store.activeWorkspaceId; }
+      const definitions = await projectGlobalVariables(store.globalVariables ?? [], this.secure);
+      this.globalVariables = store.globalVariables ?? [];
+      const serialized = JSON.stringify(definitions);
+      if (serialized !== this.globalSnapshot) {
+        await this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }]);
+        this.globalSnapshot = serialized;
+      }
+      if (this.activeId !== store.activeWorkspaceId && !this.deleted.has(store.activeWorkspaceId)) { await this.backend.setActiveWorkspace(store.activeWorkspaceId); this.activeId = store.activeWorkspaceId; }
     };
     const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
   }
+  async deleteWorkspace(id: string): Promise<void> {
+    this.deleted.add(id);
+    const remove = async () => {
+      await this.backend.deleteWorkspace(id);
+      this.secure.clear();
+      this.snapshots.delete(id); this.projects.delete(id); this.paths.delete(id); this.sdlPaths.delete(id);
+      this.developmentRewrites.delete(id);
+      if (this.activeId === id) this.activeId = "";
+    };
+    const next = this.queue.catch(() => {}).then(remove); this.queue = next;
+    try { await next; } catch (cause) { this.deleted.delete(id); throw cause; }
+  }
   private async persist(workspace: Workspace, legacySource?: string) {
+    if (this.deleted.has(workspace.id)) return;
     const { project, local, assets } = await projectWorkspace(workspace, this.secure); validateProject(project);
     if (legacySource) local.push({ table: "workspace_local_state", id: "legacy-source", value: legacySource });
     const snapshot = this.snapshots.get(workspace.id) ?? { id: workspace.id, files: {}, local: [] };
     const previousProject = this.projects.get(workspace.id); const paths = new Map(this.paths.get(workspace.id) ?? []);
     const sdlPaths = this.sdlPaths.get(workspace.id) ?? new Map<string, string>();
+    const developmentRewrites = this.developmentRewrites.get(workspace.id) ?? new Set<string>();
     const desired: Record<string, string> = { "purr.yaml": serializeManifest(project.workspace), ...assets };
     // Unreferenced sidecar files belong to the directory owner, not to Purr's
     // deletion set. Managed SDL is removed only on explicit unpin/delete.
@@ -83,9 +118,9 @@ export class WorkspacePersistence {
       const sdlPath = sdlPaths.get(resource.id) ?? `schemas/${resource.id}.graphql`; desired[path] = serializeResource(resource, sdlPath);
       if (resource.kind === "schema" && resource.pinnedSdl !== undefined) desired[sdlPath] = resource.pinnedSdl;
       const previous = previousProject?.resources.find((item) => item.id === resource.id);
-      if (previous && serializeResource(previous, sdlPath) === desired[path] && snapshot.files[path]) desired[path] = snapshot.files[path].content;
+      if (previous && serializeResource(previous, sdlPath) === desired[path] && snapshot.files[path] && !developmentRewrites.has(path)) desired[path] = snapshot.files[path].content;
     }
-    if (previousProject && serializeManifest(previousProject.workspace) === desired["purr.yaml"] && snapshot.files["purr.yaml"]) desired["purr.yaml"] = snapshot.files["purr.yaml"].content;
+    if (previousProject && serializeManifest(previousProject.workspace) === desired["purr.yaml"] && snapshot.files["purr.yaml"] && !developmentRewrites.has("purr.yaml")) desired["purr.yaml"] = snapshot.files["purr.yaml"].content;
     const changes: FileChange[] = [];
     for (const path of new Set([...Object.keys(snapshot.files), ...Object.keys(desired)])) {
       const content = desired[path] ?? null;
@@ -102,6 +137,7 @@ export class WorkspacePersistence {
       const files = await this.backend.commit(workspace.id, changes, localChanges);
       this.snapshots.set(workspace.id, { id: workspace.id, files, local: [...nextLocal.values()] });
     }
+    this.developmentRewrites.delete(workspace.id);
     this.projects.set(workspace.id, project); this.paths.set(workspace.id, paths);
   }
   async watchChanges(onReload: (workspace: Workspace) => void, onError: (message: string) => void, current: () => WorkspaceStore | null) {
@@ -152,7 +188,7 @@ export class WorkspacePersistence {
     validateProject(project);
     const snapshot = this.snapshots.get(project.workspace.id);
     const workspace = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])));
-    await this.save({ activeWorkspaceId: this.activeId || workspace.id, workspaces: [workspace] }); return workspace;
+    await this.save({ activeWorkspaceId: this.activeId || workspace.id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }
   prepareImport(project: Project): Project {
     const existing = this.projects.get(project.workspace.id);
@@ -165,10 +201,11 @@ export class WorkspacePersistence {
   async attachDirectory(id: string, directory: string): Promise<Workspace> {
     if (!this.backend.attachDirectory) throw new Error("Directory workspaces require the desktop application.");
     if (this.snapshots.has(id)) throw new Error("This workspace is already open.");
+    this.deleted.delete(id);
     const snapshot = await this.backend.attachDirectory(id, directory);
     const project = this.readProject(snapshot, false);
     const workspace = await restoreWorkspace(project, snapshot.local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])));
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
-    await this.save({ activeWorkspaceId: id, workspaces: [workspace] }); return workspace;
+    await this.save({ activeWorkspaceId: id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }
 }

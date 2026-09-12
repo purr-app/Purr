@@ -1,4 +1,4 @@
-import { Braces, Fingerprint, RadioTower } from "lucide-react";
+import { Braces, Fingerprint } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { FormField } from "../../../shared/components/ui/form-field";
@@ -11,7 +11,6 @@ import {
   inspectJwt,
   tokenExpiryLabel,
   type AuthContext,
-  type AuthSourceDocumentOption,
   type RequestAuth,
 } from "../model/request-auth";
 
@@ -20,13 +19,11 @@ export function BearerAuthForm({
   onAuthChange,
   context,
   now,
-  responseSourceDocuments,
 }: {
   auth: RequestAuth;
   onAuthChange: (auth: RequestAuth) => void;
   context: AuthContext;
   now: number;
-  responseSourceDocuments: readonly AuthSourceDocumentOption[];
 }) {
   const [inspect, setInspect] = useState(false);
   let bearer = "";
@@ -44,35 +41,8 @@ export function BearerAuthForm({
           <Fingerprint className="size-ui-4 text-action-brand" />
           Bearer credentials
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          onClick={() =>
-            onAuthChange({
-              ...auth,
-              bearer: {
-                ...auth.bearer,
-                source:
-                  auth.bearer.source === "manual" ? "response" : "manual",
-                responseError: "",
-              },
-            })
-          }
-        >
-          <RadioTower className="size-ui-3-5" />
-          {auth.bearer.source === "manual"
-            ? "Use token from response"
-            : "Use pasted token"}
-        </Button>
       </div>
-      <div
-        className={
-          auth.bearer.source === "manual"
-            ? "ui-auth-bearer-grid"
-            : "ui-auth-response-grid"
-        }
-      >
+      <div className="ui-auth-bearer-grid">
         <div className="space-y-ui-2">
           <span className="block text-ui-xs font-medium text-content-secondary">
             Token prefix
@@ -95,8 +65,7 @@ export function BearerAuthForm({
             }
           />
         </div>
-        {auth.bearer.source === "manual" ? (
-          <div className="space-y-ui-2"><FormField
+        <div className="space-y-ui-2"><FormField
             label="Bearer token"
             secret
             placeholder="Paste your token"
@@ -111,67 +80,7 @@ export function BearerAuthForm({
               })
             }
           /><Checkbox label="Store token as secret" checked={auth.credentialStorage?.bearer !== "plain"} onCheckedChange={(secret) => onAuthChange({ ...auth, credentialStorage: { ...auth.credentialStorage, bearer: secret ? "secret" : "plain" } })} /></div>
-        ) : (
-          <>
-            <div className="space-y-ui-2">
-              <span className="block text-ui-xs font-medium text-content-secondary">
-                Token request document
-              </span>
-              <SelectField
-                label="Token request document"
-                size="lg"
-                value={auth.bearer.endpointDocumentId}
-                options={[
-                  { value: "", label: "Select a saved request…" },
-                  ...responseSourceDocuments.map((document) => ({
-                    value: document.id,
-                    label: document.name,
-                  })),
-                ]}
-                className="w-full font-code"
-                onValueChange={(endpointDocumentId) =>
-                  onAuthChange({
-                    ...auth,
-                    bearer: {
-                      ...auth.bearer,
-                      endpointDocumentId,
-                      endpointPath: "",
-                      receivedToken: "",
-                      responseError: "",
-                    },
-                  })
-                }
-              />
-              {!responseSourceDocuments.length ? (
-                <p className="m-ui-0 text-ui-xs text-content-tertiary">
-                  Save the token request first so its headers and body can be reused.
-                </p>
-              ) : null}
-            </div>
-            <FormField
-              label="Response token path"
-              value={auth.bearer.expression}
-              placeholder=".auth.token"
-              onChange={(event) =>
-                onAuthChange({
-                  ...auth,
-                  bearer: {
-                    ...auth.bearer,
-                    expression: event.target.value,
-                    receivedToken: "",
-                    responseError: "",
-                  },
-                })
-              }
-            />
-          </>
-        )}
       </div>
-      {auth.bearer.responseError ? (
-        <p role="alert" className="text-ui-sm text-accent-red">
-          {auth.bearer.responseError}
-        </p>
-      ) : null}
       {jwt ? (
         <div className="flex justify-end">
           <Button

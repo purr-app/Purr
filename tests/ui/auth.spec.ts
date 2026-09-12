@@ -221,26 +221,6 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
     "Basic dXNlcjpwYXNz",
   ]);
   expect(requests[1].headers).toContainEqual(["Cookie", "sid=one"]);
-  await page.getByRole("button", { name: "Save document", exact: true }).click();
-  await page.getByLabel("Document name", { exact: true }).fill("Token request");
-  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
-  await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
-  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/profile");
-  await page.getByRole("tab", { name: /^Auth/ }).click();
-  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Use token from response", exact: true })
-    .click();
-  await page.getByRole("combobox", { name: "Token request document", exact: true }).click();
-  await page.getByRole("option", { name: "Token request", exact: true }).click();
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect
-    .poll(() => page.evaluate(() => (window as any).__testRequests.length))
-    .toBe(4);
-  expect((await page.evaluate(() => (window as any).__testRequests))[2].url).toBe("https://api.example.com/users/42");
-  expect(
-    (await page.evaluate(() => (window as any).__testRequests))[3].headers,
-  ).toContainEqual(["Authorization", "Bearer response-token"]);
 });
 
 test("OAuth refreshes while another request tab is open", async ({ page }) => {
