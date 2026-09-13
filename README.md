@@ -1,7 +1,28 @@
-# Tauri + React + Typescript
+# Purr
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Purr is a local-first desktop API client built with React, TypeScript, Vite and
+Tauri. Saved requests are versioned project files; drafts, executions, cookies and
+credentials remain local.
 
-## Recommended IDE Setup
+Start with the [architecture and current-state guide](docs/architecture.md). It is
+the primary orientation document for maintainers and coding agents.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Related references:
+
+- [Workspaces and GraphQL](docs/workspaces.md)
+- [Authentication, OAuth and cookies](docs/auth.md)
+- [Persistence, encryption and migration](docs/persistence-architecture.md)
+
+## Development
+
+```bash
+yarn dev          # browser UI preview; requests and OAuth are unavailable
+yarn tauri dev     # desktop development with native storage and networking
+yarn test
+yarn test:ui
+yarn typecheck
+yarn lint
+yarn build
+```
+
+Native Cargo commands use `--manifest-path src-tauri/Cargo.toml`.
