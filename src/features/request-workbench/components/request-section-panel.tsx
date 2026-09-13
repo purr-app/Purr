@@ -18,6 +18,7 @@ import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import type { GraphQLSchema } from "graphql";
 import { GraphqlQueryEditor } from "../../graphql/components/graphql-query-editor";
 import type { TemplateVariableActions } from "./template-variable-popover";
+import { MarkdownDocumentationEditor } from "./markdown-documentation-editor";
 
 type RequestSectionPanelProps = {
   schema?: GraphQLSchema;
@@ -50,6 +51,11 @@ export function RequestSectionPanel({
     value={draft.graphql} schema={schema} onOpenType={onOpenGraphqlType} onRunOperation={onRunGraphqlOperation}
     templateVariableActions={variableActions}
     onChange={(graphql) => onDraftChange({ ...draft, graphql })} />;
+
+  if (activeSection === "docs") return <MarkdownDocumentationEditor
+    value={draft.documentation}
+    onChange={(documentation) => onDraftChange({ ...draft, documentation })}
+  />;
 
   return section?.id === "body" ? (
     <BodyEditor

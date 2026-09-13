@@ -176,6 +176,7 @@
     --workspace-titlebar-height: 2.5rem;
     --workspace-traffic-lights-width: 4.25rem;
     --workspace-menu-width: 14rem;
+    --context-menu-width: 12rem;
     --document-tab-max-width: 14rem;
     --schema-registry-width: 16.5rem;
     --schema-details-min-width: 18rem;
@@ -358,6 +359,13 @@
 
   .ui-focus-ring {
     outline: none;
+  }
+
+  /* Full-canvas editors expose focus through the caret, not a panel-sized ring. */
+  .ui-editor-surface:focus,
+  .ui-editor-surface:focus-visible {
+    outline: none;
+    box-shadow: none;
   }
 
   .ui-workspace-header {

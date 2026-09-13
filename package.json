@@ -38,6 +38,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-hotkeys-hook": "^5.3.3",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.18.3",
     "tailwind-merge": "^3.6.0",
     "tough-cookie": "^6.0.2",

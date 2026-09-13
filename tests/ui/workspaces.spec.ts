@@ -171,6 +171,94 @@ test("sidebar opens one italic preview tab that pins itself after editing", asyn
   await expect(tabs(page).filter({ hasText: "Second" }).locator("span").nth(1)).not.toHaveClass(/italic/);
 });
 
+test("double-click pins a sidebar preview and document actions support duplicate shortcuts", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/original");
+  await saveDocument(page, "Original");
+  await page.getByRole("button", { name: "Close Original", exact: true }).click();
+  const row = page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Original", exact: true });
+
+  await row.dblclick();
+  await expect(tabs(page)).toHaveCount(1);
+  await expect(tabs(page).locator("span").nth(1)).not.toHaveClass(/italic/);
+
+  await row.click({ button: "right" });
+  const documentMenu = page.getByRole("menu", { name: "Actions for Original", exact: true });
+  await expect(documentMenu.getByRole("menuitem", { name: "Rename", exact: true })).toBeVisible();
+  await expect(documentMenu.getByRole("menuitem", { name: "Duplicate", exact: true })).toBeVisible();
+  await expect(documentMenu.locator("svg")).toHaveCount(0);
+  await documentMenu.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  await expect(tabs(page)).toHaveCount(2);
+  await expect(tabs(page).filter({ hasText: "Original copy" })).toBeVisible();
+
+  await row.click({ button: "right" });
+  await expect(tabs(page).last()).toHaveAttribute("aria-selected", "true");
+  await expect(tabs(page).first()).toHaveAttribute("aria-selected", "false");
+  await page.keyboard.press("Escape");
+
+  await row.focus();
+  await page.keyboard.press(`${mod}+e`);
+  await expect(page.getByRole("dialog", { name: "Rename document" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await row.focus();
+  await page.keyboard.press("Backspace");
+  await expect(row).toHaveCount(0);
+});
+
+test("request tab context menu duplicates and closes tab groups", async ({ page }) => {
+  await page.goto("/");
+  const first = tabs(page).first();
+  await first.click({ button: "right" });
+  const menu = page.getByRole("menu", { name: /Tab actions for/ });
+  await expect(menu.getByRole("menuitem", { name: /New request/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /Duplicate tab/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /Close other tabs/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /Close all tabs/ })).toBeVisible();
+  await expect(menu.locator("svg")).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: /Duplicate tab/ }).click();
+  await expect(tabs(page)).toHaveCount(2);
+
+  await tabs(page).first().click({ button: "right" });
+  await expect(tabs(page).last()).toHaveAttribute("aria-selected", "true");
+  await expect(tabs(page).first()).toHaveAttribute("aria-selected", "false");
+  await page.keyboard.press("Escape");
+
+  await tabs(page).last().click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Close other tabs/ }).click();
+  await expect(tabs(page)).toHaveCount(1);
+  await tabs(page).first().click({ button: "right" });
+  await page.getByRole("menuitem", { name: /New request/ }).click();
+  await expect(tabs(page)).toHaveCount(2);
+  await tabs(page).last().click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Close all tabs/ }).click();
+  await expect(tabs(page)).toHaveCount(0);
+});
+
+test("request Markdown documentation previews and persists with the document", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Docs", exact: true }).click();
+  await expect(page.getByLabel("Markdown preview", { exact: true })).toContainText("No documentation yet.");
+  await page.getByRole("button", { name: "Edit documentation", exact: true }).click();
+  const editor = page.getByLabel("Request documentation Markdown", { exact: true });
+  await expect(editor).toBeFocused();
+  await expect.poll(() => editor.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe("none");
+  await editor.fill("# Upload a file\n\nUse `multipart/form-data` for the payload.");
+  await page.locator("#request-section-docs").getByRole("button", { name: "Save", exact: true }).click();
+  const preview = page.getByLabel("Markdown preview", { exact: true });
+  await expect(preview.getByRole("heading", { name: "Upload a file", exact: true })).toBeVisible();
+  await expect(preview.getByText("multipart/form-data", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Edit documentation", exact: true }).click();
+  await editor.fill("# This must be discarded");
+  await page.locator("#request-section-docs").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(preview.getByRole("heading", { name: "Upload a file", exact: true })).toBeVisible();
+  await saveDocument(page, "Upload file");
+  await saved(page);
+  await page.reload();
+  await page.getByRole("tab", { name: "Docs", exact: true }).click();
+  await page.getByRole("button", { name: "Edit documentation", exact: true }).click();
+  await expect(page.getByLabel("Request documentation Markdown", { exact: true })).toHaveValue("# Upload a file\n\nUse `multipart/form-data` for the payload.");
+});
+
 test("blank tabs stay out of Drafts and real drafts can be discarded from the sidebar", async ({ page }) => {
   await page.goto("/");
   const draftGroup = page.getByRole("region", { name: "Drafts", exact: true });
@@ -185,7 +273,7 @@ test("blank tabs stay out of Drafts and real drafts can be discarded from the si
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/discard-me");
   await expect(draftGroup.getByRole("button", { name: "GET example.com/discard-me", exact: true })).toBeVisible();
   await draftGroup.getByRole("button", { name: "Document actions for example.com/discard-me", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Discard draft", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Discard", exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
   await expect(draftGroup).toHaveCount(0);
 
@@ -230,7 +318,7 @@ test("saved documents can be deleted from the sidebar context menu", async ({ pa
   await saveDocument(page, "Remove me");
   const row = page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Remove me", exact: true });
   await row.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Delete document", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect(tabs(page)).toHaveCount(0);
 });
@@ -315,7 +403,7 @@ test("sidebar context menu renames saved documents", async ({ page }) => {
   await saveDocument(page, "Original name");
   const row = page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Original name", exact: true });
   await row.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Rename document", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
   await page.getByLabel("Document name", { exact: true }).fill("Renamed request");
   await page.getByRole("dialog", { name: "Rename document" }).getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("region", { name: "HTTP", exact: true }).getByRole("button", { name: "GET Renamed request", exact: true })).toBeVisible();

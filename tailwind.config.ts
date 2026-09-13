@@ -115,6 +115,7 @@ export default {
         "ui-titlebar": "var(--workspace-titlebar-height)",
         "ui-traffic-lights": "var(--workspace-traffic-lights-width)",
         "ui-workspace-menu": "var(--workspace-menu-width)",
+        "ui-context-menu": "var(--context-menu-width)",
         "ui-document-tab": "var(--document-tab-max-width)",
         "ui-dialog": "var(--dialog-width)",
         "ui-name-dialog": "var(--name-dialog-width)",

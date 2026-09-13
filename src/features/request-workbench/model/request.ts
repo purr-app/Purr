@@ -50,6 +50,7 @@ const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 export type RequestDraft = {
   environmentId?: string;
   graphql?: { query: string; variables: string; operationName: string; schemaId?: string };
+  documentation: string;
   method: HttpMethod;
   url: string;
   params: RequestQueryParam[];
@@ -71,6 +72,7 @@ export function createRequestWorkspaceOverrides(): RequestWorkspaceOverrides {
 }
 
 export const initialRequestDraft: RequestDraft = {
+  documentation: "",
   method: "GET",
   url: "https://api.example.com/users/42",
   params: [{ id: "param-1", key: "", value: "", enabled: false }],

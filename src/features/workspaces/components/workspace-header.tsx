@@ -3,6 +3,7 @@ import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, Globe2,
 import { isTauri } from "@tauri-apps/api/core";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
+import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../shared/components/ui/popover";
 import { cn } from "../../../shared/lib/cn";
 import { RequestTabBar } from "../../request-workbench/components/request-tab-bar";
@@ -58,7 +59,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
           </div>
           <div className="mt-ui-1 border-t border-border-subtle pt-ui-1">
             <Button variant="ghost" className={rowClass} onClick={() => { setEnvironmentOpen(false); onNewEnvironment(); }}><Plus className="size-ui-4" />New environment</Button>
-            {environment && <Button variant="ghost" className={rowClass} onClick={() => { setEnvironmentOpen(false); onEditEnvironment(); }}><Settings2 className="size-ui-4" />Edit environment<KbdGroup keys={["mod", "e"]} /></Button>}
+            {environment && <Button variant="ghost" className={rowClass} onClick={() => { setEnvironmentOpen(false); onEditEnvironment(); }}><Settings2 className="size-ui-4" />Edit environment<KbdGroup keys={keyboardShortcuts.editEnvironment.keys} /></Button>}
           </div>
         </PopoverContent>
       </Popover>

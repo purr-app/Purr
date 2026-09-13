@@ -34,11 +34,18 @@ test("project projection excludes drafts, execution data, cookies and all creden
   assert.equal(projected.project.resources.filter((resource) => resource.kind === "http").length, 0);
   assert.ok(projected.local.some((record) => record.table === "drafts"));
   request.saved = true; request.savedRequest = cloneRequestDraft(request.request);
+  request.request.documentation = "# Basic authentication\n\nThis request returns a user.";
   request.request.body.type = "json"; request.request.body.json = '{\n  "name": "Ihor",\n  "active": true\n}\n'; request.savedRequest = cloneRequestDraft(request.request);
   request.request.environmentId = "env"; request.savedRequest.environmentId = "env";
   request.sentAt = "2026-01-01";
   workspace.cookies.push({ id: "cookie-id", name: "session", value: "cookie-secret", domain: "example.com", path: "/", secure: true, httpOnly: true, sameSite: "lax", hostOnly: true, enabled: true });
   projected = await projectWorkspace(workspace, secure);
+  const documentedResource = projected.project.resources.find((resource) => resource.kind === "http");
+  assert.ok(documentedResource?.kind === "http");
+  const documentedYaml = serializeResource(documentedResource);
+  assert.match(documentedYaml, /documentation:/);
+  const documentedRoundTrip = deserializeResource(documentedYaml);
+  assert.equal(documentedRoundTrip.kind === "http" ? documentedRoundTrip.documentation : undefined, request.request.documentation);
   const yaml = [serializeManifest(projected.project.workspace), ...projected.project.resources.map((resource) => serializeResource(resource))].join("\n");
   for (const text of ["basic-password-secret", "inactive-bearer-secret", "environment-secret", "cookie-secret", "sentAt", "lastResponse", "openDocumentIds", "splitRatios"]) assert.ok(!yaml.includes(text), text);
   const local = JSON.stringify(projected.local);
@@ -46,6 +53,7 @@ test("project projection excludes drafts, execution data, cookies and all creden
   const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
   const document = restored.documents[0]; assert.ok(isRequestDocument(document));
   assert.equal(document.request.body.json, request.request.body.json);
+  assert.equal(document.request.documentation, request.request.documentation);
   assert.equal(document.request.environmentId, "env");
   assert.equal(document.request.auth.basic.password, "basic-password-secret");
   assert.equal(restored.environments[0].variables[0].kind === "static" ? restored.environments[0].variables[0].value : "", "environment-secret");

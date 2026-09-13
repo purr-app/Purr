@@ -35,6 +35,7 @@ import {
   createWorkspace,
   discardDocument,
   deleteDocument,
+  duplicateDocument,
   getEffectiveVariables,
   getEffectiveVariableValues,
   getVariableNamespace,
@@ -165,19 +166,18 @@ export function WorkspaceWorkbench() {
     return { ...current, documents, ui: pinPreview ? { ...current.ui, previewDocumentId: null } : current.ui };
   });
   const setDraft = (change: SetStateAction<RequestDraft>) => setRequestDraft(currentDocument?.id, change);
-  const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http", duplicate = false) => {
+  const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http") => {
     if (kind === "schema") {
       const document = createSchemaDocument();
       update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
       return;
     }
     let document: RequestDocument = kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
-    if (!duplicate && workspace)
+    if (workspace)
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
-    if (duplicate && currentDocument) document = { ...document, kind: currentDocument.kind, name: `${getDocumentDisplayName(currentDocument)} copy`, request: cloneRequestDraft(currentDocument.request), ui: { ...currentDocument.ui } };
-    if (duplicate) document.request.auth.secretRefs = undefined;
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
+  const duplicateById = (id: string) => update((current) => duplicateDocument(current, id));
   const openSchema = (selectedType?: string) => {
     if (currentDocument?.kind !== "graphql") return;
     update((current) => {
@@ -196,6 +196,17 @@ export function WorkspaceWorkbench() {
     });
   };
   const closeById = (id: string) => update((current) => closeDocument(current, id));
+  const closeOtherTabs = (id: string) => update((current) => {
+    const closed = current.ui.openDocumentIds.filter((openId) => openId !== id).reduce((next, openId) => closeDocument(next, openId), current);
+    const opened = openDocument(closed, id);
+    return { ...opened, ui: { ...opened.ui, cookiesTabOpen: false, cookiesTabActive: false, settingsTabOpen: false, settingsTabActive: false,
+      variablesTabOpen: false, variablesTabActive: false } };
+  });
+  const closeAllTabs = () => update((current) => {
+    const closed = current.ui.openDocumentIds.reduce((next, id) => closeDocument(next, id), current);
+    return { ...closed, ui: { ...closed.ui, cookiesTabOpen: false, cookiesTabActive: false, settingsTabOpen: false, settingsTabActive: false,
+      variablesTabOpen: false, variablesTabActive: false } };
+  });
   const discardById = (id: string) => {
     update((current) => discardDocument(current, id));
     if (workspace) setSessions((current) => {
@@ -284,7 +295,7 @@ export function WorkspaceWorkbench() {
         icon: currentDocument.saved ? <RotateCcw className="size-ui-4" /> : <Trash2 className="size-ui-4" />,
         run: () => discardById(currentDocument.id),
       }] : []),
-      { id: "duplicate", title: `Duplicate ${currentDocument.kind === "graphql" ? "GraphQL" : "HTTP"} request`, icon: <Copy className="size-ui-4" />, shortcut: keyboardShortcuts.duplicateDocument, run: () => addDocument(currentDocument.kind, true) },
+      { id: "duplicate", title: `Duplicate ${currentDocument.kind === "graphql" ? "GraphQL" : "HTTP"} request`, icon: <Copy className="size-ui-4" />, shortcut: keyboardShortcuts.duplicateDocument, run: () => duplicateById(currentDocument.id) },
       ...(currentDocument.kind === "graphql" ? [{ id: "schema", title: "Open GraphQL schema", icon: <Network className="size-ui-4 text-action-graphql" />, run: openSchema }] : []),
       { id: "focus-url", title: "Focus request URL", icon: <TextCursorInput className="size-ui-4" />, shortcut: keyboardShortcuts.focusUrl, run: () => requestActions.current?.focusUrl() },
     ] : []),
@@ -310,6 +321,10 @@ export function WorkspaceWorkbench() {
     else if (workspace?.ui.cookiesTabActive) closeCookies();
     else if (activeDocument) closeById(activeDocument.id);
   }, shortcutOptions, [activeDocument, workspace]);
+  useHotkeys(keyboardShortcuts.closeOtherDocuments.hotkey, () => {
+    if (activeDocument && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive && !workspace?.ui.variablesTabActive) closeOtherTabs(activeDocument.id);
+  }, shortcutOptions, [activeDocument, workspace]);
+  useHotkeys(keyboardShortcuts.closeAllDocuments.hotkey, closeAllTabs, shortcutOptions, [workspace]);
 
   if (!store || !workspace) return <div className="flex h-screen items-center justify-center bg-purr-base p-ui-6 font-ui text-ui-md text-content-secondary">
     {loadError ? <div className="max-w-ui-dialog space-y-ui-4"><p role="alert">{loadError}</p><Button onClick={retry}>Retry loading workspaces</Button></div> : <p>Opening workspace…</p>}
@@ -341,13 +356,13 @@ export function WorkspaceWorkbench() {
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
       onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className="h-full shrink-0"><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onNew={addDocument} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onOpenFolder={() => {
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className="h-full shrink-0"><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onOpenFolder={() => {
         setActionError("");
         void openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
       }} /></Collapsible>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
-          onPin={(id) => update((current) => pinDocument(current, id))} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
+          onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
           {workspace.ui.settingsTabActive ? <WorkspaceSettings name={workspace.name} description={workspace.description} config={workspace.requestConfig}

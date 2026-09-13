@@ -55,7 +55,7 @@ const body = z.discriminatedUnion("type", [
 ]);
 const base = { id: entityId, name: z.string(), description: z.string().optional(), folderId: entityId.optional() };
 const request = {
-  ...base, url: z.string(), method: z.string().regex(/^[A-Z][A-Z0-9_-]*$/),
+  ...base, url: z.string(), method: z.string().regex(/^[A-Z][A-Z0-9_-]*$/), documentation: z.string().optional(),
   params: z.array(pair).default([]), headers: z.array(pair).default([]), body: body.default({ type: "none" }),
   auth: authDefinitionSchema.default({ type: "none" }), environmentId: entityId.optional(),
   overrides: z.strictObject({ headers: z.boolean().default(true), auth: z.boolean().default(true),

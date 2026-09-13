@@ -1,6 +1,9 @@
 import { Braces, Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "../../../shared/components/ui/button";
+import { KbdGroup } from "../../../shared/components/ui/kbd";
+import { Popover, PopoverAnchor, PopoverContent } from "../../../shared/components/ui/popover";
+import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
 import { cn } from "../../../shared/lib/cn";
 import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, isRequestDocument, type CreatableDocumentKind, type Workspace } from "../model/workspace";
 import { NewDocumentButton } from "./new-document-button";
@@ -23,12 +26,15 @@ type TabDrag = {
   moved: boolean;
 };
 
-export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onSave }: {
+export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onSave }: {
   workspace: Workspace;
   cookieCount: number;
   onOpen: (id: string) => void;
   onClose: (id: string) => void;
   onPin: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onCloseOther: (id: string) => void;
+  onCloseAll: () => void;
   onReorder: (sourceId: string, targetId: string) => void;
   onOpenCookies: () => void;
   onCloseCookies: () => void;
@@ -45,6 +51,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   const dropPositions = useRef<Map<string, number> | null>(null);
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const [settling, setSettling] = useState(false);
+  const [menuId, setMenuId] = useState<string | null>(null);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
   const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
   const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : [])];
@@ -71,6 +78,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
     dropPositions.current = null;
     setDrag(null);
     setSettling(false);
+    setMenuId(null);
   }, [workspace.id]);
   useLayoutEffect(() => {
     const previous = dropPositions.current;
@@ -185,12 +193,14 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
         const dirty = isDocumentDirty(document);
         const translateX = tabTranslateX(id, index);
         const dragging = drag?.id === id && drag.moved;
-        return <div key={id} data-document-id={id}
+        return <Popover key={id} open={menuId === id} onOpenChange={(open) => setMenuId(open ? id : null)}>
+          <PopoverAnchor asChild><div data-document-id={id}
           className={cn("ui-sortable-tab group flex shrink-0 cursor-grab select-none items-center rounded-ui-md border hover:bg-purr-elevated active:cursor-grabbing",
             active ? "border-border bg-purr-elevated" : "border-transparent",
             dragging && "ui-sortable-tab-dragging relative z-10",
             settling && "ui-sortable-tab-settling")}
-          style={{ "--document-tab-translate-x": `${translateX}px` } as CSSProperties}>
+          style={{ "--document-tab-translate-x": `${translateX}px` } as CSSProperties}
+          onContextMenu={(event) => { event.preventDefault(); setMenuId(id); }}>
           <button type="button" role="tab" aria-selected={active} aria-controls="active-document-panel" id={`document-tab-${id}`} title={name}
             className="ui-focus-ring flex h-control-sm max-w-ui-document-tab touch-none items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
             onClick={() => { if (!drag?.moved) onOpen(id); }} onDoubleClick={() => onPin(id)} onKeyDown={(event) => onTabKeyDown(event, id)}
@@ -204,7 +214,16 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
             {dirty ? <span className="size-ui-1-5 rounded-full bg-action-brand transition-opacity duration-ui-fast group-hover:opacity-ui-hidden group-focus-within:opacity-ui-hidden" title={document.saved ? "Unsaved changes" : "Draft"} /> : null}
             <Button variant="ghost" size="icon" className={cn("absolute inset-0 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible", dirty && "group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible")} aria-label={`Close ${name}`} onClick={() => onClose(id)}><X className="size-ui-3" /></Button>
           </span>
-        </div>;
+          </div></PopoverAnchor>
+          <PopoverContent role="menu" aria-label={`Tab actions for ${name}`} align="start" sideOffset={4} className="w-ui-context-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover" onOpenAutoFocus={(event) => event.preventDefault()}>
+            <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenuId(null); onNew(workspace.ui.lastRequestKind); }}><span className="flex-1 text-left">New request</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.newDocument.keys} /></span></Button>
+            <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenuId(null); onDuplicate(id); }}><span className="flex-1 text-left">Duplicate tab</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.duplicateDocument.keys} /></span></Button>
+            <div role="separator" className="my-ui-1 border-t border-border-subtle" />
+            <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenuId(null); onClose(id); }}><span className="flex-1 text-left">Close tab</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.closeDocument.keys} /></span></Button>
+            <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenuId(null); onCloseOther(id); }}><span className="flex-1 text-left">Close other tabs</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.closeOtherDocuments.keys} /></span></Button>
+            <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenuId(null); onCloseAll(); }}><span className="flex-1 text-left">Close all tabs</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.closeAllDocuments.keys} /></span></Button>
+          </PopoverContent>
+        </Popover>;
       })}
       {workspace.ui.cookiesTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.cookiesTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
         <button type="button" role="tab" aria-selected={workspace.ui.cookiesTabActive} aria-controls="active-document-panel" id={`document-tab-${cookiesTabId}`}

@@ -9,6 +9,7 @@ type KbdGroupProps = {
   keys: readonly ShortcutKey[];
   className?: string;
   kbdClassName?: string;
+  plain?: boolean;
 };
 
 function Kbd({ className, ...props }: KbdProps) {
@@ -23,12 +24,12 @@ function Kbd({ className, ...props }: KbdProps) {
   );
 }
 
-function KbdGroup({ keys, className, kbdClassName }: KbdGroupProps) {
+function KbdGroup({ keys, className, kbdClassName, plain = false }: KbdGroupProps) {
   const labels = keys.map(getPlatformKeyLabel);
 
   return (
     <span className={cn("ml-ui-1 inline-flex shrink-0", className)} aria-label={labels.join(" + ")}>
-      <Kbd className={cn("gap-ui-1", kbdClassName)}>
+      <Kbd className={cn("gap-ui-1", plain && "border-0 bg-transparent px-ui-0 shadow-none", kbdClassName)}>
         {labels.map((label, index) => (
           <span
             key={`${label}-${index}`}
@@ -43,7 +44,7 @@ function KbdGroup({ keys, className, kbdClassName }: KbdGroupProps) {
 }
 
 function isSymbolKey(label: string) {
-  return ["⌘", "⌃", "⌥", "⇧", "↵"].includes(label);
+  return ["⌘", "⌃", "⌥", "⇧", "↵", "⌫"].includes(label);
 }
 
 function getPlatformKeyLabel(key: ShortcutKey) {
@@ -56,6 +57,7 @@ function getPlatformKeyLabel(key: ShortcutKey) {
     shift: "⇧",
     enter: "↵",
     escape: "esc",
+    backspace: "⌫",
   };
   const otherLabels: Record<string, string> = {
     mod: "Ctrl",
@@ -64,6 +66,7 @@ function getPlatformKeyLabel(key: ShortcutKey) {
     shift: "Shift",
     enter: "Enter",
     escape: "Esc",
+    backspace: "Backspace",
   };
 
   return (isApplePlatform ? appleLabels : otherLabels)[key.toLowerCase()] ?? key.toUpperCase();

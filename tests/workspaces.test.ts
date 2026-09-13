@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyWorkspaceRequestConfig, cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
+import { applyWorkspaceRequestConfig, cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, duplicateDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
 import { resolveEnvironmentValue } from "../src/shared/lib/resolve-variables";
 import { resolveRequestEnvironment } from "../src/features/workspaces/model/environment";
 import { applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParamsFromUrl } from "../src/features/request-workbench/model/request";
@@ -108,6 +108,30 @@ test("clean saved documents use one replaceable preview tab and ordered tabs can
   workspace = reorderOpenDocuments(workspace, second.id, third.id);
   assert.deepEqual(workspace.ui.openDocumentIds, [second.id, third.id]);
   assert.equal(workspace.ui.previewDocumentId, null);
+});
+
+test("duplicating a document creates an independent pinned draft without reusing runtime credentials", () => {
+  const workspace = createWorkspace(); const source = workspace.documents[0];
+  source.saved = true; source.name = "Documented request";
+  source.request.url = "https://example.test/users";
+  source.request.documentation = "# Users\n\nReturns users.";
+  source.request.auth.secretRefs = { bearer: "purr/workspace/requests/source/bearer" };
+  source.request.auth.oauth2.token = { accessToken: "runtime-token", tokenType: "Bearer", obtainedAt: 1 };
+  source.savedRequest = cloneRequestDraft(source.request);
+
+  const duplicated = duplicateDocument(workspace, source.id);
+  const copy = duplicated.documents.at(-1)!;
+  assert.notEqual(copy.id, source.id);
+  assert.equal(copy.name, "Documented request copy");
+  assert.equal(copy.saved, false);
+  assert.equal(duplicated.ui.activeDocumentId, copy.id);
+  assert.equal(duplicated.ui.previewDocumentId, null);
+  assert.ok("request" in copy);
+  assert.equal(copy.request.documentation, source.request.documentation);
+  assert.equal(copy.request.auth.secretRefs, undefined);
+  assert.equal(copy.request.auth.oauth2.token, null);
+  copy.request.documentation = "Changed independently";
+  assert.equal(source.request.documentation, "# Users\n\nReturns users.");
 });
 
 test("workspace validation refuses unsupported versions and repairs dangling tab IDs", () => {

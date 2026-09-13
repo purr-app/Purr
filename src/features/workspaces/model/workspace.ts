@@ -113,6 +113,7 @@ export function createHttpDocument(): HttpDocument {
     id: crypto.randomUUID(), kind: "http", name: "Untitled Request", saved: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     request: {
+      documentation: "",
       method: "GET", url: "",
       params: [{ id: "param-1", key: "", value: "", enabled: false }],
       headers: [{ id: "header-1", name: "", value: "", enabled: false }],
@@ -209,6 +210,24 @@ export function cloneRequestDraft(request: RequestDraft): RequestDraft {
   return structuredClone(request);
 }
 
+export function duplicateDocument(workspace: Workspace, id: string): Workspace {
+  const source = workspace.documents.find((document) => document.id === id);
+  if (!source) return workspace;
+  if (!isRequestDocument(source)) {
+    const created = createSchemaDocument();
+    const duplicate: SchemaDocument = { ...created, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
+      folderId: source.folderId, sourceRequestId: source.sourceRequestId, endpoint: source.endpoint, sdl: source.sdl, source: source.source,
+      sourceLabel: source.sourceLabel, loadedAt: source.loadedAt, schemaSource: source.schemaSource, pinned: source.pinned, ui: { ...source.ui } };
+    return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
+  }
+  const created: RequestDocument = source.kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
+  const request = cloneRequestDraft(source.request);
+  request.auth = { ...request.auth, secretRefs: undefined, oauth2: { ...request.auth.oauth2, token: null } };
+  const duplicate: RequestDocument = { ...created, kind: source.kind, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
+    folderId: source.folderId, request, ui: { ...source.ui } };
+  return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
+}
+
 function comparableRequest(value: unknown): unknown {
   if (typeof File !== "undefined" && value instanceof File)
     return { name: value.name, size: value.size, type: value.type, lastModified: value.lastModified };
@@ -235,6 +254,7 @@ export function isMeaningfulDraft(document: WorkspaceDocument): boolean {
     request.headers.some((header) => header.name || header.value) ||
     request.body.type !== "none" ||
     (request.auth.type !== "none" && request.auth.type !== "inherit") ||
+    request.documentation.trim() ||
     document.sentAt,
   );
 }
@@ -349,6 +369,7 @@ export function validateWorkspace(value: unknown): Workspace {
   const requestShape = createHttpDocument().request;
   const normalizeRequest = (request: RequestDraft): RequestDraft => ({
     ...request,
+    documentation: typeof request.documentation === "string" ? request.documentation : "",
     auth: normalizeRequestAuth(request.auth),
     workspace: request?.workspace && typeof request.workspace === "object"
       ? {
