@@ -23,6 +23,7 @@ import { applyWorkspaceRequestConfig, type RequestKind, type WorkspaceRequestCon
 import type { Variable } from "../../workspaces/model/workspace";
 import { TemplateVariablePopover, type TemplateVariableActions } from "./template-variable-popover";
 import { ColorizedUrlInput } from "./colorized-url-input";
+import { isCurlCommand } from "../model/curl-import";
 
 type RequestComposerProps = {
   schema?: GraphQLSchema;
@@ -46,6 +47,7 @@ type RequestComposerProps = {
   variableDefinitions: readonly Variable[];
   onOpenVariable: (id: string) => void;
   onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") => void;
+  onImportCurl: (command: string) => void;
 };
 
 export function RequestComposer({
@@ -70,6 +72,7 @@ export function RequestComposer({
   variableDefinitions,
   onOpenVariable,
   onCreateMissingVariable,
+  onImportCurl,
 }: RequestComposerProps) {
   const effectiveDraft = applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig);
   const headers = getRequestHeaders(effectiveDraft, authContext);
@@ -120,8 +123,14 @@ export function RequestComposer({
               {...bindings}
               aria-label="Request URL"
               aria-invalid={urlInvalid}
-              placeholder="Enter URL or use {{base_url}}"
+              placeholder="Enter URL, paste cURL, or use {{variable}}"
               spellCheck="false"
+              onPaste={(event) => {
+                const command = event.clipboardData.getData("text/plain");
+                if (!isCurlCommand(command)) return;
+                event.preventDefault();
+                onImportCurl(command);
+              }}
             />}</TemplateVariablePopover></div>
             {draft.graphql && <Button type="button" variant="ghost" size="sm" aria-label="Open GraphQL schema" title="Schema explorer · introspection or import" onClick={onOpenSchema}>
               <Network className="size-ui-4 text-action-graphql" /><span className="hidden lg:inline">Schema</span>

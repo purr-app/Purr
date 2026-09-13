@@ -60,7 +60,7 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -75,6 +75,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   onCreateVariable: (candidate: ResponseVariableCandidate) => void;
   onOpenVariable: (id: string) => void;
   onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") => void;
+  onImportCurl: (command: string) => void;
   view: WorkbenchView;
   splitRatios: { horizontal: number; vertical: number };
   onSplitRatioChange: (orientation: "horizontal" | "vertical", ratio: number) => void;
@@ -209,6 +210,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       variableDefinitions={runtimeVariables}
       onOpenVariable={onOpenVariable}
       onCreateMissingVariable={onCreateMissingVariable}
+      onImportCurl={onImportCurl}
       onDraftChange={setDraft}
       onSend={() => {
         void send();

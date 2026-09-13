@@ -246,6 +246,42 @@ test("request tab context menu duplicates and closes tab groups", async ({ page 
   await expect(page.getByLabel("Value for X-Source", { exact: true })).toHaveValue("clipboard");
 });
 
+test("pasting cURL into the URL field imports the request and protects custom credentials", async ({ page }) => {
+  await page.goto("/");
+  const url = page.getByLabel("Request URL", { exact: true });
+  await url.evaluate((input, command) => {
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", command);
+    input.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  }, "curl 'https://api.example.com/users?active=true' -X PATCH -H 'Authorization: Bearer imported-token' -H 'X-Client-Secret: imported-secret' --data-raw '{\"name\":\"Ada\"}'");
+
+  await expect(url).toHaveValue("https://api.example.com/users?active=true");
+  await expect(page.getByRole("button", { name: "Choose HTTP method", exact: true })).toContainText("PATCH");
+  await page.getByRole("tab", { name: /^Auth/ }).click();
+  await expect(page.getByLabel("Bearer token", { exact: true })).toHaveValue("imported-token");
+  await page.getByRole("tab", { name: /^Headers/ }).click();
+  await expect(page.getByLabel("Value for X-Client-Secret", { exact: true })).toHaveValue("{{curl_x_client_secret}}");
+});
+
+test("pasting cURL into an empty workspace creates and opens an HTTP request", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Close Untitled Request", exact: true }).click();
+  await expect(tabs(page)).toHaveCount(0);
+  await page.keyboard.press(`${mod}+v`);
+  const capture = page.getByLabel("Paste cURL capture", { exact: true });
+  await expect(capture).toBeFocused();
+  await capture.evaluate((input, command) => {
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", command);
+    input.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  }, "curl 'https://api.example.com/pasted-globally' -H 'X-Source: global-paste'");
+
+  await expect(tabs(page)).toHaveCount(1);
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://api.example.com/pasted-globally");
+  await page.getByRole("tab", { name: /^Headers/ }).click();
+  await expect(page.getByLabel("Value for X-Source", { exact: true })).toHaveValue("global-paste");
+});
+
 test("request Markdown documentation previews and persists with the document", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: "Docs", exact: true }).click();

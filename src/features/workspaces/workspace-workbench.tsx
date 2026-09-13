@@ -12,7 +12,7 @@ import type { RequestDraft } from "../request-workbench/model/request";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
-import { importCurlRequest } from "../request-workbench/model/curl-import";
+import { importCurl, isCurlCommand, type CurlImport } from "../request-workbench/model/curl-import";
 import { CommandPalette, type PaletteAction } from "./components/command-palette";
 import { DocumentTabs } from "./components/document-tabs";
 import { createDynamicVariable, VariablesExplorer, type VariableScope } from "./components/variables-explorer";
@@ -59,6 +59,41 @@ import {
 type Dialog = "palette" | "new-workspace" | "save-document" | { renameDocument: string } | null;
 const actionErrorTimeoutMs = 15_000;
 
+function curlSecretVariableName(headerName: string, used: Set<string>) {
+  const stem = headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "secret";
+  const base = `curl_${stem}`;
+  let name = base;
+  let suffix = 2;
+  while (used.has(name)) name = `${base}_${suffix++}`;
+  used.add(name);
+  return name;
+}
+
+function protectImportedCurlSecrets(imported: CurlImport, workspace: Workspace, globalVariables: readonly Variable[]) {
+  if (!imported.secrets.length) return { request: imported.request, variables: [] as Variable[] };
+  const usedNames = new Set([
+    ...globalVariables,
+    ...workspace.variables,
+    ...workspace.environments.flatMap((environment) => environment.variables),
+  ].map((variable) => variable.name.trim()).filter(Boolean));
+  const bindings = new Map<string, string>();
+  const variables: Variable[] = imported.secrets.map((secret) => {
+    const name = curlSecretVariableName(secret.headerName, usedNames);
+    bindings.set(secret.headerId, name);
+    return { id: crypto.randomUUID(), name, enabled: true, sensitive: true, kind: "static", value: secret.value };
+  });
+  return {
+    request: {
+      ...imported.request,
+      headers: imported.request.headers.map((header) => {
+        const variable = bindings.get(header.id);
+        return variable ? { ...header, value: `{{${variable}}}`, secret: true } : header;
+      }),
+    },
+    variables,
+  };
+}
+
 function pruneVariableCache(workspace: Workspace, globalVariables: readonly Variable[]) {
   const variables = new Map([...globalVariables, ...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)]
     .map((variable) => [variable.id, variable]));
@@ -79,6 +114,7 @@ export function WorkspaceWorkbench() {
   const jars = useRef(new Map<string, SessionCookieJar>());
   const dynamicSessionCaches = useRef(new Map<string, Map<string, Workspace["dynamicVariableCache"][string]>>());
   const requestActions = useRef<RequestActions>(null);
+  const emptyPasteTarget = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (!actionError) return;
     const timeout = window.setTimeout(() => setActionError(""), actionErrorTimeoutMs);
@@ -179,15 +215,56 @@ export function WorkspaceWorkbench() {
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
+  const importCurlAsDocument = (command: string) => {
+    try {
+      const document = createHttpDocument();
+      const imported = importCurl(command, document.request);
+      update((current) => {
+        const secured = protectImportedCurlSecrets(imported, current, store?.globalVariables ?? []);
+        const request = withWorkspaceAuthDefault(secured.request, "http", current.requestConfig);
+        return openDocument({ ...current, variables: [...current.variables, ...secured.variables], documents: [...current.documents, { ...document, request }] }, document.id);
+      });
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "Could not import the cURL command.");
+    }
+  };
+  const importCurlIntoActiveDocument = (command: string) => {
+    if (!currentDocument || currentDocument.kind !== "http") {
+      importCurlAsDocument(command);
+      return;
+    }
+    try {
+      const imported = importCurl(command, currentDocument.request);
+      const documentId = currentDocument.id;
+      update((current) => {
+        const secured = protectImportedCurlSecrets(imported, current, store?.globalVariables ?? []);
+        let previewChanged = false;
+        const documents = current.documents.map((document) => {
+          if (document.id !== documentId || !isRequestDocument(document)) return document;
+          const request = withWorkspaceAuthDefault(secured.request, "http", current.requestConfig);
+          const next = { ...document, request, updatedAt: new Date().toISOString() };
+          if (current.ui.previewDocumentId === document.id && isDocumentDirty(next)) previewChanged = true;
+          return next;
+        });
+        return {
+          ...current,
+          variables: [...current.variables, ...secured.variables],
+          documents,
+          ui: previewChanged ? { ...current.ui, previewDocumentId: null } : current.ui,
+        };
+      });
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "Could not import the cURL command.");
+    }
+  };
   const pasteCurl = async () => {
     try {
-      const command = await navigator.clipboard.readText();
-      let document = createHttpDocument();
-      const request = importCurlRequest(command, document.request);
-      document = { ...document, request: workspace ? withWorkspaceAuthDefault(request, "http", workspace.requestConfig) : request };
-      update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
-    } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "Could not read a cURL command from the clipboard.");
+      importCurlAsDocument(await navigator.clipboard.readText());
+    } catch {
+      // WebKit-based desktop WebViews may deny Clipboard.readText() outside an
+      // editable element. Focus the capture target so the next native paste
+      // event carries clipboardData instead of showing a system Paste prompt.
+      emptyPasteTarget.current?.focus();
     }
   };
   const duplicateById = (id: string) => update((current) => duplicateDocument(current, id));
@@ -327,6 +404,12 @@ export function WorkspaceWorkbench() {
   useHotkeys(actions.map((action) => action.shortcut?.hotkey).filter(Boolean).join(","), (_, handler) => {
     actions.find((action) => action.shortcut?.hotkey === handler.hotkey)?.run();
   }, shortcutOptions, [actions]);
+  useHotkeys(keyboardShortcuts.pasteCurl.hotkey, () => emptyPasteTarget.current?.focus(), {
+    preventDefault: false,
+    enableOnFormTags: false,
+    enableOnContentEditable: false,
+    enabled: workspace?.ui.openDocumentIds.length === 0 && !dialog,
+  }, [dialog, workspace]);
   useHotkeys(`${keyboardShortcuts.commandPalette.hotkey},${keyboardShortcuts.openRecentRequest.hotkey}`, () => setDialog((current) => current === "palette" ? null : "palette"), { ...shortcutOptions, enabled: Boolean(workspace) && (!dialog || dialog === "palette") });
   useHotkeys(keyboardShortcuts.closeDocument.hotkey, () => {
     if (workspace?.ui.settingsTabActive) closeSettings();
@@ -338,7 +421,6 @@ export function WorkspaceWorkbench() {
     if (activeDocument && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive && !workspace?.ui.variablesTabActive) closeOtherTabs(activeDocument.id);
   }, shortcutOptions, [activeDocument, workspace]);
   useHotkeys(keyboardShortcuts.closeAllDocuments.hotkey, closeAllTabs, shortcutOptions, [workspace]);
-
   if (!store || !workspace) return <div className="flex h-screen items-center justify-center bg-purr-base p-ui-6 font-ui text-ui-md text-content-secondary">
     {loadError ? <div className="max-w-ui-dialog space-y-ui-4"><p role="alert">{loadError}</p><Button onClick={retry}>Retry loading workspaces</Button></div> : <p>Opening workspace…</p>}
   </div>;
@@ -483,6 +565,7 @@ export function WorkspaceWorkbench() {
                 openVariables(`environment:${created.id}`, null, variable);
               }
             }}
+            onImportCurl={importCurlIntoActiveDocument}
             onCreateVariable={(candidate) => {
               const baseName = candidate.name.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^\d/, "_$&") || "response_value";
               let name = `${baseName}_var`; let suffix = 2;
@@ -498,7 +581,12 @@ export function WorkspaceWorkbench() {
             variables={variables} runtimeVariables={getEffectiveVariables(workspace, store.globalVariables)} environmentId={workspace.activeEnvironmentId} variablesForEnvironment={variablesForEnvironment}
             dynamicVariableCache={workspace.dynamicVariableCache} dynamicVariableSessionCache={dynamicVariableSessionCache} onDynamicVariableCacheChange={(dynamicVariableCache) => update((current) => JSON.stringify(current.dynamicVariableCache) === JSON.stringify(dynamicVariableCache) ? current : ({ ...current, dynamicVariableCache }))}
             cookieJar={cookieJar!} session={session} onSessionChange={changeSession} actionsRef={requestActions} />
-            : <EmptyWorkspace onNew={() => addDocument()} onPasteCurl={() => { void pasteCurl(); }} />}
+            : <EmptyWorkspace
+              onNew={() => addDocument()}
+              onPasteCurl={() => { void pasteCurl(); }}
+              onPasteCommand={(command) => { if (isCurlCommand(command)) importCurlAsDocument(command); }}
+              pasteTargetRef={emptyPasteTarget}
+            />}
         </div>
       </div>
     </div>
