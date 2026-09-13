@@ -13,7 +13,7 @@ import {
 } from "../model/request-editor-section";
 import { bodyTypeOptions, type RequestBodyType } from "../model/request-body";
 import { authTypeOptions, type AuthType } from "../model/request-auth";
-import { Code2 } from "lucide-react";
+import { ChevronDown, Code2 } from "lucide-react";
 
 type RequestSectionTabsProps = {
   graphql?: boolean;
@@ -25,6 +25,8 @@ type RequestSectionTabsProps = {
   headerCount: number;
   hasHeaderError: boolean;
   onOpenCode: () => void;
+  detailsCollapsed?: boolean;
+  onToggleDetails?: () => void;
 };
 
 function BodyTypeIndicator({ bodyType }: { bodyType: RequestBodyType }) {
@@ -67,10 +69,13 @@ export function RequestSectionTabs({
   hasHeaderError,
   graphql = false,
   onOpenCode,
+  detailsCollapsed = false,
+  onToggleDetails,
 }: RequestSectionTabsProps) {
   return (
     <div
-      className="flex min-h-control-md shrink-0 items-center justify-between gap-ui-2 border-b border-border-subtle bg-purr-elevated px-ui-2 py-ui-1-5"
+      className="flex h-request-options shrink-0 items-center justify-between gap-ui-2 border-b border-border-subtle bg-purr-elevated px-ui-2 py-ui-1-5"
+      data-request-options-bar
     >
       <div
         className="flex min-w-0 items-center gap-ui-1 overflow-x-auto"
@@ -78,12 +83,13 @@ export function RequestSectionTabs({
         aria-label="Request options"
       >
         {(graphql ? graphqlEditorSections : requestEditorSections).map((section) => {
+            const selected = !detailsCollapsed && activeSection === section.id;
             return (
               <Button
                 key={section.id}
                 id={`request-tab-${section.id}`}
                 className={cn(
-                  activeSection === section.id
+                  selected
                     ? "bg-purr-highlight text-content-primary"
                     : "text-content-secondary opacity-ui-inactive",
                 )}
@@ -91,7 +97,7 @@ export function RequestSectionTabs({
                 weight="normal"
                 type="button"
                 role="tab"
-                aria-selected={activeSection === section.id}
+                aria-selected={selected}
                 aria-controls={`request-section-${section.id}`}
                 onClick={() => onSectionChange(section.id)}
               >
@@ -132,9 +138,14 @@ export function RequestSectionTabs({
             );
           })}
       </div>
-      <Button type="button" variant="ghost" size="icon" className="shrink-0 text-content-tertiary" aria-label="Open request code" title="Request code" onClick={onOpenCode}>
-        <Code2 className="size-ui-4" aria-hidden="true" />
-      </Button>
+      <div className="flex shrink-0 items-center gap-ui-1">
+        <Button type="button" variant="ghost" size="icon" className="shrink-0 text-content-tertiary" aria-label="Open request code" title="Request code" onClick={onOpenCode}>
+          <Code2 className="size-ui-4" aria-hidden="true" />
+        </Button>
+        {onToggleDetails ? <Button type="button" size="icon" variant="ghost" aria-label={detailsCollapsed ? "Expand request details" : "Collapse request details"} aria-expanded={!detailsCollapsed} aria-controls="request-details" onClick={onToggleDetails}>
+          <ChevronDown className={cn("size-ui-4 transition-transform duration-ui-layout motion-reduce:transition-none", !detailsCollapsed && "rotate-180")} aria-hidden="true" />
+        </Button> : null}
+      </div>
     </div>
   );
 }

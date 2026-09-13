@@ -110,6 +110,7 @@ export default {
         "method-popover": "var(--method-popover-width)",
         "auth-grant": "var(--auth-grant-width)",
         "request-toolbar": "var(--request-toolbar-height)",
+        "request-options": "var(--request-options-height)",
         "splitter-dot": "var(--splitter-dot-size)",
         "ui-sidebar": "var(--workspace-sidebar-width)",
         "ui-titlebar": "var(--workspace-titlebar-height)",

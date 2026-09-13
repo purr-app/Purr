@@ -55,6 +55,14 @@ async function mockDesktop(page: Page) {
         if (command !== "send_http") return;
         (window as any).__requests.push(args.request);
         const payload = JSON.parse(atob(args.request.bodyBase64));
+        if ((window as any).__holdGraphqlRequest && payload.operationName !== "IntrospectionQuery") {
+          await new Promise<void>((resolve) => {
+            (window as any).__releaseGraphqlRequest = () => {
+              (window as any).__holdGraphqlRequest = false;
+              resolve();
+            };
+          });
+        }
         const body = payload.operationName === "IntrospectionQuery"
           ? ((window as any).__failIntrospection ? { errors: [{ message: "Introspection disabled" }] } : { data: introspection })
           : (window as any).__graphqlNoErrors ? { data: { customer: { id: "42", name: "Ada" } } }
@@ -74,7 +82,12 @@ test("GraphQL creation menus, last-used request type, and saved query snapshots"
   await expect(page.getByRole("tab", { name: "Variables", exact: true })).toHaveCount(0);
   await expect(page.getByLabel("HTTP method")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveClass(/bg-action-graphql/);
-  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/graphql");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://graphqlplaceholder.vercel.app/graphql");
+  await expect(page.locator('[data-url-part="protocol"]')).toHaveClass(/text-action-emerald/);
+  await expect(page.locator('[data-url-part="base"]')).toHaveClass(/text-syntax-property/);
+  await expect(page.locator('[data-url-part="path"]')).toHaveClass(/text-syntax-attribute/);
+  await expect(page.locator('[data-url-accent="graphql"]')).toHaveCount(2);
+  await expect(page.locator('[data-url-accent="graphql"]').first()).toHaveClass(/text-action-graphql/);
   await page.getByLabel("GraphQL query", { exact: true }).fill(query);
   await page.getByRole("button", { name: "Save document", exact: true }).click();
   await page.getByLabel("Document name", { exact: true }).fill("Customers");
@@ -117,7 +130,18 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await page.getByRole("tab", { name: "Auth", exact: true }).click();
   await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
   await page.getByLabel("Bearer token", { exact: true }).fill("gql-test-token");
+  await page.evaluate(() => { (window as any).__holdGraphqlRequest = true; });
   await page.getByRole("button", { name: "Send", exact: true }).click();
+  const running = page.getByRole("button", { name: /Request running/ });
+  await expect(running).toHaveClass(/bg-action-graphql-surface/);
+  await expect(running).toHaveClass(/text-action-graphql/);
+  await expect(running.locator(".bg-action-graphql")).toHaveCount(1);
+  const pending = page.getByRole("region", { name: "Response pending" });
+  await expect(pending.locator("[data-pending-indicator]")).toHaveClass(/bg-action-graphql/);
+  await expect(pending.locator("[data-pending-message]")).toHaveClass(/text-content-secondary/);
+  await expect(pending.locator("[data-response-elapsed]")).toHaveClass(/text-action-graphql/);
+  await expect(pending.locator("[data-pending-hint]")).toHaveClass(/text-content-tertiary/);
+  await page.evaluate(() => (window as any).__releaseGraphqlRequest());
   await expect(page.getByText("200 OK", { exact: true })).toBeVisible();
   await expect(page.getByText("GraphQL errors 1", { exact: true })).toBeVisible();
   const responseModes = page.getByLabel("HTTP response").getByRole("button", { name: /^(Data|Prettify|Raw)$/ });

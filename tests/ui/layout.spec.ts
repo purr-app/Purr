@@ -21,7 +21,7 @@ async function mockSuccessfulRequest(page: Page) {
   });
 }
 
-test("canvas collapses to the URL and reopens request details beside a dimmed response", async ({
+test("canvas collapses to the request tabs and reopens request details beside a dimmed response", async ({
   page,
 }) => {
   await mockSuccessfulRequest(page);
@@ -57,10 +57,12 @@ test("canvas collapses to the URL and reopens request details beside a dimmed re
   );
 
   const urlBar = page.locator("[data-request-url-bar]");
-  const request = page.getByRole("region", { name: "Request composer" });
+  const requestPane = page.getByRole("region", { name: "Request editor", exact: true });
   const details = page.locator("[data-request-details]");
+  const requestOptions = page.getByRole("tablist", { name: "Request options" });
+  const requestOptionsBar = page.locator("[data-request-options-bar]");
   const cookies = page.locator("header").getByRole("button", { name: /^Cookies/ });
-  const params = details.getByRole("tab", { name: "Params" });
+  const params = requestOptions.getByRole("tab", { name: "Params" });
   await expect(cookies).toBeVisible();
   expect((await cookies.boundingBox())!.y).toBeLessThan((await params.boundingBox())!.y);
   await expect(urlBar.getByRole("button", { name: /^Cookies/ })).toHaveCount(0);
@@ -68,15 +70,21 @@ test("canvas collapses to the URL and reopens request details beside a dimmed re
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
   await expect(details).toHaveAttribute("inert", "");
-  await expect(page.getByRole("tablist", { name: "Request options" })).toHaveCount(0);
-  await expect.poll(async () => (await request.boundingBox())!.height - (await urlBar.boundingBox())!.height).toBeLessThanOrEqual(2);
+  await expect(requestOptions).toBeVisible();
+  await expect(requestOptions.getByRole("tab", { selected: true })).toHaveCount(0);
+  await expect.poll(async () => Math.abs((await requestPane.boundingBox())!.height - (await urlBar.boundingBox())!.height - (await requestOptionsBar.boundingBox())!.height)).toBeLessThanOrEqual(2);
+  const codeButton = page.getByRole("button", { name: "Open request code" });
+  const expandButton = page.getByRole("button", { name: "Expand request details" });
+  expect((await codeButton.boundingBox())!.x).toBeLessThan((await expandButton.boundingBox())!.x);
   await page.screenshot({
     path: "test-results/layout-canvas-response.png",
     fullPage: true,
   });
 
-  await page.getByRole("button", { name: "Expand request details" }).click();
+  await params.click();
   await expect(params).toBeVisible();
+  await expect(params).toHaveAttribute("aria-selected", "true");
+  await expect(details).not.toHaveAttribute("inert", "");
   const panes = page.locator('[data-split-orientation="horizontal"] > section');
   await expect.poll(async () => {
     const requestPane = (await panes.nth(0).boundingBox())!;
@@ -88,6 +96,75 @@ test("canvas collapses to the URL and reopens request details beside a dimmed re
 
   await page.getByRole("button", { name: "Focus Response viewer" }).click();
   await expect(details).toHaveAttribute("inert", "");
+  await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
+});
+
+test("empty URLs focus an invalid input and URL parts use semantic colors", async ({ page }) => {
+  await page.goto("/");
+  const url = page.getByLabel("Request URL", { exact: true });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(url).toBeFocused();
+  await expect(url).toHaveAttribute("aria-invalid", "true");
+  await expect(url).toHaveClass(/border-accent-red/);
+  await expect(page.getByRole("region", { name: "Request error" })).toHaveCount(0);
+
+  await url.fill("https://api.example.com/users/42?state=open");
+  await expect(url).toHaveAttribute("aria-invalid", "false");
+  await expect(page.locator('[data-url-part="protocol"]')).toHaveClass(/text-action-emerald/);
+  await expect(page.locator('[data-url-part="base"]')).toHaveClass(/text-syntax-property/);
+  await expect(page.locator('[data-url-part="path"]')).toHaveClass(/text-syntax-attribute/);
+  await expect(page.locator('[data-url-part="query"]')).toHaveClass(/text-accent-orange/);
+  await url.fill("https://{{path}}.typicode.com/todos/1");
+  await expect(page.locator('[data-url-part="base"]')).toHaveText("{{path}}.typicode.com");
+  await expect(page.locator('[data-url-part="path"]')).toHaveText("/todos/1");
+});
+
+test("request failures replace response details with one Error tab", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("not-a-valid-url");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const error = page.getByRole("region", { name: "Request error" });
+  await expect(error).toBeVisible();
+  await expect(error.getByRole("tab")).toHaveCount(1);
+  await expect(error.getByRole("tab", { name: "Error", exact: true })).toBeVisible();
+  await expect(error.getByRole("alert")).toContainText("Enter a valid HTTP or HTTPS URL.");
+  await expect(page.getByRole("region", { name: "HTTP response" })).toHaveCount(0);
+});
+
+test("pending requests hide an existing response, disable tabs, and cancel with Escape", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).isTauri = true;
+    (window as any).__requestCount = 0;
+    const response = { status: 200, statusText: "OK", durationMs: 12, httpVersion: "HTTP/2", headers: [["content-type", "application/json"]], bodyBase64: btoa('{"ready":true}') };
+    (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string) => {
+      if (command !== "send_http") throw new Error("Unexpected command");
+      (window as any).__requestCount += 1;
+      if ((window as any).__requestCount === 1) return response;
+      return new Promise((resolve) => { (window as any).__finishPendingRequest = () => resolve(response); });
+    } };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const pending = page.getByRole("region", { name: "Response pending" });
+  await expect(pending).toBeVisible();
+  await expect(pending.getByRole("status")).toContainText("Waiting for response");
+  await expect(pending.locator("[data-response-elapsed]")).toHaveClass(/text-action-emerald/);
+  const running = page.getByRole("button", { name: /Request running/ });
+  await expect(running).toContainText("Running ·");
+  await expect(running).toContainText("esc");
+  await page.screenshot({ path: "test-results/response-pending.png", fullPage: true });
+  expect(await pending.getByRole("tab").count()).toBeGreaterThan(1);
+  for (const tab of await pending.getByRole("tab").all()) await expect(tab).toBeDisabled();
+  await expect(page.getByRole("region", { name: "HTTP response" })).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(pending).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
+  await page.evaluate(() => (window as any).__finishPendingRequest());
   await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
 });
 

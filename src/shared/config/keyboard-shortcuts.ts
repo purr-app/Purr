@@ -22,7 +22,7 @@ export const defaultKeyboardShortcuts = {
   closeOtherDocuments: { hotkey: "mod+alt+w", keys: ["mod", "alt", "w"] },
   closeAllDocuments: { hotkey: "mod+shift+w", keys: ["mod", "shift", "w"] },
   duplicateDocument: { hotkey: "mod+d", keys: ["mod", "d"] },
-  renameDocument: { hotkey: "mod+e", keys: ["mod", "e"] },
+  renameDocument: { hotkey: "mod+r", keys: ["mod", "r"] },
   deleteDocument: { hotkey: "backspace", keys: ["backspace"] },
   toggleSidebar: { hotkey: "mod+b", keys: ["mod", "b"] },
   editEnvironment: { hotkey: "mod+e", keys: ["mod", "e"] },

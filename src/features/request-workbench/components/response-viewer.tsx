@@ -688,7 +688,7 @@ function ResponseTimelinePanel({ response }: { response: HttpResult }) {
     {
       label: "Connection + TTFB",
       duration: timeline.waitingMs,
-      className: "bg-accent-orange",
+      className: "bg-action-brand",
     },
     {
       label: "Download",
@@ -834,7 +834,7 @@ function ResponseTimelinePanel({ response }: { response: HttpResult }) {
           </p>
         </div>
 
-        <div className="mb-ui-5 text-accent-violet">
+        <div className="mb-ui-5 text-action-brand">
           <p className="m-ui-0">
             Connecting to {connectionTarget(timeline.request.url)}...
           </p>

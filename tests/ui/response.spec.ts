@@ -144,6 +144,7 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
 
   await response.getByRole("tab", { name: "Timeline", exact: true }).click();
   await expect(response.getByText("Connection + TTFB (70 ms)")).toBeVisible();
+  await expect(response.getByText("Connection + TTFB (70 ms)").locator("span")).toHaveClass(/bg-action-brand/);
   await expect(response.getByLabel("Response time waterfall")).toHaveCount(0);
   await response.getByRole("button", { name: "Show breakdown" }).click();
   await expect(response.getByLabel("Response time waterfall")).toBeVisible();

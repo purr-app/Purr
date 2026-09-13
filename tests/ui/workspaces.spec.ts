@@ -187,7 +187,12 @@ test("double-click pins a sidebar preview and document actions support duplicate
   await expect(documentMenu.getByRole("menuitem", { name: "Rename", exact: true })).toBeVisible();
   await expect(documentMenu.getByRole("menuitem", { name: "Duplicate", exact: true })).toBeVisible();
   await expect(documentMenu.locator("svg")).toHaveCount(0);
-  await documentMenu.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  await page.keyboard.press(`${mod}+r`);
+  await expect(page.getByRole("dialog", { name: "Rename document" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await row.click({ button: "right" });
+  await page.keyboard.press(`${mod}+d`);
   await expect(tabs(page)).toHaveCount(2);
   await expect(tabs(page).filter({ hasText: "Original copy" })).toBeVisible();
 
@@ -196,16 +201,13 @@ test("double-click pins a sidebar preview and document actions support duplicate
   await expect(tabs(page).first()).toHaveAttribute("aria-selected", "false");
   await page.keyboard.press("Escape");
 
-  await row.focus();
-  await page.keyboard.press(`${mod}+e`);
-  await expect(page.getByRole("dialog", { name: "Rename document" })).toBeVisible();
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await row.focus();
+  await row.click({ button: "right" });
   await page.keyboard.press("Backspace");
   await expect(row).toHaveCount(0);
 });
 
 test("request tab context menu duplicates and closes tab groups", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "curl 'https://api.example.com/from-curl' -H 'X-Source: clipboard'", writeText: async () => {} } }));
   await page.goto("/");
   const first = tabs(page).first();
   await first.click({ button: "right" });
@@ -232,6 +234,16 @@ test("request tab context menu duplicates and closes tab groups", async ({ page 
   await tabs(page).last().click({ button: "right" });
   await page.getByRole("menuitem", { name: /Close all tabs/ }).click();
   await expect(tabs(page)).toHaveCount(0);
+  const empty = page.getByRole("region", { name: "Nothing is open" });
+  await expect(empty.getByRole("img", { name: "Purr" })).toBeVisible();
+  await expect(empty.getByText("Open a document from the sidebar or start a new request.")).toBeVisible();
+  await expect(empty.getByRole("button", { name: "Open recent", exact: true })).toBeDisabled();
+  await page.screenshot({ path: "test-results/workspace-empty.png", fullPage: true });
+  await empty.getByRole("button", { name: "Paste cURL", exact: true }).click();
+  await expect(tabs(page)).toHaveCount(1);
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://api.example.com/from-curl");
+  await page.getByRole("tab", { name: /^Headers/ }).click();
+  await expect(page.getByLabel("Value for X-Source", { exact: true })).toHaveValue("clipboard");
 });
 
 test("request Markdown documentation previews and persists with the document", async ({ page }) => {
@@ -581,7 +593,10 @@ test("environment templates reach native request URL, auth, headers and JSON whi
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "No environment", exact: true }).click();
   await page.keyboard.press(`${mod}+Enter`);
-  await expect(page.getByRole("alert")).toContainText('Environment variable “base” is not defined');
+  const error = page.getByRole("region", { name: "Request error" });
+  await expect(error.getByRole("tab", { name: "Error", exact: true })).toBeVisible();
+  await expect(error.getByRole("alert")).toContainText('Environment variable “base” is not defined');
+  await expect(error.getByRole("tab")).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).__requests.length)).toBe(0);
 });
 

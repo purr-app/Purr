@@ -1,9 +1,8 @@
-import { ChevronDown, LoaderCircle, Network, SendHorizontal } from "lucide-react";
+import { Network, SendHorizontal } from "lucide-react";
 import type { GraphQLSchema } from "graphql";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
-import { Input } from "../../../shared/components/ui/input";
 import { HttpMethodPicker } from "../../../shared/components/http/http-method-picker";
 import { cn } from "../../../shared/lib/cn";
 import {
@@ -23,6 +22,7 @@ import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import { applyWorkspaceRequestConfig, type RequestKind, type WorkspaceRequestConfig } from "../model/request-workspace-config";
 import type { Variable } from "../../workspaces/model/workspace";
 import { TemplateVariablePopover, type TemplateVariableActions } from "./template-variable-popover";
+import { ColorizedUrlInput } from "./colorized-url-input";
 
 type RequestComposerProps = {
   schema?: GraphQLSchema;
@@ -40,6 +40,7 @@ type RequestComposerProps = {
   activeSection: RequestEditorSection;
   onSectionChange: (section: RequestEditorSection) => void;
   onOpenCode: () => void;
+  urlInvalid?: boolean;
   requestKind: RequestKind;
   workspaceConfig: WorkspaceRequestConfig;
   variableDefinitions: readonly Variable[];
@@ -63,6 +64,7 @@ export function RequestComposer({
   onOpenGraphqlType,
   onRunGraphqlOperation,
   onOpenCode,
+  urlInvalid = false,
   requestKind,
   workspaceConfig,
   variableDefinitions,
@@ -71,6 +73,16 @@ export function RequestComposer({
 }: RequestComposerProps) {
   const effectiveDraft = applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig);
   const headers = getRequestHeaders(effectiveDraft, authContext);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!sending) {
+      setElapsed(0);
+      return;
+    }
+    const started = performance.now();
+    const timer = window.setInterval(() => setElapsed(performance.now() - started), 50);
+    return () => window.clearInterval(timer);
+  }, [sending]);
 
   const selectSection = onSectionChange;
   const variableActionsRef = useRef<TemplateVariableActions>({ definitions: variableDefinitions, onOpenVariable, onCreateMissingVariable });
@@ -102,12 +114,12 @@ export function RequestComposer({
               value={draft.method}
               onValueChange={(method) => onDraftChange({ ...draft, method })}
             />}
-            <div className="min-w-0 flex-1"><TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params) })}>{(bindings) => <Input
-              className="h-control-md min-w-0 flex-1 font-code text-ui-sm sm:text-ui-md"
-              variant="transparent"
+            <div className="min-w-0 flex-1"><TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params) })}>{(bindings) => <ColorizedUrlInput
+              className={cn(urlInvalid && "border-accent-red")}
               value={draft.url}
               {...bindings}
               aria-label="Request URL"
+              aria-invalid={urlInvalid}
               placeholder="Enter URL or use {{base_url}}"
               spellCheck="false"
             />}</TemplateVariablePopover></div>
@@ -115,41 +127,50 @@ export function RequestComposer({
               <Network className="size-ui-4 text-action-graphql" /><span className="hidden lg:inline">Schema</span>
             </Button>}
             <Button
-              variant={draft.graphql ? "graphql" : "default"}
-              className="shadow-action"
+              variant={sending ? "secondary" : draft.graphql ? "graphql" : "default"}
+              className={cn(
+                "shadow-action",
+                sending && (draft.graphql
+                  ? "border-action-graphql-border bg-action-graphql-surface text-action-graphql"
+                  : "border-action-emerald-border bg-action-emerald-surface text-action-emerald"),
+              )}
               size="default"
-              type="submit"
-              disabled={sending}
+              type={sending ? "button" : "submit"}
+              aria-label={sending ? `Request running, ${Math.round(elapsed)} milliseconds. Press Escape to cancel` : "Send"}
             >
-              {sending ? "Sending…" : "Send"}
               {sending ? (
-                <LoaderCircle
-                  className="size-ui-4 animate-spin"
-                  aria-hidden="true"
-                />
+                <>
+                  <span className={cn("size-ui-2 animate-pulse rounded-full", draft.graphql ? "bg-action-graphql" : "bg-action-emerald")} aria-hidden="true" />
+                  <span>Running ·</span>
+                  <span className="font-semibold text-content-primary">{Math.round(elapsed)} ms</span>
+                  <span aria-hidden="true" className={cn("h-control-xs border-l", draft.graphql ? "border-action-graphql-border" : "border-action-emerald-border")} />
+                  <span className="text-content-secondary">esc</span>
+                </>
               ) : (
-                <SendHorizontal className="size-ui-4" aria-hidden="true" />
+                <>Send<SendHorizontal className="size-ui-4" aria-hidden="true" /></>
               )}
             </Button>
           </div>
         </form>
-        {onToggleDetails ? (
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            aria-label={detailsCollapsed ? "Expand request details" : "Collapse request details"}
-            aria-expanded={!detailsCollapsed}
-            aria-controls="request-details"
-            onClick={onToggleDetails}
-          >
-            <ChevronDown
-              className={cn("size-ui-4 transition-transform duration-ui-layout motion-reduce:transition-none", !detailsCollapsed && "rotate-180")}
-              aria-hidden="true"
-            />
-          </Button>
-        ) : null}
       </div>
+      <RequestSectionTabs
+          graphql={Boolean(draft.graphql)}
+          activeSection={activeSection}
+          onSectionChange={(section) => {
+            selectSection(section);
+            if (detailsCollapsed) onToggleDetails?.();
+          }}
+          bodyType={draft.body.type}
+          authType={effectiveDraft.auth.type}
+          queryCount={getEnabledRequestQueryParamCount(
+            getRequestQueryParams(draft, authContext),
+          )}
+          headerCount={getEnabledRequestHeaderCount(headers)}
+          hasHeaderError={hasRequestHeaderValidationError(headers)}
+          onOpenCode={onOpenCode}
+          detailsCollapsed={detailsCollapsed}
+          onToggleDetails={onToggleDetails}
+        />
       <div
         id="request-details"
         className={cn(
@@ -160,19 +181,6 @@ export function RequestComposer({
         aria-hidden={detailsCollapsed}
         inert={detailsCollapsed}
       >
-        <RequestSectionTabs
-          graphql={Boolean(draft.graphql)}
-          activeSection={activeSection}
-          onSectionChange={selectSection}
-          bodyType={draft.body.type}
-          authType={effectiveDraft.auth.type}
-          queryCount={getEnabledRequestQueryParamCount(
-            getRequestQueryParams(draft, authContext),
-          )}
-          headerCount={getEnabledRequestHeaderCount(headers)}
-          hasHeaderError={hasRequestHeaderValidationError(headers)}
-          onOpenCode={onOpenCode}
-        />
         <div className="min-h-0 flex-1 overflow-hidden">
             <RequestSectionPanel
               schema={schema}

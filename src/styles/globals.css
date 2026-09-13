@@ -168,7 +168,8 @@
     --auth-grant-width: 14rem;
     --auth-preview-max-height: 18rem;
     --request-toolbar-height: 3rem;
-    --request-collapsed-height: calc(var(--request-toolbar-height) + 2 * var(--border-width-hairline));
+    --request-options-height: calc(var(--control-height-md) + 2 * var(--space-1-5) + var(--border-width-hairline));
+    --request-collapsed-height: calc(var(--request-toolbar-height) + var(--request-options-height) + 2 * var(--border-width-hairline));
     --request-focus-expanded-ratio: 0.85;
     --splitter-gutter: 1.25rem;
     --splitter-dot-size: 0.1875rem;

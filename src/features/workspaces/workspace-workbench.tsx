@@ -12,6 +12,7 @@ import type { RequestDraft } from "../request-workbench/model/request";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
+import { importCurlRequest } from "../request-workbench/model/curl-import";
 import { CommandPalette, type PaletteAction } from "./components/command-palette";
 import { DocumentTabs } from "./components/document-tabs";
 import { createDynamicVariable, VariablesExplorer, type VariableScope } from "./components/variables-explorer";
@@ -20,6 +21,7 @@ import { NameDialog } from "./components/name-dialog";
 import { WorkspaceHeader } from "./components/workspace-header";
 import { WorkspaceSidebar } from "./components/workspace-sidebar";
 import { WorkspaceSettings } from "./components/workspace-request-settings";
+import { EmptyWorkspace } from "./components/empty-workspace";
 import { Collapsible } from "../../shared/components/ui/collapsible";
 import { useWorkspaces } from "./hooks/use-workspaces";
 import { openWorkspaceFolder, workspacePersistence } from "./services/workspace-storage";
@@ -176,6 +178,17 @@ export function WorkspaceWorkbench() {
     if (workspace)
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
+  };
+  const pasteCurl = async () => {
+    try {
+      const command = await navigator.clipboard.readText();
+      let document = createHttpDocument();
+      const request = importCurlRequest(command, document.request);
+      document = { ...document, request: workspace ? withWorkspaceAuthDefault(request, "http", workspace.requestConfig) : request };
+      update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "Could not read a cURL command from the clipboard.");
+    }
   };
   const duplicateById = (id: string) => update((current) => duplicateDocument(current, id));
   const openSchema = (selectedType?: string) => {
@@ -485,7 +498,7 @@ export function WorkspaceWorkbench() {
             variables={variables} runtimeVariables={getEffectiveVariables(workspace, store.globalVariables)} environmentId={workspace.activeEnvironmentId} variablesForEnvironment={variablesForEnvironment}
             dynamicVariableCache={workspace.dynamicVariableCache} dynamicVariableSessionCache={dynamicVariableSessionCache} onDynamicVariableCacheChange={(dynamicVariableCache) => update((current) => JSON.stringify(current.dynamicVariableCache) === JSON.stringify(dynamicVariableCache) ? current : ({ ...current, dynamicVariableCache }))}
             cookieJar={cookieJar!} session={session} onSessionChange={changeSession} actionsRef={requestActions} />
-            : <div className="flex h-full flex-col items-center justify-center gap-ui-3 text-content-tertiary"><FilePlus2 className="size-ui-8" /><p className="text-ui-md">Open a document or start a new request.</p><Button variant="secondary" onClick={() => addDocument()}>New {workspace.ui.lastRequestKind === "graphql" ? "GraphQL" : "HTTP"} request</Button></div>}
+            : <EmptyWorkspace onNew={() => addDocument()} onPasteCurl={() => { void pasteCurl(); }} />}
         </div>
       </div>
     </div>

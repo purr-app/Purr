@@ -9,6 +9,7 @@ import { executeRequest } from "./services/execute-request";
 import type { RequestEditorSection } from "./model/request-editor-section";
 import { ResponseViewer } from "./components/response-viewer";
 import type { ResponseVariableCandidate } from "./components/response-viewer";
+import { ErrorResponse, PendingResponse } from "./components/response-state-view";
 import { type RequestDraft } from "./model/request";
 import {
   type AuthContext,
@@ -29,32 +30,19 @@ function ResponseArea({
   sending,
   graphql,
   onCreateVariable,
+  onCancel,
 }: {
   response: HttpResult | null;
   error: string;
   sending: boolean;
   graphql: boolean;
   onCreateVariable?: (candidate: ResponseVariableCandidate) => void;
+  onCancel: () => void;
 }) {
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col gap-ui-2">
-      {error ? (
-        <p
-          role="alert"
-          className="m-ui-0 shrink-0 rounded-ui-lg bg-purr-elevated px-ui-4 py-ui-3 text-ui-md text-accent-red"
-        >
-          {error}
-        </p>
-      ) : null}
-      <div className="min-h-0 min-w-0 flex-1">
-        {response ? (
-          <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} />
-        ) : (
-          <EmptyResponse sending={sending} />
-        )}
-      </div>
-    </div>
-  );
+  if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} />;
+  if (error) return <ErrorResponse message={error} />;
+  if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} />;
+  return <EmptyResponse />;
 }
 
 export type RequestSession = {
@@ -112,6 +100,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   const [authContext, setAuthContext] = useState<AuthContext>({ variables, sensitiveVariableNames, workspace: workspaceAuth, requestDocumentId: documentId });
   useEffect(() => setAuthContext((previous) => ({ ...previous, variables, sensitiveVariableNames, workspace: workspaceAuth, requestDocumentId: documentId })), [variables, sensitiveVariableNames, workspaceAuth, documentId]);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [urlInvalid, setUrlInvalid] = useState(false);
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
   const { sending, response, error, canvasFocus } = session;
   const setSending = (sending: boolean) => onSessionChange({ sending });
@@ -119,6 +108,8 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   const setError = (error: string) => onSessionChange({ error });
   const setCanvasFocus = (canvasFocus: RequestSession["canvasFocus"]) => onSessionChange({ canvasFocus });
   const sendingRef = useRef(false);
+  const executionRef = useRef(0);
+  useEffect(() => setUrlInvalid(false), [documentId, draft.url]);
   const authRuntime = useAuthRuntime(
     draft,
     setDraft,
@@ -153,7 +144,15 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   });
   const send = async (graphqlOperationName?: string) => {
     if (sendingRef.current || sending) return;
+    if (!effectiveDraft.url.trim()) {
+      setCanvasFocus("request");
+      setUrlInvalid(true);
+      requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[aria-label="Request URL"]')?.focus());
+      return;
+    }
+    setUrlInvalid(false);
     setCanvasFocus("response");
+    const execution = ++executionRef.current;
     sendingRef.current = true;
     setSending(true);
     setError("");
@@ -162,18 +161,29 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
         ? { ...effectiveDraft, graphql: { ...effectiveDraft.graphql, operationName: graphqlOperationName } }
         : effectiveDraft;
       const dynamic = await resolveFor({ id: documentId, name: documentName, kind: requestKind, request: outgoing }, environmentId);
+      if (execution !== executionRef.current) return;
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(draft, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
       const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime);
+      if (execution !== executionRef.current) return;
       setResponse(result);
     } catch (cause) {
+      if (execution !== executionRef.current) return;
       if (cause instanceof DynamicVariableResolutionError) onDynamicVariableCacheChange(cause.cache);
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
+      if (execution !== executionRef.current) return;
       sendingRef.current = false;
       setSending(false);
     }
+  };
+  const cancelSend = () => {
+    if (!sendingRef.current && !sending) return;
+    executionRef.current += 1;
+    sendingRef.current = false;
+    setSending(false);
+    if (!response) setCanvasFocus("request");
   };
 
   useImperativeHandle(actionsRef, () => ({
@@ -209,6 +219,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       activeSection={requestSection}
       onSectionChange={onRequestSectionChange}
       onOpenCode={() => setCodeOpen(true)}
+      urlInvalid={urlInvalid}
       detailsCollapsed={canvasCollapsed}
       onToggleDetails={
         view === "canvas"
@@ -218,7 +229,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     />
   );
   const responsePane = (
-    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} />
+    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} />
   );
 
   return (

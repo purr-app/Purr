@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ChevronDown, FileCode2, FilePlus2, FolderOpen, MoreHorizontal, Network, Search, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
+import { ChevronDown, EllipsisVertical, FileCode2, FilePlus2, FolderOpen, Network, Search, Trash2 } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { Collapsible } from "../../../shared/components/ui/collapsible";
 import { Input } from "../../../shared/components/ui/input";
@@ -64,6 +64,7 @@ function DocumentRow({ document, active, draft, onOpen, onPin, onDuplicate, onDi
   onPin: (id: string) => void; onDuplicate: (id: string) => void; onDiscard: (id: string) => void; onDelete: (id: string) => void; onRename: (id: string) => void;
 }) {
   const [menu, setMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const name = getDocumentDisplayName(document);
   const remove = () => { setMenu(false); if (draft) onDiscard(document.id); else onDelete(document.id); };
   return <Popover open={menu} onOpenChange={setMenu}>
@@ -72,15 +73,46 @@ function DocumentRow({ document, active, draft, onOpen, onPin, onDuplicate, onDi
         className={cn("ui-focus-ring flex min-w-0 flex-1 items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 text-ui-sm", active ? "text-content-primary" : "text-content-secondary")}
         onClick={() => onOpen(document.id)} onDoubleClick={() => onPin(document.id)} onKeyDown={(event) => {
           const modified = event.metaKey || event.ctrlKey;
-          if (modified && event.key.toLowerCase() === "e") { event.preventDefault(); event.stopPropagation(); onRename(document.id); }
+          if (modified && event.key.toLowerCase() === "r") { event.preventDefault(); event.stopPropagation(); onRename(document.id); }
           else if (modified && event.key.toLowerCase() === "d") { event.preventDefault(); event.stopPropagation(); onDuplicate(document.id); }
           else if (!modified && (event.key === "Backspace" || event.key === "Delete")) { event.preventDefault(); remove(); }
         }}>
         <span className={cn("w-ui-10 shrink-0 text-left font-code text-ui-2xs", getDocumentBadge(document).color)}>{getDocumentBadge(document).label}</span><span className="truncate">{name}</span>
       </button>
-      <Button variant="ghost" size="icon" className="mr-ui-1 size-control-xs opacity-ui-hidden group-hover:opacity-ui-visible focus-visible:opacity-ui-visible" aria-label={`Document actions for ${name}`} onClick={() => setMenu(true)}><MoreHorizontal className="size-ui-3" /></Button>
+      <Button variant="ghost" size="icon" className="mr-ui-1 size-control-xs opacity-ui-hidden group-hover:opacity-ui-visible focus-visible:opacity-ui-visible" aria-label={`Document actions for ${name}`} onClick={() => setMenu(true)}><EllipsisVertical className="size-ui-3" /></Button>
     </div></PopoverAnchor>
-    <PopoverContent role="menu" aria-label={`Actions for ${name}`} align="end" sideOffset={4} className="w-ui-context-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover" onOpenAutoFocus={(event) => event.preventDefault()}>
+    <PopoverContent
+      ref={menuRef}
+      role="menu"
+      tabIndex={-1}
+      aria-label={`Actions for ${name}`}
+      align="end"
+      sideOffset={4}
+      className="w-ui-context-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover"
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        menuRef.current?.focus({ preventScroll: true });
+      }}
+      onKeyDown={(event) => {
+        const modified = event.metaKey || event.ctrlKey;
+        const plainModified = modified && !event.altKey && !event.shiftKey;
+        if (plainModified && event.key.toLowerCase() === "r") {
+          event.preventDefault();
+          event.stopPropagation();
+          setMenu(false);
+          onRename(document.id);
+        } else if (plainModified && event.key.toLowerCase() === "d") {
+          event.preventDefault();
+          event.stopPropagation();
+          setMenu(false);
+          onDuplicate(document.id);
+        } else if (!modified && !event.altKey && !event.shiftKey && (event.key === "Backspace" || event.key === "Delete")) {
+          event.preventDefault();
+          event.stopPropagation();
+          remove();
+        }
+      }}
+    >
       <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenu(false); onRename(document.id); }}><span className="flex-1 text-left">Rename</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.renameDocument.keys} /></span></Button>
       <Button role="menuitem" variant="ghost" size="sm" className="w-full justify-start gap-ui-1 font-normal" onClick={() => { setMenu(false); onDuplicate(document.id); }}><span className="flex-1 text-left">Duplicate</span><span aria-hidden="true"><KbdGroup plain keys={keyboardShortcuts.duplicateDocument.keys} /></span></Button>
       <div role="separator" className="my-ui-1 border-t border-border-subtle" />
