@@ -1,132 +1,163 @@
-# Local workspaces
+# Workspaces, documents, and navigation
 
-Purr creates **Personal** on first launch. Each workspace has its own documents,
-environments, folders, open/active document and workspace-cookie tabs, request-editor tabs, sidebar visibility,
-layout mode, and horizontal/vertical splitter ratios.
+This document owns the runtime workspace aggregate, document/folder hierarchy, tabs, layout state, and external-change behavior. Storage classification is in [Persistence architecture](persistence-architecture.md).
 
-The sidebar root `+` lets you choose **HTTP**, **GraphQL**, a schema or a folder.
-Each folder has its own `+` for creating a document or nested folder. Saved
-requests can be dragged into a folder or moved with **Move to…**. The directory
-tree under `documents/` is canonical; Purr writes a hidden folder marker only to
-retain stable IDs and metadata, then derives each request's `folderId` from its path.
-The tab-bar `+` / `Mod+N`
-creates the last-used request type (remembered per workspace); right-click the
-tab-bar `+` to choose a different type. A blank, never-sent document is not
-listed in **Drafts** and is removed automatically when its tab closes. Once it has
-a URL, parameter, header, body, authentication, or send attempt, it becomes a
-recoverable draft with an explicit discard action.
+## Personal workspace and workspace identity
 
-`Mod+S` names a draft and keeps it at its selected folder/root. HTTP and GraphQL
-requests are deliberately shown in one document tree. **Schemas** is an automatic
-section and appears only after the workspace contains schemas. A saved request keeps an
-explicit saved snapshot: editing and sending use a working copy, and closing the
-tab without saving restores the snapshot. Saving again commits that working copy.
-The most recent response is associated with its document in local SQLite, while
-the cookie jar is local workspace state. Both survive app restart, but neither is
-included in shareable request files.
+On first launch `createWorkspace` creates a **Personal** workspace with one pristine HTTP draft. A runtime `Workspace` contains identity, documents, folders/integration resources, variables/environments, cookie state, shared request configuration, dynamic cache, and UI state.
 
-Opening a clean saved request from the sidebar or command palette creates one
-italic preview tab. Opening another clean request replaces that preview. Editing,
-double-clicking, or dragging the preview pins it as a regular tab. Tabs can be
-reordered by dragging; `Alt+Shift+Left/Right` provides the keyboard equivalent.
-The resulting order and preview state are stored with the workspace.
-
-## On-disk format (desktop)
-
-See [Persistence architecture](persistence-architecture.md) for the canonical model,
-storage contracts, migrations, security boundary and importer extension point.
-The default project root is Tauri's application data directory followed by `projects/`.
+The shareable subset is `WorkspaceDefinition` plus canonical resources. Workspace name/description, workspace variables, shared headers, and shared auth definitions live in `purr.yaml`. The selected environment, tabs, layout, sidebar, drafts, cookies, caches, and responses are local state.
 
 ```text
-projects/<workspace-id>/
-  purr.yaml                  # versioned workspace identity/defaults
-  documents/<name>-<id>.yaml  # HTTP and GraphQL requests, one per file
-  environments/<name>-<id>.yaml
-  schemas/<name>-<id>.yaml    # source, not introspection cache
-  schemas/<id>.graphql       # explicitly pinned SDL only
-  documents/<folder>/.purr-folder.yaml # hierarchy marker; directory is source of truth
-local-state.sqlite3          # outside project: drafts/session/history/cookies/cache
+Workspace (runtime aggregate)
+  ├─ canonical definition/resources → project files
+  ├─ editor/session/cache/history   → encrypted local SQLite
+  └─ credential values              → SecretRef / secure vault
 ```
 
-Writes are serialized, revision-checked and atomic per file. Unchanged resources
-are not rewritten. Saved binary attachments use content-addressed asset files.
-Closing the desktop window flushes pending writes; failures keep the window open.
-Malformed/external conflicting files are reported without resetting user data.
-The old JSON format is read only for a checkpointed migration, then retired after
-an encrypted recovery archive is verified. Browser development uses encrypted
-IndexedDB as a UI preview, not the native filesystem or OS credential vault.
+## Documents
 
-## Environments
+`WorkspaceDocument` currently has three working kinds:
 
-Create/select environments from the title bar; `Mod+E` edits the active one.
-Variables are workspace-scoped and support `{{name}}` (including nested variable
-values). Only enabled variables in the selected environment are available.
-Templates are resolved immediately before sending, while editor drafts retain
-the original templates. Resolution applies to URL/query/header names and values,
-active JSON/XML/text/form bodies, GraphQL queries/variables/operation names,
-and auth credentials/OAuth configuration.
-Binary attachment bytes are never interpolated. Missing/circular variables stop
-the request with an explicit error. Values are inserted literally in body text;
-use the appropriate quoting/escaping for the target body format.
+- `http`: HTTP request document;
+- `graphql`: GraphQL request executed over HTTP;
+- `schema`: GraphQL schema resource.
 
-**Secret and masking are independent.** The lock control stores a variable through
-SecureStore (the encrypted local SQLite vault backed by one macOS Keychain root),
-leaving only its stable reference in YAML. The eye control changes visibility only.
-Plain variables are shareable. Switching an
-environment clears acquired OAuth/response tokens so credentials are not reused
-in another environment.
+HTTP and GraphQL are not automatic sidebar sections. Saved HTTP/GraphQL documents share one user-controlled tree. `Schemas` and `Drafts` are derived UI groups, not user folders. Runtime `DocumentKind` also reserves `trace`, `benchmark`, and `integration`, but there are no corresponding working document editors or canonical trace/benchmark resources.
 
-## GraphQL
+A request document has a current `request`, a saved baseline `savedRequest`, and a `saved` flag. `isDocumentDirty` compares the working request with the saved baseline. Saving updates the canonical resource and baseline; closing/discarding a dirty document does not silently overwrite the project file.
 
-GraphQL documents use the shared HTTP transport, authentication, headers,
-environment resolution, cookie jar and response viewer. **Query** is a full-height
-editor. Parsed operation variables appear as a resizable dock inside it, with a
-typed Form mode (including enum selectors) and a raw JSON mode. The dock remains
-hidden when the operation has no variables. Variables must serialize to a JSON object;
-an empty value means `{}`. A selector appears only when a document contains
-multiple named queries/mutations. Requests are sent as POST
-with an `application/json` envelope containing `query`, `variables` and optional
-`operationName`. Editor text is not replaced by the generated envelope.
+Schema documents have their own lifecycle; see [GraphQL](graphql.md).
 
-The labelled schema control beside the URL opens a separate **Schema** document.
-An empty schema document remains ephemeral and is not added to the sidebar; a
-successful import or introspection makes it a saved GraphQL document. Load SDL
-(`.graphql`, `.gql`, `.graphqls`, `.sdl`) or introspection JSON (bare or wrapped in
-`data`), or use **Reload introspection**. Introspection uses the source request's
-current URL, auth, headers, environment and cookies without replacing its query
-or response. Failed imports/refreshes leave the previous schema intact.
+## Canonical document tree
 
-The compact explorer provides searchable operation/type groups, field paths and
-linked return types, enum/input/interface/union information, deprecation messages,
-depth/field/list analysis, and an optional SDL/JSON pane. Query and mutation fields
-can create linked request drafts. Imported SDL preserves custom directives and type
-extensions. Source definitions are shareable; cached schemas, source-pane state and
-selected type are local. Pin SDL explicitly to share it. Loaded schemas supply
-completion, hover documentation, validation, deprecation
-warnings and type navigation to every linked request.
+The filesystem below `documents/` is the canonical hierarchy for saved HTTP and GraphQL requests:
 
-GraphQL responses split `data`, `errors`, and `extensions` into dedicated views.
-The HTTP status remains visible alongside a GraphQL error count; each error exposes
-its message, path, source locations, extension code and copy action.
+```text
+workspace/
+  purr.yaml
+  documents/
+    Accounts/
+      .purr-folder.yaml
+      get-user.yaml
+      Admin/
+        .purr-folder.yaml
+        update-user.yaml
+  schemas/
+  environments/
+  integrations/
+  assets/
+```
 
-Query and mutation operations are supported over HTTP. Subscriptions require a
-streaming transport and currently produce an explicit unsupported-operation error.
-Introspection must be enabled by the server; file import remains available when
-it is disabled. Refresh the schema after switching to a different endpoint or
-environment; cached schema data is not silently replaced.
+`WorkspacePersistence.readProject` derives request `folderId` relationships from physical directories. Each `.purr-folder.yaml` supplies stable folder identity and metadata; it does not duplicate the path as a second hierarchy. A directory without a marker can be represented by a generated folder identity when loading external content, then normalized on save.
 
-## Shortcuts
+Older `requests/` and `graphql/` roots are read for migration. New saves use the unified `documents/` tree.
 
-`Mod` is Command on macOS and Control elsewhere. Shortcuts are defined centrally
-in `src/shared/config/keyboard-shortcuts.ts`.
+## Folders and sidebar operations
 
-- `Mod+K` / `Mod+P`: command palette and document search
-- `Mod+N`, `Mod+S`, `Mod+W`, `Mod+D`: new, save/name, close, duplicate document
-- `Mod+Enter`: send active request
-- `Mod+L`: focus URL
-- `Mod+B`: toggle sidebar
-- `Mod+E`: environment variables
-- `Mod+Shift+1/2/3`: canvas / stacked / side-by-side
+Folder canonical resources live in `Workspace.extraResources` at runtime and as `.purr-folder.yaml` on disk. Folders can nest. `validateProject` rejects missing parents and cycles.
 
-Commands only target the active document. Late HTTP results stay with the
-originating document even if another document/workspace is selected meanwhile.
+The sidebar supports:
+
+- create, rename, duplicate, delete, expand/collapse, and move operations;
+- drag-and-drop of documents and folders into a folder or root;
+- document reordering among siblings;
+- Shift range selection of documents and multi-document moves;
+- per-folder recursive document counts;
+- search across document names/content metadata.
+
+`folderId` determines ownership/hierarchy. `ui.sidebarItemOrder` determines local display order only. Moving a saved request changes its canonical file directory on the next persistence commit. Deleting a folder reparents its direct documents and child folders to the deleted folder’s parent; it does not delete their contents.
+
+The vertical scope lines and indentation are presentation only. Hover/selection geometry must not change hierarchy or hit targets.
+
+## Drafts and save semantics
+
+`Drafts` includes unsaved documents. A new request is local-only until Save. A meaningful unsaved draft, or a saved document with edits, is projected to the encrypted `drafts` table. For saved dirty documents, the local record includes the canonical base used to detect an external-edit conflict.
+
+`document_session_state` preserves per-document editor state, timestamps, and the complete saved editor snapshot, including inactive body/auth modes. That allows the canonical resource to stay compact without losing local editor choices.
+
+`useWorkspaces` serializes persistence through `WorkspacePersistence`, debounces ordinary saves by 180 ms, and flushes before destructive/closing transitions. A failed flush keeps the desktop window open and exposes the error instead of pretending the workspace was saved.
+
+## Tabs and preview
+
+`ui.openDocumentIds` and `activeDocumentId` are local workspace state. Selecting a clean saved document from the sidebar opens it as a preview tab. Selecting another clean saved document can replace that preview. A preview is pinned when the user explicitly pins it or when edits make it dirty. Unsaved and dirty documents always open as normal tabs.
+
+`DocumentTabs` supports activation, close, close others/all, duplicate, and reorder. Closing affects local open state, not the canonical saved resource. Deleting/discarding is a separate model operation.
+
+Three persistent workspace-level tabs share the tab strip but are not documents:
+
+- Cookies;
+- Request settings;
+- Variables.
+
+Their open/active flags are stored in `Workspace.ui` and cannot be placed in folders.
+
+## Request/response layout
+
+`WorkbenchView` has three modes:
+
+- `canvas`: request and response switch focus in one canvas;
+- `horizontal`: request above response;
+- `vertical`: request beside response.
+
+`Workspace.ui.view` is the source of truth. Horizontal/vertical `splitRatios` and `sidebarWidth` are persisted locally. `SplitPane` updates the active pane continuously during pointer drag; the sidebar uses its own horizontal resizer. Resizers intentionally have no permanent visual handle, but expose the corresponding resize cursor and keyboard-accessible separator semantics.
+
+Sidebar open state and width are workspace-local. Width is constrained by the model/UI limits so resizing the sidebar and main request/response pane remains responsive.
+
+## Navigation and shortcuts
+
+`src/shared/config/keyboard-shortcuts.ts` is the binding source of truth. Important application bindings include:
+
+- Cmd/Ctrl+K command palette;
+- Cmd/Ctrl+P recent/document palette;
+- Cmd/Ctrl+N new request;
+- Cmd/Ctrl+S save;
+- Cmd/Ctrl+W close tab;
+- Cmd/Ctrl+Enter send;
+- Cmd/Ctrl+L focus URL;
+- Cmd/Ctrl+B toggle sidebar;
+- Cmd/Ctrl+E variables;
+- Cmd/Ctrl+Shift+1/2/3 canvas/horizontal/vertical.
+
+The command palette combines actions with saved and draft documents and supports keyboard navigation. Sidebar search is the document-tree search. Response Cmd/Ctrl+F belongs to the active response surface and is documented in [Response lifecycle](response-lifecycle.md).
+
+## Environment navigation
+
+The header selects the active environment and opens environment editing. The Variables workspace tab can inspect the effective namespace and jump to global/workspace/environment definitions. Environment selection is local, unlocks the selected environment’s secret values on demand, and clears document OAuth runtime tokens to avoid reusing a token across contexts.
+
+Full scope and persistence rules are in [Environments and variables](environments-and-variables.md).
+
+## Shared request configuration
+
+Request Settings edits workspace shared headers and auth entries. Each entry targets `all`, `http`, or `graphql`. Requests store opt-outs/excluded shared-header IDs; inheritance creates an effective request and does not mutate the stored request definition.
+
+Precedence and managed-row behavior are in [Request lifecycle](request-lifecycle.md); credential and OAuth behavior are in [Authentication and cookies](auth.md).
+
+## External project changes
+
+Project files carry SHA-256 revisions. `WorkspacePersistence.watchChanges` compares the last canonical baseline, current projected working state, and external project state:
+
+- untouched local resources can accept external updates;
+- independent changes can be merged resource-by-resource;
+- a changed saved request with a local draft/base mismatch fails with a conflict instead of discarding edits;
+- the writer uses expected revisions to reject stale overwrites.
+
+Current limitation: `src-tauri/src/persistence.rs` does not include the canonical `documents/` root in its watcher event filter. Startup and explicit reload scan it correctly, but ordinary external edits/moves under `documents/` may not reach the running UI. Do not claim complete live external-document reload until that filter and tests are updated.
+
+Application/native support exists for attaching a project to an external directory, but no current UI exposes it.
+
+## Key files
+
+- `src/features/workspaces/model/workspace.ts` — runtime aggregate, document lifecycle, tabs, ordering, folders, effective variables, and validation.
+- `src/features/workspaces/workspace-workbench.tsx` — shell composition, document/folder operations, layouts, shortcuts, and feature tabs.
+- `src/features/workspaces/components/workspace-sidebar.tsx` — common document tree, folders, selection, moves, search, and sidebar resize surface.
+- `src/features/workspaces/components/document-tabs.tsx` — document and workspace-level tab interaction.
+- `src/features/workspaces/components/workspace-header.tsx` — workspace/environment/navigation controls.
+- `src/features/workspaces/components/command-palette.tsx` — action/document search and keyboard navigation.
+- `src/features/workspaces/hooks/use-workspaces.ts` — loading, autosave, flush, retry, and close protection.
+- `src/shared/components/ui/split-pane.tsx` — request/response resize behavior.
+- `src/shared/components/ui/collapsible.tsx` — sidebar open/close layout primitive.
+- `src/shared/config/keyboard-shortcuts.ts` — default bindings.
+- `src/application/workspace-persistence.ts` — physical document tree and external reconciliation.
+- `src-tauri/src/project_files.rs` — safe file operations and revisions.
+- `src-tauri/src/persistence.rs` — registry, watcher, and commit orchestration.

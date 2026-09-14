@@ -1,28 +1,33 @@
 # Purr
 
-Purr is a local-first desktop API client built with React, TypeScript, Vite and
-Tauri. Saved requests are versioned project files; drafts, executions, cookies and
-credentials remain local.
+Purr is a local-first desktop API client. The UI and application layer are React/TypeScript; Tauri/Rust provides native HTTP, filesystem persistence, encrypted local state, macOS Keychain integration, OAuth callbacks, and response downloads.
 
-Start with the [architecture and current-state guide](docs/architecture.md). It is
-the primary orientation document for maintainers and coding agents.
+Project definitions are stored as readable YAML/SDL/assets that can be committed to Git. Drafts, tabs, layouts, response history, cookies, and caches remain local. Credentials are referenced from project files and stored separately.
 
-Related references:
+## Architecture documentation
 
-- [Workspaces and GraphQL](docs/workspaces.md)
-- [Authentication, OAuth and cookies](docs/auth.md)
-- [Persistence, encryption and migration](docs/persistence-architecture.md)
+- [System architecture](docs/architecture.md)
+- [Request lifecycle](docs/request-lifecycle.md)
+- [Response lifecycle](docs/response-lifecycle.md)
+- [Workspaces and navigation](docs/workspaces.md)
+- [Environments, variables, and secrets](docs/environments-and-variables.md)
+- [Authentication and cookies](docs/auth.md)
+- [Persistence architecture](docs/persistence-architecture.md)
+- [GraphQL](docs/graphql.md)
+- [Imports and integrations](docs/imports-and-integrations.md)
+
+Coding agents should start with [AGENTS.md](AGENTS.md), then follow its documentation map for the subsystem they are changing.
 
 ## Development
 
 ```bash
-yarn dev          # browser UI preview; requests and OAuth are unavailable
-yarn tauri dev     # desktop development with native storage and networking
-yarn test
-yarn test:ui
-yarn typecheck
-yarn lint
-yarn build
+npm install
+npm run dev
+npm test
+npm run typecheck
+npm run lint
+npm run build
+npm run tauri dev
 ```
 
-Native Cargo commands use `--manifest-path src-tauri/Cargo.toml`.
+`npm run dev` uses the browser persistence adapter for UI development; native HTTP and desktop security behavior require Tauri. Playwright tests run with `npm run test:ui`. Rust tests run from `src-tauri` with `cargo test`.

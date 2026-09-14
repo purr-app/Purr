@@ -1,307 +1,205 @@
-# Project persistence and import boundary
+# Persistence architecture
 
-## Ownership and modules
+This document is the source of truth for canonical project files, encrypted local runtime state, the secret vault, file projection, migrations, and recovery. The central rule is that runtime `Workspace` must never be serialized directly.
 
-The existing `Workspace`/document types remain the editor's runtime view. They are
-not the on-disk format. The old `workspace.json` writer has been removed, not kept
-as an alternative save path.
+## Three ownership classes
+
+### Canonical and shareable
+
+Canonical data defines the project. It should produce useful diffs, merge across branches, move between machines, and remain stable when a user merely opens a tab or sends a request. It is validated by `src/domain/project.ts` and encoded by `src/storage/yaml.ts`.
+
+### Local state
+
+Local data is machine/session/editor specific or potentially large: drafts, inactive modes, tabs, layouts, cookies, schema caches, responses, and history. Desktop stores payloads encrypted in SQLite to avoid Git noise and protect potentially sensitive runtime material.
+
+### Secret store
+
+Credential-bearing values never belong in project files. Canonical definitions contain stable `SecretRef`s. On macOS one Keychain root key derives separate database and secret-vault AES-GCM keys; individual values live in SQLite `secret_values`.
+
+`Secret ≠ masked`: asterisks in UI are not a persistence boundary.
+
+## Ownership matrix
+
+“Secret” means the row can carry credential material, not merely that it is visually hidden.
+
+| Data | Runtime owner | Persistence | Git friendly | Secret | Reason |
+| --- | --- | --- | --- | --- | --- |
+| Workspace identity/description | `Workspace` | `purr.yaml` → `WorkspaceDefinition` | Yes | No | Portable project identity |
+| User folders | `Workspace.extraResources` | `documents/**/.purr-folder.yaml`; physical path is hierarchy | Yes | No | Stable identity plus human-readable tree |
+| Saved HTTP request | `RequestDocument.savedRequest` | `documents/**/*.yaml` | Yes | Definitions may contain refs | Shareable API definition |
+| Saved GraphQL request | `GraphqlDocument.savedRequest` | `documents/**/*.yaml` | Yes | Definitions may contain refs | Same tree and transport model as HTTP |
+| Schema source definition | `SchemaDocument.schemaSource` | `schemas/*.yaml` | Yes | Registry credential may be a ref | Reproducible source metadata |
+| Pinned SDL | `SchemaDocument.sdl` | `schemas/*.graphql`, referenced from schema YAML | Yes | No by design | Offline/shareable schema snapshot |
+| Unpinned schema content | `SchemaDocument.sdl` | encrypted `schema_cache` | No | Potentially | Regenerable local cache |
+| Environment definition | `Environment` | `environments/*.yaml` | Yes | Values may be refs | Shareable named configuration |
+| Plain workspace/environment variable | `Variable(kind=static)` | `purr.yaml` or environment YAML | Yes | No | Intentional project input |
+| Sensitive variable definition | `Variable(kind=static,sensitive)` | YAML metadata + `SecretRef` | Yes | Reference only | Share identity without value |
+| Sensitive variable value | transient `Variable.value` | encrypted `secret_values` | No | Yes | Never enter Git-friendly files |
+| Global variable definition | `WorkspaceStore.globalVariables` | encrypted global `workspace_local_state/variables` | No | Maybe | App-local, not owned by one project |
+| Dynamic variable definition | workspace `Variable` | `purr.yaml` | Yes | Definition only | Shareable dependency/extraction contract |
+| Dynamic variable cache | `Workspace.dynamicVariableCache` | encrypted `workspace_local_state/dynamic-variable-cache`; sensitive values use vault refs | No | Maybe | Environment/session/TTL-specific runtime result |
+| Shared headers | `Workspace.requestConfig.headers` | `purr.yaml` | Yes | Should use variables for secrets | Project-wide request definition |
+| Shared auth definition | `Workspace.requestConfig.auth` | `purr.yaml` with credential refs | Yes | Reference only | Share scheme/scope without credentials |
+| Request auth credentials | active `RequestAuth` | `secret_values`, referenced by request YAML | No | Yes | Credential-bearing |
+| OAuth access/refresh tokens | runtime auth token | versioned encrypted `workspace_local_state/auth-runtime` with vault refs | No | Yes | Acquired, machine/session-bound |
+| Request draft / dirty working copy | `RequestDocument.request` | encrypted `drafts` | No | Maybe | Unsaved local editing state |
+| Inactive body/auth editor modes | `RequestDraft` | encrypted `document_session_state.editor` with secret envelopes | No | Maybe | UX state, not active definition |
+| Open/preview/active tabs | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Machine/session navigation |
+| Sidebar width/order/open state | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Local layout preference |
+| Request/response layout and split ratios | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Local layout preference |
+| Active environment | `Workspace.activeEnvironmentId` | encrypted `workspace_local_state/state` | No | No | Machine/session choice |
+| Latest execution | `RequestDocument.lastResponse` | encrypted `request_executions` + `response_bodies` | No | Potentially | Restore latest response without polluting Git |
+| Older execution history | not hydrated in ordinary runtime | same native tables | No | Potentially | Local indexed history backend |
+| Response headers | `HttpResult.headers` | encrypted execution payload | No | Potentially | Runtime evidence can contain tokens/cookies |
+| Response body | `HttpResult.bodyBase64/text` | encrypted `response_bodies` | No | Potentially | Large/sensitive execution data |
+| Cookie metadata | `SessionCookie` | local `cookie_metadata` index columns | No | Metadata only | Queryable local jar inventory |
+| Cookie values/full record | `SessionCookieJar` | encrypted `cookie_jar` payload | No | Yes | Session credential material |
+| Canonical attachment | live `File` in `RequestBody` | content-addressed `assets/<sha256>.bin` | Yes | Not assumed; user-controlled | Required to reproduce saved request |
+| Attachment runtime/editor state | inactive/live body modes | encrypted draft/session record; `attachments` table reserved | No | Potentially | Preserve local editor state |
+| Integration definition | `extraResources` | `integrations/*.yaml` with credential refs | Yes | References only | Canonical extension-point shape; no runtime provider yet |
+| Integration credentials | no working provider runtime | intended `SecretRef`/vault | No | Yes | Must never be embedded when implemented |
+| Recent items | no current first-class UI projection | reserved encrypted `recent_items` table | No | No | Local navigation extension point |
+
+Do not infer that a declared local table or canonical schema means the product feature is complete. `attachments` and `recent_items` are available storage tables but are not current first-class projection flows; integrations have a canonical shape but no provider runtime/UI.
+
+## Canonical project layout
 
 ```text
-Existing Purr UI                    External format
-       |                                 |
-project-projection.ts               ImportAdapter
-       |                                 |
-       +-------- domain/project.ts <-----+
-                        |
-             application/WorkspacePersistence
-                        |
-       +----------------+------------------+
-       |                |                  |
- YAML / SDL / assets   LocalStateStore    SecureStore
- filesystem            SQLite vault     one macOS Keychain root
-```
-
-| Boundary | Implementation | Owns |
-| --- | --- | --- |
-| Canonical model | `src/domain/project.ts` | Workspace defaults, HTTP/GraphQL definitions, schema sources/pins, environments, folders and integration configurations |
-| Application service | `src/application/workspace-persistence.ts` | Saved vs working copies, reconciliation, migration checkpoints, ordered commits |
-| Editor adaptation | `src/application/project-projection.ts` | Bidirectional translation between existing UI state and canonical definitions + local records |
-| Project encoding | `src/storage/yaml.ts` | Strict, version-aware deterministic YAML; selected auth/body variants only |
-| Filesystem | `src-tauri/src/project_files.rs` | Stable resource paths, hashes, atomic changed-file writes, traversal/symlink protection |
-| Local state | `src-tauri/src/local_state.rs` | SQLite migrations, encrypted runtime records, indexed execution history/cookie metadata, response blobs, pending commit journal |
-| Secrets/encryption | `src/storage/secrets.ts`, `src-tauri/src/secure_store.rs` | Stable credential refs, native vault adapter, authenticated encryption |
-| Directory watching/IPC | `src/storage/native-backend.ts`, `src-tauri/src/persistence.rs` | Narrow native commands, directory registry, debounced filesystem notifications |
-| Cookie adapter | `src/storage/cookie-jar-store.ts` | Cookie load/replace using the same encrypted local boundary; workspace commits batch these records with session changes |
-| Import entry | `src/importing/contracts.ts`, `src/application/import-project.ts` | Detection, preview/diagnostics, normalization and ordinary persistence |
-
-Canonical types import neither React/Tauri nor YAML/SQLite structures. Zod validates
-their invariants. Named pairs are ordered arrays, preserving duplicate and disabled
-headers/parameters. HTTP methods are not restricted to the current picker, so e.g.
-OpenAPI TRACE can round-trip. Schema/environment/folder links use IDs.
-
-## Project files
-
-Default desktop locations are relative to Tauri's application data directory:
-
-```text
-projects/<workspace-id>/
+<workspace>/
   purr.yaml
-  documents/<slug>-<id>.yaml   # HTTP and GraphQL requests
-  environments/<slug>-<id>.yaml
-  schemas/<slug>-<id>.yaml
-  schemas/<id>.graphql              # only an explicit pin
-  documents/<folder>/.purr-folder.yaml # folder identity/metadata; path is hierarchy
-  integrations/<slug>-<id>.yaml
-  assets/<sha256>.bin               # saved request attachments, original bytes
-
-local-state.sqlite3                 # NOT inside a project
-local-state.sqlite3-wal / -shm
-legacy-workspaces.encrypted         # migration recovery archive, if applicable
+  documents/
+    request.yaml
+    Folder/
+      .purr-folder.yaml
+      nested-request.yaml
+  schemas/
+    schema.yaml
+    schema.graphql
+  environments/
+    staging.yaml
+  integrations/
+    provider.yaml
+  assets/
+    <sha256>.bin
 ```
 
-`WorkspacePersistence.attachDirectory(id, directory)` validates an existing project
-before registering it through the normal save path. The `id` comes from its
-manifest. No directory-picker UI was added in this architecture stage. Existing
-"Open workspace folder" opens the new project location.
+`purr.yaml` stores format version, workspace identity, workspace variables, shared headers, and shared auth definitions. Resource YAML files carry a `purr` format marker and strict resource shape.
 
-All YAML files have `purr: 1`. Missing optional/default fields are normalized;
-unknown versions, unknown fields, duplicate mapping keys, aliases and malformed
-documents fail closed with errors that do not echo source contents. The manifest
-contains workspace identity/description and shared headers/auth only. It never
-contains active workspace/environment, tabs, cookie values or responses.
+HTTP and GraphQL request resources share `documents/`. Directory hierarchy is canonical; `.purr-folder.yaml` stores stable folder identity/name/metadata. Legacy `requests/` and `graphql/` roots are readable and migrated to this tree on save.
 
-```yaml
-purr: 1
-workspace:
-  id: backend
-  name: Backend API
+Pinned schemas have a YAML definition plus SDL sidecar. Request attachments are content-addressed binary assets. `WorkspacePersistence` preserves existing safe basenames/paths where possible, unmanaged non-YAML sidecars, and pinned SDL until explicit unpin/delete.
+
+## Projection boundary
+
+`projectWorkspace` and `restoreWorkspace` in `src/application/project-projection.ts` are the only supported runtime/persistence conversion:
+
+```text
+Workspace
+  → canonical Project                (definitions only)
+  → LocalRecord[]                    (session/editor/cache/history)
+  → assets Record<path, base64>      (reproducible file payloads)
+  → SecureStore writes/SecretRefs    (credential values)
 ```
 
-Raw JSON/XML/text bodies and GraphQL query/variables remain strings; no JSON-to-YAML
-object conversion is performed. Ordinary multiline values use literal blocks.
-Strings needing escapes (e.g. CRLF) use quoted scalars to preserve exact content.
-Only the active auth/body configuration is shareable. Empty placeholder rows,
-UI row IDs, timestamps, cached schema text and inactive editor forms are omitted.
-Shared-header IDs remain because request-level exclusions refer to them.
+Projection intentionally:
 
-Resource paths survive renames. Externally moved resources are reindexed by ID,
-including custom SDL sidecar paths. Initial paths use a readable slug plus stable
-ID; folder resources currently model grouping without requiring physical nesting.
-Unchanged parsed definitions retain original file bytes, including comments, and
-are not rewritten by UI changes. Editing that resource rewrites deterministic YAML;
-comment-preserving editing of changed resources is not implemented.
+- saves the baseline rather than dirty edits into canonical resources;
+- removes synthetic empty editor rows and managed read-only rows;
+- saves only the active body/auth canonical mode;
+- protects credentials in dirty/inactive runtime objects before local serialization;
+- separates latest response body for native local storage;
+- associates a dirty draft with its canonical base for conflict detection.
 
-The initial load scans supported directories once. Normal notifications reload
-individual files; directory-level moves trigger a rescan. Native notifications are
-debounced by 180 ms. Reconciliation merges unrelated changes and rejects conflicts
-with dirty working copies, duplicate IDs or invalid YAML. UI errors preserve local
-edits and external bytes. There is no automatic conflict-resolution editor.
+`WorkspacePersistence` then maps canonical resource IDs to paths, serializes YAML, computes file/local diffs, and queues commits. Callers must not use `JSON.stringify(workspace)` or write individual files/DB rows as an alternative save path.
 
-Before writing, SHA-256 revisions are compared to the read baseline. Native writes
-use a same-directory temporary file, fsync and atomic rename, and check revisions
-again for each file. A local encrypted journal makes multi-file/SQLite commits
-restart-recoverable (not a filesystem-wide atomic transaction). Recovery accepts
-already-written desired bytes but stops on a conflicting external edit. Like a
-normal editor, this is optimistic coordination, not a distributed filesystem lock.
+## Native filesystem safety and commit model
 
-## Local SQLite state
+`src-tauri/src/project_files.rs` accepts only managed relative paths, rejects traversal and symlink escapes, and calculates SHA-256 revisions. Writes use same-directory temporary files, flush/sync, and atomic persist/rename. Deletes target individual resolved files; empty directories can remain.
 
-Migration 1 creates application/workspace registries, workspace local state,
-drafts, document session state, request executions, cookies, schema cache,
-recent items, attachment cache and pending commits. Migration 2 adds indexed
-execution metadata, separate response bodies and indexed cookie metadata.
-Migration 3 adds the encrypted credential vault. Migrations are transactional,
-recorded, idempotent and reject future versions.
-SQLite uses WAL, `synchronous=FULL` and a busy timeout.
+Each `FileChange` includes `expectedRevision`. A mismatch aborts rather than overwriting an external edit. `src-tauri/src/persistence.rs` journals a cross-file/local commit in encrypted `pending_commits`, applies it, and clears the journal. Startup replays recoverable pending commits.
 
-Each entity is updated independently. Current open/active tabs and pane state are
-small workspace/session records, not repeated request definitions. Saved request
-editor snapshots retain inactive body/auth forms locally; unsaved working copies
-also record their base definition for external-edit conflict detection. Saving a
-draft writes YAML using the same document ID. Pristine drafts still remain local.
+Workspace roots live in the local registry. Deleting a Purr-managed workspace deletes its managed project directory; deleting an attached external workspace unregisters it without deleting its external project files. Attach-directory support exists below the UI boundary only.
 
-Execution records are separate from request definitions and append over time.
-Only the latest execution per document is hydrated at launch; the indexed native
-`list_request_history` command returns paginated metadata. Body bytes/text are in
-encrypted `response_bodies`. No execution/history viewer was added. Old v1 execution
-rows remain readable; their new metadata indexes fill when those records are next
-written. Bench/trace result tables are intentionally not invented before their
-runtime models exist.
+## External changes and conflicts
 
-Schema caches contain SDL + loaded time + source signature. Source changes
-invalidate cached SDL; pinned SDL is independent and wins on load. Files selected
-through the existing schema UI are parsed into local cache, with their source
-definition shareable. Pin explicitly to make the actual schema available on a
-different device. Registry variants currently describe sources only; no registry
-fetcher was implemented.
+`WorkspacePersistence.watchChanges` performs a three-way comparison between loaded baseline, current projected state, and re-read external canonical files. Clean changes can be accepted and independent resources merged. A dirty saved request whose recorded base differs from the external definition raises a conflict and preserves local edits.
 
-## Credentials and sensitive runtime data
+Known limitation: the Rust watcher filter currently omits `documents/`, although scanning/path validation support it. External request/folder changes under the canonical tree are therefore not reliably emitted live. Startup/full reload still reads them. This limitation should be removed in code and tests before docs claim full live synchronization.
 
-`SecureStore` exposes `get/set/delete/exists`. References are stable, workspace-
-scoped IDs, e.g. `purr/<workspace>/environments/<environment>/<variable-id>`.
-Variable/request/resource rename or move never derives a new credential key from
-its display name. Explicit refs loaded from YAML are retained. Import validation
-rejects cross-workspace refs and duplicate transient credential refs.
+## Local SQLite
 
-The macOS adapter uses the `keyring` crate's `apple-native` backend for exactly one
-generic-password item: service `app.purr.credentials`, account
-`purr/local-storage/master-key-v1`. Its value is a random 256-bit root key encoded
-as base64. No `SecAccessControl`, user-presence, biometric, or device-passcode flag
-is requested. Domain/UI code never calls Keychain APIs. Windows/Linux adapters
-deliberately fail closed until Credential Manager/Secret Service implementations
-are provided; they are not claimed as supported secure-storage platforms here.
+`src-tauri/src/local_state.rs` creates schema migrations and the encrypted payload tables listed by `LocalTable`:
 
-The root is read once when native persistence first opens and retained only through
-derived Rust cipher instances for that backend process. HKDF-SHA256, salt
-`purr:root-key:v1`, derives independent keys with info `purr:database:v1` and
-`purr:secrets:v1`. Existing development SQLite payloads encrypted directly by the
-root are re-encrypted transactionally once and marked `hkdf-sha256-v1`; the root
-itself is not replaced. Missing root material with existing encrypted data fails
-closed.
+- `workspace_local_state`;
+- `drafts`;
+- `document_session_state`;
+- `request_executions`;
+- `cookie_jar`;
+- `schema_cache`;
+- `recent_items`;
+- `attachments`.
 
-Credential values live in SQLite `secret_values`, keyed by `SecretRef`, with
-separate ciphertext, random 96-bit nonce, crypto version, and timestamps. AES-256-
-GCM authenticates `purr:secret:v1|<SecretRef>` as AAD, preventing a row from being
-moved under another reference. `set`, `get`, `exists`, and `delete` touch SQLite and
-the in-memory derived cipher only; they do not access Keychain. Root and derived
-key byte buffers use `Zeroizing` while being constructed.
+Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated encrypted `response_bodies`, `cookie_metadata`, and `secret_values`. SQLite runs with WAL, full synchronous behavior, and a busy timeout.
 
-Release bundles use the configured Apple Development identity. `yarn tauri dev`
-also injects `scripts/tauri-dev-runner.sh`, which signs each newly built executable
-with the stable bundle identifier and development identity before running it. This
-replaces Cargo's changing ad-hoc `cdhash` requirement with a stable designated
-requirement. An existing root item created by the old ad-hoc executable can require
-one macOS **Always Allow** approval for the signed identity; normal subsequent
-starts do not intentionally request authentication. Set `PURR_DEV_SIGNING_IDENTITY`
-when a different local development certificate should be used.
+General local-record payloads are AES-GCM encrypted with context/AAD bound to workspace/table/record identity. Execution document/time/status and cookie metadata columns remain plaintext indexes; execution bodies, full execution payloads, cookie values, drafts, and session state are encrypted.
 
-Environment Secret is a semantic flag independent of reveal/hide. Plain values
-go to YAML. Secret definitions store only `{kind: secret, ref: ...}`; values go to
-SecureStore. Inactive environment secrets are loaded on selection/edit, and blank
-unresolved fields cannot overwrite stored values. Active request/auth values are
-resolved for the existing editor and execution flow. A frontend memory cache avoids
-repeated vault IPC during frequent UI saves; the vault itself never performs per-
-secret Keychain reads.
+Ordinary `read` returns only the newest execution per document. `history` queries indexed metadata with a before cursor and 1–100 limit. `WorkspacePersistence` retains older native execution rows even though the runtime projection contains only latest responses.
 
-Basic passwords, API keys, OAuth client secrets, acquired access/refresh tokens,
-response-derived bearer tokens and inactive auth credentials use the same secure
-boundary. Bearer tokens can explicitly be stored plain; templated auth values
-normally remain shareable `{{variable}}` strings. Acquired tokens never enter YAML.
-Workspace auth runtime has one versioned local shape containing only definition
-hashes and SecureStore references for acquired tokens. An earlier or malformed dev
-cache is discarded and persisted as an empty canonical record; saved auth definitions
-and their credentials remain untouched. Normal reads do not carry a second auth
-model. References outside the current workspace are rejected.
+## Secure store
 
-Cookie metadata is indexed in SQLite, not represented as environment variables.
-Cookie values and all other local payloads (including response headers/bodies and
-sent request snapshots, which may contain credentials) are encrypted with the
-database-derived RustCrypto AES-256-GCM key. Every record has a random nonce and
-workspace/table/ID authenticated data. The root key is inaccessible through
-frontend credential IPC. Missing keys or authentication failures stop loading
-rather than create a new key over old data.
+`SecureStore` is a typed frontend contract. `NativeSecureStore` maps it to `secure_get/set/delete/exists`. `storeCredential` writes a value and returns either a plain credential (only when explicitly allowed) or a secret ref.
 
-The current compatibility API still has a narrow `secure_get(SecretRef)` command,
-so a credential can exist transiently in React/JS when the editor resolves or
-explicitly reveals it; current HTTP/OAuth request construction also occurs in the
-frontend before `send_http`. There is no bulk-secret IPC. Moving auth resolution and
-request construction fully behind Rust is conscious remaining work, not claimed by
-this storage change. Values are not logged or included in persistence errors. This
-is at-rest protection, not protection against a compromised desktop process,
-debugger, or deliberately copied reveal. Manual plaintext body/header values are
-not automatically detected as secrets; use environment secret references for
-those. There is no telemetry/devtools persistence added here.
+On macOS `PlatformRootKeyStore` stores one 32-byte root in Keychain service `app.purr.credentials`. HKDF derives separate database and secret keys. The root key is read once when the backend starts. If encrypted data exists and the Keychain item is missing, startup fails closed and does not generate a replacement key that would make old data unreadable.
 
-Old development per-secret Keychain items are deliberately not read or deleted by
-normal startup: doing so would reproduce one prompt per item. Their YAML refs remain
-valid, but affected values must be entered once so they are written into the new
-SQLite vault. The obsolete items may then be removed from Keychain Access manually.
+Other native platforms currently fail closed because no root-key adapter is configured.
 
-The browser UI preview has a separate IndexedDB implementation with WebCrypto
-AES-GCM and a nonextractable browser key. It is not equivalent to the OS vault,
-not the desktop production backend, and does not claim directory watching. The
-old browser localStorage key is only read for migration, then archived encrypted
-in IndexedDB and removed.
+## Schema and data migrations
 
-## Legacy migration sequence
+There are distinct migration responsibilities:
 
-1. Read the existing `workspaces/index.json` and per-workspace `workspace.json`
-   using the read-only legacy adapter. Invalid/unsupported data aborts; no reset.
-2. Normalize with the existing workspace validator (including earlier shared-auth
-   defaults), then split canonical definitions, local state and secret values.
-3. Store credentials, commit project files and encrypted local records. Record an
-   encrypted per-workspace source fingerprint for restart/idempotence checks.
-4. Restore active workspace locally. Only after all workspace commits succeed,
-   create and verify an authenticated `legacy-workspaces.encrypted` archive outside
-   the project. Changed originals or a bad archive prevent retirement.
-5. Remove only archived `workspace.json` files and the old index; keep directories
-   and unrelated files. Mark migration complete in SQLite. Restart after partial
-   retirement accepts only unchanged surviving originals covered by the archive.
+- YAML `projectFormatVersion` and tolerant development-shape rewrites in `storage/yaml.ts`;
+- legacy monolithic workspace migration into project files/local records in `WorkspacePersistence.load`;
+- legacy request root migration into `documents/`;
+- SQLite schema migrations in `local_state.rs`;
+- encrypted envelope/key migration in native secure/local modules;
+- runtime record payload migration before strict restoration.
 
-The archive preserves the old logical workspace snapshot, including credentials,
-under the local master key. Tests decrypt and verify it. Retain the SQLite files,
-archive and Keychain master key together for recovery; copying a DB without its
-key is insufficient. A backup/key-export/recovery UI is not implemented. This
-migration cannot erase plaintext from existing Git history, filesystem snapshots
-or old external backups.
+The last category is currently incomplete. Workspace auth runtime has an explicit `version: 1` parser and resets invalid runtime tokens safely. Drafts, document session state, workspace UI state, dynamic cache, cookie records, and schema cache do not all have equivalent application-level shape versions. A schema-incompatible value can make `restoreWorkspace`/`validateWorkspace` reject the whole workspace. Any change to these record shapes must add tolerant decoding/migration and a regression fixture; deleting user state is not an acceptable automatic migration.
 
-Secret writes precede project commits because Keychain and SQLite cannot share a
-transaction. A failed commit may leave unused refs or an updated credential value;
-it never places that value in YAML as fallback. Automatic credential/asset garbage
-collection is intentionally deferred to avoid deleting references still used by
-drafts, histories or recovery archives.
+## Failure and recovery rules
 
-## Next import stage
+- Invalid canonical YAML/project data is rejected without modifying source files.
+- Missing attachment assets reject load rather than fabricate request data.
+- External/dirty conflicts preserve both sources and stop the merge.
+- Missing Keychain root with existing encrypted data fails closed.
+- Failed secure writes may leave an unused secret ref/value, but code must never fall back to plaintext project/local storage.
+- Autosave/flush failures stay visible and can prevent window close.
+- Recovery must be explicit and minimal; do not silently discard drafts, cookies, history, or credentials.
 
-Implement `ImportAdapter.canImport/inspect/import` and register it. Adapters receive
-input, return canonical resources plus structured preview counts/diagnostics, and
-never receive a filesystem/DB handle. `persistImport` validates the normalized
-model and credentials, then delegates to `WorkspacePersistence`. Existing-workspace
-imports are additive and reject ID collisions before writes; existing defaults are
-preserved. Adapter options decide name duplication/unsupported-feature policies.
-No feature-complete format adapter or import UI exists yet.
+## Imports and persistence
 
-Postman/OpenAPI implementations can now map operations to request definitions,
-servers to environment candidates, parameters to ordered headers/params,
-request-body examples to raw bodies, security schemes to selected auth variants,
-and collection groups to folders. GraphQL sources remain Purr resources, not an
-external-format extension hidden inside HTTP requests. OpenCollection remains an
-adapter boundary; no dependency on its schema exists in core.
+`persistImport` validates a normalized canonical project before committing it. Import is additive, rejects duplicate resource IDs and invalid/cross-workspace secret refs, writes transient secret values to `SecureStore`, then uses the normal `WorkspacePersistence` save path. No importer may bypass projection/storage safety or invent a parallel file layout. Full status is in [Imports and integrations](imports-and-integrations.md).
 
-Conscious remaining work for that stage:
+## Invariants for changes
 
-- Actual Postman v2.1/OpenAPI 3.x parsing, previews, duplicate/reference remapping,
-  unsupported-feature warnings and source-format fixtures; then Yaak/OpenCollection.
-- Import attachment ingestion and external file-reference policy (normal editor
-  attachment persistence already works). Normalized import currently carries
-  definitions/credentials, not an external filesystem reader.
-- Directory chooser/reload/conflict-resolution UX, full history UI/retention,
-  project backup/recovery controls, secret/key lifecycle and optional cache GC.
-- Windows/Linux vault adapters before desktop support on those platforms.
-- Rich OpenAPI schema/example metadata, alternative security requirements and
-  unsupported auth schemes need explicit domain extensions when implemented;
-  they must yield warnings rather than silently flattening to supported auth.
-- Bench/observability provider behavior, cloud sync, Git client and registry fetchers
-  are outside this stage. Current integration/source definitions are storage models,
-  not working provider integrations.
+- Canonical model changes update Zod schemas, YAML codec/migration, fixtures/tests, and docs together.
+- New local tables or payload shapes update `LocalTable`, Rust migration/read/write logic, projection, compatibility handling, tests, and this matrix.
+- New secret-bearing fields require explicit `SecretRef` projection and redaction before any project/local write.
+- A project move/rename follows resource identity and revisions; do not derive identity only from filename.
+- Runtime `Workspace` remains an aggregate, never a schema shortcut.
 
-## Verification
+## Key files
 
-`npm test`, `npm run test:ui`, `npm run typecheck`, `npm run lint`, `npm run build`,
-`cargo test`, `cargo check`, `cargo clippy --all-targets -- -D warnings` and
-`cargo fmt --check` (Rust commands use `--manifest-path src-tauri/Cargo.toml`).
-
-Persistence tests cover YAML determinism/round-trips, exact raw JSON and multiline
-GraphQL, disabled/repeated fields, secrets/inactive auth/OAuth tokens, lazy environment
-resolution, saved-vs-draft state, attachments, schema source/cache/pin separation,
-external moves/conflicts/parse failures, additive imports and interrupted migration.
-Native tests exercise real temporary files, SQLite upgrades/rollback/history,
-authenticated encryption and archive recovery, interrupted commits and symlink
-rejection. A macOS test creates and deletes a disposable Keychain credential through
-the actual abstraction. Browser native IPC mocks are test-only, not proof of native
-storage security; a separate browser preview test checks encrypted IndexedDB storage.
-
-Library references: [yaml](https://eemeli.org/yaml/),
-[rusqlite](https://docs.rs/rusqlite/0.37.0/rusqlite/),
-[keyring apple-native](https://docs.rs/keyring/3.6.3/keyring/),
-[RustCrypto AES-GCM](https://docs.rs/aes-gcm/0.10.3/aes_gcm/).
+- `src/domain/project.ts` — canonical schemas and cross-resource invariants.
+- `src/application/project-projection.ts` — canonical/local/asset/secret classification and restoration.
+- `src/application/workspace-persistence.ts` — paths, revisions, diffing, commit queue, migration, and external merge.
+- `src/application/import-project.ts` — normalized import validation and additive commit.
+- `src/storage/contracts.ts` — persistence/local/secure interfaces and table names.
+- `src/storage/yaml.ts` — deterministic YAML serialization and compatible decoding.
+- `src/storage/secrets.ts` — credential refs and protected runtime traversal.
+- `src/storage/native-backend.ts` — Tauri storage and secure adapters.
+- `src/storage/browser-backend.ts` — browser development persistence.
+- `src-tauri/src/project_files.rs` — safe project path/file operations.
+- `src-tauri/src/local_state.rs` — SQLite schema, encryption, history, cookie indexes, and vault.
+- `src-tauri/src/secure_store.rs` — Keychain root and cryptographic key derivation.
+- `src-tauri/src/persistence.rs` — registry, journals, Tauri commands, and watcher.
