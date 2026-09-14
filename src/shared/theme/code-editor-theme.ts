@@ -183,12 +183,17 @@ export const purrCodeTheme = EditorView.theme(
       color: "var(--content-primary)",
     },
     ".cm-searchMatch": {
-      backgroundColor: "var(--action-brand-surface)",
+      backgroundColor: "var(--accent-orange)",
+      color: "var(--purr-base)",
       outline: "none",
     },
     ".cm-searchMatch.cm-searchMatch-selected": {
-      backgroundColor: "var(--editor-selection)",
+      backgroundColor: "var(--syntax-number)",
+      color: "var(--purr-base)",
       outline: "none",
+    },
+    ".cm-selectionMatch-main": {
+      backgroundColor: "var(--editor-selection)",
     },
     ".cm-foldPlaceholder": {
       backgroundColor: "var(--purr-elevated)",

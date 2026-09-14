@@ -51,6 +51,16 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
   await expect(response.getByLabel("Response body viewer")).toContainText(
     '"active": true',
   );
+  await response.getByLabel("Response body viewer", { exact: true }).click();
+  await page.keyboard.press("Control+f");
+  const responseFind = response.getByLabel("Find in response", { exact: true });
+  await expect(responseFind).toBeFocused();
+  await responseFind.fill("Alex");
+  await expect(response.getByText("1/1", { exact: true })).toBeVisible();
+  await expect(response.locator(".cm-searchMatch")).toHaveCount(1);
+  await response.getByRole("button", { name: "Next match", exact: true }).click();
+  await response.getByRole("button", { name: "Close find", exact: true }).click();
+  await expect(responseFind).toHaveCount(0);
   await page.screenshot({
     path: "test-results/response-body.png",
     fullPage: true,
@@ -121,6 +131,12 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
 
   await response.getByRole("tab", { name: /^Headers/ }).click();
   await expect(response.getByText("application/json; charset=utf-8")).toBeVisible();
+  await page.keyboard.press("Control+f");
+  const headerFind = response.getByLabel("Find in response", { exact: true });
+  await headerFind.fill("report-to");
+  await expect(headerFind).toBeFocused();
+  await expect(response.getByText("1/1", { exact: true })).toBeVisible();
+  await response.getByRole("button", { name: "Close find", exact: true }).click();
   await response
     .getByRole("button", { name: "Format JSON value for report-to" })
     .click();
@@ -144,6 +160,12 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
 
   await response.getByRole("tab", { name: "Timeline", exact: true }).click();
   await expect(response.getByText("Connection + TTFB (70 ms)")).toBeVisible();
+  await page.keyboard.press("Control+f");
+  const timelineFind = response.getByLabel("Find in response", { exact: true });
+  await timelineFind.fill("Preparing request");
+  await expect(timelineFind).toBeFocused();
+  await expect(response.getByText("1/1", { exact: true })).toBeVisible();
+  await response.getByRole("button", { name: "Close find", exact: true }).click();
   await expect(response.getByText("Connection + TTFB (70 ms)").locator("span")).toHaveClass(/bg-action-brand/);
   await expect(response.getByLabel("Response time waterfall")).toHaveCount(0);
   await response.getByRole("button", { name: "Show breakdown" }).click();

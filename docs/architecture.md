@@ -90,8 +90,8 @@ workspace variables, shared headers and shared auth. New installs create a
 
 | Kind | Runtime | Saved file | Current behavior |
 | --- | --- | --- | --- |
-| HTTP | `HttpDocument` | `requests/<slug>-<id>.yaml` | Full HTTP request definition. |
-| GraphQL request | `GraphqlDocument` | `graphql/<slug>-<id>.yaml` | HTTP transport plus GraphQL query envelope. |
+| HTTP | `HttpDocument` | `documents/<slug>-<id>.yaml` | Full HTTP request definition. |
+| GraphQL request | `GraphqlDocument` | `documents/<slug>-<id>.yaml` | HTTP transport plus GraphQL query envelope. |
 | Schema | `SchemaDocument` | `schemas/<slug>-<id>.yaml`; optional `<id>.graphql` | Source definition; cache stays local unless SDL is pinned. |
 
 `trace`, `benchmark` and `integration` are reserved document/resource concepts,
@@ -232,12 +232,11 @@ Errors expose message, path, source locations and extension code when provided.
 ```text
 <app-data>/projects/<workspace-id>/
   purr.yaml
-  requests/<slug>-<id>.yaml
-  graphql/<slug>-<id>.yaml
+  documents/<slug>-<id>.yaml   # HTTP and GraphQL requests
   environments/<slug>-<id>.yaml
   schemas/<slug>-<id>.yaml
   schemas/<id>.graphql          # only pinned SDL
-  folders/<slug>-<id>.yaml
+  documents/<folder>/.purr-folder.yaml # folder marker; the directory is canonical
   integrations/<slug>-<id>.yaml
   assets/<sha256>.bin
 

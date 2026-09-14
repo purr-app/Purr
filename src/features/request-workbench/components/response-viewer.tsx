@@ -2,6 +2,7 @@ import {
   Braces,
   Check,
   ChevronDown,
+  ChevronUp,
   Clock3,
   Cookie as CookieIcon,
   Copy,
@@ -13,14 +14,16 @@ import {
   Globe2,
   CircleAlert,
   Code2,
-  Search,
+  Filter,
   RefreshCw,
+  X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { AutocompleteInput } from "../../../shared/components/ui/autocomplete-input";
+import { Input } from "../../../shared/components/ui/input";
 import { JsonCodePreview } from "../../../shared/components/ui/json-code-preview";
 import {
   Popover,
@@ -260,7 +263,7 @@ function findResponseField(root: unknown, key: string, base = "$", seen = new Se
   return undefined;
 }
 
-function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", onCreateVariable }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
+function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", onCreateVariable, findQuery, findMatchIndex, onFindMatchCount }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; findQuery?: string; findMatchIndex?: number; onFindMatchCount?: (count: number) => void }) {
   const rawInfo = useMemo(
     () => inspectResponseBody(response.headers, response.text),
     [response.headers, response.text],
@@ -320,9 +323,11 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
       ? "text"
       : queryResult.value !== undefined || info.kind === "json"
         ? "json"
-        : info.kind === "xml" || info.kind === "html"
-          ? "xml"
-          : "text";
+        : info.kind === "ndjson" || info.kind === "yaml" || info.kind === "csv"
+          ? info.kind
+          : info.kind === "xml" || info.kind === "html"
+            ? "xml"
+            : "text";
   const openFieldMenu = language === "json" && rawInfo.parsedJson !== undefined ? ({ text, x, y }: { text: string; x: number; y: number }) => {
     const match = text.trim().match(/^"((?:\\.|[^"\\])+)"\s*:/);
     if (!match) return;
@@ -386,7 +391,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
                     ? ".users[0].name"
                     : "$.users[0].name"
                 }
-                icon={<Search className="size-ui-3" aria-hidden="true" />}
+                icon={<Filter className="size-ui-3" aria-hidden="true" />}
                 className="flex-1 sm:max-w-validation-popover"
                 inputClassName="h-control-sm rounded-ui-md bg-purr-elevated pr-ui-2 font-code text-ui-sm"
                 onValueChange={(value) => {
@@ -417,7 +422,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
       <div className="min-h-0 flex-1">
         {binaryOverview ? <BinaryResponsePanel response={response} info={rawInfo} />
           : visualPreview ? <ResponsePreview response={response} info={rawInfo} />
-            : <><ResponseCodeViewer value={content} language={language} onLineContextMenu={openFieldMenu} />
+            : <><ResponseCodeViewer value={content} language={language} onLineContextMenu={openFieldMenu} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={onFindMatchCount} />
             {fieldMenu ? <Popover open onOpenChange={(open) => { if (!open) setFieldMenu(null); }}><PopoverAnchor asChild><span aria-hidden="true" className="fixed size-ui-0" style={{ left: fieldMenu.x, top: fieldMenu.y }} /></PopoverAnchor><PopoverContent role="menu" aria-label="Response field actions" align="start" className="w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
               <Button role="menuitem" variant="ghost" className="w-full justify-start" onClick={() => { void navigator.clipboard.writeText(fieldMenu.value); setFieldMenu(null); }}><Copy className="size-ui-4" />Copy value</Button>
               <Button role="menuitem" variant="ghost" className="w-full justify-start font-code" onClick={() => { void navigator.clipboard.writeText(fieldMenu.jsonPath); setFieldMenu(null); }}>JSONPath <span className="ml-auto truncate text-content-tertiary">{fieldMenu.jsonPath}</span></Button>
@@ -963,8 +968,136 @@ function NetworkDetailsPopover({ response }: { response: HttpResult }) {
   );
 }
 
+function responseTextMatches(root: HTMLElement, query: string) {
+  if (!query) return [] as Range[];
+  const needle = query.toLocaleLowerCase();
+  const matches: Range[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      return parent?.closest("[data-response-find-bar]") || !node.nodeValue
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const value = node.nodeValue ?? "";
+    const normalized = value.toLocaleLowerCase();
+    let offset = normalized.indexOf(needle);
+    while (offset >= 0) {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.setEnd(node, offset + query.length);
+      matches.push(range);
+      offset = normalized.indexOf(needle, offset + query.length);
+    }
+  }
+  return matches;
+}
+
+const responseFindHighlightName = "purr-response-find";
+const responseFindActiveHighlightName = "purr-response-find-active";
+
+type CssHighlights = {
+  set: (name: string, highlight: Highlight) => void;
+  delete: (name: string) => void;
+};
+
+function responseFindHighlights() {
+  const css = CSS as typeof CSS & { highlights?: CssHighlights };
+  return typeof Highlight === "undefined" ? undefined : css.highlights;
+}
+
+function clearResponseTextHighlights() {
+  const highlights = responseFindHighlights();
+  highlights?.delete(responseFindHighlightName);
+  highlights?.delete(responseFindActiveHighlightName);
+}
+
+function selectResponseTextMatch(root: HTMLElement, query: string, requestedIndex: number) {
+  const matches = responseTextMatches(root, query);
+  const highlights = responseFindHighlights();
+  clearResponseTextHighlights();
+  if (!matches.length) return { count: 0, index: 0 };
+  const index = ((requestedIndex % matches.length) + matches.length) % matches.length;
+  const range = matches[index];
+  if (highlights) {
+    highlights.set(responseFindHighlightName, new Highlight(...matches));
+    highlights.set(responseFindActiveHighlightName, new Highlight(range));
+  }
+  (range.startContainer.parentElement?.closest(".cm-line, [data-response-find-result]") ?? range.startContainer.parentElement)
+    ?.scrollIntoView({ block: "center", inline: "nearest" });
+  return { count: matches.length, index };
+}
+
+function ResponseFindBar({
+  value,
+  count,
+  index,
+  inputRef,
+  onValueChange,
+  onPrevious,
+  onNext,
+  onClose,
+}: {
+  value: string;
+  count: number;
+  index: number;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onValueChange: (value: string) => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      data-response-find-bar
+      className="absolute right-ui-2 top-ui-2 z-10 flex h-control-sm items-center gap-ui-1 rounded-ui-md border border-border-default bg-purr-overlay p-ui-1 shadow-popover"
+    >
+      <Input
+        ref={inputRef}
+        value={value}
+        onChange={(event) => onValueChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            if (event.shiftKey) onPrevious();
+            else onNext();
+          }
+        }}
+        aria-label="Find in response"
+        placeholder="Find in response"
+        spellCheck="false"
+        className="h-control-xs w-method-popover rounded-ui-sm border-transparent bg-transparent px-ui-1 font-code text-ui-xs"
+      />
+      <span className="min-w-ui-7 text-right font-code text-ui-2xs text-content-tertiary" aria-live="polite">
+        {value ? `${count ? index + 1 : 0}/${count}` : "0/0"}
+      </span>
+      <Button type="button" size="xs" variant="ghost" aria-label="Previous match" disabled={!count} onClick={onPrevious}>
+        <ChevronUp className="size-ui-3" aria-hidden="true" />
+      </Button>
+      <Button type="button" size="xs" variant="ghost" aria-label="Next match" disabled={!count} onClick={onNext}>
+        <ChevronDown className="size-ui-3" aria-hidden="true" />
+      </Button>
+      <Button type="button" size="xs" variant="ghost" aria-label="Close find" onClick={onClose}>
+        <X className="size-ui-3" aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}
+
 export function ResponseViewer({ response, graphql = false, onCreateVariable }: { response: HttpResult; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
   const [tab, setTab] = useState<ResponseTab>("response");
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findMatchIndex, setFindMatchIndex] = useState(0);
+  const [findMatchCount, setFindMatchCount] = useState(0);
+  const responsePanelRef = useRef<HTMLDivElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const graphqlResult = useMemo(() => graphql ? inspectGraphqlResponse(response) : undefined, [graphql, response]);
   const graphqlDataResponse = useMemo(() => graphqlResult && "data" in graphqlResult ? responseWithJson(response, graphqlResult.data) : undefined, [graphqlResult, response]);
   const tabs: readonly { value: ResponseTab; label: string; icon?: LucideIcon; disabled?: boolean }[] = graphql ? [
@@ -977,12 +1110,64 @@ export function ResponseViewer({ response, graphql = false, onCreateVariable }: 
     () => getResponseCookies(response.headers).length,
     [response.headers],
   );
-  useEffect(() => setTab("response"), [response.bodyBase64, response.timeline.startedAtMs]);
+  const searchable = tab === "response" || tab === "headers" || tab === "timeline";
+  const selectPanelFindMatch = useCallback((requestedIndex: number) => {
+    const panel = responsePanelRef.current;
+    if (!panel) return;
+    const match = selectResponseTextMatch(panel, findQuery, requestedIndex);
+    setFindMatchCount(match.count);
+    setFindMatchIndex(match.index);
+  }, [findQuery]);
+  const moveFindMatch = useCallback((direction: -1 | 1) => {
+    if (tab === "response") setFindMatchIndex((current) => findMatchCount
+      ? (current + direction + findMatchCount) % findMatchCount
+      : 0);
+    else selectPanelFindMatch(findMatchIndex + direction);
+  }, [findMatchCount, findMatchIndex, selectPanelFindMatch, tab]);
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindQuery("");
+    setFindMatchIndex(0);
+    setFindMatchCount(0);
+    clearResponseTextHighlights();
+    window.getSelection()?.removeAllRanges();
+  }, []);
+
+  useEffect(() => {
+    setTab("response");
+    closeFind();
+  }, [closeFind, response.bodyBase64, response.timeline.startedAtMs]);
+  useEffect(() => {
+    if (!findOpen || !searchable) return;
+    if (tab === "response") {
+      clearResponseTextHighlights();
+      setFindMatchIndex(0);
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      selectPanelFindMatch(0);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearResponseTextHighlights();
+    };
+  }, [findOpen, findQuery, searchable, selectPanelFindMatch, tab]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
+      if (!searchable) return;
+      event.preventDefault();
+      setFindOpen(true);
+      requestAnimationFrame(() => findInputRef.current?.focus());
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [searchable]);
 
   return (
     <section
       aria-label="HTTP response"
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel"
+      className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel"
     >
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated p-ui-2">
         <div
@@ -1049,13 +1234,24 @@ export function ResponseViewer({ response, graphql = false, onCreateVariable }: 
           <span>{formatPayloadSize(response.size)}</span>
         </div>
       </div>
+      {findOpen && searchable ? <ResponseFindBar
+        value={findQuery}
+        count={findMatchCount}
+        index={findMatchIndex}
+        inputRef={findInputRef}
+        onValueChange={(value) => { setFindQuery(value); setFindMatchIndex(0); }}
+        onPrevious={() => moveFindMatch(-1)}
+        onNext={() => moveFindMatch(1)}
+        onClose={closeFind}
+      /> : null}
       <div
+        ref={responsePanelRef}
         id="response-panel"
         role="tabpanel"
         aria-labelledby={`response-tab-${tab}`}
         className="min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} /> : null}
+        {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}

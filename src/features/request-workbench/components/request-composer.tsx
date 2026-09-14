@@ -7,8 +7,11 @@ import { HttpMethodPicker } from "../../../shared/components/http/http-method-pi
 import { cn } from "../../../shared/lib/cn";
 import {
   getEnabledRequestHeaderCount,
+  getEnabledRequestPathParamCount,
   getEnabledRequestQueryParamCount,
   getRequestHeaders,
+  getRequestPathParams,
+  getRequestPathParamsFromUrl,
   getRequestQueryParams,
   getRequestQueryParamsFromUrl,
   hasRequestHeaderValidationError,
@@ -117,7 +120,7 @@ export function RequestComposer({
               value={draft.method}
               onValueChange={(method) => onDraftChange({ ...draft, method })}
             />}
-            <div className="min-w-0 flex-1"><TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params) })}>{(bindings) => <ColorizedUrlInput
+            <div className="min-w-0 flex-1"><TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params), pathParams: getRequestPathParamsFromUrl(url, draft.pathParams) })}>{(bindings) => <ColorizedUrlInput
               className={cn(urlInvalid && "border-accent-red")}
               value={draft.url}
               {...bindings}
@@ -173,7 +176,7 @@ export function RequestComposer({
           authType={effectiveDraft.auth.type}
           queryCount={getEnabledRequestQueryParamCount(
             getRequestQueryParams(draft, authContext),
-          )}
+          ) + getEnabledRequestPathParamCount(getRequestPathParams(draft))}
           headerCount={getEnabledRequestHeaderCount(headers)}
           hasHeaderError={hasRequestHeaderValidationError(headers)}
           onOpenCode={onOpenCode}

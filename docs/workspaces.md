@@ -1,18 +1,24 @@
 # Local workspaces
 
 Purr creates **Personal** on first launch. Each workspace has its own documents,
-environments, open/active document and workspace-cookie tabs, request-editor tabs, sidebar visibility,
+environments, folders, open/active document and workspace-cookie tabs, request-editor tabs, sidebar visibility,
 layout mode, and horizontal/vertical splitter ratios.
 
-The sidebar `+` lets you choose **HTTP** or **GraphQL**. The tab-bar `+` / `Mod+N`
+The sidebar root `+` lets you choose **HTTP**, **GraphQL**, a schema or a folder.
+Each folder has its own `+` for creating a document or nested folder. Saved
+requests can be dragged into a folder or moved with **Move to…**. The directory
+tree under `documents/` is canonical; Purr writes a hidden folder marker only to
+retain stable IDs and metadata, then derives each request's `folderId` from its path.
+The tab-bar `+` / `Mod+N`
 creates the last-used request type (remembered per workspace); right-click the
 tab-bar `+` to choose a different type. A blank, never-sent document is not
 listed in **Drafts** and is removed automatically when its tab closes. Once it has
 a URL, parameter, header, body, authentication, or send attempt, it becomes a
 recoverable draft with an explicit discard action.
 
-`Mod+S` names a draft and adds it to **HTTP** or **GraphQL**. GraphQL request and
-schema documents share the GraphQL group. A saved request keeps an
+`Mod+S` names a draft and keeps it at its selected folder/root. HTTP and GraphQL
+requests are deliberately shown in one document tree. **Schemas** is an automatic
+section and appears only after the workspace contains schemas. A saved request keeps an
 explicit saved snapshot: editing and sending use a working copy, and closing the
 tab without saving restores the snapshot. Saving again commits that working copy.
 The most recent response is associated with its document in local SQLite, while
@@ -34,11 +40,11 @@ The default project root is Tauri's application data directory followed by `proj
 ```text
 projects/<workspace-id>/
   purr.yaml                  # versioned workspace identity/defaults
-  requests/<name>-<id>.yaml   # one saved request per file
-  graphql/<name>-<id>.yaml
+  documents/<name>-<id>.yaml  # HTTP and GraphQL requests, one per file
   environments/<name>-<id>.yaml
   schemas/<name>-<id>.yaml    # source, not introspection cache
   schemas/<id>.graphql       # explicitly pinned SDL only
+  documents/<folder>/.purr-folder.yaml # hierarchy marker; directory is source of truth
 local-state.sqlite3          # outside project: drafts/session/history/cookies/cache
 ```
 

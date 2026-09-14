@@ -59,6 +59,16 @@
 @tailwind utilities;
 
 @layer base {
+
+  ::highlight(purr-response-find) {
+    background-color: var(--accent-yellow);
+    color: var(--purr-base);
+  }
+
+  ::highlight(purr-response-find-active) {
+    background-color: var(--accent-orange);
+    color: var(--purr-base);
+  }
   :root {
     color-scheme: dark;
     /*#08090e #12131a #090e19  #171a26 #0e111a*/
@@ -174,6 +184,8 @@
     --splitter-gutter: 1.25rem;
     --splitter-dot-size: 0.1875rem;
     --workspace-sidebar-width: 15rem;
+    --workspace-sidebar-min-width: 12rem;
+    --workspace-sidebar-max-width: 28rem;
     --workspace-titlebar-height: 2.5rem;
     --workspace-traffic-lights-width: 4.25rem;
     --workspace-menu-width: 14rem;
@@ -422,7 +434,7 @@
   }
 
   .ui-collapsible[data-orientation="horizontal"] {
-    width: var(--workspace-sidebar-width);
+    width: var(--sidebar-width, var(--workspace-sidebar-width));
     transition-property: width, opacity;
   }
 

@@ -10,7 +10,7 @@ import type { RequestEditorSection } from "./model/request-editor-section";
 import { ResponseViewer } from "./components/response-viewer";
 import type { ResponseVariableCandidate } from "./components/response-viewer";
 import { ErrorResponse, PendingResponse } from "./components/response-state-view";
-import { type RequestDraft } from "./model/request";
+import { getRequestPathParamsFromUrl, getRequestQueryParamsFromUrl, normalizeRequestUrlProtocol, type RequestDraft } from "./model/request";
 import {
   type AuthContext,
 } from "./model/request-auth";
@@ -151,6 +151,17 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[aria-label="Request URL"]')?.focus());
       return;
     }
+    const normalizedUrl = normalizeRequestUrlProtocol(effectiveDraft.url);
+    if (normalizedUrl !== draft.url) {
+      setDraft((current) => current.url === draft.url
+        ? {
+            ...current,
+            url: normalizedUrl,
+            params: getRequestQueryParamsFromUrl(normalizedUrl, current.params),
+            pathParams: getRequestPathParamsFromUrl(normalizedUrl, current.pathParams),
+          }
+        : current);
+    }
     setUrlInvalid(false);
     setCanvasFocus("response");
     const execution = ++executionRef.current;
@@ -158,14 +169,20 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     setSending(true);
     setError("");
     try {
-      const outgoing = graphqlOperationName && effectiveDraft.graphql
-        ? { ...effectiveDraft, graphql: { ...effectiveDraft.graphql, operationName: graphqlOperationName } }
-        : effectiveDraft;
+      const normalizedDraft: RequestDraft = {
+        ...effectiveDraft,
+        url: normalizedUrl,
+        params: getRequestQueryParamsFromUrl(normalizedUrl, effectiveDraft.params),
+        pathParams: getRequestPathParamsFromUrl(normalizedUrl, effectiveDraft.pathParams),
+      };
+      const outgoing = graphqlOperationName && normalizedDraft.graphql
+        ? { ...normalizedDraft, graphql: { ...normalizedDraft.graphql, operationName: graphqlOperationName } }
+        : normalizedDraft;
       const dynamic = await resolveFor({ id: documentId, name: documentName, kind: requestKind, request: outgoing }, environmentId);
       if (execution !== executionRef.current) return;
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
-      const outgoingContext = contextFor(draft, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
+      const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
       const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime);
       if (execution !== executionRef.current) return;
       setResponse(result);

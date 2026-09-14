@@ -1,6 +1,8 @@
 import {
   getRequestHeaders,
+  getRequestPathParams,
   getRequestQueryParams,
+  updateRequestPathParams,
   updateRequestQueryParams,
   updateRequestHeaders,
   type RequestDraft,
@@ -89,6 +91,10 @@ export function RequestSectionPanel({
       className="h-full min-h-0 overflow-auto bg-purr-surface"
     >
       <QueryParamsEditor
+        pathParams={getRequestPathParams(draft)}
+        onPathParamsChange={(pathParams) =>
+          onDraftChange(updateRequestPathParams(draft, pathParams))
+        }
         params={getRequestQueryParams(draft, authContext)}
         variableActions={variableActions}
         onParamsChange={(params) =>

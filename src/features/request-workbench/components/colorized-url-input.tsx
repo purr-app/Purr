@@ -35,6 +35,13 @@ function partClass(kind: UrlPart["kind"]) {
 }
 
 function colorizedPart(part: UrlPart) {
+  if (part.kind === "path") {
+    return part.value.split(/(:[A-Za-z_][A-Za-z0-9_-]*|graphql)/gi).map((value, index) => value.startsWith(":")
+      ? <span key={`${value}-${index}`} data-url-accent="path-param" className="text-accent-orange">{value}</span>
+      : value.toLowerCase() === "graphql"
+        ? <span key={`${value}-${index}`} data-url-accent="graphql" className="text-action-graphql">{value}</span>
+        : value);
+  }
   return part.value.split(/(graphql)/gi).map((value, index) => value.toLowerCase() === "graphql"
     ? <span key={`${value}-${index}`} data-url-accent="graphql" className="text-action-graphql">{value}</span>
     : value);

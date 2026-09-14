@@ -1,6 +1,6 @@
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import { getAuthBindingForRequest, resolveAuth, type AuthContext } from "../model/request-auth";
-import { applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParams, type RequestDraft } from "../model/request";
+import { applyRequestPathParamsToUrl, applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParams, normalizeRequestUrlProtocol, type RequestDraft } from "../model/request";
 import { getRequestBodyValidationMessage, serializeRequestBody } from "../model/request-body";
 import type { SessionCookieJar } from "../model/cookie-jar";
 import { resolveRequestEnvironment } from "../../workspaces/model/environment";
@@ -14,11 +14,25 @@ export async function prepareWireRequest(draft: RequestDraft, context: AuthConte
   sensitiveHeaders: string[];
   sensitiveQueryParams: string[];
 }> {
-  const outgoing = prepareGraphqlRequest(resolveRequestEnvironment(draft, context.variables ?? {}));
+  const resolved = resolveRequestEnvironment(draft, context.variables ?? {});
+  const outgoing = prepareGraphqlRequest({
+    ...resolved,
+    url: applyRequestPathParamsToUrl(
+      normalizeRequestUrlProtocol(resolved.url),
+      resolved.pathParams,
+    ),
+  });
   const maskedVariables = Object.fromEntries(Object.entries(context.variables ?? {}).map(([name, value]) => [name,
     context.sensitiveVariableNames?.includes(name) ? "********" : value]));
   const maskedContext = { ...context, variables: maskedVariables };
-  const maskedOutgoing = prepareGraphqlRequest(resolveRequestEnvironment(draft, maskedVariables));
+  const maskedResolved = resolveRequestEnvironment(draft, maskedVariables);
+  const maskedOutgoing = prepareGraphqlRequest({
+    ...maskedResolved,
+    url: applyRequestPathParamsToUrl(
+      normalizeRequestUrlProtocol(maskedResolved.url),
+      maskedResolved.pathParams,
+    ),
+  });
   const bodyError = getRequestBodyValidationMessage(outgoing.body);
   if (bodyError) throw new Error(bodyError);
   const authResult = getAuthBindingForRequest(outgoing.auth, outgoing.url, context);

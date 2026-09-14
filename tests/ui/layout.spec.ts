@@ -117,11 +117,18 @@ test("empty URLs focus an invalid input and URL parts use semantic colors", asyn
   await url.fill("https://{{path}}.typicode.com/todos/1");
   await expect(page.locator('[data-url-part="base"]')).toHaveText("{{path}}.typicode.com");
   await expect(page.locator('[data-url-part="path"]')).toHaveText("/todos/1");
+  await url.fill("https://api.example.com/users/:id");
+  await expect(page.locator('[data-url-accent="path-param"]')).toHaveText(":id");
+  await page.getByRole("tab", { name: /^Params/ }).click();
+  await expect(page.getByText("Path params", { exact: true })).toBeVisible();
+  await expect(page.getByText("Query params", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Params 1", exact: true })).toBeVisible();
+  await page.getByLabel("Value for id", { exact: true }).fill("42");
 });
 
 test("request failures replace response details with one Error tab", async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("Request URL", { exact: true }).fill("not-a-valid-url");
+  await page.getByLabel("Request URL", { exact: true }).fill("http://[::1");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   const error = page.getByRole("region", { name: "Request error" });
   await expect(error).toBeVisible();

@@ -45,6 +45,13 @@ export type RequestQueryParam = {
   secret?: boolean;
 };
 
+export type RequestPathParam = {
+  id: string;
+  key: string;
+  value: string;
+  enabled: boolean;
+};
+
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export type RequestDraft = {
@@ -54,6 +61,7 @@ export type RequestDraft = {
   method: HttpMethod;
   url: string;
   params: RequestQueryParam[];
+  pathParams?: RequestPathParam[];
   headers: RequestHeader[];
   body: RequestBody;
   auth: RequestAuth;
@@ -76,6 +84,7 @@ export const initialRequestDraft: RequestDraft = {
   method: "GET",
   url: "https://api.example.com/users/42",
   params: [{ id: "param-1", key: "", value: "", enabled: false }],
+  pathParams: [],
   headers: [{ id: "header-1", name: "", value: "", enabled: false }],
   body: createRequestBody(),
   auth: createRequestAuth(),
@@ -248,6 +257,11 @@ export function getEnabledRequestQueryParamCount(params: RequestQueryParam[]) {
     .length;
 }
 
+export function getEnabledRequestPathParamCount(params: RequestPathParam[]) {
+  return params.filter((param) => param.enabled && param.key.trim().length > 0)
+    .length;
+}
+
 export function getRequestQueryParamsFromUrl(
   url: string,
   currentParams: RequestQueryParam[] = [],
@@ -279,6 +293,73 @@ export function getRequestQueryParamsFromUrl(
       ? { ...emptyParam, enabled: false }
       : createEmptyRequestQueryParam([...currentParams, ...params]),
   ];
+}
+
+function getHighestPathParamId(params: RequestPathParam[]) {
+  return params.reduce((highest, param) => {
+    const id = Number(param.id.replace("path-param-", ""));
+    return Number.isFinite(id) ? Math.max(highest, id) : highest;
+  }, 0);
+}
+
+export function getRequestPathParamsFromUrl(
+  url: string,
+  currentParams: RequestPathParam[] = [],
+): RequestPathParam[] {
+  const path = url.split(/[?#]/, 1)[0] ?? "";
+  const names = Array.from(
+    path.matchAll(/(?:^|\/):([A-Za-z_][A-Za-z0-9_-]*)(?=\/|$)/g),
+    (match) => match[1],
+  );
+  const remaining = [...currentParams];
+  const highestId = getHighestPathParamId(currentParams);
+
+  return names.map((key, index) => {
+    const existingAt = remaining.findIndex((param) => param.key === key);
+    const existing = existingAt >= 0 ? remaining.splice(existingAt, 1)[0] : undefined;
+    return existing ?? {
+      id: `path-param-${highestId + index + 1}`,
+      key,
+      value: "",
+      enabled: true,
+    };
+  });
+}
+
+export function getRequestPathParams(draft: RequestDraft) {
+  return getRequestPathParamsFromUrl(draft.url, draft.pathParams);
+}
+
+export function updateRequestPathParams(
+  draft: RequestDraft,
+  pathParams: RequestPathParam[],
+): RequestDraft {
+  return { ...draft, pathParams };
+}
+
+export function applyRequestPathParamsToUrl(
+  url: string,
+  pathParams: RequestPathParam[] = [],
+) {
+  const values = new Map(
+    pathParams
+      .filter((param) => param.enabled && param.key && param.value)
+      .map((param) => [param.key, param.value]),
+  );
+  const [path, suffix = ""] = url.split(/([?#][\s\S]*)/, 2);
+  return `${path.replace(/(?:^|\/):([A-Za-z_][A-Za-z0-9_-]*)(?=\/|$)/g, (segment, key: string) => {
+    const value = values.get(key);
+    return value === undefined ? segment : segment.replace(`:${key}`, encodeURIComponent(value));
+  })}${suffix}`;
+}
+
+export function normalizeRequestUrlProtocol(url: string) {
+  const value = url.trim();
+  if (!value || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value) || value.startsWith("{{")) return value;
+  const host = value.split(/[/?#]/, 1)[0].toLowerCase();
+  const isLocal = host === "localhost" || host.startsWith("localhost:")
+    || /^(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0)(?::\d+)?$/.test(host);
+  return `${isLocal ? "http" : "https"}://${value}`;
 }
 
 export function applyRequestQueryParamsToUrl(

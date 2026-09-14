@@ -179,7 +179,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
       .filter((field) => field.key || field.value || field.attachment).map(async (field) => ({ name: field.key, value: field.value, enabled: field.enabled,
         ...(field.attachment ? { file: await fileRef(field.attachment) } : {}), ...(field.contentType ? { contentType: field.contentType } : {}) }))) };
   const common = { id: document.id, name: document.name, ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
-    method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), headers: pairs(draft.headers), body: payload,
+    method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []), headers: pairs(draft.headers), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
     ...(!draft.workspace.headersEnabled || !draft.workspace.authEnabled || !draft.useCookieJar || Object.values(draft.workspace.headerOverrides).some((value) => !value)
       ? { overrides: { headers: draft.workspace.headersEnabled, auth: draft.workspace.authEnabled, cookies: draft.useCookieJar,
@@ -251,6 +251,7 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
   }
   const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure),
     params: [...resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })), { id: "param-empty", key: "", value: "", enabled: false }],
+    pathParams: resource.pathParams.map((row, index) => ({ id: `path-param-${index}`, key: row.name, value: row.value, enabled: row.enabled })),
     headers: [...resource.headers.map((row, index) => ({ id: `header-${index}`, ...row })), { id: "header-empty", name: "", value: "", enabled: false }],
     useCookieJar: resource.overrides?.cookies ?? true, environmentId: resource.environmentId,
     workspace: { headersEnabled: resource.overrides?.headers ?? true, authEnabled: resource.overrides?.auth ?? true,
@@ -333,6 +334,9 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
     }
     return result;
   }));
+  const documentOrder = workspace.ui.sidebarItemOrder ?? workspace.ui.documentOrder ?? [];
+  const documentIndexes = new Map(documentOrder.map((id, index) => [id, index]));
+  workspace.documents.sort((left, right) => (documentIndexes.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (documentIndexes.get(right.id) ?? Number.MAX_SAFE_INTEGER));
   workspace.cookies = records.filter((record) => record.table === "cookie_jar").map((record) => record.value as Workspace["cookies"][number]);
   return validateWorkspace(workspace);
 }

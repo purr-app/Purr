@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type SetStateAction } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { Columns2, Cookie as CookieIcon, Copy, FilePlus2, Globe2, Network, PanelLeft, RotateCcw, Rows2, Save, SendHorizontal, Settings2, Square, TextCursorInput, Trash2, Waypoints } from "lucide-react";
 import { SchemaExplorer } from "../graphql/components/schema-explorer";
@@ -23,10 +23,12 @@ import { WorkspaceSidebar } from "./components/workspace-sidebar";
 import { WorkspaceSettings } from "./components/workspace-request-settings";
 import { EmptyWorkspace } from "./components/empty-workspace";
 import { Collapsible } from "../../shared/components/ui/collapsible";
+import { cn } from "../../shared/lib/cn";
 import { useWorkspaces } from "./hooks/use-workspaces";
 import { openWorkspaceFolder, workspacePersistence } from "./services/workspace-storage";
 import { secretRef } from "../../storage/secrets";
 import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
+import type { ProjectResource } from "../../domain/project";
 import {
   cloneRequestDraft,
   closeDocument,
@@ -56,7 +58,7 @@ import {
   type Workspace,
 } from "./model/workspace";
 
-type Dialog = "palette" | "new-workspace" | "save-document" | { renameDocument: string } | null;
+type Dialog = "palette" | "new-workspace" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
 const actionErrorTimeoutMs = 15_000;
 
 function curlSecretVariableName(headerName: string, used: Set<string>) {
@@ -111,10 +113,12 @@ export function WorkspaceWorkbench() {
   const [variableScope, setVariableScope] = useState<VariableScope>("effective");
   const [variableSelection, setVariableSelection] = useState<string | null>(null);
   const [variableDraft, setVariableDraft] = useState<Variable | null>(null);
+  const [resizingSidebar, setResizingSidebar] = useState(false);
   const jars = useRef(new Map<string, SessionCookieJar>());
   const dynamicSessionCaches = useRef(new Map<string, Map<string, Workspace["dynamicVariableCache"][string]>>());
   const requestActions = useRef<RequestActions>(null);
   const emptyPasteTarget = useRef<HTMLTextAreaElement>(null);
+  const sidebarResize = useRef<{ startX: number; width: number } | null>(null);
   useEffect(() => {
     if (!actionError) return;
     const timeout = window.setTimeout(() => setActionError(""), actionErrorTimeoutMs);
@@ -204,17 +208,76 @@ export function WorkspaceWorkbench() {
     return { ...current, documents, ui: pinPreview ? { ...current.ui, previewDocumentId: null } : current.ui };
   });
   const setDraft = (change: SetStateAction<RequestDraft>) => setRequestDraft(currentDocument?.id, change);
-  const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http") => {
+  const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http", folderId?: string) => {
     if (kind === "schema") {
       const document = createSchemaDocument();
       update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
       return;
     }
-    let document: RequestDocument = kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
+    let document: RequestDocument = { ...(kind === "graphql" ? createGraphqlDocument() : createHttpDocument()), ...(folderId ? { folderId } : {}) };
     if (workspace)
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
+  const createFolder = (parentId?: string) => setDialog({ newFolder: parentId ?? null });
+  const moveDocument = (id: string, folderId: string | null) => update((current) => ({ ...current, documents: current.documents.map((document) => document.id === id
+    ? { ...document, ...(folderId ? { folderId } : { folderId: undefined }) }
+    : document) }));
+  const moveDocuments = (ids: string[], folderId: string | null) => {
+    const moving = new Set(ids);
+    update((current) => ({ ...current, documents: current.documents.map((document) => moving.has(document.id)
+      ? { ...document, ...(folderId ? { folderId } : { folderId: undefined }) }
+      : document) }));
+  };
+  const reorderSidebarItem = (sourceId: string, targetId: string, position: "before" | "after") => update((current) => {
+    const folders = (current.extraResources ?? []).filter((resource): resource is Extract<ProjectResource, { kind: "folder" }> => resource.kind === "folder");
+    const sourceDocument = current.documents.find((document) => document.id === sourceId && document.kind !== "schema");
+    const sourceFolder = folders.find((folder) => folder.id === sourceId);
+    const target = current.documents.find((document) => document.id === targetId && document.kind !== "schema");
+    if ((!sourceDocument && !sourceFolder) || !target || sourceId === targetId) return current;
+    const targetFolderId = target.folderId ?? null;
+    if (sourceFolder) {
+      let parentId = targetFolderId;
+      while (parentId) {
+        if (parentId === sourceFolder.id) return current;
+        parentId = folders.find((folder) => folder.id === parentId)?.folderId ?? null;
+      }
+    }
+    const documents = current.documents.map((document) => document.id === sourceId
+      ? { ...document, ...(targetFolderId ? { folderId: targetFolderId } : { folderId: undefined }) }
+      : document);
+    const extraResources = (current.extraResources ?? []).map((resource) => resource.id === sourceId && resource.kind === "folder"
+      ? { ...resource, ...(targetFolderId ? { folderId: targetFolderId } : { folderId: undefined }) }
+      : resource);
+    const validIds = [...documents.filter((document) => document.kind !== "schema").map((document) => document.id), ...extraResources.filter((resource) => resource.kind === "folder").map((resource) => resource.id)];
+    const order = [...new Set([...(current.ui.sidebarItemOrder ?? current.ui.documentOrder ?? []), ...validIds])].filter((id) => id !== sourceId && validIds.includes(id));
+    const targetIndex = order.indexOf(targetId);
+    order.splice(targetIndex + (position === "after" ? 1 : 0), 0, sourceId);
+    return { ...current, documents, extraResources, ui: { ...current.ui,
+      sidebarItemOrder: order,
+      documentOrder: order.filter((id) => documents.some((document) => document.id === id)),
+    } };
+  });
+  const moveFolder = (id: string, folderId: string | null) => update((current) => {
+    const folders = (current.extraResources ?? []).filter((resource): resource is Extract<ProjectResource, { kind: "folder" }> => resource.kind === "folder");
+    let parentId = folderId;
+    while (parentId) { if (parentId === id) return current; parentId = folders.find((folder) => folder.id === parentId)?.folderId ?? null; }
+    return { ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.id === id && resource.kind === "folder"
+      ? { ...resource, ...(folderId ? { folderId } : { folderId: undefined }) }
+      : resource) };
+  });
+  const deleteFolder = (id: string) => update((current) => {
+    const folder = (current.extraResources ?? []).find((resource): resource is Extract<ProjectResource, { kind: "folder" }> => resource.id === id && resource.kind === "folder");
+    if (!folder) return current;
+    const parentId = folder.folderId;
+    const reparent = <T extends { folderId?: string }>(item: T): T => item.folderId === id ? { ...item, ...(parentId ? { folderId: parentId } : { folderId: undefined }) } : item;
+    return {
+      ...current,
+      documents: current.documents.map(reparent),
+      environments: current.environments.map(reparent),
+      extraResources: (current.extraResources ?? []).filter((resource) => resource.id !== id).map(reparent),
+    };
+  });
   const importCurlAsDocument = (command: string) => {
     try {
       const document = createHttpDocument();
@@ -451,10 +514,30 @@ export function WorkspaceWorkbench() {
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
       onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className="h-full shrink-0"><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onOpenFolder={() => {
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
         void openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
       }} /></Collapsible>
+      {workspace.ui.sidebarOpen && <div role="separator" tabIndex={0} aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin={12} aria-valuemax={28} aria-valuenow={Math.round(workspace.ui.sidebarWidth)} className="ui-focus-ring flex w-ui-1 shrink-0 touch-none cursor-col-resize" onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        sidebarResize.current = { startX: event.clientX, width: workspace.ui.sidebarWidth };
+        setResizingSidebar(true);
+      }} onPointerMove={(event) => {
+        if (!sidebarResize.current) return;
+        const rootFontSize = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
+        const width = Math.max(12, Math.min(28, sidebarResize.current.width + (event.clientX - sidebarResize.current.startX) / rootFontSize));
+        update((current) => current.ui.sidebarWidth === width ? current : { ...current, ui: { ...current.ui, sidebarWidth: width } });
+      }} onPointerUp={(event) => {
+        sidebarResize.current = null;
+        setResizingSidebar(false);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      }} onPointerCancel={() => { sidebarResize.current = null; setResizingSidebar(false); }} onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        update((current) => ({ ...current, ui: { ...current.ui, sidebarWidth: Math.max(12, Math.min(28, current.ui.sidebarWidth + (event.key === "ArrowRight" ? 1 : -1))) } }));
+      }} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
@@ -607,6 +690,16 @@ export function WorkspaceWorkbench() {
       const document = workspace.documents.find((item) => item.id === dialog.renameDocument);
       return document ? <NameDialog title="Rename document" label="Document name" initial={getDocumentDisplayName(document)} onClose={() => setDialog(null)} onSave={(name) => {
         update((current) => ({ ...current, documents: current.documents.map((item) => item.id === document.id ? { ...item, name, updatedAt: new Date().toISOString() } : item) })); setDialog(null);
+      }} /> : null;
+    })()}
+    {dialog && typeof dialog === "object" && "newFolder" in dialog && <NameDialog title="New folder" label="Folder name" initial="" onClose={() => setDialog(null)} onSave={(name) => {
+      const folder: Extract<ProjectResource, { kind: "folder" }> = { id: crypto.randomUUID(), name, kind: "folder", ...(dialog.newFolder ? { folderId: dialog.newFolder } : {}) };
+      update((current) => ({ ...current, extraResources: [...(current.extraResources ?? []), folder] })); setDialog(null);
+    }} />}
+    {dialog && typeof dialog === "object" && "renameFolder" in dialog && (() => {
+      const folder = (workspace.extraResources ?? []).find((resource): resource is Extract<ProjectResource, { kind: "folder" }> => resource.id === dialog.renameFolder && resource.kind === "folder");
+      return folder ? <NameDialog title="Rename folder" label="Folder name" initial={folder.name} onClose={() => setDialog(null)} onSave={(name) => {
+        update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.id === folder.id && resource.kind === "folder" ? { ...resource, name } : resource) })); setDialog(null);
       }} /> : null;
     })()}
   </div>;

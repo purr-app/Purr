@@ -7,9 +7,27 @@ import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, 
 import { CachedSecureStore } from "../storage/secrets";
 import type { Variable } from "../features/workspaces/model/workspace";
 
-const resourceDirectory = (resource: ProjectResource) => ({ http: "requests", graphql: "graphql", schema: "schemas", environment: "environments", folder: "folders", integration: "integrations" })[resource.kind];
+// Requests and request-adjacent documents share one canonical directory. The
+// previous requests/ and graphql/ locations remain readable so existing
+// workspaces can be migrated safely on their next save.
+const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", schema: "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
 const slug = (name: string) => name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "resource";
 const key = (record: LocalRecord | LocalChange) => `${record.table}/${record.id}`;
+const folderMarker = ".purr-folder.yaml";
+const parentPath = (path: string) => path.split("/").slice(0, -1).join("/");
+const fileName = (path: string) => { const parts = path.split("/"); return parts[parts.length - 1] || ""; };
+const pathAfter = (path: string, prefix: string) => path.startsWith(prefix) ? path.slice(prefix.length) : "";
+const folderDirectoryName = (name: string) => {
+  const value = name.normalize("NFC").trim().replace(/[\\/]+/g, "-").slice(0, 128);
+  return value && value !== "." && value !== ".." && !value.startsWith(".") ? value : "folder";
+};
+
+function generatedFolderId(path: string, used: Set<string>) {
+  const stem = `folder-${path.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 112) || "root"}`;
+  let id = stem; let suffix = 2;
+  while (used.has(id)) id = `${stem}-${suffix++}`;
+  used.add(id); return id;
+}
 export class WorkspacePersistence {
   private snapshots = new Map<string, StoredWorkspace>();
   private projects = new Map<string, Project>();
@@ -34,6 +52,61 @@ export class WorkspacePersistence {
       const resource = decoded.value; if (decoded.developmentRewrite) developmentRewrites.add(path);
       paths.set(resource.id, path); return resource;
     });
+    // documents/ is the hierarchy's source of truth. Folder marker files keep
+    // stable IDs/metadata, while ordinary directories created outside Purr are
+    // promoted to first-class folders on the next save.
+    const folders = new Map(resources.filter((resource) => resource.kind === "folder").map((resource) => [resource.id, resource]));
+    const directoryFolders = new Map<string, string>();
+    const usedIds = new Set(resources.map((resource) => resource.id));
+    for (const resource of folders.values()) {
+      const path = paths.get(resource.id) ?? "";
+      if (path.startsWith("documents/") && fileName(path) === folderMarker)
+        directoryFolders.set(pathAfter(parentPath(path), "documents/"), resource.id);
+    }
+    const ensureDirectory = (directory: string): string | undefined => {
+      if (!directory) return undefined;
+      let parentId: string | undefined;
+      let current = "";
+      for (const part of directory.split("/").filter(Boolean)) {
+        current = current ? `${current}/${part}` : part;
+        let id = directoryFolders.get(current);
+        if (!id) {
+          id = generatedFolderId(current, usedIds);
+          const folder: Extract<ProjectResource, { kind: "folder" }> = { id, name: part, kind: "folder", ...(parentId ? { folderId: parentId } : {}) };
+          resources.push(folder); folders.set(id, folder); directoryFolders.set(current, id);
+        } else {
+          const folder = folders.get(id)!;
+          const index = resources.findIndex((resource) => resource.id === id);
+          const normalized = { ...folder, name: part, ...(parentId ? { folderId: parentId } : { folderId: undefined }) };
+          folders.set(id, normalized); resources[index] = normalized;
+        }
+        parentId = id;
+      }
+      return parentId;
+    };
+    const legacyFolderDirectory = (id: string): string => {
+      const folder = folders.get(id); if (!folder) return "";
+      const existing = [...directoryFolders.entries()].find(([, folderId]) => folderId === id)?.[0];
+      if (existing !== undefined) return existing;
+      const parent = folder.folderId ? legacyFolderDirectory(folder.folderId) : "";
+      const directory = parent ? `${parent}/${folderDirectoryName(folder.name)}` : folderDirectoryName(folder.name);
+      directoryFolders.set(directory, id); return directory;
+    };
+    for (const folder of folders.values()) legacyFolderDirectory(folder.id);
+    for (let index = 0; index < resources.length; index += 1) {
+      const resource = resources[index];
+      if (resource.kind !== "http" && resource.kind !== "graphql") continue;
+      const path = paths.get(resource.id) ?? "";
+      const inDocuments = pathAfter(path, "documents/");
+      const inLegacyRequests = pathAfter(path, "requests/");
+      const inLegacyGraphql = pathAfter(path, "graphql/");
+      const relative = inDocuments || inLegacyRequests || inLegacyGraphql;
+      const directory = parentPath(relative);
+      // The legacy graphql/ root used to be a UI grouping, not a folder.
+      const folderId = directory ? ensureDirectory(directory) : undefined;
+      if ((resource.folderId ?? undefined) !== folderId)
+        resources[index] = { ...resource, ...(folderId ? { folderId } : { folderId: undefined }) };
+    }
     for (const resource of resources) if (resource.kind === "schema") {
       const pinned = pinnedSchemaPath(snapshot.files[paths.get(resource.id)!].content); if (pinned) sdlPaths.set(resource.id, pinned);
     }
@@ -113,8 +186,28 @@ export class WorkspacePersistence {
     // deletion set. Managed SDL is removed only on explicit unpin/delete.
     for (const [path, file] of Object.entries(snapshot.files)) if (!path.endsWith(".yaml")
       && !previousProject?.resources.some((item) => item.kind === "schema" && item.pinnedSdl !== undefined && path === (sdlPaths.get(item.id) ?? `schemas/${item.id}.graphql`))) desired[path] ??= file.content;
+    const folders = new Map(project.resources.filter((resource): resource is Extract<ProjectResource, { kind: "folder" }> => resource.kind === "folder").map((resource) => [resource.id, resource]));
+    const folderDirectories = new Map<string, string>();
+    const documentDirectory = (folderId?: string): string => {
+      if (!folderId) return "documents";
+      const cached = folderDirectories.get(folderId); if (cached) return cached;
+      const folder = folders.get(folderId); if (!folder) return "documents";
+      const directory = `${documentDirectory(folder.folderId)}/${folderDirectoryName(folder.name)}`;
+      folderDirectories.set(folderId, directory); return directory;
+    };
     for (const resource of project.resources) {
-      const path = paths.get(resource.id) ?? `${resourceDirectory(resource)}/${slug(resource.name)}-${resource.id}.yaml`; paths.set(resource.id, path);
+      const existingPath = paths.get(resource.id);
+      // Keep user-organized paths stable, except for legacy request roots. A
+      // move preserves nested names (requests/users/a.yaml ->
+      // documents/users/a.yaml) and lets the normal change-set delete the old
+      // file only after its replacement is written.
+      const path = resource.kind === "folder"
+        ? `${documentDirectory(resource.id)}/${folderMarker}`
+        : resource.kind === "http" || resource.kind === "graphql"
+          ? `${documentDirectory(resource.folderId)}/${existingPath?.startsWith("documents/") || existingPath?.startsWith("requests/") || existingPath?.startsWith("graphql/")
+            ? fileName(existingPath) : `${slug(resource.name)}-${resource.id}.yaml`}`
+          : existingPath ?? `${resourceDirectory(resource)}/${slug(resource.name)}-${resource.id}.yaml`;
+      paths.set(resource.id, path);
       const sdlPath = sdlPaths.get(resource.id) ?? `schemas/${resource.id}.graphql`; desired[path] = serializeResource(resource, sdlPath);
       if (resource.kind === "schema" && resource.pinnedSdl !== undefined) desired[sdlPath] = resource.pinnedSdl;
       const previous = previousProject?.resources.find((item) => item.id === resource.id);

@@ -117,8 +117,8 @@ test("file watching reconciles a moved YAML resource without renaming it back or
   const { workspace } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
   const persistence = new WorkspacePersistence(backend, secure); let current: WorkspaceStore = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
   await persistence.save(current);
-  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("requests/"))!;
-  const moved = "requests/users/get-user.yaml";
+  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
+  const moved = "documents/users/get-user.yaml";
   await backend.moveResource(workspace.id, path, moved, before.files[path].revision);
   const reloaded = new Promise<void>((resolve, reject) => {
     void persistence.watchChanges((workspace) => { current = { ...current, workspaces: [workspace] }; resolve(); }, reject, () => current)
@@ -128,11 +128,44 @@ test("file watching reconciles a moved YAML resource without renaming it back or
   assert.ok(backend.snapshot.workspaces[0].files[moved]); assert.ok(!backend.snapshot.workspaces[0].files[path]);
 });
 
+test("legacy request directories are migrated to the shared documents directory without changing IDs", async () => {
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const first = new WorkspacePersistence(backend, secure);
+  await first.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+  const before = backend.snapshot.workspaces[0];
+  const original = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
+  const legacy = `requests/${original.slice("documents/".length)}`;
+  await backend.moveResource(workspace.id, original, legacy, before.files[original].revision);
+  const restored = await new WorkspacePersistence(backend, secure).load();
+  const files = backend.snapshot.workspaces[0].files;
+  assert.ok(Object.keys(files).some((path) => path.startsWith("documents/")));
+  assert.ok(!Object.keys(files).some((path) => path.startsWith("requests/")));
+  const persisted = Object.values(files).find((file) => file.content.includes(document.id));
+  assert.ok(persisted);
+  assert.equal(restored.workspaces[0].documents[0].id, document.id);
+});
+
+test("documents directories restore sidebar folders and persist their marker metadata", async () => {
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const persistence = new WorkspacePersistence(backend, secure);
+  await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+  const before = backend.snapshot.workspaces[0];
+  const source = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
+  const sourceParts = source.split("/"); const moved = `documents/external/${sourceParts[sourceParts.length - 1]}`;
+  await backend.moveResource(workspace.id, source, moved, before.files[source].revision);
+  const loaded = await new WorkspacePersistence(backend, secure).load();
+  const restored = loaded.workspaces[0]; const folder = restored.extraResources?.find((resource) => resource.kind === "folder" && resource.name === "external");
+  assert.ok(folder?.kind === "folder");
+  assert.equal(restored.documents.find((item) => item.id === document.id)?.folderId, folder.id);
+  assert.ok(backend.snapshot.workspaces[0].files["documents/external/.purr-folder.yaml"]);
+  assert.ok(backend.snapshot.workspaces[0].files[moved]);
+});
+
 test("external valid edits conflict with dirty working copies instead of discarding them", async () => {
   const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
   const persistence = new WorkspacePersistence(backend, secure); const current = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
   await persistence.save(current); document.request.url = "https://local.example/unsaved";
-  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("requests/"))!;
+  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
   const resource = deserializeResource(before.files[path].content); assert.ok(resource.kind === "http"); resource.url = "https://external.example/changed";
   await backend.saveResource(workspace.id, { path, content: serializeResource(resource), expectedRevision: before.files[path].revision });
   const error = await new Promise<string>((resolve, reject) => {
@@ -273,7 +306,7 @@ test("clean editor snapshots cannot shadow a credential updated through SecureSt
   document.request.auth.type = "bearer"; document.request.auth.bearer.token = "old-value";
   document.savedRequest = cloneRequestDraft(document.request);
   await new WorkspacePersistence(backend, secure).save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
-  const path = Object.keys(backend.snapshot.workspaces[0].files).find((path) => path.startsWith("requests/"))!;
+  const path = Object.keys(backend.snapshot.workspaces[0].files).find((path) => path.startsWith("documents/"))!;
   const definition = deserializeResource(backend.snapshot.workspaces[0].files[path].content);
   assert.ok(definition.kind === "http" && definition.auth.type === "bearer" && definition.auth.token.kind === "secret");
   await secure.set(definition.auth.token.ref, "updated-value");

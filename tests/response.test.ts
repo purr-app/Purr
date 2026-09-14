@@ -30,6 +30,9 @@ test("response body detection respects content types and safe content sniffing",
   assert.equal(inspectResponseBody([["content-type", "audio/mpeg"]], "binary").kind, "audio");
   assert.equal(inspectResponseBody([["content-type", "video/mp4"]], "binary").kind, "video");
   assert.equal(inspectResponseBody([["content-type", "application/pdf"]], "%PDF-1.7").kind, "binary");
+  assert.equal(inspectResponseBody([["content-type", "application/yaml"]], "name: Purr").kind, "yaml");
+  assert.equal(inspectResponseBody([["content-type", "text/csv"]], "name,role\nAda,admin").kind, "csv");
+  assert.equal(inspectResponseBody([["content-type", "application/x-ndjson"]], '{"name":"Ada"}\n{"name":"Lin"}').kind, "ndjson");
   assert.equal(inspectResponseBody([], "plain text").kind, "text");
   assert.equal(inspectResponseBody([], "\u0000\ufffd").kind, "binary");
 });

@@ -1,7 +1,7 @@
 import { prettifyBodyCode } from "./request-body";
 import type { HttpResult } from "../services/http-client";
 
-export type ResponseBodyKind = "json" | "xml" | "html" | "text" | "image" | "audio" | "video" | "binary";
+export type ResponseBodyKind = "json" | "ndjson" | "yaml" | "csv" | "xml" | "html" | "text" | "image" | "audio" | "video" | "binary";
 export type ResponseViewMode = "pretty" | "prettify" | "raw" | "hex" | "base64";
 export type ResponseQueryLanguage = "jq" | "jsonpath";
 
@@ -58,6 +58,12 @@ export function inspectResponseBody(
     }
   }
 
+  if (/(?:x-ndjson|ndjson|jsonl|json-lines)/.test(mediaType))
+    return { kind: "ndjson", mediaType, label: "NDJSON" };
+  if (mediaType.includes("yaml") || mediaType.includes("yml"))
+    return { kind: "yaml", mediaType, label: "YAML" };
+  if (mediaType === "text/csv" || mediaType.includes("csv"))
+    return { kind: "csv", mediaType, label: "CSV" };
   if (mediaType.includes("json") || mediaType.endsWith("+json"))
     return { kind: "json", mediaType, label: "JSON", parsedJson };
   if (mediaType.startsWith("image/"))
@@ -70,7 +76,7 @@ export function inspectResponseBody(
     return { kind: "html", mediaType, label: "HTML" };
   if (mediaType.includes("xml") || mediaType.endsWith("+xml"))
     return { kind: "xml", mediaType, label: "XML" };
-  if (mediaType.startsWith("text/") || mediaType.includes("javascript") || mediaType.includes("graphql") || mediaType.includes("yaml"))
+  if (mediaType.startsWith("text/") || mediaType.includes("javascript") || mediaType.includes("graphql"))
     return { kind: "text", mediaType, label: "Text" };
   if (mediaType)
     return { kind: "binary", mediaType, label: "Binary" };
@@ -91,6 +97,9 @@ export function inspectResponseBody(
 
 const responseExtensions: Readonly<Record<string, string>> = {
   "application/json": "json",
+  "application/x-ndjson": "ndjson",
+  "application/yaml": "yaml",
+  "application/x-yaml": "yaml",
   "application/pdf": "pdf",
   "application/zip": "zip",
   "application/gzip": "gz",

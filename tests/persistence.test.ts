@@ -132,6 +132,6 @@ test("normalized imports use the same persistence path", async () => {
   const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
   const resource = deserializeResource(await readFile(new URL("./fixtures/projects/get-user.yaml", import.meta.url), "utf8"));
   await persistImport({ workspace: { id: "imported", name: "Imported", headers: [], auth: [] }, resources: [resource], diagnostics: [], secrets: [] }, persistence);
-  assert.ok(Object.keys(backend.snapshot.workspaces[0].files).some((path) => path.startsWith("requests/")));
+  assert.ok(Object.keys(backend.snapshot.workspaces[0].files).some((path) => path.startsWith("documents/")));
   assert.ok(!JSON.stringify(backend.snapshot.workspaces[0].files).includes("lastResponse"));
 });

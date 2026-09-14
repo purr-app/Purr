@@ -46,12 +46,11 @@ Default desktop locations are relative to Tauri's application data directory:
 ```text
 projects/<workspace-id>/
   purr.yaml
-  requests/<slug>-<id>.yaml
-  graphql/<slug>-<id>.yaml
+  documents/<slug>-<id>.yaml   # HTTP and GraphQL requests
   environments/<slug>-<id>.yaml
   schemas/<slug>-<id>.yaml
   schemas/<id>.graphql              # only an explicit pin
-  folders/<slug>-<id>.yaml
+  documents/<folder>/.purr-folder.yaml # folder identity/metadata; path is hierarchy
   integrations/<slug>-<id>.yaml
   assets/<sha256>.bin               # saved request attachments, original bytes
 

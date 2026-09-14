@@ -44,6 +44,7 @@ impl FilesystemWorkspaceStore {
                 || [
                     "requests/",
                     "graphql/",
+                    "documents/",
                     "schemas/",
                     "environments/",
                     "folders/",
@@ -111,6 +112,7 @@ impl FilesystemWorkspaceStore {
                         && [
                             "requests",
                             "graphql",
+                            "documents",
                             "schemas",
                             "environments",
                             "folders",

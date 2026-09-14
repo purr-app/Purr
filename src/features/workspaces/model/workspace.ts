@@ -75,7 +75,7 @@ export function getDocumentBadge(document: WorkspaceDocument) {
       : { label: document.request.method, color: getHttpMethodStyle(document.request.method).text };
 }
 export function getDocumentGroup(document: WorkspaceDocument) {
-  return !document.saved ? "Drafts" : document.kind === "schema" || document.kind === "graphql" ? "GraphQL" : "HTTP";
+  return !document.saved ? "Drafts" : document.kind === "schema" ? "Schemas" : "Documents";
 }
 export type Workspace = {
   schemaVersion: 1;
@@ -102,6 +102,11 @@ export type Workspace = {
     variablesTabOpen: boolean;
     variablesTabActive: boolean;
     sidebarOpen: boolean;
+    sidebarWidth: number;
+    /** Ordered tree items (documents and folders) for the sidebar only. */
+    sidebarItemOrder: string[];
+    /** @deprecated Kept while older local workspace state is migrated. */
+    documentOrder: string[];
     view: WorkbenchView;
     splitRatios: { horizontal: number; vertical: number };
   };
@@ -116,6 +121,7 @@ export function createHttpDocument(): HttpDocument {
       documentation: "",
       method: "GET", url: "",
       params: [{ id: "param-1", key: "", value: "", enabled: false }],
+      pathParams: [],
       headers: [{ id: "header-1", name: "", value: "", enabled: false }],
       body: createRequestBody(), auth: createRequestAuth(), useCookieJar: true,
       workspace: createRequestWorkspaceOverrides(),
@@ -146,6 +152,9 @@ export function createWorkspace(name = "Personal", id: string = crypto.randomUUI
     ui: {
       openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false,
       settingsTabOpen: false, settingsTabActive: false, sidebarOpen: true,
+      sidebarWidth: 15,
+      sidebarItemOrder: [],
+      documentOrder: [],
       variablesTabOpen: false, variablesTabActive: false,
       view: "canvas", lastRequestKind: "http", splitRatios: { horizontal: 50, vertical: 50 },
     },
@@ -370,6 +379,10 @@ export function validateWorkspace(value: unknown): Workspace {
   const normalizeRequest = (request: RequestDraft): RequestDraft => ({
     ...request,
     documentation: typeof request.documentation === "string" ? request.documentation : "",
+    pathParams: Array.isArray(request.pathParams)
+      ? request.pathParams.filter((param): param is NonNullable<RequestDraft["pathParams"]>[number] => Boolean(param)
+        && typeof param.id === "string" && typeof param.key === "string" && typeof param.value === "string" && typeof param.enabled === "boolean")
+      : [],
     auth: normalizeRequestAuth(request.auth),
     workspace: request?.workspace && typeof request.workspace === "object"
       ? {
@@ -490,6 +503,11 @@ export function validateWorkspace(value: unknown): Workspace {
         && workspace.ui.cookiesTabActive !== true && workspace.ui.settingsTabActive !== true,
       view: ["canvas", "horizontal", "vertical"].includes(workspace.ui.view) ? workspace.ui.view : "canvas",
       sidebarOpen: workspace.ui.sidebarOpen !== false,
+      sidebarWidth: Math.max(12, Math.min(28, typeof workspace.ui.sidebarWidth === "number" ? workspace.ui.sidebarWidth : 15)),
+      sidebarItemOrder: Array.isArray(workspace.ui.sidebarItemOrder)
+        ? [...new Set(workspace.ui.sidebarItemOrder)].filter((id) => ids.has(id) || (workspace.extraResources ?? []).some((resource) => resource.kind === "folder" && resource.id === id))
+        : Array.isArray(workspace.ui.documentOrder) ? [...new Set(workspace.ui.documentOrder)].filter((id) => ids.has(id)) : [],
+      documentOrder: Array.isArray(workspace.ui.documentOrder) ? [...new Set(workspace.ui.documentOrder)].filter((id) => ids.has(id)) : [],
       splitRatios: {
         horizontal: Math.max(24, Math.min(76, workspace.ui.splitRatios?.horizontal || 50)),
         vertical: Math.max(24, Math.min(76, workspace.ui.splitRatios?.vertical || 50)),

@@ -34,6 +34,9 @@ export function resolveRequestEnvironment(draft: RequestDraft, variables: Record
   if (body.type === "form-data") body.formData = fields(body.formData);
   if (body.type === "url-encoded") body.urlEncoded = fields(body.urlEncoded);
   const params = draft.params.map((param) => param.enabled ? { ...param, key: resolve(param.key), value: resolve(param.value) } : param);
+  const pathParams = draft.pathParams?.map((param) => param.enabled
+    ? { ...param, key: resolve(param.key), value: resolve(param.value) }
+    : param);
   // A URL variable can include its own query string. Keep those parameters too.
   const urlParams = getRequestQueryParamsFromUrl(url).filter((param) => param.enabled)
     .map((param) => ({ ...param, key: resolve(param.key), value: resolve(param.value) }))
@@ -41,6 +44,7 @@ export function resolveRequestEnvironment(draft: RequestDraft, variables: Record
   return { ...draft,
     ...(draft.graphql ? { graphql: { ...draft.graphql, query: resolve(draft.graphql.query), variables: resolveGraphqlVariables(draft.graphql.variables), operationName: resolve(draft.graphql.operationName) } } : {}),
     url, body,
+    ...(pathParams ? { pathParams } : {}),
     params: [...urlParams, ...params],
     headers: draft.headers.map((header) => header.enabled ? { ...header, name: resolve(header.name), value: resolve(header.value) } : header),
   };

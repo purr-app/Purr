@@ -40,6 +40,8 @@ export type KeyValueEntry = {
   badge?: string;
   scope?: string;
   hideReadOnlyIndicator?: boolean;
+  keyReadOnly?: boolean;
+  deletable?: boolean;
 };
 
 type KeyValueEditorProps = {
@@ -56,6 +58,7 @@ type KeyValueEditorProps = {
   validationMessage?: string;
   valueFont?: "code" | "ui";
   className?: string;
+  fillHeight?: boolean;
   multipart?: boolean;
   onReadOnlyEnabledChange?: (entry: KeyValueEntry, enabled: boolean) => void;
   scopeOptions?: readonly { value: string; label: string }[];
@@ -148,6 +151,7 @@ export function KeyValueEditor({
   validationMessage,
   valueFont = "ui",
   className,
+  fillHeight = true,
   multipart = false,
   onReadOnlyEnabledChange,
   scopeOptions,
@@ -168,7 +172,7 @@ export function KeyValueEditor({
 
   const updateEntry = (entryId: string, update: Partial<KeyValueEntry>) => {
     const previousEntry = entries.find((entry) => entry.id === entryId);
-    if (previousEntry?.readOnly) {
+    if (previousEntry?.readOnly || (previousEntry?.keyReadOnly && "key" in update)) {
       if (Object.keys(update).length === 1 && typeof update.enabled === "boolean")
         onReadOnlyEnabledChange?.(previousEntry, update.enabled);
       return;
@@ -343,7 +347,8 @@ export function KeyValueEditor({
   return (
     <section
       className={cn(
-        "min-h-full bg-purr-surface px-ui-3 py-ui-2",
+        fillHeight && "min-h-full",
+        "bg-purr-surface px-ui-3 py-ui-2",
         multipart && "ui-multipart-editor",
         className,
       )}
@@ -492,7 +497,7 @@ function KeyValueRow({
         </span>
       ) : null}
       <EntryKeyField
-        readOnly={entry.readOnly}
+        readOnly={entry.readOnly || entry.keyReadOnly}
         value={entry.key}
         muted={!entry.enabled}
         inputRef={keyInputRef}
@@ -581,12 +586,12 @@ function KeyValueRow({
         >
           <LockKeyhole className="size-ui-3" aria-hidden="true" />
         </span>
-      ) : hasContent && !entry.readOnly ? (
+      ) : hasContent && !entry.readOnly && entry.deletable !== false ? (
         <DragHandle onDragStart={onDragStart} onDragEnd={onDragEnd} />
       ) : (
         <span className="size-control-xs shrink-0" aria-hidden="true" />
       )}
-      {hasContent && !entry.readOnly ? (
+      {hasContent && !entry.readOnly && entry.deletable !== false ? (
         <button
           className="ui-focus-ring flex size-control-xs shrink-0 items-center justify-center rounded-ui-md text-content-tertiary opacity-ui-hidden transition-all duration-ui-fast hover:bg-purr-highlight hover:text-method-delete group-hover:opacity-ui-visible focus-visible:opacity-ui-visible"
           type="button"
