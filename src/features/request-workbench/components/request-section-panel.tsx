@@ -82,6 +82,7 @@ export function RequestSectionPanel({
       })}
       context={authContext}
       runtime={authRuntime}
+      variableActions={variableActions}
     />
   ) : section?.id === "query" ? (
     <section

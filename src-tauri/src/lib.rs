@@ -1,5 +1,6 @@
 mod downloads;
 mod http;
+mod importing;
 mod local_state;
 mod oauth;
 mod persistence;
@@ -52,6 +53,7 @@ pub fn run() {
             exit_app,
             downloads::save_response_body,
             http::send_http,
+            importing::import_collection,
             oauth::authorize_oauth,
             oauth::cancel_oauth,
             persistence::load_persistence,

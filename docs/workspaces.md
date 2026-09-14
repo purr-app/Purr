@@ -4,7 +4,7 @@ This document owns the runtime workspace aggregate, document/folder hierarchy, t
 
 ## Personal workspace and workspace identity
 
-On first launch `createWorkspace` creates a **Personal** workspace with one pristine HTTP draft. A runtime `Workspace` contains identity, documents, folders/integration resources, variables/environments, cookie state, shared request configuration, dynamic cache, and UI state.
+On first launch `createWorkspace` creates a **Personal** workspace with one pristine HTTP draft. A runtime `Workspace` contains identity, documents, folders/imported-schema/integration resources, variables/environments, cookie state, shared request configuration, dynamic cache, and UI state.
 
 The shareable subset is `WorkspaceDefinition` plus canonical resources. Workspace name/description, workspace variables, shared headers, and shared auth definitions live in `purr.yaml`. The selected environment, tabs, layout, sidebar, drafts, cookies, caches, and responses are local state.
 
@@ -28,6 +28,8 @@ HTTP and GraphQL are not automatic sidebar sections. Saved HTTP/GraphQL document
 A request document has a current `request`, a saved baseline `savedRequest`, and a `saved` flag. `isDocumentDirty` compares the working request with the saved baseline. Saving updates the canonical resource and baseline; closing/discarding a dirty document does not silently overwrite the project file.
 
 Schema documents have their own lifecycle; see [GraphQL](graphql.md).
+
+`api-schema` is a canonical imported-source resource retained in `Workspace.extraResources`; it is not a GraphQL `SchemaDocument` and currently has no editor. Imported requests link back to it through `RequestDefinition.origin` with a stable operation pointer and optional OpenAPI `operationId`.
 
 ## Canonical document tree
 
@@ -129,7 +131,7 @@ Full scope and persistence rules are in [Environments and variables](environment
 
 ## Shared request configuration
 
-Request Settings edits workspace shared headers and auth entries. Each entry targets `all`, `http`, or `graphql`. Requests store opt-outs/excluded shared-header IDs; inheritance creates an effective request and does not mutate the stored request definition.
+Request Settings edits workspace shared headers and any number of shared auth profiles. Each entry targets `all`, `http`, or `graphql`; overlapping auth scopes are intentional because requests select a profile by stable ID from Auth → Inherit. Requests store the selected auth profile, opt-outs, and excluded shared-header IDs. Inheritance creates an effective request and does not mutate the stored request definition.
 
 Precedence and managed-row behavior are in [Request lifecycle](request-lifecycle.md); credential and OAuth behavior are in [Authentication and cookies](auth.md).
 

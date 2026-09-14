@@ -11,7 +11,7 @@ import { getHttpMethodStyle } from "../../../shared/model/http-method";
 import type { WorkbenchView } from "../../request-workbench/components/request-tab-bar";
 import type { HttpResult } from "../../request-workbench/services/http-client";
 import type { SessionCookie } from "../../request-workbench/model/cookie-jar";
-import type { ProjectResource, SchemaDefinition, SecretRef } from "../../../domain/project";
+import type { ProjectResource, RequestDefinition, SchemaDefinition, SecretRef } from "../../../domain/project";
 
 // Stable discriminants allow importers and future document editors to coexist.
 export type DocumentKind = "http" | "graphql" | "schema" | "trace" | "benchmark" | "integration";
@@ -42,6 +42,7 @@ type DocumentBase = {
   updatedAt: string;
   description?: string;
   folderId?: string;
+  origin?: RequestDefinition["origin"];
 };
 export type RequestDocumentKind = "http" | "graphql";
 export type CreatableDocumentKind = RequestDocumentKind | "schema";
@@ -427,8 +428,6 @@ export function validateWorkspace(value: unknown): Workspace {
       || !matchesShape(auth.value, createRequestAuth())
       || !authTypeOptions.some((option) => option.value === auth.value.type) || auth.value.type === "inherit")
     || new Set(requestConfig.auth.map((auth) => auth.id)).size !== requestConfig.auth.length
-    || requestConfig.auth.some((auth, index) => requestConfig.auth.some((other, otherIndex) => index !== otherIndex
-      && (auth.scope === "all" || other.scope === "all" || auth.scope === other.scope)))
     || requestConfig.headers.some((header) => !header || typeof header.id !== "string" || typeof header.name !== "string"
       || typeof header.value !== "string" || typeof header.enabled !== "boolean" || !scopes.includes(header.scope))
     || new Set(requestConfig.headers.map((header) => header.id)).size !== requestConfig.headers.length)
@@ -442,6 +441,14 @@ export function validateWorkspace(value: unknown): Workspace {
       || environment.variables.some((variable) => !isVariable(variable)))
     || workspace.variables.some((variable) => !isVariable(variable)))
     throw new Error("Invalid document or environment data. The original file has not been changed.");
+  const hasInvalidInheritedProfile = (request: RequestDraft, kind: RequestDocumentKind) => request.auth.type === "inherit"
+    && request.auth.inherit.profileId
+    && !requestConfig.auth.some((profile) => profile.id === request.auth.inherit.profileId
+      && (profile.scope === "all" || profile.scope === kind));
+  if (workspace.documents.some((document) => isRequestDocument(document)
+    && (hasInvalidInheritedProfile(document.request, document.kind)
+      || Boolean(document.savedRequest && hasInvalidInheritedProfile(document.savedRequest, document.kind)))))
+    throw new Error("A request inherits from a missing or incompatible shared authentication profile.");
   const ids = new Set(workspace.documents.map((document) => document.id));
   if (ids.size !== workspace.documents.length || new Set(workspace.environments.map((environment) => environment.id)).size !== workspace.environments.length)
     throw new Error("Duplicate document or environment identifiers. The original file has not been changed.");
@@ -531,7 +538,7 @@ function isVariable(value: unknown): value is Variable {
 
 function matchesShape(value: unknown, shape: unknown): boolean {
   if (shape === null) return value === null || (typeof value === "object" && value !== null);
-  if (Array.isArray(shape)) return Array.isArray(value) && value.every((item) => matchesShape(item, shape[0]));
+  if (Array.isArray(shape)) return Array.isArray(value) && (!shape.length || value.every((item) => matchesShape(item, shape[0])));
   if (typeof shape === "object") return value !== null && typeof value === "object" && Object.entries(shape as object)
     .every(([key, child]) => matchesShape((value as Record<string, unknown>)[key], child));
   return typeof value === typeof shape;

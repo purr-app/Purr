@@ -160,6 +160,7 @@ test("scoped shared values remain request-overridable", () => {
   assert.equal(effective.headers.some((header) => header.name === "X-GraphQL"), false);
   assert.equal(effective.auth.type, "inherit");
   assert.equal(effective.auth.inherit.source, "workspace");
+  assert.equal(effective.auth.inherit.profileId, "http-auth");
 
   document.request.workspace.headerOverrides.all = false;
   document.request.workspace.authEnabled = false;
@@ -171,6 +172,24 @@ test("scoped shared values remain request-overridable", () => {
   document.request.headers = [{ id: "local", name: "X-Workspace", value: "local", enabled: true }];
   effective = applyWorkspaceRequestConfig(document.request, "http", restored.requestConfig);
   assert.deepEqual(effective.headers.filter((header) => header.name === "X-Workspace").map((header) => header.value), ["local"]);
+});
+
+test("multiple shared auth profiles can overlap and requests preserve their selected profile", () => {
+  const workspace = createWorkspace();
+  const first = createRequestAuth(); first.type = "bearer"; first.bearer.token = "first";
+  const second = createRequestAuth(); second.type = "bearer"; second.bearer.token = "second";
+  workspace.requestConfig.auth = [
+    { id: "first", name: "First", enabled: true, scope: "all", value: first },
+    { id: "second", name: "Second", enabled: true, scope: "http", value: second },
+  ];
+  const request = workspace.documents[0].request;
+  request.auth = { ...request.auth, type: "inherit", inherit: { source: "workspace", profileId: "first" } };
+  const effective = applyWorkspaceRequestConfig(request, "http", workspace.requestConfig);
+  assert.equal(effective.auth.type, "inherit");
+  assert.equal(effective.auth.inherit.profileId, "first");
+  assert.doesNotThrow(() => validateWorkspace(workspace));
+  request.auth.inherit.profileId = "missing";
+  assert.throws(() => validateWorkspace(workspace), /missing or incompatible/);
 });
 
 test("environments are scoped and disabled variables are excluded", () => {

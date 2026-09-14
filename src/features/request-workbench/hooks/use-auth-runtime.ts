@@ -35,6 +35,7 @@ export function useAuthRuntime(
   setDraft: Dispatch<SetStateAction<RequestDraft>>,
   context: AuthContext,
   setContext: Dispatch<SetStateAction<AuthContext>>,
+  onInheritedAuthChange?: (profileId: string, auth: RequestAuth) => void,
 ) {
   const [busy, setBusy] = useState(false);
   const [authorizing, setAuthorizing] = useState(false);
@@ -108,6 +109,7 @@ export function useAuthRuntime(
               ? { ...auth, oauth2: { ...auth.oauth2, token } }
               : auth;
           if (effective.source) {
+            const updatedSourceAuth = update(effective.source.auth);
             setContext((previous) => ({
               ...previous,
               workspace:
@@ -115,18 +117,23 @@ export function useAuthRuntime(
                 previous.workspace.id === effective.source?.id
                   ? {
                       ...previous.workspace,
-                      auth: update(previous.workspace.auth),
+                      auth: updatedSourceAuth,
                     }
                   : previous.workspace,
+              workspaceProfiles: previous.workspaceProfiles?.map((profile) =>
+                profile.id === effective.source?.id
+                  ? { ...profile, auth: updatedSourceAuth }
+                  : profile),
               environment:
                 previous.environment &&
                 previous.environment.id === effective.source?.id
                   ? {
                       ...previous.environment,
-                      auth: update(previous.environment.auth),
+                      auth: updatedSourceAuth,
                     }
                   : previous.environment,
             }));
+            onInheritedAuthChange?.(effective.source.id, updatedSourceAuth);
           } else
             setDraft((previous) => ({
               ...previous,
@@ -148,7 +155,7 @@ export function useAuthRuntime(
       pending.current = { sessionId, identity: key, abort, promise };
       return promise;
     },
-    [setDraft, setContext],
+    [onInheritedAuthChange, setDraft, setContext],
   );
 
   const token =

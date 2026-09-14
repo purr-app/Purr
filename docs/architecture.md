@@ -28,7 +28,7 @@ The browser adapter exists for development and tests. It is not a transparent re
 
 ### Canonical domain layer
 
-`src/domain/project.ts` defines strict Zod schemas for `WorkspaceDefinition`, `ProjectResource`, `RequestDefinition`, `SchemaDefinition`, `EnvironmentDefinition`, folder and integration definitions, credentials, and variables. `validateProject` enforces references, uniqueness, secret ownership, auth-scope overlap, and folder acyclicity.
+`src/domain/project.ts` defines strict Zod schemas for `WorkspaceDefinition`, `ProjectResource`, `RequestDefinition`, GraphQL `SchemaDefinition`, imported `ApiSchemaDefinition`, environment, folder and integration definitions, credentials, and variables. `validateProject` enforces references, uniqueness, secret ownership, selected-auth-profile compatibility, and folder acyclicity. Auth-profile scopes may overlap because requests can select a profile explicitly.
 
 Canonical types describe the portable project. They do not contain React state, IPC DTOs, database columns, filesystem paths, YAML syntax, live `File` objects, response history, or plaintext secret values.
 
@@ -54,6 +54,7 @@ canonical Project + local records + assets
 Rust modules provide narrow privileged boundaries:
 
 - `src-tauri/src/http.rs`: validated HTTP(S) transport without automatic redirects.
+- `src-tauri/src/importing.rs`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/project_files.rs`: safe project scanning and revision-checked atomic file operations.
 - `src-tauri/src/local_state.rs`: encrypted local records, execution metadata/history, and secret vault.
 - `src-tauri/src/secure_store.rs`: Keychain root key and derived encryption keys.
@@ -117,6 +118,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 | HTTP request | `RequestDocument` + `RequestDraft` | `RequestDefinition(kind=http)` | Working |
 | GraphQL request | `GraphqlDocument` | `RequestDefinition(kind=graphql)` | Working over HTTP |
 | Schema resource | `SchemaDocument` | `SchemaDefinition` | Working for introspection/file sources |
+| Imported API schema | `Workspace.extraResources` | `ApiSchemaDefinition` | OpenAPI 3.x source snapshot working; no schema editor yet |
 | Folder | `extraResources` | folder `ProjectResource` | Working, nested filesystem hierarchy |
 | Environment | `Environment` | `EnvironmentDefinition` | Working |
 | Variable | `Variable` | `VariableDefinition` | Static and dynamic-request working; external-secret reserved |
@@ -131,7 +133,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
 - Attached external project directories have application/native support but no current UI.
-- Registry schema sources, external secret providers, generic imports, integrations, tracing, benchmarks, and subscriptions are not implemented end-to-end.
+- Registry schema sources, external secret providers, non-OpenAPI collection adapters, integrations, tracing, benchmarks, and subscriptions are not implemented end-to-end.
 
 ## Documentation ownership
 

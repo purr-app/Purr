@@ -44,11 +44,12 @@ export type RequestAuth = {
     placement: "header" | "query" | "cookie";
   };
   oauth2: OAuthConfig;
-  inherit: { source: "auto" | "workspace" | "environment" };
+  inherit: { source: "auto" | "workspace" | "environment"; profileId?: string };
 };
 export type AuthProfile = { id: string; name: string; auth: RequestAuth };
 export type AuthContext = {
   workspace?: AuthProfile;
+  workspaceProfiles?: AuthProfile[];
   environment?: AuthProfile;
   variables?: Record<string, string>;
   sensitiveVariableNames?: readonly string[];
@@ -112,19 +113,24 @@ export function resolveAuth(
         error: "Authentication inheritance contains a cycle.",
       };
     visited.add(current);
+    const workspace = current.inherit.profileId
+      ? context.workspaceProfiles?.find((profile) => profile.id === current.inherit.profileId)
+      : context.workspace ?? context.workspaceProfiles?.[0];
     source =
       current.inherit.source === "workspace"
-        ? context.workspace
+        ? workspace
         : current.inherit.source === "environment"
           ? context.environment
           : source === context.environment
-            ? context.workspace
-            : (context.environment ?? context.workspace);
+            ? workspace
+            : (context.environment ?? workspace);
     if (!source)
       return {
         auth: current,
         error:
-          "No authentication is configured for this workspace or environment.",
+          current.inherit.profileId
+            ? "The selected shared authentication profile is unavailable for this request."
+            : "No authentication is configured for this workspace or environment.",
       };
     current = source.auth;
   }

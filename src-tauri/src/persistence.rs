@@ -71,6 +71,7 @@ fn project_change_paths(root: &Path, paths: &[PathBuf], rescan: bool) -> Vec<Str
         }
         if relative.ends_with(".yaml")
             || relative.ends_with(".graphql")
+            || relative.ends_with(".openapi")
             || relative.ends_with(".bin")
         {
             changes.insert(relative);
@@ -240,6 +241,10 @@ mod watcher_tests {
         assert_eq!(
             project_change_paths(&root, &[root.join("schemas/api.yaml")], false),
             vec!["schemas/api.yaml"]
+        );
+        assert_eq!(
+            project_change_paths(&root, &[root.join("schemas/api.openapi")], false),
+            vec!["schemas/api.openapi"]
         );
     }
 }

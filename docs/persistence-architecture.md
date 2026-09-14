@@ -30,6 +30,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Saved GraphQL request | `GraphqlDocument.savedRequest` | `documents/**/*.yaml` | Yes | Definitions may contain refs | Same tree and transport model as HTTP |
 | Schema source definition | `SchemaDocument.schemaSource` | `schemas/*.yaml` | Yes | Registry credential may be a ref | Reproducible source metadata |
 | Pinned SDL | `SchemaDocument.sdl` | `schemas/*.graphql`, referenced from schema YAML | Yes | No by design | Offline/shareable schema snapshot |
+| Imported OpenAPI schema | `Workspace.extraResources` | `schemas/*.yaml` metadata + referenced `schemas/*.openapi` source | Yes | No by design | Preserves the imported source and request-origin links without treating it as GraphQL SDL |
 | Unpinned schema content | `SchemaDocument.sdl` | encrypted `schema_cache` | No | Potentially | Regenerable local cache |
 | Environment definition | `Environment` | `environments/*.yaml` | Yes | Values may be refs | Shareable named configuration |
 | Plain workspace/environment variable | `Variable(kind=static)` | `purr.yaml` or environment YAML | Yes | No | Intentional project input |
@@ -75,6 +76,8 @@ Do not infer that a declared local table or canonical schema means the product f
   schemas/
     schema.yaml
     schema.graphql
+    imported-api.yaml
+    api-schema-<id>.openapi
   environments/
     staging.yaml
   integrations/
@@ -85,9 +88,11 @@ Do not infer that a declared local table or canonical schema means the product f
 
 `purr.yaml` stores format version, workspace identity, workspace variables, shared headers, and shared auth definitions. Resource YAML files carry a `purr` format marker and strict resource shape.
 
+Shared authentication profiles have stable canonical IDs. A request using inheritance stores only the selected `profileId`; the profile owns its scheme and credential `SecretRef`s. This permits several profiles with the same HTTP/GraphQL scope without duplicating credentials into request files.
+
 HTTP and GraphQL request resources share `documents/`. Directory hierarchy is canonical; `.purr-folder.yaml` stores stable folder identity/name/metadata. Legacy `requests/` and `graphql/` roots are readable and migrated to this tree on save.
 
-Pinned schemas have a YAML definition plus SDL sidecar. Request attachments are content-addressed binary assets. `WorkspacePersistence` preserves existing safe basenames/paths where possible, unmanaged non-YAML sidecars, and pinned SDL until explicit unpin/delete.
+Pinned GraphQL schemas have a YAML definition plus SDL sidecar. Imported OpenAPI schemas use an `api-schema` YAML definition plus a `.openapi` UTF-8 source sidecar. Request attachments are content-addressed binary assets. `WorkspacePersistence` preserves existing safe basenames/paths where possible and owns referenced schema sidecars until their resource is explicitly removed.
 
 ## Projection boundary
 
@@ -175,7 +180,7 @@ The last category is currently incomplete. Workspace auth runtime has an explici
 - External/dirty conflicts preserve both sources and stop the merge.
 - Missing Keychain root with existing encrypted data fails closed.
 - Failed secure writes may leave an unused secret ref/value, but code must never fall back to plaintext project/local storage.
-- Autosave/flush failures stay visible and can prevent window close.
+- Autosave/flush failures stay visible. A failed revision-checked final save does not block native window close and does not overwrite the external file.
 - Recovery must be explicit and minimal; do not silently discard drafts, cookies, history, or credentials.
 
 ## Imports and persistence

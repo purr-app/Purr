@@ -36,7 +36,7 @@ const pair = z.strictObject({ name: z.string(), value: z.string(), enabled: z.bo
 const scope = z.enum(["all", "http", "graphql"]);
 export const authDefinitionSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("none") }),
-  z.strictObject({ type: z.literal("inherit") }),
+  z.strictObject({ type: z.literal("inherit"), profileId: entityId.optional() }),
   z.strictObject({ type: z.literal("bearer"), token: credentialSchema, prefix: z.string().default("Bearer") }),
   z.strictObject({ type: z.literal("basic"), username: z.string(), password: credentialSchema }),
   z.strictObject({ type: z.literal("api-key"), name: z.string(), placement: z.enum(["header", "query", "cookie"]), value: credentialSchema }),
@@ -60,6 +60,7 @@ const request = {
   auth: authDefinitionSchema.default({ type: "none" }), environmentId: entityId.optional(),
   overrides: z.strictObject({ headers: z.boolean().default(true), auth: z.boolean().default(true),
     excludedHeaderIds: z.array(entityId).default([]), cookies: z.boolean().default(true) }).optional(),
+  origin: z.strictObject({ type: z.literal("openapi"), schemaId: entityId, operationPath: z.string(), operationId: z.string().optional() }).optional(),
 };
 export const requestDefinitionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ ...request, kind: z.literal("http") }),
@@ -74,6 +75,12 @@ export const schemaDefinitionSchema = z.strictObject({
   ]), pin: z.boolean().default(true), pinnedSdl: z.string().optional(),
 });
 export type SchemaDefinition = z.infer<typeof schemaDefinitionSchema>;
+export const apiSchemaDefinitionSchema = z.strictObject({
+  ...base, kind: z.literal("api-schema"), format: z.literal("openapi-3"),
+  source: z.strictObject({ type: z.enum(["file", "directory", "url", "text"]), location: z.string() }),
+  document: z.string(),
+});
+export type ApiSchemaDefinition = z.infer<typeof apiSchemaDefinitionSchema>;
 export const environmentDefinitionSchema = z.strictObject({ ...base, kind: z.literal("environment"),
   variables: z.array(variableDefinitionSchema).default([]),
 });
@@ -81,7 +88,7 @@ export type EnvironmentDefinition = z.infer<typeof environmentDefinitionSchema>;
 export const folderDefinitionSchema = z.strictObject({ ...base, kind: z.literal("folder") });
 export const integrationDefinitionSchema = z.strictObject({ ...base, kind: z.literal("integration"), provider: z.string(),
   endpoint: z.string().optional(), credentials: z.record(z.string(), credentialSchema).default({}) });
-export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema]);
+export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, apiSchemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema]);
 export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
   id: entityId, name: z.string(), description: z.string().optional(),
@@ -111,9 +118,6 @@ export function validateProject(project: Project): Project {
   if (new Set(workspace.auth.map((item) => item.id)).size !== workspace.auth.length || new Set(workspace.headers.map((item) => item.id)).size !== workspace.headers.length)
     throw new Error("Duplicate workspace configuration identifiers.");
   if (workspace.auth.some((item) => item.config.type === "inherit")) throw new Error("Workspace authentication cannot inherit from itself.");
-  if (workspace.auth.some((item, index) => workspace.auth.some((other, otherIndex) => index !== otherIndex
-    && (item.scope === "all" || other.scope === "all" || item.scope === other.scope))))
-    throw new Error("Workspace authentication scopes overlap.");
   if (new Set(workspace.variables.map((variable) => variable.name.trim()).filter(Boolean)).size !== workspace.variables.filter((variable) => variable.name.trim()).length)
     throw new Error("Duplicate workspace variable names.");
   const variableIds = [...workspace.variables, ...resources.flatMap((resource) => resource.kind === "environment" ? resource.variables : [])].map((variable) => variable.id);
@@ -142,6 +146,15 @@ export function validateProject(project: Project): Project {
       throw new Error("A cached dynamic variable requires a positive cache duration.");
   };
   for (const resource of resources) {
+    const inheritedProfileId = (resource.kind === "http" || resource.kind === "graphql") && resource.auth.type === "inherit"
+      ? resource.auth.profileId : undefined;
+    if ((resource.kind === "http" || resource.kind === "graphql") && inheritedProfileId
+      && !workspace.auth.some((profile) => profile.id === inheritedProfileId
+        && (profile.scope === "all" || profile.scope === resource.kind)))
+      throw new Error("A request inherits from a missing or incompatible workspace authentication profile.");
+    if ((resource.kind === "http" || resource.kind === "graphql") && resource.origin
+      && !resources.some((item) => item.kind === "api-schema" && item.id === resource.origin?.schemaId))
+      throw new Error("An imported request refers to a missing API schema.");
     if (resource.kind === "environment" && new Set(resource.variables.map((variable) => variable.name.trim()).filter(Boolean)).size !== resource.variables.filter((variable) => variable.name.trim()).length)
       throw new Error("Duplicate environment variable names.");
     if (resource.kind === "environment" && resource.variables.some((variable) => workspaceVariableNames.has(variable.name.trim())))

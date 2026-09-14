@@ -13,13 +13,14 @@ import { ErrorResponse, PendingResponse } from "./components/response-state-view
 import { getRequestPathParamsFromUrl, getRequestQueryParamsFromUrl, normalizeRequestUrlProtocol, type RequestDraft } from "./model/request";
 import {
   type AuthContext,
+  type RequestAuth,
 } from "./model/request-auth";
 import { SessionCookieJar } from "./model/cookie-jar";
 import { useAuthRuntime } from "./hooks/use-auth-runtime";
 import {
   type HttpResult,
 } from "./services/http-client";
-import { applyWorkspaceRequestConfig, getWorkspaceAuth, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
+import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
 import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest } from "../workspaces/services/dynamic-variable-resolver";
 import type { DynamicVariableCacheEntry, Variable } from "../workspaces/model/workspace";
@@ -60,7 +61,7 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -74,7 +75,8 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   sourceDocuments: readonly DynamicSourceRequestDocument[];
   onCreateVariable: (candidate: ResponseVariableCandidate) => void;
   onOpenVariable: (id: string) => void;
-  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") => void;
+  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request", sensitive?: boolean) => void;
+  onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onImportCurl: (command: string) => void;
   view: WorkbenchView;
   splitRatios: { horizontal: number; vertical: number };
@@ -93,13 +95,16 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   onSessionChange: (patch: Partial<RequestSession>) => void;
   actionsRef: Ref<RequestActions>;
 }) {
-  const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, requestKind), [requestKind, workspaceConfig]);
+  const workspaceAuthEntries = useMemo(() => getWorkspaceAuthProfiles(workspaceConfig, requestKind), [requestKind, workspaceConfig]);
+  const workspaceProfiles = useMemo(() => workspaceAuthEntries.map((entry) => ({ id: entry.id, name: entry.name || workspaceName, auth: entry.value })), [workspaceAuthEntries, workspaceName]);
+  const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, requestKind,
+    draft.auth.type === "inherit" ? draft.auth.inherit.profileId : undefined), [draft.auth, requestKind, workspaceConfig]);
   const workspaceAuth = useMemo(() => draft.workspace.authEnabled && workspaceAuthEntry
-    ? { id: `workspace-auth-${workspaceAuthEntry.id}`, name: workspaceAuthEntry.name || workspaceName, auth: workspaceAuthEntry.value } : undefined,
+    ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || workspaceName, auth: workspaceAuthEntry.value } : undefined,
   [draft.workspace.authEnabled, workspaceAuthEntry, workspaceName]);
   const sensitiveVariableNames = useMemo(() => runtimeVariables.filter((variable) => variable.sensitive).map((variable) => variable.name), [runtimeVariables]);
-  const [authContext, setAuthContext] = useState<AuthContext>({ variables, sensitiveVariableNames, workspace: workspaceAuth, requestDocumentId: documentId });
-  useEffect(() => setAuthContext((previous) => ({ ...previous, variables, sensitiveVariableNames, workspace: workspaceAuth, requestDocumentId: documentId })), [variables, sensitiveVariableNames, workspaceAuth, documentId]);
+  const [authContext, setAuthContext] = useState<AuthContext>({ variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId });
+  useEffect(() => setAuthContext((previous) => ({ ...previous, variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId })), [variables, sensitiveVariableNames, workspaceAuth, workspaceProfiles, documentId]);
   const [codeOpen, setCodeOpen] = useState(false);
   const [urlInvalid, setUrlInvalid] = useState(false);
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
@@ -116,6 +121,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     setDraft,
     authContext,
     setAuthContext,
+    onWorkspaceAuthChange,
   );
 
   const contextFor = (request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames): AuthContext => ({
@@ -123,10 +129,11 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     variables: resolvedVariables,
     sensitiveVariableNames: sensitiveNames,
     requestDocumentId: id,
+    workspaceProfiles: getWorkspaceAuthProfiles(workspaceConfig, kind).map((entry) => ({ id: entry.id, name: entry.name || workspaceName, auth: entry.value })),
     workspace: (() => {
-      const entry = getWorkspaceAuth(workspaceConfig, kind);
+      const entry = getWorkspaceAuth(workspaceConfig, kind, request.auth.type === "inherit" ? request.auth.inherit.profileId : undefined);
       return request.workspace.authEnabled && entry
-        ? { id: `workspace-auth-${entry.id}`, name: entry.name || workspaceName, auth: entry.value }
+        ? { id: entry.id, name: entry.name || workspaceName, auth: entry.value }
         : undefined;
     })(),
   });

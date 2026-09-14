@@ -19,6 +19,7 @@ import { SessionCookieJar } from "../src/features/request-workbench/model/cookie
 import {
   createPkce,
   fetchOAuthToken,
+  resolvedOAuth,
 } from "../src/features/request-workbench/services/oauth-client";
 import {
   executeHttp,
@@ -232,6 +233,29 @@ test("missing variables and inherited profiles fail visibly", () => {
   assert.match(getAuthBinding(auth).error!, /not defined/);
   auth.type = "inherit";
   assert.ok(getAuthBinding(auth).error);
+});
+test("Inherit selects an explicit shared profile and OAuth resolves variables in endpoints and secrets", () => {
+  const auth = createRequestAuth();
+  auth.type = "inherit";
+  auth.inherit = { source: "workspace", profileId: "partner" };
+  const primary = createRequestAuth(); primary.type = "bearer"; primary.bearer.token = "primary";
+  const partner = createRequestAuth(); partner.type = "api-key"; partner.apiKey = { name: "X-Partner-Key", value: "{{partnerSecret}}", placement: "header" };
+  const context: AuthContext = { variables: { partnerSecret: "secret" }, workspaceProfiles: [
+    { id: "primary", name: "Primary", auth: primary },
+    { id: "partner", name: "Partner", auth: partner },
+  ] };
+  assert.deepEqual(getAuthBinding(auth, context).binding, { target: "header", name: "X-Partner-Key", value: "secret" });
+  auth.inherit.profileId = "missing";
+  assert.match(resolveAuth(auth, context).error!, /selected shared authentication profile/i);
+
+  const oauth = createRequestAuth().oauth2;
+  oauth.authorizationUrl = "https://{{authHost}}/{{tenant}}/authorize";
+  oauth.tokenUrl = "https://{{authHost}}/{{tenant}}/token";
+  oauth.clientSecret = "{{oauthSecret}}";
+  const resolved = resolvedOAuth(oauth, { variables: { authHost: "login.example.com", tenant: "purr", oauthSecret: "vault-value" } });
+  assert.equal(resolved.authorizationUrl, "https://login.example.com/purr/authorize");
+  assert.equal(resolved.tokenUrl, "https://login.example.com/purr/token");
+  assert.equal(resolved.clientSecret, "vault-value");
 });
 test("JWT inspection decodes Unicode and never claims signature verification", () => {
   const token = [

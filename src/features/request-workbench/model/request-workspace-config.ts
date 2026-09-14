@@ -35,9 +35,18 @@ export function requestScopeApplies(scope: RequestScope, kind: RequestKind) {
 export function getWorkspaceAuth(
   config: WorkspaceRequestConfig,
   kind: RequestKind,
+  profileId?: string,
 ) {
-  return config.auth.find((auth) => auth.enabled && auth.scope === kind && auth.value.type !== "none")
-    ?? config.auth.find((auth) => auth.enabled && auth.scope === "all" && auth.value.type !== "none");
+  const profiles = getWorkspaceAuthProfiles(config, kind);
+  if (profileId) return profiles.find((auth) => auth.id === profileId);
+  return profiles.find((auth) => auth.scope === kind) ?? profiles[0];
+}
+
+export function getWorkspaceAuthProfiles(
+  config: WorkspaceRequestConfig,
+  kind: RequestKind,
+) {
+  return config.auth.filter((auth) => auth.enabled && requestScopeApplies(auth.scope, kind) && auth.value.type !== "none");
 }
 
 export function workspaceAuthApplies(
@@ -54,9 +63,10 @@ export function withWorkspaceAuthDefault(
 ): RequestDraft {
   if (!request.workspace.authEnabled || request.auth.type !== "none" || !workspaceAuthApplies(config, kind))
     return request;
+  const profile = getWorkspaceAuth(config, kind);
   return {
     ...request,
-    auth: { ...request.auth, type: "inherit", inherit: { source: "workspace" } },
+    auth: { ...request.auth, type: "inherit", inherit: { source: "workspace", ...(profile ? { profileId: profile.id } : {}) } },
   };
 }
 

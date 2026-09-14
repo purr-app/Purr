@@ -58,13 +58,18 @@ export function serializeResource(resource: ProjectResource, sdlPath?: string): 
     const { pinnedSdl, pin, ...source } = validated;
     return yaml({ purr: projectFormatVersion, ...source, ...(pin ? {} : { pin: false }), ...(pinnedSdl !== undefined && sdlPath ? { pinned: sdlPath } : {}) });
   }
+  if (validated.kind === "api-schema") {
+    const { document: _document, ...definition } = validated;
+    if (!sdlPath) throw new Error("An API schema sidecar path is required.");
+    return yaml({ purr: projectFormatVersion, ...definition, schema: sdlPath });
+  }
   return yaml({ purr: projectFormatVersion, ...validated });
 }
 export function deserializeResource(text: string, readSdl: (path: string) => string = () => { throw new Error(); }): ProjectResource {
   return deserializeResourceFile(text, readSdl).value;
 }
 export function deserializeResourceFile(text: string, readSdl: (path: string) => string = () => { throw new Error(); }): DecodedProjectFile<ProjectResource> {
-  const { purr: _version, pinned, ...value } = parse(text);
+  const { purr: _version, pinned, schema, ...value } = parse(text);
   try {
     let developmentRewrite = false;
     // Lightweight development transition only; the next save rewrites the
@@ -75,6 +80,10 @@ export function deserializeResourceFile(text: string, readSdl: (path: string) =>
     if (pinned !== undefined) {
       if (value.kind !== "schema" || typeof pinned !== "string" || !/^schemas\/[a-zA-Z0-9_/-]+\.graphql$/.test(pinned)) throw new Error();
       value.pinnedSdl = readSdl(pinned);
+    }
+    if (schema !== undefined) {
+      if (value.kind !== "api-schema" || typeof schema !== "string" || !/^schemas\/[a-zA-Z0-9_/-]+\.openapi$/.test(schema)) throw new Error();
+      value.document = readSdl(schema);
     }
     return { value: resourceSchema.parse(value), developmentRewrite };
   } catch { throw new Error("Invalid Purr resource definition. The original file has not been changed."); }
@@ -105,5 +114,6 @@ function convertDevelopmentAuth(candidate: unknown): DecodedProjectFile<unknown>
   return { value: { ...row, config: canonicalConfig }, developmentRewrite: true };
 }
 export function pinnedSchemaPath(text: string): string | undefined {
-  const value = parse(text); return typeof value.pinned === "string" ? value.pinned : undefined;
+  const value = parse(text);
+  return typeof value.pinned === "string" ? value.pinned : typeof value.schema === "string" ? value.schema : undefined;
 }

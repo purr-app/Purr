@@ -13,7 +13,7 @@ Purr is a local-first desktop API client built with React/TypeScript and Tauri/R
 - `src/domain/` owns storage- and UI-independent canonical project schemas and validation.
 - `src/application/` owns projection between runtime and canonical models, persistence orchestration, and import commits.
 - `src/storage/` owns typed persistence/secret contracts, YAML codecs, and native/browser adapters.
-- `src-tauri/src/` owns OS, filesystem, encrypted SQLite/Keychain, OAuth callback, download, and HTTP transport boundaries.
+- `src-tauri/src/` owns OS, filesystem, encrypted SQLite/Keychain, OAuth callback, download, HTTP transport, and large collection import/parsing boundaries.
 - `src/shared/` owns reusable UI primitives, design tokens/theme integration, shared utilities, and shortcut configuration.
 - `tests/` owns TypeScript unit/integration tests and Playwright UI tests; Rust module tests live beside `src-tauri/src/*.rs`.
 

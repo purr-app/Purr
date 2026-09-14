@@ -55,6 +55,7 @@ impl FilesystemWorkspaceStore {
                 .any(|prefix| relative.starts_with(prefix)))
             || !(relative.ends_with(".yaml")
                 || relative.ends_with(".graphql")
+                || relative.starts_with("schemas/") && relative.ends_with(".openapi")
                 || relative.starts_with("assets/") && relative.ends_with(".bin"))
         {
             return Err("Invalid project resource path".into());
@@ -264,6 +265,8 @@ mod tests {
             directory: dir.path().into(),
         };
         assert!(store.path("requests/../../outside.yaml").is_err());
+        assert!(store.path("schemas/imported.openapi").is_ok());
+        assert!(store.path("documents/imported.openapi").is_err());
         let first = FileChange {
             path: "purr.yaml".into(),
             content: Some("purr: 1\n".into()),

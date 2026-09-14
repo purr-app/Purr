@@ -94,7 +94,7 @@ test("GraphQL creation menus, last-used request type, and saved query snapshots"
   await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
   await page.getByLabel("GraphQL query", { exact: true }).fill("{ __typename }");
   await page.getByRole("button", { name: "Close Customers", exact: true }).click();
-  await page.getByRole("region", { name: "GraphQL", exact: true }).getByRole("button", { name: "GQL Customers", exact: true }).click();
+  await page.getByLabel("Documents", { exact: true }).getByRole("button", { name: "GQL Customers", exact: true }).click();
   await expect(page.getByLabel("GraphQL query", { exact: true })).toHaveText(query);
   await page.getByRole("button", { name: "New GraphQL request", exact: true }).click();
   await expect(page.getByLabel("GraphQL query", { exact: true })).toHaveText("");
@@ -189,7 +189,7 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await saved(page); await page.reload();
   await expect(page.getByRole("region", { name: "Type Customer", exact: true })).toBeVisible();
   await expect(page.getByLabel("GraphQL schema endpoint", { exact: true })).toHaveValue("https://example.com/graphql");
-  await expect(page.getByRole("region", { name: "GraphQL", exact: true })).toContainText("SDL");
+  await expect(page.getByRole("region", { name: "Schemas", exact: true })).toContainText("SDL");
   await page.screenshot({ path: "test-results/graphql-schema.png" });
   await tabs(page).filter({ hasText: "GQL" }).click();
   await page.getByRole("tab", { name: "Query", exact: true }).click();
@@ -337,13 +337,13 @@ test("empty schema tabs stay out of the sidebar and explorer fields create linke
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/graphql");
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
   await expect(tabs(page)).toHaveCount(3);
-  await expect(page.getByRole("region", { name: "GraphQL", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Schemas", exact: true })).toHaveCount(0);
   await tabs(page).filter({ hasText: "GQL" }).click();
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
   await expect(tabs(page)).toHaveCount(3);
 
   await page.getByLabel("Schema file", { exact: true }).setInputFiles({ name: "customers.graphql", mimeType: "text/plain", buffer: Buffer.from(sdl) });
-  await expect(page.getByRole("region", { name: "GraphQL", exact: true })).toContainText("SDL");
+  await expect(page.getByRole("region", { name: "Schemas", exact: true })).toContainText("SDL");
   const queryType = page.getByRole("region", { name: "Type Query", exact: true });
   await expect(queryType.getByText("Depth", { exact: true })).toBeVisible();
   await expect(queryType.getByText("Fields", { exact: true })).toBeVisible();

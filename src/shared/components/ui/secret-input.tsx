@@ -1,10 +1,10 @@
 import { Check, Copy, Eye, EyeOff, KeyRound } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import { Button } from "./button";
 import { Input, type InputProps } from "./input";
 import { cn } from "../../lib/cn";
 
-export function SecretInput({ className, ...props }: Omit<InputProps, "type">) {
+export const SecretInput = forwardRef<HTMLInputElement, Omit<InputProps, "type">>(function SecretInput({ className, ...props }, ref) {
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
@@ -20,6 +20,7 @@ export function SecretInput({ className, ...props }: Omit<InputProps, "type">) {
         />
         <Input
           {...props}
+          ref={ref}
           type={visible ? "text" : "password"}
           autoComplete="off"
           spellCheck={false}
@@ -79,4 +80,4 @@ export function SecretInput({ className, ...props }: Omit<InputProps, "type">) {
       ) : null}
     </div>
   );
-}
+});

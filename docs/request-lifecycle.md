@@ -20,6 +20,8 @@ This document is the source of truth for request models, effective request const
 
 `RequestDefinition` in `src/domain/project.ts` is the Git-friendly form. `requestDefinition` in `src/application/project-projection.ts` projects only the saved snapshot (`savedRequest`) when a saved document has unsaved edits; it projects the current request when saving a new or updated document. Empty editor rows, managed rows, inactive body/auth forms, responses, and UI state are excluded.
 
+An OpenAPI-created request may also carry canonical `origin` metadata: the imported API-schema resource ID, JSON pointer to the operation, and the source `operationId` when present. This metadata is identity/navigation context; it does not create an alternative request-composition path.
+
 The lifecycle distinctions are:
 
 - **saved and clean**: `request` and `savedRequest` are equivalent;
@@ -101,12 +103,12 @@ Body-owned `Content-Type` and auth-owned names appear managed/read-only. The und
 
 ## Workspace shared authentication
 
-Workspace auth entries also use `all`, `http`, or `graphql` scopes. `validateProject` prevents overlapping auth scopes. An exact request-kind entry wins over `all`. A new request defaults from `none` to `inherit` when an applicable enabled workspace auth exists.
+Workspace auth entries also use `all`, `http`, or `graphql` scopes, and multiple profiles may target the same scope. Canonical `AuthDefinition.inherit.profileId` selects the exact profile for a request. For requests without a selection, an exact request-kind profile wins over the first applicable `all` profile. A new request defaults from `none` to `inherit` when an applicable enabled workspace auth exists.
 
 Request auth behaves as follows:
 
 - explicit request auth wins;
-- `inherit` resolves through `AuthContext` to workspace auth;
+- `inherit` resolves through `AuthContext.workspaceProfiles` to the selected workspace profile;
 - a request-level auth opt-out leaves inheritance unavailable;
 - workspace configuration is applied to an effective copy, not written into the saved request.
 

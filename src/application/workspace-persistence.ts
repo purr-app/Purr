@@ -10,7 +10,7 @@ import type { Variable } from "../features/workspaces/model/workspace";
 // Requests and request-adjacent documents share one canonical directory. The
 // previous requests/ and graphql/ locations remain readable so existing
 // workspaces can be migrated safely on their next save.
-const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", schema: "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
+const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", schema: "schemas", "api-schema": "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
 const slug = (name: string) => name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "resource";
 const key = (record: LocalRecord | LocalChange) => `${record.table}/${record.id}`;
 const folderMarker = ".purr-folder.yaml";
@@ -107,7 +107,7 @@ export class WorkspacePersistence {
       if ((resource.folderId ?? undefined) !== folderId)
         resources[index] = { ...resource, ...(folderId ? { folderId } : { folderId: undefined }) };
     }
-    for (const resource of resources) if (resource.kind === "schema") {
+    for (const resource of resources) if (resource.kind === "schema" || resource.kind === "api-schema") {
       const pinned = pinnedSchemaPath(snapshot.files[paths.get(resource.id)!].content); if (pinned) sdlPaths.set(resource.id, pinned);
     }
     const project = validateProject({ workspace, resources });
@@ -185,7 +185,8 @@ export class WorkspacePersistence {
     // Unreferenced sidecar files belong to the directory owner, not to Purr's
     // deletion set. Managed SDL is removed only on explicit unpin/delete.
     for (const [path, file] of Object.entries(snapshot.files)) if (!path.endsWith(".yaml")
-      && !previousProject?.resources.some((item) => item.kind === "schema" && item.pinnedSdl !== undefined && path === (sdlPaths.get(item.id) ?? `schemas/${item.id}.graphql`))) desired[path] ??= file.content;
+      && !previousProject?.resources.some((item) => (item.kind === "schema" && item.pinnedSdl !== undefined || item.kind === "api-schema")
+        && path === (sdlPaths.get(item.id) ?? (item.kind === "schema" ? `schemas/${item.id}.graphql` : `schemas/${item.id}.openapi`)))) desired[path] ??= file.content;
     const folders = new Map(project.resources.filter((resource): resource is Extract<ProjectResource, { kind: "folder" }> => resource.kind === "folder").map((resource) => [resource.id, resource]));
     const folderDirectories = new Map<string, string>();
     const documentDirectory = (folderId?: string): string => {
@@ -208,8 +209,9 @@ export class WorkspacePersistence {
             ? fileName(existingPath) : `${slug(resource.name)}-${resource.id}.yaml`}`
           : existingPath ?? `${resourceDirectory(resource)}/${slug(resource.name)}-${resource.id}.yaml`;
       paths.set(resource.id, path);
-      const sdlPath = sdlPaths.get(resource.id) ?? `schemas/${resource.id}.graphql`; desired[path] = serializeResource(resource, sdlPath);
+      const sdlPath = sdlPaths.get(resource.id) ?? (resource.kind === "api-schema" ? `schemas/${resource.id}.openapi` : `schemas/${resource.id}.graphql`); desired[path] = serializeResource(resource, sdlPath);
       if (resource.kind === "schema" && resource.pinnedSdl !== undefined) desired[sdlPath] = resource.pinnedSdl;
+      if (resource.kind === "api-schema") desired[sdlPath] = resource.document;
       const previous = previousProject?.resources.find((item) => item.id === resource.id);
       if (previous && serializeResource(previous, sdlPath) === desired[path] && snapshot.files[path] && !developmentRewrites.has(path)) desired[path] = snapshot.files[path].content;
     }
@@ -239,7 +241,7 @@ export class WorkspacePersistence {
     const files = { ...previous.files }; let changed = false;
     if (scanned) paths = [...new Set([...Object.keys(previous.files), ...Object.keys(scanned.files)])];
     for (const path of new Set(paths)) {
-      if (!/\.(yaml|graphql|bin)$/.test(path)) continue;
+      if (!/\.(yaml|graphql|openapi|bin)$/.test(path)) continue;
       const file = scanned ? scanned.files[path] : await this.backend.reloadResource(id, path); if (file?.revision === files[path]?.revision) continue;
       changed = true; if (file) files[path] = file; else delete files[path];
     }
@@ -259,7 +261,8 @@ export class WorkspacePersistence {
         const before = baseline.resources.find((item) => item.id === resourceId);
         const localResource = projected.project.resources.find((item) => item.id === resourceId);
         const external = project.resources.find((item) => item.id === resourceId);
-        const signature = (value?: ProjectResource) => value ? serializeResource(value, value.kind === "schema" ? `schemas/${value.id}.graphql` : undefined) + (value.kind === "schema" ? value.pinnedSdl ?? "" : "") : null;
+        const signature = (value?: ProjectResource) => value ? serializeResource(value, value.kind === "schema" ? `schemas/${value.id}.graphql` : value.kind === "api-schema" ? `schemas/${value.id}.openapi` : undefined)
+          + (value.kind === "schema" ? value.pinnedSdl ?? "" : value.kind === "api-schema" ? value.document : "") : null;
         if (signature(localResource) === signature(before)) continue;
         if (signature(external) !== signature(before) && signature(external) !== signature(localResource)) throw new Error("Concurrent resource edits");
         merged.resources = merged.resources.filter((item) => item.id !== resourceId);
@@ -292,11 +295,12 @@ export class WorkspacePersistence {
       this.queue = this.queue.catch(() => {}).then(reload).catch(() => onError("Project files changed externally but could not be reconciled. Local edits and files are preserved. Fix invalid YAML or conflicting edits, then reload."));
     });
   }
-  async saveProject(project: Project): Promise<Workspace> {
+  async saveProject(project: Project, initialize: (workspace: Workspace) => Workspace = (workspace) => workspace): Promise<Workspace> {
     validateProject(project);
     const snapshot = this.snapshots.get(project.workspace.id);
-    const workspace = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])));
-    await this.save({ activeWorkspaceId: this.activeId || workspace.id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
+    const restored = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])));
+    const workspace = initialize(restored);
+    await this.save({ activeWorkspaceId: workspace.id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }
   prepareImport(project: Project): Project {
     const existing = this.projects.get(project.workspace.id);

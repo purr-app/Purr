@@ -135,3 +135,48 @@ test("normalized imports use the same persistence path", async () => {
   assert.ok(Object.keys(backend.snapshot.workspaces[0].files).some((path) => path.startsWith("documents/")));
   assert.ok(!JSON.stringify(backend.snapshot.workspaces[0].files).includes("lastResponse"));
 });
+
+test("failed import commits remove transient secret values", async () => {
+  const backend = new MemoryPersistenceBackend();
+  backend.commit = async () => { throw new Error("Import commit failed"); };
+  const secure = new MemorySecureStore();
+  const persistence = new WorkspacePersistence(backend, secure);
+  const ref = "purr/failed-import/imports/openapi/access-token" as const;
+  await assert.rejects(persistImport({
+    workspace: { id: "failed-import", name: "Failed", headers: [], auth: [], variables: [
+      { id: "access-token", name: "accessToken", enabled: true, sensitive: true, kind: "static", secretRef: ref },
+    ] },
+    resources: [], diagnostics: [], secrets: [{ ref, value: "" }],
+  }, persistence), /Import commit failed/);
+  assert.equal(await secure.exists(ref), false);
+});
+
+test("OpenAPI imports persist operation metadata and the source document as a schema sidecar", async () => {
+  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const schemaId = "api-schema-example";
+  const authRef = "purr/openapi-import/auth/bearer-auth/bearer" as const;
+  const result = {
+    workspace: { id: "openapi-import", name: "Example API", headers: [], auth: [
+      { id: "bearer-auth", name: "Bearer auth", enabled: true, scope: "all" as const,
+        config: { type: "bearer" as const, token: { kind: "secret" as const, ref: authRef }, prefix: "Bearer" } },
+    ], variables: [{ id: "base-url", name: "baseUrl", enabled: true, sensitive: false, kind: "static" as const, value: "https://api.example.com" }] },
+    resources: [
+      { id: "users", name: "Users", kind: "folder" as const },
+      { id: schemaId, name: "Example API OpenAPI", kind: "api-schema" as const, format: "openapi-3" as const, source: { type: "url" as const, location: "https://api.example.com/openapi.yaml" }, document: "openapi: 3.1.0\ninfo: { title: Example API, version: 1 }\npaths: {}\n" },
+      { id: "get-user", name: "Get user", kind: "http" as const, folderId: "users", method: "GET", url: "{{baseUrl}}/users/:id",
+        params: [], pathParams: [{ name: "id", value: "", enabled: true }], headers: [], body: { type: "none" as const }, auth: { type: "inherit" as const, profileId: "bearer-auth" },
+        origin: { type: "openapi" as const, schemaId, operationPath: "#/paths/~1users~1{id}/get", operationId: "getUser" } },
+    ], diagnostics: [], secrets: [{ ref: authRef, value: "" }],
+  };
+  const imported = await persistImport(result, persistence);
+  assert.equal(imported.id, "openapi-import"); assert.equal(imported.ui.activeDocumentId, "get-user");
+  const files = backend.snapshot.workspaces[0].files;
+  assert.equal(files[`schemas/${schemaId}.openapi`].content, result.resources[1].document);
+  assert.match(Object.values(files).find((file) => file.content.includes("kind: api-schema"))!.content, new RegExp(`schema: schemas/${schemaId}\\.openapi`));
+  const reloaded = await new WorkspacePersistence(backend, secure).load();
+  assert.equal(reloaded.workspaces[0].documents[0].origin?.operationId, "getUser");
+  assert.equal(reloaded.workspaces[0].documents[0].request.auth.inherit.profileId, "bearer-auth");
+  assert.equal(reloaded.workspaces[0].requestConfig.auth[0].value.bearer.token, "");
+  const schema = reloaded.workspaces[0].extraResources?.find((resource) => resource.id === schemaId);
+  assert.ok(schema?.kind === "api-schema"); assert.equal(schema.document, result.resources[1].document);
+});

@@ -84,7 +84,7 @@ export async function authToDefinition(auth: RequestAuth, secure: SecureStore, w
     auth.secretRefs?.[field] ?? secretRef(workspace, owner, field), value, mode ?? (/{{[^{}]+}}/.test(value) ? "plain" : "secret"));
   switch (auth.type) {
     case "none": return { type: "none" };
-    case "inherit": return { type: "inherit" };
+    case "inherit": return { type: "inherit", ...(auth.inherit.profileId ? { profileId: auth.inherit.profileId } : {}) };
     case "bearer": return { type: "bearer", token: await credential("bearer", auth.bearer.token, auth.credentialStorage?.bearer), prefix: auth.bearer.prefix };
     case "basic": return { type: "basic", username: auth.basic.username, password: await credential("password", auth.basic.password) };
     case "api-key": return { type: "api-key", name: auth.apiKey.name, placement: auth.apiKey.placement, value: await credential("api-key", auth.apiKey.value) };
@@ -101,7 +101,7 @@ export async function authFromDefinition(value: AuthDefinition, secure: SecureSt
     return resolveCredential(secure, credential);
   };
   switch (value.type) {
-    case "inherit": auth.inherit.source = "workspace"; break;
+    case "inherit": auth.inherit = { source: "workspace", ...(value.profileId ? { profileId: value.profileId } : {}) }; break;
     case "bearer": auth.bearer = { ...auth.bearer, token: await remember("bearer", value.token), prefix: value.prefix };
       auth.credentialStorage = { bearer: value.token.kind }; break;
     case "basic": auth.basic = { username: value.username, password: await remember("password", value.password) }; break;
@@ -178,7 +178,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     : { type: body.type, fields: await Promise.all((body.type === "form-data" ? body.formData : body.urlEncoded)
       .filter((field) => field.key || field.value || field.attachment).map(async (field) => ({ name: field.key, value: field.value, enabled: field.enabled,
         ...(field.attachment ? { file: await fileRef(field.attachment) } : {}), ...(field.contentType ? { contentType: field.contentType } : {}) }))) };
-  const common = { id: document.id, name: document.name, ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
+  const common = { id: document.id, name: document.name, ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), ...(document.origin ? { origin: document.origin } : {}),
     method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []), headers: pairs(draft.headers), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
     ...(!draft.workspace.headersEnabled || !draft.workspace.authEnabled || !draft.useCookieJar || Object.values(draft.workspace.headerOverrides).some((value) => !value)
@@ -257,13 +257,13 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
     workspace: { headersEnabled: resource.overrides?.headers ?? true, authEnabled: resource.overrides?.auth ?? true,
       headerOverrides: Object.fromEntries((resource.overrides?.excludedHeaderIds ?? []).map((id) => [id, false])) },
     ...(resource.kind === "graphql" ? { graphql: { query: resource.graphql.query, variables: resource.graphql.variables, operationName: resource.graphql.operation ?? "", schemaId: resource.graphql.schemaId } } : {}) };
-  return { ...document, id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, saved: true, request: draft, savedRequest: draft };
+  return { ...document, id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, origin: resource.origin, saved: true, request: draft, savedRequest: draft };
 }
 
 export async function restoreWorkspace(project: Project, records: LocalRecord[], secure: SecureStore, assets: Record<string, string>): Promise<Workspace> {
   const workspace = createWorkspace(project.workspace.name, project.workspace.id); workspace.documents = [];
   workspace.description = project.workspace.description ?? "";
-  workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration");
+  workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration" || item.kind === "api-schema");
   workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, true)));
   workspace.requestConfig = { headers: project.workspace.headers, auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure) }))) };
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;

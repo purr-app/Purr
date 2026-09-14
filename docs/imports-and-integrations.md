@@ -1,6 +1,6 @@
 # Imports, exports, and integrations
 
-This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow and a generic normalized project-import boundary, but no registered OpenAPI/Postman/Yaak adapters or integration providers.
+This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow and a native OpenAPI 3.x workspace importer. Postman, Insomnia, Bruno, Yaak, and integration providers remain extension points.
 
 ## Current feature status
 
@@ -10,10 +10,11 @@ This document distinguishes working import/export behavior from architectural ex
 | Create a request from cURL in an empty/non-HTTP context | Working |
 | Copy effective request as cURL/wget/HTTP | Working with explicit secret reveal |
 | Duplicate a Purr document | Working inside a workspace |
-| Canonical `ImportAdapter` contract and registry | Implemented boundary |
+| Native `ImportAdapter` contract and registry | Implemented boundary |
 | Validate and persist a `NormalizedImportResult` | Implemented application path |
-| Import preview UI | Not implemented |
-| OpenAPI/Postman/Other collection adapters | Not implemented |
+| New-workspace import UI | Working for file, folder, URL, and pasted text |
+| OpenAPI 3.0/3.1 adapter | Working first version |
+| Postman/Insomnia/Bruno/Yaak adapters | Not implemented |
 | Generic project export package | Not implemented; canonical directory is the portable artifact |
 | Integration provider runtime/UI | Not implemented |
 | Trace/observability providers | Reserved only |
@@ -37,24 +38,59 @@ Formats are cURL, wget, and HTTP/1.1. The cURL/wget renderers use POSIX single-q
 
 The canonical workspace directory remains the only current project-level export: copy/commit the Git-friendly files together with assets, and provision secret values separately.
 
-## Generic import boundary
+## Native import pipeline
 
-`src/importing/contracts.ts` defines:
+The New workspace row reveals **New empty** and **Import** side options only while that row is hovered or after it is clicked. The compact import modal has one file drop/picker, an explicit folder picker, and one field that accepts either a filesystem path or an HTTP(S) URL. A typed path is classified as file or directory by native filesystem metadata. The native contract also accepts in-memory text, which is used as the fallback when a browser-style dropped `File` does not expose a native path. Missing/inaccessible sources, invalid YAML/JSON, ambiguous folders, unsupported formats, remote failures, and normalization failures remain in the modal as errors; no workspace is added to runtime state.
 
-- `ImportSource`: primary text plus optional named bytes;
+```text
+ImportWorkspaceDialog
+  → import_collection IPC
+  → Rust ImportSource loader (file/directory/URL/text)
+  → JSON/YAML parse on a blocking worker
+  → metadata-based adapter detection
+  → local/remote $ref document loading and resolution
+  → OpenApi3Adapter → Rust ImportModel
+  → normalized canonical result (the foreign AST never reaches React)
+  → validateProject() / persistImport()
+  → WorkspacePersistence canonical commit + SecureStore
+  → add and activate runtime Workspace
+```
+
+The project becomes visible and active only after the normal revision-checked persistence route succeeds. Parsing and normalization do not run on the WebView/UI thread. The root plus all referenced source documents share a cumulative 64 MiB and 256-document budget; remote bodies are read incrementally so a missing `Content-Length` cannot bypass the limit. URL imports accept HTTP(S), follow at most ten redirects, and remote `$ref` documents must also use HTTP(S). File imports recursively load referenced JSON/YAML files, including relative files outside the root file's immediate directory. An unresolved reference fails the import instead of producing a partial request. Directory detection requires exactly one document whose top-level `openapi` value starts with `3.`.
+
+## OpenAPI 3.x mapping
+
+- folders use the first operation tag; additional tags do not duplicate requests;
+- without tags, the first meaningful path segment is used, skipping a leading `api` or `v<number>` segment, so `/api/users/{id}/posts` becomes one `Users` folder rather than a deep path tree;
+- request names use `summary`, then `operationId`, then `METHOD path`;
+- `operationId` is retained independently in `RequestDefinition.origin` together with the operation pointer and imported schema ID;
+- one server creates workspace `baseUrl` plus defaults for server template variables; multiple servers create environments, each with `baseUrl`, and the first is selected locally;
+- server `{variable}` placeholders become Purr `{{variable}}` templates;
+- OpenAPI `{pathParam}` segments become Purr `:pathParam`; path parameters are enabled, while optional query/header parameters are retained disabled with their example/default when available;
+- JSON, XML, text, URL-encoded, multipart, and binary body modes are selected from request content. JSON schemas/examples create an editable example body, and the generated structure is also appended to request documentation;
+- every operation receives baseline Markdown in the request Docs tab: display name, operation ID when present, parameter location/required state, selected and available request-body content types, and response statuses/descriptions. OpenAPI descriptions, external documentation links, resolved schema descriptions, and generated body examples enrich that baseline when available;
+- the original OpenAPI source is stored as a canonical `api-schema` resource with a referenced `schemas/*.openapi` sidecar.
+
+Every supported Bearer, Basic, header/query/cookie API-key, or OAuth 2.0 authorization-code/client-credentials security scheme becomes a named workspace shared-auth profile. Each imported request persists the stable profile ID selected by its effective operation/global `security` declaration; an explicit empty security declaration becomes a request auth opt-out. Credential placeholders are direct `SecretRef` fields on the profile, with empty values initialized in `SecureStore`; the importer does not invent credential variables or write plaintext values to YAML. OAuth endpoint `{variable}` placeholders become Purr `{{variable}}` templates. OpenID Connect currently imports as bearer-token auth with a warning because discovery is not implemented. Unsupported HTTP schemes, OAuth flows, combined auth beyond the first supported scheme, and mutual TLS produce diagnostics rather than invented transport behavior.
+
+Schema-driven body completion is not implemented yet. The imported example body and `origin` link preserve enough canonical information for a future completion service without storing the OpenAPI AST inside each request. The first version maps root-level `servers`; path-item and operation-level server overrides are not yet projected. External reference documents participate in normalization, while the canonical `api-schema` resource currently retains the selected root source rather than a bundled copy of every dependency.
+
+## Generic normalized boundary
+
+`src/importing/contracts.ts` defines the IPC/application shapes:
+
+- `ImportSource`: discriminated inferred path, explicit file/directory, URL, or text source;
 - `ImportDiagnostic`: stable warning/error codes with source/resource context;
 - `ImportPreview`: adapter ID, resource counts, diagnostics, and optional environment candidates;
 - `ImportOptions`: destination workspace, secret inclusion, and duplicate policy;
-- `NormalizedImportResult`: canonical workspace/resources, diagnostics, and transient secret values;
-- `ImportAdapter`: `canImport`, `inspect`, and `import`;
-- `ImportAdapterRegistry`: adapter registration and source detection.
+- `NormalizedImportResult`: the canonical handoff from native normalization to application persistence.
+
+The concrete `ImportAdapter` trait and registry live in `src-tauri/src/importing.rs`, so future large collection parsers normalize to the same Rust `ImportModel` before producing Purr canonical resources.
 
 ```text
-source file(s)
-  → adapter.canImport()
-  → adapter.inspect()             no persistence, no secret leakage
-  → user options/conflict choice  future UI
-  → adapter.import()
+ImportSource
+  → native adapter.can_import()
+  → adapter.normalize() → ImportModel
   → NormalizedImportResult
   → validateProject()
   → persistImport()
@@ -71,14 +107,14 @@ Adapters must normalize into the existing canonical model. They do not get to wr
 - unrelated existing resources remain;
 - duplicate resource IDs are rejected before commit;
 - every transient secret ref must be unique and scoped to the destination workspace;
-- secret values are written directly to `SecureStore`, never diagnostics/preview/YAML;
+- secret values are written directly to `SecureStore`, never diagnostics/preview/YAML, and are removed again if any later secret write or the canonical project commit fails;
 - the normal persistence path performs canonical/local projection and commit.
 
-The contract exposes duplicate policy and environment candidates, but there is no UI or concrete adapter applying rename/skip behavior today. Secret writes happen before the project commit; a later commit failure may leave an unused secure value, but must never cause plaintext fallback.
+The TypeScript contract still exposes duplicate policy and preview/environment-candidate shapes for a future preview step; the current new-workspace flow imports directly after validation.
 
 ## Requirements for future collection adapters
 
-OpenAPI, Postman, Yaak, and similar formats are roadmap items, not working features. When an adapter is implemented, this document and its tests must state:
+Postman, Insomnia, Bruno, Yaak, and similar formats are roadmap items, not working features. When another adapter is implemented, this document and its tests must state:
 
 - source versions/media types and detection;
 - mapping for folders, HTTP/GraphQL requests, params, duplicate/disabled rows, bodies, and attachments;
@@ -89,7 +125,7 @@ OpenAPI, Postman, Yaak, and similar formats are roadmap items, not working featu
 - diagnostics with source paths;
 - whether imports add resources or create a workspace.
 
-Do not advertise an adapter based only on the existence of `ImportAdapter`.
+Do not advertise an adapter based only on its registration; it needs mapping, persistence, and end-to-end tests.
 
 ## Integration resources
 
@@ -124,8 +160,11 @@ Execution history currently has encrypted native storage and metadata pagination
 - `src/features/workspaces/workspace-workbench.tsx` — replace-active versus create-document cURL behavior and secret-variable protection.
 - `src/features/request-workbench/components/request-code-dialog.tsx` — effective request, cookie merge, reveal, and clipboard UX.
 - `src/features/request-workbench/model/request-code.ts` — cURL/wget/HTTP rendering and escaping.
-- `src/importing/contracts.ts` — generic adapter, preview, diagnostics, and normalized result contracts.
+- `src/importing/contracts.ts` — import source, future preview/options, diagnostics, and normalized-result IPC contracts.
+- `src/application/import-workspace.ts` — native IPC call and persistence handoff.
 - `src/application/import-project.ts` — validation, secret writes, and import commit.
+- `src/features/workspaces/components/import-workspace-dialog.tsx` — source selection, progress, and modal error state.
+- `src-tauri/src/importing.rs` — native loaders, OpenAPI adapter, `$ref` resolver, intermediate model, and canonical normalization.
 - `src/application/workspace-persistence.ts` — additive collision handling and normal persistence path.
 - `src/domain/project.ts` — canonical import targets and reserved integration shape.
 - `src/features/request-workbench/components/response-viewer.tsx` — disabled Trace surface.

@@ -8,8 +8,9 @@ import { keyboardShortcuts } from "../../shared/config/keyboard-shortcuts";
 import { RequestWorkbench, emptyRequestSession, type RequestActions, type RequestSession } from "../request-workbench/request-workbench";
 import { SessionCookieJar } from "../request-workbench/model/cookie-jar";
 import type { AuthRuntime } from "../request-workbench/hooks/use-auth-runtime";
+import type { RequestAuth } from "../request-workbench/model/request-auth";
 import type { RequestDraft } from "../request-workbench/model/request";
-import { applyWorkspaceRequestConfig, getWorkspaceAuth, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
+import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
 import { importCurl, isCurlCommand, type CurlImport } from "../request-workbench/model/curl-import";
@@ -18,6 +19,7 @@ import { DocumentTabs } from "./components/document-tabs";
 import { createDynamicVariable, VariablesExplorer, type VariableScope } from "./components/variables-explorer";
 import { DynamicVariableResolutionError, resolveDynamicVariables } from "./services/dynamic-variable-resolver";
 import { NameDialog } from "./components/name-dialog";
+import { ImportWorkspaceDialog } from "./components/import-workspace-dialog";
 import { WorkspaceHeader } from "./components/workspace-header";
 import { WorkspaceSidebar } from "./components/workspace-sidebar";
 import { WorkspaceSettings } from "./components/workspace-request-settings";
@@ -28,6 +30,8 @@ import { useWorkspaces } from "./hooks/use-workspaces";
 import { openWorkspaceFolder, workspacePersistence } from "./services/workspace-storage";
 import { secretRef } from "../../storage/secrets";
 import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
+import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
+import type { ImportSource } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
 import {
   cloneRequestDraft,
@@ -58,7 +62,7 @@ import {
   type Workspace,
 } from "./model/workspace";
 
-type Dialog = "palette" | "new-workspace" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
+type Dialog = "palette" | "new-workspace" | "import-workspace" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
 const actionErrorTimeoutMs = 15_000;
 
 function curlSecretVariableName(headerName: string, used: Set<string>) {
@@ -177,6 +181,11 @@ export function WorkspaceWorkbench() {
       : document) }));
   };
   const update = (change: (workspace: Workspace) => Workspace) => { if (workspace) updateWorkspace(workspace.id, change); };
+  const updateWorkspaceAuth = (profileId: string, auth: RequestAuth) => update((current) => ({
+    ...current,
+    requestConfig: { ...current.requestConfig, auth: current.requestConfig.auth.map((profile) =>
+      profile.id === profileId ? { ...profile, value: auth } : profile) },
+  }));
   const removeUnusedVariableSecrets = (before: readonly Variable[], after: readonly Variable[]) => {
     const retained = new Set(after.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     const removed = before.flatMap((variable) => {
@@ -506,10 +515,40 @@ export function WorkspaceWorkbench() {
     if (resolved && resolved !== environment) update((current) => ({ ...current, environments: current.environments.map((item) => item.id === resolved.id ? resolved : item) }));
     return getVariableNamespace({ ...workspace, environments }, store.globalVariables, id);
   };
+  const openVariableDefinition = (id: string) => {
+    const scope: VariableScope = store.globalVariables.some((variable) => variable.id === id) ? "global"
+      : workspace.variables.some((variable) => variable.id === id) ? "workspace"
+        : `environment:${workspace.environments.find((environment) => environment.variables.some((variable) => variable.id === id))?.id ?? workspace.activeEnvironmentId ?? ""}`;
+    openVariables(scope, id, null);
+  };
+  const createMissingVariableDefinition = (name: string, kind: "static" | "dynamic-request", sensitive = false) => {
+    const variable = kind === "dynamic-request" ? { ...createDynamicVariable(name), sensitive }
+      : { id: crypto.randomUUID(), name, enabled: true, sensitive, kind: "static" as const, value: "", ...(sensitive ? { loaded: true } : {}) };
+    if (kind === "dynamic-request") {
+      openVariables("workspace", null, variable); return;
+    }
+    const environment = workspace.environments.find((item) => item.id === workspace.activeEnvironmentId);
+    if (environment) {
+      openVariables(`environment:${environment.id}`, null, variable);
+    } else {
+      let environmentName = "New environment"; let suffix = 2;
+      while (workspace.environments.some((item) => item.name === environmentName)) environmentName = `New environment ${suffix++}`;
+      const created = { id: crypto.randomUUID(), name: environmentName, variables: [] };
+      update((current) => ({ ...current, activeEnvironmentId: created.id, environments: [...current.environments, created] }));
+      openVariables(`environment:${created.id}`, null, variable);
+    }
+  };
+  const importWorkspace = async (source: ImportSource) => {
+    const imported = await importWorkspaceSource(source, workspacePersistence());
+    setStore((current) => current ? { ...current, activeWorkspaceId: imported.id,
+      workspaces: [...current.workspaces.filter((candidate) => candidate.id !== imported.id), imported] } : current);
+    setDialog(null);
+  };
   return <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} variablesActive={workspace.ui.variablesTabActive} onCookies={openCookies} onVariables={() => openVariables("effective", null, null)}
       onNewWorkspace={() => setDialog("new-workspace")}
+      onImportWorkspace={() => setDialog("import-workspace")}
       onRequestSettings={openSettings}
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
       onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
@@ -545,13 +584,28 @@ export function WorkspaceWorkbench() {
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
           {workspace.ui.settingsTabActive ? <WorkspaceSettings name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             variables={variables}
+            variableActions={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}
             onNameChange={(name) => update((current) => ({ ...current, name }))}
             onDescriptionChange={(description) => update((current) => ({ ...current, description }))}
-            onConfigChange={(requestConfig) => update((current) => ({ ...current, requestConfig,
-              documents: current.documents.map((document) => !document.saved && isRequestDocument(document)
-                ? { ...document, request: withWorkspaceAuthDefault(document.request, document.kind, requestConfig) }
-                : document),
-            }))} onDelete={async () => { try {
+            onConfigChange={(requestConfig) => update((current) => {
+              const reconcile = (request: RequestDraft, kind: "http" | "graphql") => {
+                const selected = request.auth.type === "inherit" ? request.auth.inherit.profileId : undefined;
+                if (!selected || requestConfig.auth.some((profile) => profile.id === selected && (profile.scope === "all" || profile.scope === kind)))
+                  return request;
+                const fallback = getWorkspaceAuth(requestConfig, kind);
+                return { ...request, auth: fallback
+                  ? { ...request.auth, type: "inherit" as const, inherit: { source: "workspace" as const, profileId: fallback.id } }
+                  : { ...request.auth, type: "none" as const } };
+              };
+              return { ...current, requestConfig,
+                documents: current.documents.map((document) => {
+                  if (!isRequestDocument(document)) return document;
+                  const request = reconcile(!document.saved ? withWorkspaceAuthDefault(document.request, document.kind, requestConfig) : document.request, document.kind);
+                  const savedRequest = document.savedRequest ? reconcile(document.savedRequest, document.kind) : document.savedRequest;
+                  return { ...document, request, savedRequest };
+                }),
+              };
+            })} onDelete={async () => { try {
               await deleteWorkspace(workspace.id); jars.current.delete(workspace.id); dynamicSessionCaches.current.delete(workspace.id);
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
@@ -600,11 +654,14 @@ export function WorkspaceWorkbench() {
                   forceVariableIds: new Set([variable.id]),
                   execute: async (document, resolvedVariables, environmentId) => {
                     const scoped = await variablesForEnvironment(environmentId);
-                    const auth = getWorkspaceAuth(workspace.requestConfig, document.kind);
+                    const auth = getWorkspaceAuth(workspace.requestConfig, document.kind,
+                      document.request.auth.type === "inherit" ? document.request.auth.inherit.profileId : undefined);
                     return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspace.requestConfig), {
                       variables: resolvedVariables, sensitiveVariableNames: scoped.filter((item) => item.sensitive).map((item) => item.name),
-                      requestDocumentId: document.id, workspace: document.request.workspace.authEnabled && auth
-                        ? { id: `workspace-auth-${auth.id}`, name: auth.name || workspace.name, auth: auth.value } : undefined,
+                      requestDocumentId: document.id,
+                      workspaceProfiles: getWorkspaceAuthProfiles(workspace.requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
+                      workspace: document.request.workspace.authEnabled && auth
+                        ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
                     }, cookieJar!, runtime);
                   } });
                 update((current) => ({ ...current, dynamicVariableCache: resolution.cache }));
@@ -621,33 +678,14 @@ export function WorkspaceWorkbench() {
           </section> : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
             source={schemaSource} variables={variables} workspaceConfig={workspace.requestConfig} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
+            onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${contextKey}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={workspace.requestConfig}
             workspaceName={workspace.name} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
-            onOpenVariable={(id) => {
-              const scope: VariableScope = store.globalVariables.some((variable) => variable.id === id) ? "global"
-                : workspace.variables.some((variable) => variable.id === id) ? "workspace"
-                  : `environment:${workspace.environments.find((environment) => environment.variables.some((variable) => variable.id === id))?.id ?? workspace.activeEnvironmentId ?? ""}`;
-              openVariables(scope, id, null);
-            }}
-            onCreateMissingVariable={(name, kind) => {
-              const variable = kind === "dynamic-request" ? createDynamicVariable(name)
-                : { id: crypto.randomUUID(), name, enabled: true, sensitive: false, kind: "static" as const, value: "" };
-              if (kind === "dynamic-request") {
-                openVariables("workspace", null, variable); return;
-              }
-              const environment = workspace.environments.find((item) => item.id === workspace.activeEnvironmentId);
-              if (environment) {
-                openVariables(`environment:${environment.id}`, null, variable);
-              } else {
-                let environmentName = "New environment"; let suffix = 2;
-                while (workspace.environments.some((item) => item.name === environmentName)) environmentName = `New environment ${suffix++}`;
-                const created = { id: crypto.randomUUID(), name: environmentName, variables: [] };
-                update((current) => ({ ...current, activeEnvironmentId: created.id, environments: [...current.environments, created] }));
-                openVariables(`environment:${created.id}`, null, variable);
-              }
-            }}
+            onOpenVariable={openVariableDefinition}
+            onCreateMissingVariable={createMissingVariableDefinition}
+            onWorkspaceAuthChange={updateWorkspaceAuth}
             onImportCurl={importCurlIntoActiveDocument}
             onCreateVariable={(candidate) => {
               const baseName = candidate.name.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^\d/, "_$&") || "response_value";
@@ -683,6 +721,7 @@ export function WorkspaceWorkbench() {
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
+    {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} />}
     {dialog === "save-document" && currentDocument && <NameDialog title="Save document" label="Document name" initial={getDocumentDisplayName(currentDocument)} onClose={() => setDialog(null)} onSave={(name) => {
       updateDocument((document) => ({ ...document, name, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() })); setDialog(null);
     }} />}

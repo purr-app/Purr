@@ -1,6 +1,11 @@
 import type { Credential, ProjectResource, SecretRef, WorkspaceDefinition } from "../domain/project";
 
-export type ImportSource = { name: string; mediaType?: string; content: string; files?: ReadonlyMap<string, Uint8Array> };
+export type ImportSource =
+  | { kind: "path"; path: string }
+  | { kind: "file"; path: string }
+  | { kind: "directory"; path: string }
+  | { kind: "url"; url: string }
+  | { kind: "text"; name: string; content: string };
 export type ImportDiagnostic = {
   severity: "warning" | "error";
   code: "unsupported-script" | "omitted-secret" | "unsupported-auth" | "duplicate-name" | "unsupported-feature" | "invalid-input" | "missing-reference";
@@ -18,22 +23,5 @@ export type NormalizedImportResult = {
   diagnostics: ImportDiagnostic[];
   // Transient values go directly to SecureStore, never to preview/errors or serializers.
   secrets: Array<{ ref: SecretRef; value: string }>;
+  activeEnvironmentId?: string;
 };
-export interface ImportAdapter {
-  readonly id: string;
-  canImport(source: ImportSource): boolean | Promise<boolean>;
-  inspect(source: ImportSource): Promise<ImportPreview>;
-  import(source: ImportSource, options: ImportOptions): Promise<NormalizedImportResult>;
-}
-export class ImportAdapterRegistry {
-  private adapters = new Map<string, ImportAdapter>();
-  register(adapter: ImportAdapter) {
-    if (this.adapters.has(adapter.id)) throw new Error("An import adapter with this ID is already registered.");
-    this.adapters.set(adapter.id, adapter);
-  }
-  async detect(source: ImportSource) {
-    const matches: ImportAdapter[] = [];
-    for (const adapter of this.adapters.values()) if (await adapter.canImport(source)) matches.push(adapter);
-    return matches;
-  }
-}

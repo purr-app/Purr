@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2 } from "lucide-react";
+import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, FileInput, FilePlus2, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2 } from "lucide-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
@@ -13,7 +13,7 @@ import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar"
 const menuClass = "mt-ui-2 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
 const rowClass = "w-full justify-start font-normal";
 
-export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, settingsActive, variablesActive, onCookies, onVariables, onWorkspace, onNewWorkspace, onRequestSettings, onEnvironment, onEditEnvironment, onNewEnvironment, onToggleSidebar, onPalette, onView }: {
+export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, settingsActive, variablesActive, onCookies, onVariables, onWorkspace, onNewWorkspace, onImportWorkspace, onRequestSettings, onEnvironment, onEditEnvironment, onNewEnvironment, onToggleSidebar, onPalette, onView }: {
   store: WorkspaceStore; workspace: Workspace;
   cookieJar: SessionCookieJar;
   cookiesActive: boolean;
@@ -21,11 +21,12 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   variablesActive: boolean;
   onCookies: () => void;
   onVariables: () => void;
-  onWorkspace: (id: string) => void; onNewWorkspace: () => void; onRequestSettings: () => void;
+  onWorkspace: (id: string) => void; onNewWorkspace: () => void; onImportWorkspace: () => void; onRequestSettings: () => void;
   onEnvironment: (id: string | null) => void; onEditEnvironment: () => void; onNewEnvironment: () => void;
   onToggleSidebar: () => void; onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
 }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [newWorkspaceOptionsOpen, setNewWorkspaceOptionsOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   useSyncExternalStore(cookieJar.subscribe, cookieJar.getVersion);
   const cookieCount = cookieJar.list().length;
@@ -37,10 +38,16 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
       <Button variant="ghost" size="icon" aria-label={workspace.ui.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title="Toggle sidebar · Mod+B" onClick={onToggleSidebar}>
         {workspace.ui.sidebarOpen ? <PanelLeftClose className="size-ui-3-5" /> : <PanelLeftOpen className="size-ui-3-5" />}
       </Button>
-      <Popover open={workspaceOpen} onOpenChange={setWorkspaceOpen}>
+      <Popover open={workspaceOpen} onOpenChange={(open) => { setWorkspaceOpen(open); if (!open) setNewWorkspaceOptionsOpen(false); }}>
         <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 shrink" aria-label="Select workspace"><Layers className="size-ui-3-5 shrink-0 text-action-brand" /><span className="truncate">{workspace.name}</span><ChevronDown className="size-ui-3 shrink-0" /></Button></PopoverTrigger>
-        <PopoverContent align="start" className={menuClass} aria-label="Workspaces">
-          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onNewWorkspace(); }}><Plus className="size-ui-4" />New workspace</Button>
+        <PopoverContent align="start" className={menuClass} aria-label="Workspaces" onOpenAutoFocus={(event) => event.preventDefault()}>
+          <div className="relative" onPointerEnter={() => setNewWorkspaceOptionsOpen(true)} onPointerLeave={() => setNewWorkspaceOptionsOpen(false)}>
+            <Button variant="ghost" className={rowClass} aria-haspopup="menu" aria-expanded={newWorkspaceOptionsOpen} onClick={() => setNewWorkspaceOptionsOpen(true)}><Plus className="size-ui-4" />New workspace<ChevronRight className="ml-auto size-ui-3" /></Button>
+            <div role="menu" aria-label="New workspace options" aria-hidden={!newWorkspaceOptionsOpen} className={cn("absolute left-full top-0 z-50 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover transition-opacity duration-ui-fast", newWorkspaceOptionsOpen ? "visible opacity-100" : "invisible opacity-0")}>
+              <Button role="menuitem" variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onNewWorkspace(); }}><FilePlus2 className="size-ui-4" />New empty</Button>
+              <Button role="menuitem" variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onImportWorkspace(); }}><FileInput className="size-ui-4" />Import</Button>
+            </div>
+          </div>
           <div className="my-ui-1 max-h-ui-variable-list overflow-y-auto border-y border-border-subtle py-ui-1">
             {store.workspaces.map((item) => <Button key={item.id} variant="ghost" className={rowClass} aria-pressed={item.id === workspace.id} onClick={() => { onWorkspace(item.id); setWorkspaceOpen(false); }}>
               <Check className={cn("size-ui-4 text-action-brand", item.id !== workspace.id && "invisible")} /><span className="max-w-ui-document-tab truncate">{item.name}</span>

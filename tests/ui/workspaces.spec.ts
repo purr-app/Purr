@@ -69,6 +69,7 @@ test("documents, workspace selection, environments and independent layouts survi
   await expect(separator).toHaveAttribute("aria-valuenow", "54");
   await page.getByRole("button", { name: "Select workspace" }).click();
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New empty", exact: true }).click();
   await page.getByLabel("Workspace name", { exact: true }).fill("Acme Backend");
   await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
@@ -466,19 +467,13 @@ test("workspace settings tab manages identity, shared headers and scoped auth", 
   await settings.getByRole("button", { name: "Save authentication", exact: true }).click();
   await expect(settings.getByText("Main API auth", { exact: true })).toBeVisible();
   await expect(settings.getByText("Bearer Token · All requests", { exact: true })).toBeVisible();
-  await expect(settings.getByRole("button", { name: "Add shared auth", exact: true })).toBeDisabled();
-  await settings.getByRole("button", { name: "Edit Main API auth", exact: true }).click();
-  await settings.getByRole("combobox", { name: "Requests using this authentication", exact: true }).click();
-  await page.getByRole("option", { name: "HTTP", exact: true }).click();
-  await settings.getByRole("button", { name: "Save authentication", exact: true }).click();
+  await expect(settings.getByRole("button", { name: "Add shared auth", exact: true })).toBeEnabled();
   await settings.getByRole("button", { name: "Add shared auth", exact: true }).click();
-  await expect(settings.getByRole("combobox", { name: "Requests using this authentication", exact: true })).toContainText("GraphQL");
-  await settings.getByLabel("Auth name", { exact: true }).fill("GraphQL auth");
+  await settings.getByLabel("Auth name", { exact: true }).fill("Partner API auth");
   await settings.getByRole("tab", { name: "Bearer Token", exact: true }).click();
-  await settings.getByLabel("Bearer token", { exact: true }).fill("graphql-token");
+  await settings.getByLabel("Bearer token", { exact: true }).fill("partner-token");
   await settings.getByRole("button", { name: "Save authentication", exact: true }).click();
-  await expect(settings.getByText("Bearer Token · HTTP requests", { exact: true })).toBeVisible();
-  await expect(settings.getByText("Bearer Token · GraphQL requests", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Bearer Token · All requests", { exact: true })).toHaveCount(2);
 
   await page.getByRole("tab", { name: /Untitled Request/, exact: true }).click();
 
@@ -493,7 +488,10 @@ test("workspace settings tab manages identity, shared headers and scoped auth", 
   await page.getByRole("tab", { name: /^Auth/ }).click();
   await expect(page.getByRole("tab", { name: "Inherit", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText(/Authentication inherited from Main API auth/)).toContainText("Bearer Token");
-  await expect(page.getByRole("combobox", { name: "Inherit authentication from", exact: true })).toHaveCount(0);
+  const inheritedProfile = page.getByRole("combobox", { name: "Inherit authentication from", exact: true });
+  await inheritedProfile.click();
+  await page.getByRole("option", { name: "Partner API auth", exact: true }).click();
+  await expect(page.getByText(/Authentication inherited from Partner API auth/)).toContainText("Bearer Token");
   await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await expect(page.locator("#request-section-settings").getByRole("checkbox")).toHaveCount(0);
 
@@ -508,13 +506,13 @@ test("workspace settings tab manages identity, shared headers and scoped auth", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
   const sent = await page.evaluate(() => (window as any).__requests.at(-1));
   expect(sent.headers).toContainEqual(["X-Workspace", "shared-value"]);
-  expect(sent.headers).toContainEqual(["Authorization", "Bearer workspace-token"]);
+  expect(sent.headers).toContainEqual(["Authorization", "Bearer partner-token"]);
   const response = page.getByRole("region", { name: "HTTP response", exact: true });
   await response.getByRole("tab", { name: "Request", exact: true }).click();
   await expect(response.getByLabel("HTTP request viewer")).toContainText("GET /users/42 HTTP/1.1");
   await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer ********");
   await response.getByRole("button", { name: "Reveal request secrets", exact: true }).click();
-  await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer workspace-token");
+  await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer partner-token");
 });
 
 test("sidebar context menu renames saved documents", async ({ page }) => {
@@ -564,8 +562,24 @@ test("dialogs focus their primary field instead of the close button", async ({ p
   await page.goto("/");
   await page.getByRole("button", { name: "Select workspace" }).click();
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New empty", exact: true }).click();
   await expect(page.getByLabel("Workspace name", { exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: "Close dialog", exact: true })).not.toBeFocused();
+});
+
+test("new workspace hover options open the import source modal", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  const options = page.getByRole("menu", { name: "New workspace options" });
+  await expect(options.getByRole("menuitem", { name: "New empty", exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "New workspace", exact: true }).hover();
+  await expect(options.getByRole("menuitem", { name: "New empty", exact: true })).toBeVisible();
+  await options.getByRole("menuitem", { name: "Import", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Import workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Choose import file", exact: true })).toBeVisible();
+  await page.getByLabel("File path or URL", { exact: true }).fill("https://example.com/openapi.yaml");
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("desktop application");
 });
 
 test("variables use explicit drafts, validate duplicate names without blocking typing, and toggle atomically", async ({ page }) => {

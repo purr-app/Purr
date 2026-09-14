@@ -11,6 +11,7 @@ import {
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import { BearerAuthForm } from "./bearer-auth-form";
 import { OAuthAuthForm } from "./oauth-auth-form";
+import type { TemplateVariableActions } from "./template-variable-popover";
 
 type Props = {
   auth: RequestAuth;
@@ -20,6 +21,7 @@ type Props = {
   allowInherit?: boolean;
   idPrefix?: string;
   ariaLabel?: string;
+  variableActions?: TemplateVariableActions;
 };
 
 export function AuthEditor({
@@ -30,11 +32,13 @@ export function AuthEditor({
   allowInherit = true,
   idPrefix = "request",
   ariaLabel,
+  variableActions,
 }: Props) {
   const resolved = resolveAuth(auth, context);
   const typeOptions = allowInherit
     ? authTypeOptions
     : authTypeOptions.filter((option) => option.value !== "inherit");
+  const workspaceProfiles = context.workspaceProfiles ?? (context.workspace ? [context.workspace] : []);
 
   return (
     <section
@@ -166,20 +170,31 @@ export function AuthEditor({
             auth={auth}
             onAuthChange={onAuthChange}
             runtime={runtime}
+            variableActions={variableActions}
           />
         ) : null}
 
         {auth.type === "inherit" ? (
-          <div className="flex items-center gap-ui-2 text-ui-sm">
-            <GitBranch className="size-ui-4 shrink-0 text-action-brand" />
-            {resolved.error ? (
-              <span role="alert" className="text-accent-red">No workspace authentication is configured for this request type.</span>
-            ) : (
-              <span role="status" className="text-content-tertiary">
-                Authentication inherited from <span className="text-content-secondary">{resolved.source?.name ?? "workspace"}</span>
-                {resolved.auth.type !== "inherit" ? <> · <span className="text-content-secondary">{authTypeOptions.find((option) => option.value === resolved.auth.type)?.label ?? resolved.auth.type}</span></> : null}
-              </span>
-            )}
+          <div className="space-y-ui-4">
+            {workspaceProfiles.length > 1 ? <div className="max-w-ui-dialog space-y-ui-2">
+              <span className="block text-ui-xs font-medium text-content-secondary">Shared authentication profile</span>
+              <SelectField label="Inherit authentication from" size="lg"
+                value={auth.inherit.profileId ?? resolved.source?.id ?? workspaceProfiles[0].id}
+                options={workspaceProfiles.map((profile) => ({ value: profile.id, label: profile.name }))}
+                onValueChange={(profileId) => onAuthChange({ ...auth, inherit: { source: "workspace", profileId } })}
+                className="w-full" />
+            </div> : null}
+            <div className="flex items-center gap-ui-2 text-ui-sm">
+              <GitBranch className="size-ui-4 shrink-0 text-action-brand" />
+              {resolved.error ? (
+                <span role="alert" className="text-accent-red">{resolved.error}</span>
+              ) : (
+                <span role="status" className="text-content-tertiary">
+                  Authentication inherited from <span className="text-content-secondary">{resolved.source?.name ?? "workspace"}</span>
+                  {resolved.auth.type !== "inherit" ? <> · <span className="text-content-secondary">{authTypeOptions.find((option) => option.value === resolved.auth.type)?.label ?? resolved.auth.type}</span></> : null}
+                </span>
+              )}
+            </div>
           </div>
         ) : null}
       </div>

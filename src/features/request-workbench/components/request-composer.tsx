@@ -49,7 +49,7 @@ type RequestComposerProps = {
   workspaceConfig: WorkspaceRequestConfig;
   variableDefinitions: readonly Variable[];
   onOpenVariable: (id: string) => void;
-  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") => void;
+  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request", sensitive?: boolean) => void;
   onImportCurl: (command: string) => void;
 };
 
@@ -96,7 +96,7 @@ export function RequestComposer({
   const variableActions = useMemo<TemplateVariableActions>(() => ({
     get definitions() { return variableActionsRef.current.definitions; },
     onOpenVariable: (id) => variableActionsRef.current.onOpenVariable(id),
-    onCreateMissingVariable: (name, kind) => variableActionsRef.current.onCreateMissingVariable(name, kind),
+    onCreateMissingVariable: (name, kind, sensitive) => variableActionsRef.current.onCreateMissingVariable(name, kind, sensitive),
   }), []);
 
   return (

@@ -180,6 +180,25 @@ test("API key placement, OAuth fields, cookies and compact responsive layout", a
     .toBe(true);
 });
 
+test("OAuth endpoint templates and client-secret variables use the variable workflow", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Auth", exact: true }).click();
+  await page.getByRole("tab", { name: "OAuth 2.0", exact: true }).click();
+  const tokenUrl = page.getByLabel("Token URL", { exact: true });
+  await tokenUrl.fill("https://{{authHost}}/{{tenant}}/token");
+  await expect(tokenUrl).toHaveValue("https://{{authHost}}/{{tenant}}/token");
+  const clientSecret = page.getByLabel("Client Secret", { exact: true });
+  await clientSecret.fill("{{oauthSecret}}");
+  await clientSecret.evaluate((element: HTMLInputElement) => {
+    element.setSelectionRange(5, 5);
+    element.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+  });
+  await page.getByRole("button", { name: "Create environment variable", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Variables", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveValue("oauthSecret");
+  await expect(page.getByRole("switch", { name: "Sensitive & masked secret", exact: true })).toHaveAttribute("aria-checked", "true");
+});
+
 test("request pipeline applies auth, learns cookies and sends them on the next request", async ({
   page,
 }) => {

@@ -15,7 +15,7 @@ This document owns authentication schemes, OAuth token lifecycle, credential sto
 
 The canonical `AuthDefinition` stores only the active scheme. Inactive editor forms are local session state and their credential fields are protected through `protectRuntime` before the local record is written.
 
-`resolveAuth` follows inheritance through `AuthContext`. The runtime type can represent workspace or environment profiles, but current product configuration exposes workspace shared auth; environments currently contain variables only. Cycles and missing inherited profiles fail before transport.
+`resolveAuth` follows inheritance through `AuthContext`. The runtime type can represent workspace or environment profiles, but current product configuration exposes workspace shared auth; environments currently contain variables only. A request may persist `inherit.profileId` to select one applicable workspace profile. Older requests without that field use the default applicable profile. Cycles and missing/incompatible selected profiles fail before transport.
 
 ## Effective bindings
 
@@ -29,7 +29,7 @@ Auth input values support `{{variable}}` interpolation. Validation rejects white
 
 The managed binding replaces a same-name manual row only in the effective request. The original row remains in the editor/persistence model and returns if auth changes. API-key cookie mode contributes to the manual/effective Cookie header and therefore wins over a same-name jar cookie.
 
-Workspace shared auth entries have `all`, `http`, or `graphql` scope. Exact kind wins over `all`, overlapping scopes are invalid, and requests can opt out. The effective workspace config is assembled without mutating the saved request.
+Workspace shared auth entries have `all`, `http`, or `graphql` scope. Multiple enabled profiles may overlap in scope: the request Auth → Inherit selector chooses the profile by stable ID. For a legacy/new request without an explicit selection, an exact request-kind profile is preferred over the first `all` profile. Requests can opt out. The effective workspace config is assembled without mutating the saved request.
 
 ## Credential storage and redaction
 
@@ -55,6 +55,8 @@ Passwords, API keys, OAuth client secrets, acquired access/refresh tokens, and o
 `authorizeOAuth` creates a random state and S256 PKCE verifier/challenge, opens the system browser through Rust, and waits for a loopback callback. The redirect must be `http://127.0.0.1:<port>/...` without query/fragment. `src-tauri/src/oauth.rs` binds the callback listener, verifies state, and returns the authorization code; cancellation is a separate `cancel_oauth` command.
 
 OAuth endpoints require HTTPS except `localhost`, `127.0.0.1`, or `::1` for development, and endpoint fragments are rejected. Browser development cannot perform the native authorization callback.
+
+Authorization URL, token URL, callback URL, client ID, scopes, and client secret accept `{{variable}}` templates; resolution happens before endpoint validation and token exchange. The Client Secret completion UI lists only sensitive variables and creates missing definitions as sensitive. A template remains Git-friendly while the selected variable value stays in `SecureStore`.
 
 ### Token ownership
 

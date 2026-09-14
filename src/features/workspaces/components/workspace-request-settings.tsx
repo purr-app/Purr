@@ -18,20 +18,15 @@ import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { FormField } from "../../../shared/components/ui/form-field";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
 import { SelectField } from "../../../shared/components/ui/select-field";
+import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
 
 type SettingsTab = "general" | "headers" | "auth";
 
 const scopeLabel = (scope: RequestScope) => scope === "all" ? "All requests" : `${scope === "graphql" ? "GraphQL" : "HTTP"} requests`;
 const authLabel = (auth: WorkspaceSharedAuth) => authTypeOptions.find((option) => option.value === auth.value.type)?.label ?? auth.value.type;
 
-function availableAuthScopes(auth: WorkspaceSharedAuth[], editingId?: string) {
-  const other = auth.filter((entry) => entry.id !== editingId);
-  if (other.some((entry) => entry.scope === "all")) return [] as RequestScope[];
-  const scopes: RequestScope[] = [];
-  if (!other.length) scopes.push("all");
-  if (!other.some((entry) => entry.scope === "http")) scopes.push("http");
-  if (!other.some((entry) => entry.scope === "graphql")) scopes.push("graphql");
-  return scopes;
+function availableAuthScopes(_auth: WorkspaceSharedAuth[], _editingId?: string) {
+  return requestScopeOptions.map((option) => option.value);
 }
 
 export function WorkspaceSettings({
@@ -39,6 +34,7 @@ export function WorkspaceSettings({
   description,
   config,
   variables,
+  variableActions,
   onNameChange,
   onDescriptionChange,
   onConfigChange,
@@ -48,6 +44,7 @@ export function WorkspaceSettings({
   description: string;
   config: WorkspaceRequestConfig;
   variables: Record<string, string>;
+  variableActions?: TemplateVariableActions;
   onNameChange: (name: string) => void;
   onDescriptionChange: (description: string) => void;
   onConfigChange: (config: WorkspaceRequestConfig) => void;
@@ -149,9 +146,9 @@ export function WorkspaceSettings({
               <div className="flex items-start justify-between gap-ui-4">
                 <div>
                   <h2 className="m-ui-0 text-ui-md font-medium text-content-primary">Shared authentication</h2>
-                  <p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">Add one profile per request type, or one profile for all request types.</p>
+                  <p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">Add reusable profiles and select the required profile from each request’s Inherit authentication.</p>
                 </div>
-                <Button variant="secondary" size="sm" disabled={!availableAuthScopes(config.auth).length || Boolean(editingAuth)} onClick={() => {
+                <Button variant="secondary" size="sm" disabled={Boolean(editingAuth)} onClick={() => {
                   const available = availableAuthScopes(config.auth);
                   setEditingAuth({ id: crypto.randomUUID(), name: "", enabled: true, scope: available[0] ?? "all", value: createRequestAuth() });
                 }}><Plus className="size-ui-4" />Add shared auth</Button>
@@ -169,7 +166,7 @@ export function WorkspaceSettings({
                   </div>
                   <div className="overflow-hidden rounded-ui-lg border border-border-subtle">
                     <AuthEditor auth={editingAuth.value} onAuthChange={(value) => setEditingAuth((current) => current ? { ...current, value } : current)}
-                      context={authContext} runtime={authRuntime} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication" />
+                      context={authContext} runtime={authRuntime} variableActions={variableActions} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication" />
                   </div>
                   <div className="flex justify-end gap-ui-2">
                     <Button variant="ghost" onClick={() => setEditingAuth(null)}>Cancel</Button>

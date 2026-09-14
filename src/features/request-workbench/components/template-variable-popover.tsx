@@ -16,7 +16,7 @@ type InputBindings = {
 export type TemplateVariableActions = {
   definitions: readonly Variable[];
   onOpenVariable: (id: string) => void;
-  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") => void;
+  onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request", sensitive?: boolean) => void;
 };
 
 type Token = { start: number; end: number; name: string; complete: boolean };

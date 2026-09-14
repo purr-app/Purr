@@ -7,11 +7,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../shared/compone
 import { cn } from "../../../shared/lib/cn";
 import type { RequestDocument, SchemaDocument } from "../../workspaces/model/workspace";
 import { initialRequestDraft, type RequestDraft } from "../../request-workbench/model/request";
-import type { AuthContext } from "../../request-workbench/model/request-auth";
+import type { AuthContext, RequestAuth } from "../../request-workbench/model/request-auth";
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
 import { useAuthRuntime } from "../../request-workbench/hooks/use-auth-runtime";
 import { executeRequest } from "../../request-workbench/services/execute-request";
-import { applyWorkspaceRequestConfig, getWorkspaceAuth, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
+import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { normalizeSchema, parseGraphqlSchema } from "../model/graphql";
 import { GraphqlCodeEditor } from "./graphql-code-editor";
 
@@ -63,10 +63,11 @@ function analysis(type: GraphQLNamedType) {
   return { fields: fields.length, deprecated: deprecatedPaths.length, lists: listPaths.length, depth: depthPath.length, depthPath, listPaths, deprecatedPaths };
 }
 
-export function SchemaExplorer({ document, source, variables, workspaceConfig, cookieJar, setSourceDraft, onChange, onCreateRequest }: {
+export function SchemaExplorer({ document, source, variables, workspaceConfig, cookieJar, setSourceDraft, onChange, onWorkspaceAuthChange, onCreateRequest }: {
   document: SchemaDocument; source?: RequestDocument; variables: Record<string, string>; cookieJar: SessionCookieJar;
   workspaceConfig: WorkspaceRequestConfig;
   setSourceDraft: Dispatch<SetStateAction<RequestDraft>>; onChange: (patch: Partial<SchemaDocument>) => void;
+  onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
   const [filter, setFilter] = useState("");
@@ -74,12 +75,15 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [format, setFormat] = useState<"sdl" | "json">("sdl");
-  const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, "graphql"), [workspaceConfig]);
+  const workspaceAuthEntries = useMemo(() => getWorkspaceAuthProfiles(workspaceConfig, "graphql"), [workspaceConfig]);
+  const workspaceProfiles = useMemo(() => workspaceAuthEntries.map((entry) => ({ id: entry.id, name: entry.name || "Workspace", auth: entry.value })), [workspaceAuthEntries]);
+  const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, "graphql",
+    source?.request.auth.type === "inherit" ? source.request.auth.inherit.profileId : undefined), [source?.request.auth, workspaceConfig]);
   const workspaceAuth = useMemo(() => (source?.request.workspace.authEnabled ?? true) && workspaceAuthEntry
-    ? { id: `workspace-auth-${workspaceAuthEntry.id}`, name: workspaceAuthEntry.name || "Workspace", auth: workspaceAuthEntry.value } : undefined,
+    ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || "Workspace", auth: workspaceAuthEntry.value } : undefined,
   [source?.request.workspace.authEnabled, workspaceAuthEntry]);
-  const [context, setContext] = useState<AuthContext>({ variables, workspace: workspaceAuth });
-  useEffect(() => setContext((current) => ({ ...current, variables, workspace: workspaceAuth })), [variables, workspaceAuth]);
+  const [context, setContext] = useState<AuthContext>({ variables, workspace: workspaceAuth, workspaceProfiles });
+  useEffect(() => setContext((current) => ({ ...current, variables, workspace: workspaceAuth, workspaceProfiles })), [variables, workspaceAuth, workspaceProfiles]);
   const upload = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   const mounted = useRef(true);
@@ -97,7 +101,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
     onChange({ endpoint: next.url, ...(document.schemaSource && "endpoint" in document.schemaSource ? { schemaSource: { ...document.schemaSource, endpoint: next.url } } : {}),
       ...(next.url !== endpoint && document.pinned === false ? { sdl: "", loadedAt: null } : {}) });
   }, [document.pinned, document.schemaSource, endpoint, onChange, schemaDraft, setSourceDraft, source]);
-  const runtime = useAuthRuntime(schemaDraft, setSchemaDraft, context, setContext);
+  const runtime = useAuthRuntime(schemaDraft, setSchemaDraft, context, setContext, onWorkspaceAuthChange);
   const parsed = useMemo(() => { try { return { schema: document.sdl ? parseGraphqlSchema(document.sdl) : undefined, error: "" }; } catch (cause) { return { schema: undefined, error: String(cause) }; } }, [document.sdl]);
   const schema = parsed.schema;
   const types = useMemo(() => schema ? Object.values(schema.getTypeMap()).filter((type) => !type.name.startsWith("__")) : [], [schema]);
