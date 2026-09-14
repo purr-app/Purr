@@ -139,10 +139,11 @@ Project files carry SHA-256 revisions. `WorkspacePersistence.watchChanges` compa
 
 - untouched local resources can accept external updates;
 - independent changes can be merged resource-by-resource;
+- `folderId` for saved requests is taken from the rescanned canonical path even when the request has unrelated dirty editor content;
 - a changed saved request with a local draft/base mismatch fails with a conflict instead of discarding edits;
 - the writer uses expected revisions to reject stale overwrites.
 
-Current limitation: `src-tauri/src/persistence.rs` does not include the canonical `documents/` root in its watcher event filter. Startup and explicit reload scan it correctly, but ordinary external edits/moves under `documents/` may not reach the running UI. Do not claim complete live external-document reload until that filter and tests are updated.
+`src-tauri/src/persistence.rs` watches every registered project root with `RecursiveMode::Recursive`. Any event inside `documents/` produces a debounced full snapshot reload. This intentionally favors correctness over path-level optimization: directory create/move/rename/delete events and Git’s atomic file replacement patterns vary by platform, while the scanned filesystem tree is canonical. Notify overflow/rescan signals and watcher errors also request a full snapshot. `WorkspacePersistence` then performs the same revision and three-way conflict checks before replacing the runtime tree.
 
 Application/native support exists for attaching a project to an external directory, but no current UI exposes it.
 

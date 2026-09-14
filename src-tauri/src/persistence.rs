@@ -6,9 +6,9 @@ use crate::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{mpsc, Mutex},
     time::Duration,
 };
@@ -26,6 +26,63 @@ struct RuntimeStorage {
     data: PathBuf,
     migration_snapshot: Option<Value>,
 }
+
+const PROJECT_RESOURCE_ROOTS: [&str; 8] = [
+    "requests",
+    "graphql",
+    "documents",
+    "schemas",
+    "environments",
+    "folders",
+    "integrations",
+    "assets",
+];
+
+fn project_change_paths(root: &Path, paths: &[PathBuf], rescan: bool) -> Vec<String> {
+    if rescan {
+        return vec!["*".into()];
+    }
+    let mut changes = BTreeSet::new();
+    for path in paths {
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() {
+            changes.insert("*".into());
+            continue;
+        }
+        if relative == "purr.yaml" {
+            changes.insert(relative);
+            continue;
+        }
+        let resource_root = relative.split('/').next().unwrap_or("");
+        if !PROJECT_RESOURCE_ROOTS.contains(&resource_root) {
+            continue;
+        }
+        // The documents directory is itself the canonical folder hierarchy.
+        // Any event inside it may represent a nested directory create, move,
+        // rename or removal, so rescan the complete workspace snapshot instead
+        // of trying to infer a tree mutation from platform-specific event pairs.
+        if resource_root == "documents" {
+            changes.clear();
+            changes.insert("*".into());
+            break;
+        }
+        if relative.ends_with(".yaml")
+            || relative.ends_with(".graphql")
+            || relative.ends_with(".bin")
+        {
+            changes.insert(relative);
+        } else if !relative.split('/').any(|part| part.starts_with('.')) {
+            changes.clear();
+            changes.insert("*".into());
+            break;
+        }
+    }
+    changes.into_iter().collect()
+}
+
 fn valid_id(id: &str) -> Result<(), String> {
     if id.is_empty()
         || id.len() > 128
@@ -56,19 +113,26 @@ impl RuntimeStorage {
         std::thread::spawn(move || {
             while let Ok(first) = receiver.recv() {
                 let mut paths = Vec::new();
-                if let Ok(event) = first {
-                    if !matches!(event.kind, notify::EventKind::Access(_)) {
+                let mut rescan = false;
+                match first {
+                    Ok(event) if !matches!(event.kind, notify::EventKind::Access(_)) => {
+                        rescan |= event.need_rescan();
                         paths.extend(event.paths);
                     }
+                    Err(_) => rescan = true,
+                    _ => {}
                 }
                 while let Ok(event) = receiver.recv_timeout(Duration::from_millis(180)) {
-                    if let Ok(event) = event {
-                        if !matches!(event.kind, notify::EventKind::Access(_)) {
+                    match event {
+                        Ok(event) if !matches!(event.kind, notify::EventKind::Access(_)) => {
+                            rescan |= event.need_rescan();
                             paths.extend(event.paths);
                         }
+                        Err(_) => rescan = true,
+                        _ => {}
                     }
                 }
-                if !paths.is_empty() {
+                if rescan || !paths.is_empty() {
                     let state = handle.state::<PersistenceState>();
                     if let Ok(guard) = state.0.lock() {
                         if let Some(storage) = guard.as_ref() {
@@ -76,45 +140,7 @@ impl RuntimeStorage {
                                 .roots
                                 .iter()
                                 .filter_map(|(id, root)| {
-                                    let relative: Vec<String> = paths
-                                        .iter()
-                                        .filter_map(|path| {
-                                            path.strip_prefix(root).ok().map(|path| {
-                                                path.to_string_lossy().replace('\\', "/")
-                                            })
-                                        })
-                                        .filter_map(|path| {
-                                            if path == "purr.yaml"
-                                                || [
-                                                    "requests",
-                                                    "graphql",
-                                                    "schemas",
-                                                    "environments",
-                                                    "folders",
-                                                    "integrations",
-                                                    "assets",
-                                                ]
-                                                .contains(&path.split('/').next().unwrap_or(""))
-                                            {
-                                                if path.ends_with(".yaml")
-                                                    || path.ends_with(".graphql")
-                                                    || path.ends_with(".bin")
-                                                {
-                                                    Some(path)
-                                                } else if !path
-                                                    .split('/')
-                                                    .any(|part| part.starts_with('.'))
-                                                    && !path.contains('.')
-                                                {
-                                                    Some("*".into())
-                                                } else {
-                                                    None
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
+                                    let relative = project_change_paths(root, &paths, rescan);
                                     if relative.is_empty() {
                                         None
                                     } else {
@@ -179,6 +205,42 @@ impl RuntimeStorage {
     }
     fn workspace(&self, id: &str) -> Result<Value, String> {
         Ok(json!({ "id": id, "files": self.files(id)?.load()?, "local": self.local.read(id)? }))
+    }
+}
+
+#[cfg(test)]
+mod watcher_tests {
+    use super::project_change_paths;
+    use std::path::PathBuf;
+
+    #[test]
+    fn documents_events_always_rescan_the_canonical_tree() {
+        let root = PathBuf::from("/workspace");
+        for paths in [
+            vec![root.join("documents/request.yaml")],
+            vec![root.join("documents/one/two/request.yaml")],
+            vec![root.join("documents/one"), root.join("documents/renamed")],
+            vec![root.join("documents/one/two")],
+            vec![root.join("documents/one/.purr-folder.yaml")],
+        ] {
+            assert_eq!(project_change_paths(&root, &paths, false), vec!["*"]);
+        }
+    }
+
+    #[test]
+    fn watcher_rescans_after_backend_overflow_and_filters_unmanaged_paths() {
+        let root = PathBuf::from("/workspace");
+        assert_eq!(project_change_paths(&root, &[], true), vec!["*"]);
+        assert!(project_change_paths(
+            &root,
+            &[root.join(".git/index"), root.join("notes.txt")],
+            false
+        )
+        .is_empty());
+        assert_eq!(
+            project_change_paths(&root, &[root.join("schemas/api.yaml")], false),
+            vec!["schemas/api.yaml"]
+        );
     }
 }
 fn access<T>(

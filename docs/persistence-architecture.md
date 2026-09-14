@@ -122,9 +122,9 @@ Workspace roots live in the local registry. Deleting a Purr-managed workspace de
 
 ## External changes and conflicts
 
-`WorkspacePersistence.watchChanges` performs a three-way comparison between loaded baseline, current projected state, and re-read external canonical files. Clean changes can be accepted and independent resources merged. A dirty saved request whose recorded base differs from the external definition raises a conflict and preserves local edits.
+`WorkspacePersistence.watchChanges` performs a three-way comparison between loaded baseline, current projected state, and re-read external canonical files. Clean changes can be accepted and independent resources merged. Because `documents/` owns hierarchy, restoration takes a saved request’s `folderId` from its rescanned canonical path while preserving unrelated dirty editor content. Other concurrent changes to a dirty request definition still raise a conflict and preserve local edits.
 
-Known limitation: the Rust watcher filter currently omits `documents/`, although scanning/path validation support it. External request/folder changes under the canonical tree are therefore not reliably emitted live. Startup/full reload still reads them. This limitation should be removed in code and tests before docs claim full live synchronization.
+The Rust watcher uses `RecursiveMode::Recursive` for each registered project root. A change anywhere below `documents/` is coalesced for 180 ms and emitted as a full-workspace reload request. Full scanning is deliberate because a native rename may arrive as paired paths, separate create/delete events, a directory-only event, or a backend rescan notice. Notify overflow/rescan signals and watcher errors also force a full snapshot. Other resource roots retain path-specific reloads when the event identifies a canonical file.
 
 ## Local SQLite
 

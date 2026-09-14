@@ -306,11 +306,22 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
     if (index < 0 && !draft.saved) workspace.documents.push(draft);
     else if (index >= 0 && isRequestDocument(draft)) {
       const definition = project.resources.find((item) => item.id === draft.id);
-      if (draft.base && definition && serializeResource(draft.base) !== serializeResource(definition))
+      const baseAtCanonicalLocation = draft.base && definition
+        ? { ...draft.base, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }
+        : draft.base;
+      if (baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation) !== serializeResource(definition))
         throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
-      workspace.documents[index] = draft;
+      // documents/ owns hierarchy. Preserve the dirty request editor state but
+      // always take its location from the canonical filesystem projection.
+      workspace.documents[index] = { ...draft, ...(definition?.folderId ? { folderId: definition.folderId } : { folderId: undefined }) };
     }
   }
+  const canonicalFolderIds = new Set((workspace.extraResources ?? [])
+    .filter((resource) => resource.kind === "folder")
+    .map((resource) => resource.id));
+  workspace.documents = workspace.documents.map((document) => document.folderId && !canonicalFolderIds.has(document.folderId)
+    ? { ...document, folderId: undefined }
+    : document);
   workspace.documents = await Promise.all(workspace.documents.map(async (document) => {
     const session = get("document_session_state", document.id) as (Partial<typeof document> & { editor?: unknown; definition?: string }) | undefined;
     const result = { ...document, ...(session ? { ui: session.ui ?? document.ui, createdAt: session.createdAt ?? document.createdAt, updatedAt: session.updatedAt ?? document.updatedAt } : {}) } as WorkspaceDocument;

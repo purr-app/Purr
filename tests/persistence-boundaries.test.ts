@@ -161,6 +161,147 @@ test("documents directories restore sidebar folders and persist their marker met
   assert.ok(backend.snapshot.workspaces[0].files[moved]);
 });
 
+test("nested folders and documents round-trip through canonical filesystem paths with stable IDs", async () => {
+  const { workspace, document } = savedWorkspace();
+  const secure = new MemorySecureStore();
+  const backend = new MemoryPersistenceBackend();
+  workspace.extraResources = [
+    { id: "folder-api", kind: "folder", name: "API" },
+    { id: "folder-users", kind: "folder", name: "Users", folderId: "folder-api" },
+  ];
+  document.folderId = "folder-users";
+  document.name = "Get user";
+  document.savedRequest = cloneRequestDraft(document.request);
+
+  let persistence = new WorkspacePersistence(backend, secure);
+  await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+  let files = backend.snapshot.workspaces[0].files;
+  const requestName = Object.keys(files).find((path) => path.startsWith("documents/API/Users/") && path.endsWith(".yaml") && !path.endsWith(".purr-folder.yaml"))?.split("/").pop();
+  assert.ok(requestName);
+  assert.ok(files["documents/API/.purr-folder.yaml"]);
+  assert.ok(files["documents/API/Users/.purr-folder.yaml"]);
+  assert.ok(files[`documents/API/Users/${requestName}`]);
+  assert.equal(deserializeResource(files["documents/API/.purr-folder.yaml"].content).id, "folder-api");
+  assert.equal(deserializeResource(files["documents/API/Users/.purr-folder.yaml"].content).id, "folder-users");
+
+  let loaded = await new WorkspacePersistence(backend, secure).load();
+  let restored = loaded.workspaces[0];
+  const restoredUsers = restored.extraResources?.find((resource) => resource.id === "folder-users");
+  assert.ok(restoredUsers?.kind === "folder");
+  assert.equal(restoredUsers.folderId, "folder-api");
+  assert.equal(restored.documents.find((item) => item.id === document.id)?.folderId, "folder-users");
+
+  restored.extraResources = restored.extraResources?.map((resource) => resource.id === "folder-users" && resource.kind === "folder"
+    ? { ...resource, name: "Accounts", folderId: undefined }
+    : resource);
+  const movedDocument = restored.documents.find((item) => item.id === document.id)!;
+  movedDocument.folderId = "folder-users";
+  movedDocument.name = "Renamed request";
+  if (isRequestDocument(movedDocument)) movedDocument.savedRequest = cloneRequestDraft(movedDocument.request);
+  persistence = new WorkspacePersistence(backend, secure);
+  await persistence.load();
+  await persistence.save(loaded);
+
+  files = backend.snapshot.workspaces[0].files;
+  assert.ok(files["documents/API/.purr-folder.yaml"]);
+  assert.ok(files["documents/Accounts/.purr-folder.yaml"]);
+  assert.ok(files[`documents/Accounts/${requestName}`]);
+  assert.ok(!files["documents/API/Users/.purr-folder.yaml"]);
+  assert.ok(!files[`documents/API/Users/${requestName}`]);
+  assert.equal(deserializeResource(files["documents/Accounts/.purr-folder.yaml"].content).id, "folder-users");
+  const movedDefinition = deserializeResource(files[`documents/Accounts/${requestName}`].content);
+  assert.equal(movedDefinition.id, document.id);
+  assert.equal(movedDefinition.name, "Renamed request");
+
+  loaded = await new WorkspacePersistence(backend, secure).load();
+  restored = loaded.workspaces[0];
+  const rootFolder = restored.extraResources?.find((resource) => resource.id === "folder-users");
+  assert.ok(rootFolder?.kind === "folder");
+  assert.equal(rootFolder.folderId, undefined);
+  assert.equal(rootFolder.name, "Accounts");
+  assert.equal(restored.documents.find((item) => item.id === document.id)?.folderId, "folder-users");
+});
+
+test("external document-tree renames, moves and deletes reload from canonical hierarchy", async () => {
+  const { workspace, document } = savedWorkspace();
+  const secure = new MemorySecureStore();
+  const backend = new MemoryPersistenceBackend();
+  workspace.extraResources = [
+    { id: "folder-root", kind: "folder", name: "API" },
+    { id: "folder-child", kind: "folder", name: "Users", folderId: "folder-root" },
+  ];
+  document.folderId = "folder-child";
+  document.savedRequest = cloneRequestDraft(document.request);
+  const persistence = new WorkspacePersistence(backend, secure);
+  let current: WorkspaceStore = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
+  await persistence.save(current);
+
+  const nextReload = () => new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Watcher did not reload the external document-tree change.")), 1_000);
+    void persistence.watchChanges((reloaded) => {
+      clearTimeout(timeout);
+      current = { ...current, workspaces: [reloaded] };
+      resolve();
+    }, (message) => {
+      clearTimeout(timeout);
+      reject(new Error(message));
+    }, () => current).then(() => backend.listener?.(workspace.id, ["*"]));
+  });
+  const move = async (from: string, to: string) => {
+    const file = backend.snapshot.workspaces[0].files[from];
+    assert.ok(file, from);
+    await backend.moveResource(workspace.id, from, to, file.revision);
+  };
+
+  let requestPath = Object.keys(backend.snapshot.workspaces[0].files).find((path) => path.startsWith("documents/API/Users/") && path.endsWith(".yaml") && !path.endsWith(".purr-folder.yaml"))!;
+  await move("documents/API/.purr-folder.yaml", "documents/Services/.purr-folder.yaml");
+  await move("documents/API/Users/.purr-folder.yaml", "documents/Services/Users/.purr-folder.yaml");
+  await move(requestPath, requestPath.replace("documents/API/Users/", "documents/Services/Users/"));
+  await nextReload();
+
+  let restored = current.workspaces[0];
+  const root = restored.extraResources?.find((resource) => resource.id === "folder-root");
+  const child = restored.extraResources?.find((resource) => resource.id === "folder-child");
+  assert.ok(root?.kind === "folder" && child?.kind === "folder");
+  assert.equal(root.name, "Services");
+  assert.equal(child.folderId, root.id);
+  assert.equal(restored.documents.find((item) => item.id === document.id)?.folderId, child.id);
+
+  const dirtyDocument = restored.documents.find((item) => item.id === document.id);
+  assert.ok(dirtyDocument && isRequestDocument(dirtyDocument));
+  dirtyDocument.request.url = "https://local.example/unsaved-after-external-move";
+  requestPath = Object.keys(backend.snapshot.workspaces[0].files).find((path) => path.startsWith("documents/Services/Users/") && path.endsWith(".yaml") && !path.endsWith(".purr-folder.yaml"))!;
+  const renamedRequestPath = "documents/People/external-name.yaml";
+  await move("documents/Services/Users/.purr-folder.yaml", "documents/People/.purr-folder.yaml");
+  await move(requestPath, renamedRequestPath);
+  await nextReload();
+
+  restored = current.workspaces[0];
+  const movedChild = restored.extraResources?.find((resource) => resource.id === "folder-child");
+  assert.ok(movedChild?.kind === "folder");
+  assert.equal(movedChild.name, "People");
+  assert.equal(movedChild.folderId, undefined);
+  const externallyMovedDocument = restored.documents.find((item) => item.id === document.id);
+  assert.ok(externallyMovedDocument && isRequestDocument(externallyMovedDocument));
+  assert.equal(externallyMovedDocument.folderId, movedChild.id);
+  assert.equal(externallyMovedDocument.request.url, "https://local.example/unsaved-after-external-move");
+  externallyMovedDocument.savedRequest = cloneRequestDraft(externallyMovedDocument.request);
+  await persistence.save(current);
+  assert.ok(backend.snapshot.workspaces[0].files[renamedRequestPath]);
+
+  const files = backend.snapshot.workspaces[0].files;
+  await backend.commit(workspace.id, [
+    { path: renamedRequestPath, content: null, expectedRevision: files[renamedRequestPath].revision },
+    { path: "documents/People/.purr-folder.yaml", content: null, expectedRevision: files["documents/People/.purr-folder.yaml"].revision },
+  ], []);
+  await nextReload();
+
+  restored = current.workspaces[0];
+  assert.ok(!restored.documents.some((item) => item.id === document.id));
+  assert.ok(!restored.extraResources?.some((resource) => resource.id === "folder-child"));
+  assert.ok(restored.extraResources?.some((resource) => resource.id === "folder-root"));
+});
+
 test("external valid edits conflict with dirty working copies instead of discarding them", async () => {
   const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
   const persistence = new WorkspacePersistence(backend, secure); const current = { activeWorkspaceId: workspace.id, workspaces: [workspace] };

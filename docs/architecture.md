@@ -127,7 +127,6 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 ## Current architectural limitations
 
 - UI cancellation invalidates ownership of a pending completion but does not abort the native HTTP request.
-- Rust filesystem watching currently filters legacy roots plus `schemas`, `environments`, `folders`, `integrations`, and `assets`, but omits the canonical `documents/` root. External document edits are therefore not reliably pushed into the running UI; explicit reload/startup still scans them.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
