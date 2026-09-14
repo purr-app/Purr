@@ -145,6 +145,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - [Persistence](persistence-architecture.md): exact file/local/vault classification and recovery.
 - [GraphQL](graphql.md): request and schema lifecycles.
 - [Imports and integrations](imports-and-integrations.md): normalized import boundary and reserved concepts.
+- [Modular architecture migration plan](modular-architecture-migration-plan.md): target public/private composition, extension contracts, and the incremental native content-engine migration.
 
 ## Key files
 

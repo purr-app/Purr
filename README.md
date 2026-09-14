@@ -15,6 +15,7 @@ Project definitions are stored as readable YAML/SDL/assets that can be committed
 - [Persistence architecture](docs/persistence-architecture.md)
 - [GraphQL](docs/graphql.md)
 - [Imports and integrations](docs/imports-and-integrations.md)
+- [Public core, extensions, and native-engine migration plan](docs/modular-architecture-migration-plan.md)
 
 Coding agents should start with [AGENTS.md](AGENTS.md), then follow its documentation map for the subsystem they are changing.
 
