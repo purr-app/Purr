@@ -106,7 +106,7 @@ function pruneVariableCache(workspace: Workspace, globalVariables: readonly Vari
 }
 
 export function WorkspaceWorkbench() {
-  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, flush } = useWorkspaces();
+  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave } = useWorkspaces();
   const [dialog, setDialog] = useState<Dialog>(null);
   const [sessions, setSessions] = useState<Record<string, RequestSession>>({});
   const [actionError, setActionError] = useState("");
@@ -674,7 +674,7 @@ export function WorkspaceWorkbench() {
       </div>
     </div>
     <footer className="flex h-control-sm shrink-0 items-center justify-end gap-ui-3 border-t border-border-subtle bg-purr-base px-ui-3 text-ui-xs text-content-tertiary">
-      {saveError || actionError ? <><span role="alert" className="min-w-0 truncate text-accent-red" title={saveError || actionError}>{saveError ? `Could not save workspace: ${saveError}` : actionError}</span>{saveError ? <Button variant="ghost" size="xs" onClick={() => { void flush().catch(() => {}); }}>Retry saving</Button> : null}</>
+      {saveError || actionError ? <><span role="alert" className="min-w-0 truncate text-accent-red" title={saveError || actionError}>{saveError ? `Could not save workspace: ${saveError}` : actionError}</span>{saveError ? <Button variant="ghost" size="xs" onClick={() => { void retrySave().catch(() => {}); }}>Reload and retry</Button> : null}</>
         : <span role="status">{saving ? "Saving…" : "Saved locally"}</span>}
     </footer>
     {dialog === "palette" && <CommandPalette workspace={workspace} actions={actions} onOpenDocument={(id) => update((current) => previewDocument(current, id))} onClose={() => setDialog(null)} />}

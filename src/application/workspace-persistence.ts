@@ -233,46 +233,61 @@ export class WorkspacePersistence {
     this.developmentRewrites.delete(workspace.id);
     this.projects.set(workspace.id, project); this.paths.set(workspace.id, paths);
   }
+  private async reconcileWorkspace(id: string, paths: string[], working?: Workspace): Promise<Workspace | null> {
+    const previous = this.snapshots.get(id); if (!previous) return null;
+    const scanned = paths.includes("*") ? await this.backend.loadWorkspace(id) : undefined;
+    const files = { ...previous.files }; let changed = false;
+    if (scanned) paths = [...new Set([...Object.keys(previous.files), ...Object.keys(scanned.files)])];
+    for (const path of new Set(paths)) {
+      if (!/\.(yaml|graphql|bin)$/.test(path)) continue;
+      const file = scanned ? scanned.files[path] : await this.backend.reloadResource(id, path); if (file?.revision === files[path]?.revision) continue;
+      changed = true; if (file) files[path] = file; else delete files[path];
+    }
+    if (!changed) return null;
+    const snapshot = { ...previous, files }; const project = this.readProject(snapshot, false);
+    const projected = working ? await projectWorkspace(working, this.secure) : undefined;
+    const local = projected?.local ?? previous.local;
+    const baseline = this.projects.get(id);
+    const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
+    if (baseline && projected) {
+      const localManifest = serializeManifest(projected.project.workspace);
+      if (localManifest !== serializeManifest(baseline.workspace)) {
+        if (serializeManifest(project.workspace) !== serializeManifest(baseline.workspace) && localManifest !== serializeManifest(project.workspace)) throw new Error("Concurrent workspace settings edits");
+        merged.workspace = projected.project.workspace;
+      }
+      for (const resourceId of new Set([...baseline.resources, ...projected.project.resources].map((item) => item.id))) {
+        const before = baseline.resources.find((item) => item.id === resourceId);
+        const localResource = projected.project.resources.find((item) => item.id === resourceId);
+        const external = project.resources.find((item) => item.id === resourceId);
+        const signature = (value?: ProjectResource) => value ? serializeResource(value, value.kind === "schema" ? `schemas/${value.id}.graphql` : undefined) + (value.kind === "schema" ? value.pinnedSdl ?? "" : "") : null;
+        if (signature(localResource) === signature(before)) continue;
+        if (signature(external) !== signature(before) && signature(external) !== signature(localResource)) throw new Error("Concurrent resource edits");
+        merged.resources = merged.resources.filter((item) => item.id !== resourceId);
+        if (localResource) merged.resources.push(localResource);
+      }
+      // Removing a saved definition must not discard an unsaved working copy.
+      if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
+    }
+    const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])));
+    this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project); return workspace;
+  }
+  reconcileExternalChanges(store: WorkspaceStore): Promise<WorkspaceStore> {
+    const reconcile = async () => {
+      let result = store;
+      for (const working of store.workspaces) {
+        const workspace = await this.reconcileWorkspace(working.id, ["*"], working);
+        if (workspace) result = { ...result, workspaces: result.workspaces.map((item) => item.id === workspace.id ? workspace : item) };
+      }
+      return result;
+    };
+    const next = this.queue.catch(() => {}).then(reconcile); this.queue = next; return next;
+  }
   async watchChanges(onReload: (workspace: Workspace) => void, onError: (message: string) => void, current: () => WorkspaceStore | null) {
     return this.backend.watchChanges((id, paths) => {
       const reload = async () => {
-        const previous = this.snapshots.get(id); if (!previous) return;
-        const scanned = paths.includes("*") ? await this.backend.loadWorkspace(id) : undefined;
-        const files = { ...previous.files }; let changed = false;
-        if (scanned) paths = [...new Set([...Object.keys(previous.files), ...Object.keys(scanned.files)])];
-        for (const path of new Set(paths)) {
-          if (!/\.(yaml|graphql|bin)$/.test(path)) continue;
-          const file = scanned ? scanned.files[path] : await this.backend.reloadResource(id, path); if (file?.revision === files[path]?.revision) continue;
-          changed = true; if (file) files[path] = file; else delete files[path];
-        }
-        if (!changed) return;
-        const snapshot = { ...previous, files }; const project = this.readProject(snapshot, false);
         const working = current()?.workspaces.find((workspace) => workspace.id === id);
-        const projected = working ? await projectWorkspace(working, this.secure) : undefined;
-        const local = projected?.local ?? previous.local;
-        const baseline = this.projects.get(id);
-        const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
-        if (baseline && projected) {
-          const localManifest = serializeManifest(projected.project.workspace);
-          if (localManifest !== serializeManifest(baseline.workspace)) {
-            if (serializeManifest(project.workspace) !== serializeManifest(baseline.workspace) && localManifest !== serializeManifest(project.workspace)) throw new Error("Concurrent workspace settings edits");
-            merged.workspace = projected.project.workspace;
-          }
-          for (const resourceId of new Set([...baseline.resources, ...projected.project.resources].map((item) => item.id))) {
-            const before = baseline.resources.find((item) => item.id === resourceId);
-            const localResource = projected.project.resources.find((item) => item.id === resourceId);
-            const external = project.resources.find((item) => item.id === resourceId);
-            const signature = (value?: ProjectResource) => value ? serializeResource(value, value.kind === "schema" ? `schemas/${value.id}.graphql` : undefined) + (value.kind === "schema" ? value.pinnedSdl ?? "" : "") : null;
-            if (signature(localResource) === signature(before)) continue;
-            if (signature(external) !== signature(before) && signature(external) !== signature(localResource)) throw new Error("Concurrent resource edits");
-            merged.resources = merged.resources.filter((item) => item.id !== resourceId);
-            if (localResource) merged.resources.push(localResource);
-          }
-          // Removing a saved definition must not discard an unsaved working copy.
-          if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
-        }
-        const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])));
-        this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project); onReload(workspace);
+        const workspace = await this.reconcileWorkspace(id, paths, working);
+        if (workspace) onReload(workspace);
       };
       this.queue = this.queue.catch(() => {}).then(reload).catch(() => onError("Project files changed externally but could not be reconciled. Local edits and files are preserved. Fix invalid YAML or conflicting edits, then reload."));
     });

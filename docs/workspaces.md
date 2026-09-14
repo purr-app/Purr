@@ -145,6 +145,8 @@ Project files carry SHA-256 revisions. `WorkspacePersistence.watchChanges` compa
 
 `src-tauri/src/persistence.rs` watches every registered project root with `RecursiveMode::Recursive`. Any event inside `documents/` produces a debounced full snapshot reload. This intentionally favors correctness over path-level optimization: directory create/move/rename/delete events and Git’s atomic file replacement patterns vary by platform, while the scanned filesystem tree is canonical. Notify overflow/rescan signals and watcher errors also request a full snapshot. `WorkspacePersistence` then performs the same revision and three-way conflict checks before replacing the runtime tree.
 
+The explicit **Reload and retry** save action closes the race where a save observes an external filesystem revision before the debounced watcher reload runs. It rescans and reconciles first, then retries with the refreshed baseline; genuine concurrent content edits remain conflicts. Revision conflicts do not block the macOS window close because the failed preflight has not overwritten canonical files.
+
 Application/native support exists for attaching a project to an external directory, but no current UI exposes it.
 
 ## Key files

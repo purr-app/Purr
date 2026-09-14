@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { saveBeforeApplicationExit } from "../../../application/application-close";
 import { loadWorkspaceStore, saveWorkspaceStore, watchWorkspaceChanges, workspacePersistence } from "../services/workspace-storage";
 import { createWorkspace, type Workspace, type WorkspaceStore } from "../model/workspace";
 
@@ -32,6 +33,18 @@ export function useWorkspaces() {
       if (latest.current === snapshot) { setSaving(false); setSaveError(""); }
     } catch (error) { setSaving(false); setSaveError(String(error)); throw error; }
   }, []);
+  const retrySave = useCallback(async () => {
+    const snapshot = latest.current;
+    if (!snapshot) return;
+    setSaving(true);
+    try {
+      const reconciled = await workspacePersistence().reconcileExternalChanges(snapshot);
+      latest.current = reconciled;
+      setStore(reconciled);
+      await saveWorkspaceStore(reconciled);
+      if (latest.current === reconciled) { setSaving(false); setSaveError(""); }
+    } catch (error) { setSaving(false); setSaveError(String(error)); throw error; }
+  }, []);
   useEffect(() => {
     if (!store) return;
     setSaving(true);
@@ -47,8 +60,9 @@ export function useWorkspaces() {
       if (closing) return;
       if (!latest.current) return;
       event.preventDefault();
-      try { await flush(); closing = true; await invoke("exit_app"); }
-      catch { closing = false; /* The save error remains visible; the window stays open. */ }
+      closing = true;
+      try { await saveBeforeApplicationExit(flush, () => invoke("exit_app")); }
+      catch { closing = false; }
     })).then((listener) => { if (disposed) listener(); else unlisten = listener; }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };
   }, [flush]);
@@ -64,5 +78,5 @@ export function useWorkspaces() {
       return { ...current, workspaces, activeWorkspaceId: current.activeWorkspaceId === id ? workspaces[0].id : current.activeWorkspaceId };
     });
   }, []);
-  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry: load, flush };
+  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry: load, flush, retrySave };
 }

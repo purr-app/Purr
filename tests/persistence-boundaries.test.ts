@@ -128,6 +128,29 @@ test("file watching reconciles a moved YAML resource without renaming it back or
   assert.ok(backend.snapshot.workspaces[0].files[moved]); assert.ok(!backend.snapshot.workspaces[0].files[path]);
 });
 
+test("explicit save retry reconciles an external move before committing local edits", async () => {
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const persistence = new WorkspacePersistence(backend, secure); let current: WorkspaceStore = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
+  await persistence.save(current);
+  const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((candidate) => candidate.startsWith("documents/"))!;
+  const moved = "documents/externally-renamed.yaml";
+  await backend.moveResource(workspace.id, path, moved, before.files[path].revision);
+  document.request.url = "https://local.example/retained-on-retry";
+  document.savedRequest = cloneRequestDraft(document.request);
+  await assert.rejects(persistence.save(current), /conflict/);
+
+  current = await persistence.reconcileExternalChanges(current);
+  const reconciled = current.workspaces[0].documents.find((candidate) => candidate.id === document.id);
+  assert.ok(reconciled && isRequestDocument(reconciled));
+  assert.equal(reconciled.request.url, "https://local.example/retained-on-retry");
+  await persistence.save(current);
+
+  const files = backend.snapshot.workspaces[0].files;
+  assert.ok(!files[path]); assert.ok(files[moved]);
+  const saved = deserializeResource(files[moved].content); assert.ok(saved.kind === "http");
+  assert.equal(saved.url, "https://local.example/retained-on-retry");
+});
+
 test("legacy request directories are migrated to the shared documents directory without changing IDs", async () => {
   const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
   const first = new WorkspacePersistence(backend, secure);
