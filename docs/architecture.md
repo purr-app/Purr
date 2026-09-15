@@ -59,15 +59,15 @@ canonical Project + local records + assets
 
 Rust modules provide narrow privileged boundaries:
 
-- `src-tauri/src/http.rs`: validated HTTP(S) transport without automatic redirects.
-- `src-tauri/src/importing.rs`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
-- `src-tauri/src/project_files.rs`: safe project scanning and revision-checked atomic file operations.
-- `src-tauri/src/local_state.rs`: encrypted local records, execution metadata/history, and secret vault.
-- `src-tauri/src/secure_store.rs`: Keychain root key and derived encryption keys.
-- `src-tauri/src/persistence.rs`: workspace registry, commit journal, watchers, and Tauri persistence commands.
+- `src-tauri/src/http/`: validated HTTP(S) transport without automatic redirects.
+- `src-tauri/src/content/`: encrypted response-content chunks, lifecycle, bounded reads, and a dedicated SQLite worker.
+- `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
+- `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
+- `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
+- `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.
-- `src-tauri/src/downloads.rs`: native response-body save.
-- `src-tauri/src/lib.rs`: registered Tauri commands and managed services.
+- `src-tauri/src/composition.rs`: registered Tauri commands, plugins, and managed services.
+- `src-tauri/src/lib.rs`: minimal public run surface.
 
 ## Dependency direction and invariants
 

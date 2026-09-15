@@ -9,6 +9,10 @@ const nativeRoot = join(root, "src-tauri", "src");
 const registeredCommands = [
   "exit_app",
   "save_response_body",
+  "response_content_inspect",
+  "response_content_read_range",
+  "response_content_read_lines",
+  "response_content_release",
   "send_http",
   "import_collection",
   "authorize_oauth",

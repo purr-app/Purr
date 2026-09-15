@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { z } from "zod";
 
 import type { HttpTransportResponse } from "../../application/ports/http";
 import type { PlatformAdapters } from "../../application/ports/platform";
@@ -14,6 +15,7 @@ import type {
   StoredWorkspace,
 } from "../../application/ports/persistence";
 import type { SecureStore } from "../../application/ports/credentials";
+import type { ResponseContentPort } from "../../application/ports/response-content";
 import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 
@@ -161,6 +163,73 @@ const unavailableContent = () =>
     new Error("Native response content is not available before Phase 5."),
   );
 
+const contentInfoSchema = z.object({
+  size: z.number().int().nonnegative(),
+  mediaType: z.string().optional(),
+  textEncoding: z.string().optional(),
+});
+const contentWindowSchema = z.object({
+  offset: z.number().int().nonnegative(),
+  bytesRead: z.number().int().nonnegative(),
+  content: z.string(),
+  complete: z.boolean(),
+});
+const linePageSchema = z.object({
+  lines: z.array(z.string()),
+  nextCursor: z.string().optional(),
+  complete: z.boolean(),
+});
+
+function rejectAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+}
+
+class TauriResponseContent implements ResponseContentPort {
+  async inspect(reference: ResponseContentRef, signal?: AbortSignal) {
+    rejectAborted(signal);
+    return contentInfoSchema.parse(
+      await invoke("response_content_inspect", { reference }),
+    );
+  }
+
+  async readRange(
+    reference: ResponseContentRef,
+    range: { offset: number; length: number },
+    mode: "bytes" | "text" | "hex" | "base64",
+    signal?: AbortSignal,
+  ) {
+    rejectAborted(signal);
+    return contentWindowSchema.parse(
+      await invoke("response_content_read_range", { reference, range, mode }),
+    );
+  }
+
+  async readLines(
+    reference: ResponseContentRef,
+    cursor: string | undefined,
+    limit: number,
+    signal?: AbortSignal,
+  ) {
+    rejectAborted(signal);
+    return linePageSchema.parse(
+      await invoke("response_content_read_lines", {
+        reference,
+        cursor,
+        limit,
+      }),
+    );
+  }
+
+  search = unavailableContent;
+  format = unavailableContent;
+  query = unavailableContent;
+  save = unavailableContent;
+
+  async release(reference: ResponseContentRef) {
+    await invoke<void>("response_content_release", { reference });
+  }
+}
+
 export function createTauriPlatformAdapters(): PlatformAdapters {
   const secureStore = new TauriSecureStore();
   return {
@@ -168,16 +237,7 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
     secureStore,
     httpTransport: (request: HttpRequestSnapshot) =>
       invoke<HttpTransportResponse>("send_http", { request }),
-    responseContent: {
-      inspect: unavailableContent,
-      readRange: unavailableContent,
-      readLines: unavailableContent,
-      search: unavailableContent,
-      format: unavailableContent,
-      query: unavailableContent,
-      save: unavailableContent,
-      release: async (_reference: ResponseContentRef) => unavailableContent(),
-    },
+    responseContent: new TauriResponseContent(),
     oauthCallback: {
       authorize: (input) => invoke<string>("authorize_oauth", input),
       cancel: (sessionId) => invoke<void>("cancel_oauth", { sessionId }),

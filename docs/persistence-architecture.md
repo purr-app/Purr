@@ -52,7 +52,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Latest execution | `RequestDocument.lastResponse` | encrypted `request_executions` + `response_bodies` | No | Potentially | Restore latest response without polluting Git |
 | Older execution history | not hydrated in ordinary runtime | same native tables | No | Potentially | Local indexed history backend |
 | Response headers | `InlineHttpResponse.headers` / `HttpExchange.response.headers` | encrypted execution payload | No | Potentially | Runtime evidence can contain tokens/cookies |
-| Response body | `InlineHttpResponse.bodyBase64/text`; future `HttpExchange.content` reference | encrypted `response_bodies` | No | Potentially | Large/sensitive execution data |
+| Response body | `InlineHttpResponse.bodyBase64/text`; future `HttpExchange.content` reference | encrypted legacy `response_bodies`; native `response_contents` + encrypted chunks | No | Potentially | Large/sensitive execution data |
 | Cookie metadata | `SessionCookie` | local `cookie_metadata` index columns | No | Metadata only | Queryable local jar inventory |
 | Cookie values/full record | `SessionCookieJar` | encrypted `cookie_jar` payload | No | Yes | Session credential material |
 | Canonical attachment | live `File` in `RequestBody` | content-addressed `assets/<sha256>.bin` | Yes | Not assumed; user-controlled | Required to reproduce saved request |
@@ -119,9 +119,9 @@ Projection intentionally:
 
 ## Native filesystem safety and commit model
 
-`src-tauri/src/project_files.rs` accepts only managed relative paths, rejects traversal and symlink escapes, and calculates SHA-256 revisions. Writes use same-directory temporary files, flush/sync, and atomic persist/rename. Deletes target individual resolved files; empty directories can remain.
+`src-tauri/src/persistence/project_files.rs` accepts only managed relative paths, rejects traversal and symlink escapes, and calculates SHA-256 revisions. Writes use same-directory temporary files, flush/sync, and atomic persist/rename. Deletes target individual resolved files; empty directories can remain.
 
-Each `FileChange` includes `expectedRevision`. A mismatch aborts rather than overwriting an external edit. `src-tauri/src/persistence.rs` journals a cross-file/local commit in encrypted `pending_commits`, applies it, and clears the journal. Startup replays recoverable pending commits.
+Each `FileChange` includes `expectedRevision`. A mismatch aborts rather than overwriting an external edit. `src-tauri/src/persistence/runtime.rs` journals a cross-file/local commit in encrypted `pending_commits`, applies it, and clears the journal. Startup replays recoverable pending commits.
 
 Workspace roots live in the local registry. Deleting a Purr-managed workspace deletes its managed project directory; deleting an attached external workspace unregisters it without deleting its external project files. Attach-directory support exists below the UI boundary only.
 
@@ -135,7 +135,7 @@ The Rust watcher uses `RecursiveMode::Recursive` for each registered project roo
 
 ## Local SQLite
 
-`src-tauri/src/local_state.rs` creates schema migrations and the encrypted payload tables listed by `LocalTable`:
+`src-tauri/src/persistence/local_records.rs` creates schema migrations and the encrypted payload tables listed by `LocalTable`:
 
 - `workspace_local_state`;
 - `drafts`;
@@ -146,7 +146,9 @@ The Rust watcher uses `RecursiveMode::Recursive` for each registered project roo
 - `recent_items`;
 - `attachments`.
 
-Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated encrypted `response_bodies`, `cookie_metadata`, and `secret_values`. SQLite runs with WAL, full synchronous behavior, and a busy timeout.
+Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated legacy `response_bodies`, `cookie_metadata`, `secret_values`, and the Phase 5 `response_contents`/`response_content_chunks` store. SQLite runs with WAL, full synchronous behavior, foreign keys, and a busy timeout.
+
+Native response content has an explicit `staging`, `ready`, or `adopted` state. Chunks are at most 256 KiB and independently encrypted with AAD bound to their content identity and position. The content worker removes expired unowned records. Persisting a v2 execution adopts matching ready content in the same SQLite transaction; deleting that execution or workspace deletes its metadata and cascading chunks. Legacy inline `response_bodies` remain readable and are not deleted by the schema migration.
 
 General local-record payloads are AES-GCM encrypted with context/AAD bound to workspace/table/record identity. Execution document/time/status and cookie metadata columns remain plaintext indexes; execution bodies, full execution payloads, cookie values, drafts, and session state are encrypted.
 
@@ -156,7 +158,7 @@ Ordinary `read` returns only the newest execution per document. `history` querie
 
 `SecureStore` is a typed frontend contract. `NativeSecureStore` maps it to `secure_get/set/delete/exists`. `storeCredential` writes a value and returns either a plain credential (only when explicitly allowed) or a secret ref.
 
-On macOS `PlatformRootKeyStore` stores one 32-byte root in Keychain service `app.purr.credentials`. HKDF derives separate database and secret keys. The root key is read once when the backend starts. If encrypted data exists and the Keychain item is missing, startup fails closed and does not generate a replacement key that would make old data unreadable.
+On macOS `PlatformRootKeyStore` stores one 32-byte root in Keychain service `app.purr.credentials`. HKDF derives separate database, credential-vault, and response-content keys. Each native storage worker reads the root when it starts and retains only its derived cipher. If encrypted data exists and the Keychain item is missing, startup fails closed and does not generate a replacement key that would make old data unreadable.
 
 Other native platforms currently fail closed because no root-key adapter is configured.
 
@@ -167,7 +169,7 @@ There are distinct migration responsibilities:
 - YAML `projectFormatVersion` and tolerant development-shape rewrites in `storage/yaml.ts`;
 - legacy monolithic workspace migration into project files/local records in `WorkspacePersistence.load`;
 - legacy request root migration into `documents/`;
-- SQLite schema migrations in `local_state.rs`;
+- SQLite schema migrations in `persistence/local_records.rs`;
 - encrypted envelope/key migration in native secure/local modules;
 - runtime record payload migration before strict restoration.
 

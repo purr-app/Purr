@@ -2,6 +2,11 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::fs;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::content::{
+    actor::ResponseContentState,
+    contracts::{ByteRange, ContentInfo, ContentWindow, LinePage, ResponseContentRef},
+};
+
 fn safe_file_name(value: &str) -> String {
     let cleaned: String = value
         .chars()
@@ -50,6 +55,52 @@ pub async fn save_response_body(
     let path = file.into_path().map_err(|error| error.to_string())?;
     fs::write(&path, bytes).map_err(|error| format!("Cannot save {}: {error}", path.display()))?;
     Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+pub async fn response_content_inspect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    reference: ResponseContentRef,
+) -> Result<ContentInfo, String> {
+    state.handle(&app)?.inspect(reference.id).await
+}
+
+#[tauri::command]
+pub async fn response_content_read_range(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    reference: ResponseContentRef,
+    range: ByteRange,
+    mode: String,
+) -> Result<ContentWindow, String> {
+    state
+        .handle(&app)?
+        .read_range(reference.id, range, mode)
+        .await
+}
+
+#[tauri::command]
+pub async fn response_content_read_lines(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    reference: ResponseContentRef,
+    cursor: Option<String>,
+    limit: usize,
+) -> Result<LinePage, String> {
+    state
+        .handle(&app)?
+        .read_lines(reference.id, cursor, limit)
+        .await
+}
+
+#[tauri::command]
+pub async fn response_content_release(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    reference: ResponseContentRef,
+) -> Result<(), String> {
+    state.handle(&app)?.release(reference.id).await
 }
 
 #[cfg(test)]

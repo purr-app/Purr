@@ -1,5 +1,6 @@
 mod commands;
 mod composition;
+mod content;
 mod http;
 mod importing;
 mod oauth;

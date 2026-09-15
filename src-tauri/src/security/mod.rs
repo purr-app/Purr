@@ -11,6 +11,7 @@ const KEYCHAIN_SERVICE: &str = "app.purr.credentials";
 pub const ROOT_KEY_REF: &str = "purr/local-storage/master-key-v1";
 const DATABASE_KEY_INFO: &[u8] = b"purr:database:v1";
 const SECRETS_KEY_INFO: &[u8] = b"purr:secrets:v1";
+const RESPONSE_CONTENT_KEY_INFO: &[u8] = b"purr:response-content:v1";
 
 // The OS store owns one root key only. SecretRef values are handled by the
 // encrypted SQLite vault and never become individual Keychain items.
@@ -72,6 +73,7 @@ pub struct LocalCipher(Aes256Gcm);
 pub struct RootCiphers {
     pub database: LocalCipher,
     pub secrets: LocalCipher,
+    pub response_content: LocalCipher,
     pub legacy_database: Option<LocalCipher>,
 }
 
@@ -114,9 +116,11 @@ impl RootCiphers {
         }
         let database_key = derive_key(&root, DATABASE_KEY_INFO)?;
         let secrets_key = derive_key(&root, SECRETS_KEY_INFO)?;
+        let response_content_key = derive_key(&root, RESPONSE_CONTENT_KEY_INFO)?;
         Ok(Self {
             database: LocalCipher::from_key(&database_key[..])?,
             secrets: LocalCipher::from_key(&secrets_key[..])?,
+            response_content: LocalCipher::from_key(&response_content_key[..])?,
             legacy_database: needs_legacy_database_key
                 .then(|| LocalCipher::from_key(&root))
                 .transpose()?,
@@ -282,7 +286,10 @@ pub mod tests {
         let root = [7_u8; 32];
         let database = derive_key(&root, DATABASE_KEY_INFO).unwrap();
         let secrets = derive_key(&root, SECRETS_KEY_INFO).unwrap();
+        let response_content = derive_key(&root, RESPONSE_CONTENT_KEY_INFO).unwrap();
         assert_ne!(&*database, &*secrets);
+        assert_ne!(&*database, &*response_content);
+        assert_ne!(&*secrets, &*response_content);
     }
 
     #[test]

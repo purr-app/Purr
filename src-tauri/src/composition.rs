@@ -1,4 +1,4 @@
-use crate::{commands, http, oauth, persistence};
+use crate::{commands, content::actor::ResponseContentState, http, oauth, persistence};
 
 #[cfg(target_os = "macos")]
 fn set_macos_app_icon() {
@@ -23,6 +23,7 @@ pub fn run() {
         .manage(http::HttpClient::default())
         .manage(oauth::OAuthCallbacks::default())
         .manage(persistence::PersistenceState::default())
+        .manage(ResponseContentState::default())
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
@@ -31,6 +32,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::exit_app,
             commands::response::save_response_body,
+            commands::response::response_content_inspect,
+            commands::response::response_content_read_range,
+            commands::response::response_content_read_lines,
+            commands::response::response_content_release,
             commands::http::send_http,
             commands::importing::import_collection,
             oauth::authorize_oauth,

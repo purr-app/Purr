@@ -1,4 +1,7 @@
-use crate::security::{validate_secret_ref, LocalCipher, RootCiphers, RootKeyStore};
+use crate::{
+    persistence::response_bodies::{adopt_content, delete_execution_content},
+    security::{validate_secret_ref, LocalCipher, RootCiphers, RootKeyStore},
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,12 +42,12 @@ impl LocalStateStore {
         .map_err(db_error)?;
         Self::migrate(&mut db)?;
         let mut has_encrypted_data = false;
-        for table in
-            TABLES
-                .iter()
-                .copied()
-                .chain(["pending_commits", "response_bodies", "secret_values"])
-        {
+        for table in TABLES.iter().copied().chain([
+            "pending_commits",
+            "response_bodies",
+            "secret_values",
+            "response_content_chunks",
+        ]) {
             has_encrypted_data |= db
                 .query_row(
                     &format!("SELECT EXISTS(SELECT 1 FROM {table})"),
@@ -90,11 +93,11 @@ impl LocalStateStore {
     pub fn cipher(&self) -> &LocalCipher {
         &self.cipher
     }
-    fn migrate(db: &mut Connection) -> Result<(), String> {
+    pub(crate) fn migrate(db: &mut Connection) -> Result<(), String> {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(db_error)?;
-        if version > 3 {
+        if version > 4 {
             return Err("Local database was created by a newer Purr version".into());
         }
         if version == 0 {
@@ -135,6 +138,39 @@ impl LocalStateStore {
                 );
                 INSERT INTO migrations(version) VALUES(3);
                 PRAGMA user_version=3;",
+            )
+            .map_err(db_error)?;
+            tx.commit().map_err(db_error)?;
+        }
+        if version < 4 {
+            let tx = db.transaction().map_err(db_error)?;
+            tx.execute_batch(
+                "CREATE TABLE response_contents(
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT,
+                    execution_id TEXT,
+                    state TEXT NOT NULL CHECK(state IN ('staging','ready','adopted')),
+                    byte_length INTEGER NOT NULL DEFAULT 0 CHECK(byte_length >= 0),
+                    media_type TEXT,
+                    charset TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    UNIQUE(workspace_id, execution_id)
+                );
+                CREATE INDEX response_contents_expiry ON response_contents(state, expires_at);
+                CREATE TABLE response_content_chunks(
+                    content_id TEXT NOT NULL REFERENCES response_contents(id) ON DELETE CASCADE,
+                    chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+                    plain_offset INTEGER NOT NULL CHECK(plain_offset >= 0),
+                    plain_length INTEGER NOT NULL CHECK(plain_length > 0),
+                    crypto_version INTEGER NOT NULL,
+                    nonce BLOB NOT NULL,
+                    ciphertext BLOB NOT NULL,
+                    PRIMARY KEY(content_id, chunk_index),
+                    UNIQUE(content_id, plain_offset)
+                );
+                INSERT INTO migrations(version) VALUES(4);
+                PRAGMA user_version=4;",
             )
             .map_err(db_error)?;
             tx.commit().map_err(db_error)?;
@@ -343,6 +379,11 @@ impl LocalStateStore {
         )
         .map_err(db_error)?;
         tx.execute(
+            "DELETE FROM response_contents WHERE workspace_id=?1",
+            [workspace],
+        )
+        .map_err(db_error)?;
+        tx.execute(
             "DELETE FROM cookie_metadata WHERE workspace_id=?1",
             [workspace],
         )
@@ -440,6 +481,7 @@ impl LocalStateStore {
                         params![workspace, record.id],
                     )
                     .map_err(db_error)?;
+                    delete_execution_content(&tx, workspace, &record.id)?;
                 }
             } else {
                 let context = format!("{workspace}/{}/{}", record.table, record.id);
@@ -456,12 +498,37 @@ impl LocalStateStore {
                                 &format!("{workspace}/response_bodies/{}", record.id),
                             )?;
                             tx.execute("INSERT INTO response_bodies(workspace_id,execution_id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,execution_id) DO UPDATE SET payload=excluded.payload",params![workspace,record.id,payload]).map_err(db_error)?;
+                            delete_execution_content(&tx, workspace, &record.id)?;
+                        } else if let Some(content) = response.get("content") {
+                            let content_id = content["id"]
+                                .as_str()
+                                .ok_or("Invalid response content reference")?;
+                            let byte_length = content["byteLength"]
+                                .as_u64()
+                                .ok_or("Invalid response content reference")?;
+                            let complete = content["complete"]
+                                .as_bool()
+                                .ok_or("Invalid response content reference")?;
+                            adopt_content(
+                                &tx,
+                                workspace,
+                                &record.id,
+                                content_id,
+                                byte_length,
+                                complete,
+                            )?;
+                            tx.execute(
+                                "DELETE FROM response_bodies WHERE workspace_id=?1 AND execution_id=?2",
+                                params![workspace, record.id],
+                            )
+                            .map_err(db_error)?;
                         } else {
                             tx.execute(
                                 "DELETE FROM response_bodies WHERE workspace_id=?1 AND execution_id=?2",
                                 params![workspace, record.id],
                             )
                             .map_err(db_error)?;
+                            delete_execution_content(&tx, workspace, &record.id)?;
                         }
                     }
                 }
@@ -902,7 +969,7 @@ mod tests {
         let secure = MemoryRootKeyStore::default();
         let store = LocalStateStore::open(&path, &secure).unwrap();
         // Reconstruct the earlier local schema, then exercise the real migration.
-        store.db.execute_batch("DROP INDEX execution_document_time; ALTER TABLE request_executions DROP COLUMN document_id; ALTER TABLE request_executions DROP COLUMN started_at; ALTER TABLE request_executions DROP COLUMN status; DROP TABLE response_bodies; DROP TABLE cookie_metadata; DROP TABLE secret_values; DELETE FROM migrations WHERE version>1; PRAGMA user_version=1;").unwrap();
+        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_document_time; ALTER TABLE request_executions DROP COLUMN document_id; ALTER TABLE request_executions DROP COLUMN started_at; ALTER TABLE request_executions DROP COLUMN status; DROP TABLE response_bodies; DROP TABLE cookie_metadata; DROP TABLE secret_values; DELETE FROM migrations WHERE version>1; PRAGMA user_version=1;").unwrap();
         let value = serde_json::json!({"text":"retained draft"});
         let payload = store
             .cipher
@@ -925,6 +992,41 @@ mod tests {
         drop(store);
         assert!(LocalStateStore::open(&path, &secure).is_err());
     }
+    #[test]
+    fn sqlite_v3_inline_response_survives_the_content_store_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let secure = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&path, &secure).unwrap();
+        store
+            .write(
+                "workspace",
+                &[LocalRecord {
+                    table: "request_executions".into(),
+                    id: "legacy-response".into(),
+                    value: serde_json::json!({"documentId":"request","response":{"status":200,"text":"legacy body","bodyBase64":"bGVnYWN5IGJvZHk=","timeline":{"startedAtMs":1}}}),
+                }],
+            )
+            .unwrap();
+        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DELETE FROM migrations WHERE version=4; PRAGMA user_version=3;").unwrap();
+        drop(store);
+
+        let store = LocalStateStore::open(&path, &secure).unwrap();
+        let loaded = store.read("workspace").unwrap();
+        assert_eq!(loaded[0].value["response"]["text"], "legacy body");
+        assert_eq!(
+            loaded[0].value["response"]["bodyBase64"],
+            "bGVnYWN5IGJvZHk="
+        );
+        assert_eq!(
+            store
+                .db
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+    }
+
     #[test]
     fn migrations_are_idempotent_and_sensitive_records_are_encrypted() {
         let dir = tempfile::tempdir().unwrap();
@@ -958,7 +1060,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM migrations", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
     }
 }

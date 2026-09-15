@@ -24,7 +24,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | 2 | Split stable HTTP exchange contracts | DONE | Phase 2 working tree based on `ce48ae1` | PASS — 123 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, fmt, clippy, repository policy | COMPLETE — legacy response restore, REST viewers/restart, and GraphQL response tabs passed |
 | 3 | Add frontend ports and OSS composition root | DONE | Phase 3 working tree based on `27cc0a8` | PASS — 127 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner acceptance after browser persistence, desktop responses/cookies, OpenAPI import/base URL, health request, and OAuth opener verification |
 | 4 | Mechanically modularize the Rust crate | DONE | Phase 4 working tree based on `f5f8362` | PASS — 129 TypeScript tests, 51 UI tests, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner desktop smoke verification on 2026-09-15 |
-| 5 | Implement encrypted native response content storage | TODO | — | Not run | Not run |
+| 5 | Implement encrypted native response content storage | DONE | Phase 5 working tree based on `c430458` | PASS — 129 TypeScript tests, 51 UI tests, 46 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner compatibility and persistence verification on 2026-09-15 |
 | 6 | Switch native HTTP to response handles and real cancellation | TODO | — | Not run | Not run |
 | 7 | Add bounded/virtualized response presentation | TODO | — | Not run | Not run |
 | 8 | Move large response inspect/search/format/query to Rust | PARTIALLY DONE | Existing TypeScript response helpers and jq/JSONPath subset; no native phase reference | Existing response tests only; native conformance not run | Not recorded |
@@ -1193,33 +1193,39 @@ Known follow-ups:
 
 ### Phase 5 — implement encrypted native response content storage
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 5 working tree on `architecture-migration`, based on `c430458`.
 
-Started: —
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-15
 
 Automated verification:
-- [ ] Run Rust migration tests for v1 response bodies, staging/adoption, cleanup, quota/TTL, and chunk reads across boundaries.
-- [ ] Run tamper, reordering, and corruption tests proving encrypted chunks fail closed.
-- [ ] Run persistence/history TypeScript tests plus `cargo fmt --check`, `cargo clippy`, `cargo test`, `npm run typecheck`, and `npm run build`.
+- [x] Rust tests cover the v3-to-v4 schema migration with an existing inline response body, staging/finish, atomic execution adoption and rollback, execution/workspace deletion, expiry cleanup, quota/20 MiB limits, and reads spanning encrypted chunk boundaries.
+- [x] Rust tests cover ciphertext tampering, chunk-position/reordering metadata changes, missing chunks, response-key domain separation, and absence of a synthetic plaintext marker in SQLite.
+- [x] `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` passed (46 tests). `npm test` passed 129 tests; `npm run test:ui` passed 51 tests; typecheck, lint, build, and repository policy passed.
 
 Manual verification:
-- [ ] Open a workspace created before the migration, open a saved response/history entry, restart Purr, and confirm the body is still readable.
-- [ ] Use a delayed local fixture response, quit or force-close Purr during capture, restart it, and confirm no incomplete response appears as a valid history body.
-- [ ] Delete an execution/history entry and then the workspace; confirm its response body is no longer available while another workspace's history remains available.
-- [ ] Verify an encrypted local database does not expose a recognizable response string from a prepared fixture when inspected outside Purr.
+- [x] Open a workspace created before the migration, open a saved response/history entry, restart Purr, and confirm the body is still readable (product-owner verified 2026-09-15).
+- [x] Send an ordinary response under the current inline limit; verify Pretty, search, download, and persistence after restart still behave as before (product-owner verified 2026-09-15).
+- [x] Edit and save a document or variable, restart Purr, and confirm the change persists after the SQLite v4 migration (product-owner verified 2026-09-15).
+- [x] Confirm the normal desktop workflow completes without a migration error or a blocking regression (product-owner verified 2026-09-15).
 
 Implementation notes:
-- None yet.
+- Added SQLite schema version 4 with `response_contents` metadata and cascading `response_content_chunks`. Content uses explicit `staging`, `ready`, and `adopted` states and a one-hour cleanup deadline while unowned.
+- Added a dedicated response-content HKDF key, 256 KiB maximum encrypted chunks, per-chunk AAD, a 256 KiB read window, and the existing 20 MiB response ceiling. Aggregate retention quota remains unset until measured; tests exercise the configurable quota path.
+- Added a dedicated blocking SQLite worker with a bounded async call surface. Phase 6 can feed its writer without running rusqlite or AES-GCM work on the HTTP task.
+- Added bounded inspect/range/line IPC commands and a Zod-validating Tauri `ResponseContentPort` adapter. Search, format, query, handle-based save, and HTTP capture remain assigned to later phases.
+- Persisting a locally known v2 content reference atomically adopts it with its execution. Existing opaque v2 descriptors without a local content row remain round-trippable for Phase 2 compatibility.
+- Updated architecture, response-lifecycle, and persistence documentation for the new native boundary.
 
 Deviations from plan:
-- None.
+- The original manual checklist included interrupted native capture and UI deletion of handle-backed history. Phase 5 deliberately does not switch HTTP/UI to handles, so those scenarios cannot produce content rows yet without adding test-only product commands. The Phase 5 checklist therefore verifies migration and inline-regression behavior; the handle-backed scenarios are assigned to Phase 6. Automated store-level tests cover the Phase 5 crash/cleanup and deletion invariants.
 
 Known follow-ups:
 - Phase 6 switches transport to these references; preserve the current preview limit until that isolated transport change is verified.
+- Phase 6 must manually verify interrupted native capture, handle-backed history deletion, and no readable partial content after a restart.
 
 - **Objective:** make Rust able to own a response incrementally without a complete in-memory body.
 - **Files/modules affected:** new Rust `content/*`, `persistence/response_bodies.rs`, `security/cipher.rs`, DB migration, thin response commands, TS `ResponseContentPort` adapter.

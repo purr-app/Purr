@@ -5,7 +5,7 @@ This document owns the path from native response bytes to frontend rendering, se
 ## Pipeline
 
 ```text
-Reqwest response in src-tauri/src/http.rs
+Reqwest response in src-tauri/src/http/transport.rs
   → WireResponse over Tauri IPC
   → executeHttp() redirect/cookie loop
   → base64 bytes decoded to Uint8Array + UTF-8 text
@@ -17,13 +17,15 @@ Reqwest response in src-tauri/src/http.rs
 
 `WireResponse` contains status, status text, duplicate-preserving headers, base64 body bytes, transport duration, header/download timings, HTTP version, and optional local/remote socket addresses. `executeHttp` adds final URL, decoded `text`, actual byte size, and the frontend timeline, then wraps the result in the domain-owned `InlineHttpResponse` compatibility shape. Redirects are resolved in TypeScript, so the final response describes the last hop while timeline redirect entries retain hop metadata.
 
-`src/domain/http.ts` also defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. Phase 2 only establishes and validates this contract. Desktop responses remain inline until native content storage and the response-content port are implemented in later phases.
+`src/domain/http.ts` also defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. Desktop HTTP responses remain inline until Phase 6 switches transport ownership. The Phase 5 native content store and bounded read adapter are available in parallel but do not yet receive HTTP bodies.
 
 The UTF-8 text decode is permissive. Binary-safe operations such as image/media display, hex/base64 rendering, and download use `bodyBase64`, not a text re-encoding.
 
 ## Native response boundary
 
-`src-tauri/src/http.rs` disables Reqwest redirects and streams up to 20 MiB into the response preview. It preserves repeated response headers including `Set-Cookie`, measures header/download/total transport time, and sanitizes transport errors so the request URL/query is not echoed into an error string.
+`src-tauri/src/http/transport.rs` disables Reqwest redirects and streams up to 20 MiB into the response preview. It preserves repeated response headers including `Set-Cookie`, measures header/download/total transport time, and sanitizes transport errors so the request URL/query is not echoed into an error string.
+
+`src-tauri/src/content/` owns the parallel encrypted response-content engine. It stores bounded chunks with a response-specific derived key and AAD bound to content ID, chunk index, byte offset, length, and crypto version. Content remains unreadable while `staging`, becomes readable when `ready`, and is adopted atomically when its execution record is persisted. Bounded inspect, byte-range, and line-page operations cross the `ResponseContentPort`; HTTP capture starts using the writer in Phase 6.
 
 Rust does not choose a viewer, parse JSON, calculate cookie policy, normalize redirects, extract variables, or persist history. Those remain TypeScript/application responsibilities.
 
@@ -71,7 +73,7 @@ Textual bodies support the modes applicable to their kind:
 - HTML preview is sandboxed and receives a restrictive CSP and no-referrer policy;
 - binary content receives a metadata/download presentation rather than unsafe text rendering.
 
-`downloadResponseBody` preserves original bytes. Desktop uses the Tauri save dialog/command in `src-tauri/src/downloads.rs`; browser development uses `showSaveFilePicker` when available and otherwise an object-URL download.
+`downloadResponseBody` preserves original bytes. Desktop inline responses use the Tauri save dialog/command in `src-tauri/src/commands/response.rs`; browser development uses `showSaveFilePicker` when available and otherwise an object-URL download. Saving a native content reference directly is deferred until Phase 9.
 
 ## Syntax highlighting
 
@@ -113,6 +115,7 @@ Rust stores:
 
 - encrypted execution payload/metadata in `request_executions`;
 - the large encrypted body in `response_bodies`;
+- Phase 5 metadata and independently encrypted chunks in `response_contents` and `response_content_chunks` after a v2 execution adopts them;
 - indexed plaintext columns for workspace, document, start time, and status to support lookup.
 
 Startup `read` hydrates only the newest execution for each document. `list_request_history` exposes cursor-style metadata pagination by document and `before`, with a limit clamped to 1–100. There is currently no history-browser UI and no frontend flow for hydrating an arbitrary older response. This is backend/storage support, not a complete product feature.
@@ -146,6 +149,7 @@ Every send captures an execution counter. A newer send or Escape increments it; 
 - `src/features/request-workbench/services/download-response.ts` — browser/native download selection.
 - `src/features/request-workbench/request-workbench.tsx` — per-document response/error ownership and stale-completion guard.
 - `src/application/project-projection.ts` — latest-response local projection and hydration.
-- `src-tauri/src/http.rs` — native response bytes, headers, timings, and errors.
-- `src-tauri/src/local_state.rs` — execution persistence and history pagination.
-- `src-tauri/src/downloads.rs` — native save boundary.
+- `src-tauri/src/http/transport.rs` — current inline native response bytes, headers, timings, and errors.
+- `src-tauri/src/content/` — encrypted content lifecycle, bounded reads, and the dedicated storage worker.
+- `src-tauri/src/persistence/local_records.rs` and `response_bodies.rs` — execution persistence, atomic content adoption, deletion, and history pagination.
+- `src-tauri/src/commands/response.rs` — native response-content IPC and inline save boundary.
