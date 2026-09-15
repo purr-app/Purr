@@ -1,14 +1,16 @@
 {
-  "name": "purr",
+  "name": "@purr/core",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "npm@11.16.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "test": "tsx --test tests/*.test.ts",
     "test:ui": "playwright test",
+    "check:repo": "node scripts/check-repository-policy.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests *.ts",
+    "lint": "eslint src tests scripts eslint.config.js playwright.config.ts tailwind.config.ts vite.config.ts",
     "build": "tsc && vite build",
     "benchmark:responses": "tsx scripts/performance/response-baseline.ts",
     "fixture:responses": "tsx scripts/performance/response-fixture-server.ts",

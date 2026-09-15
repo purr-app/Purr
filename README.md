@@ -22,7 +22,7 @@ Coding agents should start with [AGENTS.md](AGENTS.md), then follow its document
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run dev
 npm test
 npm run typecheck
@@ -32,3 +32,7 @@ npm run tauri dev
 ```
 
 `npm run dev` uses the browser persistence adapter for UI development; native HTTP and desktop security behavior require Tauri. Playwright tests run with `npm run test:ui`. Rust tests run from `src-tauri` with `cargo test`.
+
+npm is the only supported JavaScript package manager. The repository pins it through `packageManager` and commits `package-lock.json`; dependency upgrades should be separate from architecture changes. On macOS, the development runner uses ad-hoc signing by default. Set `PURR_DEV_SIGNING_IDENTITY` in the local shell when a persistent Apple Development identity is required. Release signing and notarization credentials are supplied by release CI and never belong in repository configuration.
+
+The root package reserves the public identity `@purr/core` at version `0.1.0`, but remains private during the migration and currently exposes no supported library entry points. Phase 15 will add only `./app`, `./extension-api`, and `./styles`; consumers must not import source paths such as `src/features/*`.

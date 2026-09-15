@@ -70,8 +70,21 @@ The product owner ran these scenarios against the current pre-optimization deskt
 - The clean 100 KiB response completed in under 100 ms by manual observation with no visible freeze. Native RSS rose from 134.2 MiB idle to 153.6 MiB and WebView RSS from 218.0 MiB to 279.0 MiB.
 - The 40-type GraphQL scenario passed schema load, schema search, autocomplete, and hover checks. At observation time native RSS was 161.7 MiB and WebView RSS was 543.3 MiB.
 - Workspace loading was noticeably prolonged after the earlier large-response/crash tests. This is an observed correlation only; Phase 0 did not isolate whether history, local state, WebView recovery, or another path caused it.
+- After the stress run, saving a document or variable stalled the UI for several seconds in every workspace. Renaming the complete application-data directory and starting with clean state restored responsive saves and workspace loading.
 - Fixture-server logs contained Yaak/other-client traffic, so no sent-byte value from that log is recorded or treated as Purr cancellation evidence.
 - These observations establish the starting behavior. Phase 0 does not attempt to diagnose or fix it.
+
+## Persistence amplification hypothesis
+
+Code inspection after the manual run found a plausible amplification path, but Phase 0 did not profile it sufficiently to claim a single root cause:
+
+1. every workspace-store change schedules `WorkspacePersistence.save()` after 180 ms;
+2. `save()` calls `persist()` for every loaded workspace;
+3. restored persistence snapshots contain response `text` and `bodyBase64`, and in-session snapshots retain previous `request_executions` records;
+4. `persist()` performs synchronous `JSON.stringify` comparisons over local records before deciding whether a record needs a native commit;
+5. changed executions are additionally serialized, encrypted, and stored in SQLite, while workspace loading decrypts and reconstructs the latest response body per document.
+
+The multi-workspace UI stall can therefore occur even when a document/variable edit does not logically change an old response: the WebView may still serialize large retained response values while calculating the change set. SQLite size, response decryption/restoration, and journal/write costs may add latency, but were not isolated. Phases 5–9 must profile this path and replace full bodies in frontend persistence snapshots with lightweight native content references.
 
 ## Interpretation rules
 

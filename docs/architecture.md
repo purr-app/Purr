@@ -73,6 +73,14 @@ Rust modules provide narrow privileged boundaries:
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
 
+ESLint enforces the boundaries that the current tree can satisfy without a refactor: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application services cannot add React or Tauri dependencies. `src/application/import-workspace.ts` is the single recorded legacy exception because it still invokes the native importer directly; Phase 3 replaces that import with an application port. Rules for future `src/platform/` and `src/extension-api/` directories are already reserved so those modules cannot reach feature UI or other implementation-owned paths.
+
+## Public package and build identity
+
+The repository uses npm exclusively and treats `package-lock.json` as the JavaScript dependency lock. The root package reserves `@purr/core@0.1.0` while remaining private during migration. It intentionally has no package exports yet: internal source paths are unsupported, and Phase 15 introduces the reviewed `./app`, `./extension-api`, and `./styles` surfaces together with their build output and conformance checks.
+
+The checked-in Tauri configuration is the unsigned OSS build configuration. It contains no developer or release signing identity. macOS development uses ad-hoc signing unless `PURR_DEV_SIGNING_IDENTITY` is supplied locally; official certificates, signing identities, notarization credentials, and updater keys are release-composition inputs outside the public repository.
+
 ## Major flows
 
 ### Load and save

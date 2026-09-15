@@ -20,7 +20,10 @@ fi
 
 purr_dev_binary=$1
 shift
-purr_dev_identity=${PURR_DEV_SIGNING_IDENTITY:-Apple Development: ihor.polishyk@gmail.com (9GVJ23P53A)}
+purr_dev_identity=${PURR_DEV_SIGNING_IDENTITY:-}
+if [ -z "$purr_dev_identity" ]; then
+  purr_dev_identity=-
+fi
 
 /usr/bin/codesign \
   --force \

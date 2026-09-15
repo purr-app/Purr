@@ -20,7 +20,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | Phase | Name | Status | Implemented in | Automated verification | Manual verification |
 | --- | --- | --- | --- | --- | --- |
 | 0 | Freeze measurements and compatibility fixtures | DONE | `10bf837` (tooling on `main`) plus Phase 0 working tree based on merge `f86cd15` | PASS — unit/UI/Rust suites, typecheck, lint, build, fmt, clippy, benchmark, fixture smoke | COMPLETE — safe response/GraphQL/RSS scenarios and current failure modes recorded |
-| 1 | Stabilize repository and dependency rules | PARTIALLY DONE | Existing npm/Cargo scripts and ignore rules predate this plan; no phase reference | Existing checks present; clean-install and OSS-build record missing | Not recorded |
+| 1 | Stabilize repository and dependency rules | DONE | Working tree based on `c4c8c8d` (Phase 1 implementation; commit pending) | PASS — clean npm install, repository policy, unit/UI/type/lint/build, Rust checks, Tauri dev/app build | COMPLETE — OSS launch, REST/GraphQL, restart, persistence, and secret/YAML behavior passed |
 | 2 | Split stable HTTP exchange contracts | TODO | — | Not run | Not run |
 | 3 | Add frontend ports and OSS composition root | TODO | — | Not run | Not run |
 | 4 | Mechanically modularize the Rust crate | TODO | — | Not run | Not run |
@@ -927,32 +927,44 @@ Known follow-ups:
 
 ### Phase 1 — stabilize repository and dependency rules
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing npm/Cargo scripts, `.gitignore`, and test commands predate this plan; no dedicated phase commit/reference.
+Implemented in: Working tree based on `c4c8c8d` (Phase 1 implementation; commit pending).
 
-Started: Pre-plan
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-15
 
 Automated verification:
-- [ ] Run a clean npm install using the selected package manager and verify the lockfile is unchanged.
-- [ ] Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy`, and `cargo test`.
-- [ ] Run an OSS Tauri development/build smoke check using only public configuration.
+- [x] Run `npm ci` in a clean detached worktree using npm 11.16.0; 408 packages installed, audit reported zero vulnerabilities, and the resulting lockfile was byte-identical to the prepared Phase 1 lockfile.
+- [x] Run `npm run check:repo`, `npm test` (120), `npm run test:ui` (51), `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` (37).
+- [x] Run an OSS Tauri development/build smoke check using only public configuration: `tauri dev` launched with an ad-hoc signature and no TeamIdentifier; an unsigned release `Purr.app` bundle built successfully with `--no-sign --ci`.
 
 Manual verification:
-- [ ] Clone the repository into a new directory, install dependencies with the selected package manager, and launch the OSS build without a sibling private checkout.
-- [ ] Open an existing workspace, send one REST request and one GraphQL request, then restart Purr and confirm the workspace still restores.
-- [ ] Inspect the public Tauri configuration used by the build and confirm it contains no developer signing identity or release credential.
+- [x] Launch the OSS build without any private dependency. A clean detached checkout installed and built with npm only; the product owner confirmed the resulting dev configuration launches and operates normally.
+- [x] Open an existing current-format workspace, send REST and GraphQL requests, restart Purr, and confirm workspace/request/schema state restores; all passed.
+- [x] Inspect and enforce the public Tauri configuration: no developer signing identity or release credential is present, repository policy passes, and the owner observed no signing-related runtime failure.
+- [x] Save and use a secret-backed value in the ad-hoc-signed macOS dev build, restart, and confirm it remains usable without entering project YAML; passed.
 
 Implementation notes:
-- The repository currently contains both npm and Yarn artifacts, and Tauri development invokes Yarn; import restrictions, public package exports, and OSS CI are not in place.
+- npm 11.16.0 is declared as the only supported JavaScript package manager. Yarn lock/config/install state were removed without changing dependency versions; `package-lock.json` changed only for the reserved package name.
+- Tauri hooks now invoke npm. Public Tauri config contains no signing identity; the macOS dev runner uses ad-hoc signing unless `PURR_DEV_SIGNING_IDENTITY` is supplied locally.
+- The root reserves `@purr/core@0.1.0` but remains private and exposes no supported library paths until Phase 15 adds the reviewed exports.
+- ESLint now protects the current domain/application boundaries and reserves rules for future platform/extension API paths. `src/application/import-workspace.ts` remains the one explicit legacy Tauri exception until Phase 3.
+- Added a repository policy check for package identity, npm-only artifacts, lock metadata, public registry URLs/credentials, and signing config; public macOS CI runs the full check/test/build set and produces an unsigned OSS `.app` bundle.
+- Existing Vite large-chunk/Zod annotation warnings and npm's deprecation warning for the locked ESLint 9.39.5 package remain non-blocking; dependency upgrades are outside this phase.
+- Product-owner smoke testing found no Phase 1 functional regression in REST, GraphQL, restart, workspace persistence, or secret/YAML handling.
+- Existing app data produced multi-second UI stalls when saving a document or variable after the large-response stress tests; renaming the app-data directory and starting clean restored normal performance. Code inspection supports a persistence-amplification hypothesis: every store edit persists all workspaces and synchronously compares local records with `JSON.stringify`, while restored/in-session execution records carry full response `text` and `bodyBase64`. SQLite encryption/loading may add cost, but the root-cause share has not been profiled.
 
 Deviations from plan:
 - None.
 
 Known follow-ups:
-- Keep package-manager conversion isolated from dependency upgrades.
+- Upgrade the existing ESLint dependency in a separate dependency-maintenance change after verifying compatibility; do not combine it with architecture migration.
+- Phase 3 removes the direct Tauri imports currently owned by feature/application modules, including the documented `import-workspace.ts` lint exception.
+- Phase 15 implements the reserved `./app`, `./extension-api`, and `./styles` package exports and external-shell conformance checks.
+- The first pushed commit must exercise the new GitHub workflow; local equivalents and the unsigned OSS bundle pass, but the hosted runner has not executed it yet.
+- Phases 5–9 must profile and eliminate full response bodies from frontend persistence snapshots/change detection. Measure WebView serialization separately from SQLite encryption/write and workspace-load decryption before assigning the slowdown to the database alone.
 
 - **Objective:** make the public repo a deterministic dependency before introducing extension code.
 - **Files/modules affected:** `package.json`, lockfiles, `src-tauri/tauri.conf.json`, ESLint config, CI skeleton, architecture docs.

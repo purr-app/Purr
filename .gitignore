@@ -13,6 +13,9 @@ dist-ssr
 test-results
 playwright-report
 *.local
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
