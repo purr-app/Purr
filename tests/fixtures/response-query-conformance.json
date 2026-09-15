@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "document": {
+    "users": [
+      { "name": "Alex", "roles": ["admin", "editor"] },
+      { "name": "Rivera", "roles": ["viewer"] }
+    ],
+    "meta": { "name": "page" }
+  },
+  "queries": [
+    { "id": "jq-property-index", "language": "jq", "expression": ".users[0].name", "expected": "Alex" },
+    { "id": "jq-wildcard", "language": "jq", "expression": ".users[].name", "expected": ["Alex", "Rivera"] },
+    { "id": "jq-length", "language": "jq", "expression": ".users | length", "expected": 2 },
+    { "id": "jsonpath-property-index", "language": "jsonpath", "expression": "$.users[1].name", "expected": "Rivera" },
+    { "id": "jsonpath-recursive", "language": "jsonpath", "expression": "$..name", "expected": ["Alex", "Rivera", "page"] }
+  ],
+  "errors": [
+    { "id": "jsonpath-missing", "language": "jsonpath", "expression": "$.missing", "errorPattern": "did not match" }
+  ],
+  "suggestions": [
+    { "language": "jq", "includes": [".users[].name"] },
+    { "language": "jsonpath", "includes": ["$.users[*].name"], "excludesContaining": ["| length"] }
+  ]
+}

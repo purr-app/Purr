@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -10,6 +11,18 @@ import {
   inspectResponseBody,
   queryResponseJson,
 } from "../src/features/request-workbench/model/response";
+
+type QueryLanguage = "jq" | "jsonpath";
+type QueryConformanceFixture = {
+  version: number;
+  document: unknown;
+  queries: Array<{ id: string; language: QueryLanguage; expression: string; expected: unknown }>;
+  errors: Array<{ id: string; language: QueryLanguage; expression: string; errorPattern: string }>;
+  suggestions: Array<{ language: QueryLanguage; includes: string[]; excludesContaining?: string[] }>;
+};
+const queryConformance = JSON.parse(
+  readFileSync(new URL("./fixtures/response-query-conformance.json", import.meta.url), "utf8"),
+) as QueryConformanceFixture;
 
 test("response body detection respects content types and safe content sniffing", () => {
   const json = inspectResponseBody(
@@ -64,43 +77,28 @@ test("pretty, raw, hex and base64 response representations preserve payload data
 });
 
 test("jq and JSONPath selectors extract nested response values", () => {
-  const body = {
-    users: [
-      { name: "Alex", roles: ["admin", "editor"] },
-      { name: "Rivera", roles: ["viewer"] },
-    ],
-    meta: { name: "page" },
-  };
-  assert.equal(queryResponseJson(body, ".users[0].name", "jq"), "Alex");
-  assert.deepEqual(queryResponseJson(body, ".users[].name", "jq"), [
-    "Alex",
-    "Rivera",
-  ]);
-  assert.equal(queryResponseJson(body, ".users | length", "jq"), 2);
-  assert.equal(queryResponseJson(body, "$.users[1].name", "jsonpath"), "Rivera");
-  assert.deepEqual(queryResponseJson(body, "$..name", "jsonpath"), [
-    "Alex",
-    "Rivera",
-    "page",
-  ]);
-  assert.throws(
-    () => queryResponseJson(body, "$.missing", "jsonpath"),
-    /did not match/,
-  );
-  assert.ok(
-    getResponseQuerySuggestions(body, "jq").includes(".users[].name"),
-  );
-  assert.ok(
-    getResponseQuerySuggestions(body, "jsonpath").includes(
-      "$.users[*].name",
-    ),
-  );
-  assert.equal(
-    getResponseQuerySuggestions(body, "jsonpath").some((path) =>
-      path.includes("| length"),
-    ),
-    false,
-  );
+  assert.equal(queryConformance.version, 1);
+  for (const query of queryConformance.queries) {
+    assert.deepEqual(
+      queryResponseJson(queryConformance.document, query.expression, query.language),
+      query.expected,
+      query.id,
+    );
+  }
+  for (const query of queryConformance.errors) {
+    assert.throws(
+      () => queryResponseJson(queryConformance.document, query.expression, query.language),
+      new RegExp(query.errorPattern),
+      query.id,
+    );
+  }
+  for (const expectation of queryConformance.suggestions) {
+    const suggestions = getResponseQuerySuggestions(queryConformance.document, expectation.language);
+    for (const value of expectation.includes) assert.ok(suggestions.includes(value), value);
+    for (const value of expectation.excludesContaining ?? []) {
+      assert.equal(suggestions.some((suggestion) => suggestion.includes(value)), false, value);
+    }
+  }
 });
 
 test("response cookies preserve values and attributes from duplicate Set-Cookie headers", () => {

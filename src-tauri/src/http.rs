@@ -215,6 +215,50 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[tokio::test]
+    async fn response_preview_rejects_one_byte_over_twenty_mebibytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            let size = 20 * 1024 * 1024 + 1;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            let chunk = [b'x'; 64 * 1024];
+            let mut remaining = size;
+            while remaining > 0 {
+                let length = remaining.min(chunk.len());
+                if stream.write_all(&chunk[..length]).is_err() {
+                    break;
+                }
+                remaining -= length;
+            }
+        });
+        let request = HttpRequest {
+            url: format!("http://{address}/oversized"),
+            method: "GET".into(),
+            headers: vec![],
+            body_base64: None,
+        };
+        let error = perform_http(request, &HttpClient::default().0)
+            .await
+            .err()
+            .expect("oversized response must fail");
+        assert_eq!(error, "Response exceeds the 20 MB preview limit.");
+        server.join().unwrap();
+    }
+
     #[test]
     fn transport_rejects_non_http_and_url_credentials() {
         for value in [

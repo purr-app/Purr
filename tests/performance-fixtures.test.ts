@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { test } from "node:test";
+
+import {
+  responseBaselineSizes,
+  syntheticFixtureBytes,
+  syntheticFixtureChunk,
+  syntheticFixtureText,
+  syntheticGraphqlIntrospection,
+  syntheticGraphqlSdl,
+} from "./performance/synthetic-fixtures";
+
+test("performance fixture sizes are declared without allocating heavyweight CI bodies", () => {
+  assert.deepEqual(responseBaselineSizes.map(({ bytes }) => bytes), [
+    100 * 1024,
+    1024 * 1024,
+    20 * 1024 * 1024,
+    100 * 1024 * 1024,
+  ]);
+});
+
+test("synthetic response fixtures are exact, deterministic, and structurally valid", () => {
+  const bytes = 4096;
+  for (const kind of ["text", "json", "ndjson", "binary"] as const) {
+    const first = syntheticFixtureBytes(kind, bytes);
+    const second = Buffer.concat([
+      syntheticFixtureChunk(kind, bytes, 0, 997),
+      syntheticFixtureChunk(kind, bytes, 997, bytes - 997),
+    ]);
+    assert.equal(first.length, bytes);
+    assert.equal(createHash("sha256").update(first).digest("hex"), createHash("sha256").update(second).digest("hex"));
+  }
+  assert.equal(JSON.parse(syntheticFixtureText("json", bytes)).tail, "purr-tail-marker");
+  const ndjson = syntheticFixtureText("ndjson", bytes).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(ndjson.at(-1).tail, "purr-tail-marker");
+  assert.match(syntheticFixtureText("text", bytes), /purr-tail-marker/);
+});
+
+test("synthetic GraphQL fixtures contain no external data and scale deterministically", () => {
+  const sdl = syntheticGraphqlSdl(12);
+  assert.match(sdl, /type FixtureType11/);
+  assert.doesNotMatch(sdl, /https?:|@|token|secret/i);
+  const introspection = syntheticGraphqlIntrospection(12);
+  assert.equal(introspection.__schema.queryType.name, "Query");
+  assert.equal(introspection.__schema.types.filter((type) => type.name.startsWith("FixtureType")).length, 12);
+});

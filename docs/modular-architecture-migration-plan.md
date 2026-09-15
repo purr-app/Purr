@@ -1,6 +1,6 @@
 # Purr: migration plan for a public core, private extensions, and a modular native engine
 
-Status: architecture plan; no refactoring is implemented by this document.  
+Status: canonical architecture plan, execution tracker, and product-owner checklist; no refactoring is implemented by this document.
 Code baseline reviewed: `f841397` (`main`) on 2026-09-14.
 
 This plan is based on the current TypeScript and Rust code, tests, persistence format, and documented request/response lifecycle. It deliberately keeps Purr as one application and one Rust crate for now. The main decisions are:
@@ -12,6 +12,48 @@ This plan is based on the current TypeScript and Rust code, tests, persistence f
 5. TypeScript keeps interactive request composition, canonical project schemas, UI state, GraphQL editor intelligence, and application policy. Moving those wholesale to Rust would create a second application model and a second request-building path.
 6. Large response support is built around an opaque native content reference. Merely moving `JSON.parse` to Rust while still returning the complete formatted result to React would not solve the memory problem.
 7. A second repository is the intended result, but creating it before the extension contract and one public vertical slice are proven would be premature. The split happens near the end of the migration, after Jaeger validates the boundary.
+
+## Migration progress
+
+This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DONE` identifies an existing precursor only; it does not mean the phase acceptance criteria or its verification checklist are complete. No phase is `DONE` until its scope, automated checks, manual checks, and completion protocol are all recorded.
+
+| Phase | Name | Status | Implemented in | Automated verification | Manual verification |
+| --- | --- | --- | --- | --- | --- |
+| 0 | Freeze measurements and compatibility fixtures | DONE | `10bf837` (tooling on `main`) plus Phase 0 working tree based on merge `f86cd15` | PASS — unit/UI/Rust suites, typecheck, lint, build, fmt, clippy, benchmark, fixture smoke | COMPLETE — safe response/GraphQL/RSS scenarios and current failure modes recorded |
+| 1 | Stabilize repository and dependency rules | PARTIALLY DONE | Existing npm/Cargo scripts and ignore rules predate this plan; no phase reference | Existing checks present; clean-install and OSS-build record missing | Not recorded |
+| 2 | Split stable HTTP exchange contracts | TODO | — | Not run | Not run |
+| 3 | Add frontend ports and OSS composition root | TODO | — | Not run | Not run |
+| 4 | Mechanically modularize the Rust crate | TODO | — | Not run | Not run |
+| 5 | Implement encrypted native response content storage | TODO | — | Not run | Not run |
+| 6 | Switch native HTTP to response handles and real cancellation | TODO | — | Not run | Not run |
+| 7 | Add bounded/virtualized response presentation | TODO | — | Not run | Not run |
+| 8 | Move large response inspect/search/format/query to Rust | PARTIALLY DONE | Existing TypeScript response helpers and jq/JSONPath subset; no native phase reference | Existing response tests only; native conformance not run | Not recorded |
+| 9 | Remove remaining body round trips | PARTIALLY DONE | Existing base64 download/media/binary request paths; no handle-based phase reference | Existing request/response tests only | Not recorded |
+| 10 | Profile and isolate GraphQL analysis | PARTIALLY DONE | Existing GraphQL parse/schema/editor flow; no profiling or worker phase reference | Existing GraphQL tests only | Not recorded |
+| 11 | Migrate canonical integration envelope | PARTIALLY DONE | Existing `{provider, endpoint, credentials}` canonical shape; no envelope migration reference | Existing project validation only | Not recorded |
+| 12 | Implement extension API and immutable registries | PARTIALLY DONE | Existing native import-adapter registry is a precursor only; no extension API reference | Import tests only; extension conformance not run | Not recorded |
+| 13 | Add provider-neutral observability use case and UI | TODO | — | Not run | Not run |
+| 14 | Implement Jaeger public validation adapter | TODO | — | Not run | Not run |
+| 15 | Expose reusable frontend and Rust composition surfaces | PARTIALLY DONE | Existing `purr_lib` library target; no public builder/package export reference | Existing Rust build/tests only | Not recorded |
+| 16 | Create `purr-commercial` and official build composition | TODO | — | Not run | Not run |
+
+## Phase completion protocol
+
+After completing every phase, the implementation agent must:
+
+1. Update the phase `Status` and the summary table.
+2. Record the commit hash, PR URL/number, or precise working-tree reference in `Implemented in`.
+3. Mark only automated checks that were actually run; leave every unrun check unchecked.
+4. Record the date in `Started` and `Completed`.
+5. Record deviations from this plan and explain why they were necessary.
+6. Record known follow-ups, including work deliberately deferred to a later phase.
+7. Give the product owner a separate final block titled `## What you must verify manually` containing only the concrete manual checks for that phase, including required fixture/data setup.
+
+### Failure rules
+
+- A failing or unrun required automated check prevents `DONE`. Use `PARTIALLY DONE` when the implemented portion is usable and documented; use `BLOCKED` when a repeated unresolved condition prevents meaningful progress. Record the exact command/check and failure reason in `Implementation notes`.
+- Do not silently rewrite the architecture when implementation differs. Record the difference in `Deviations from plan`, why it was necessary, and the smallest dependency/note update needed for later phases.
+- `DONE` requires implemented scope, relevant tests, build/typecheck/lint/Rust checks, phase acceptance criteria, no known blocking regression, and a completed manual-verification record. Passing code review or inspecting code is not sufficient.
 
 ## A. Current architecture assessment
 
@@ -834,6 +876,48 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 0 — freeze measurements and compatibility fixtures
 
+Status: DONE
+
+Implemented in: `10bf837` (performance tooling committed on `main`) plus the Phase 0 working tree based on merge `f86cd15`.
+
+Started: 2026-09-15
+
+Completed: 2026-09-15
+
+Automated verification:
+- [x] Run deterministic response benchmarks for 100 KiB, 1 MiB, 20 MiB, and 100 MiB fixtures and save the report.
+- [x] Run the reusable jq/JSONPath conformance fixture suite against the current TypeScript implementation.
+- [x] Run TypeScript unit/UI tests and Rust tests after adding fixtures: 120 unit tests, 51 Playwright tests, and 37 Rust tests passed.
+- [x] Run `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, and `cargo clippy --all-targets -- -D warnings`.
+- [x] Smoke-test synthetic JSON, NDJSON, binary, GraphQL, and 100 MiB `HEAD` fixture endpoints; verify the native 20 MiB + 1 byte compatibility error in a deterministic Rust test.
+
+Manual verification:
+- [x] From a clean isolated desktop start, record idle native/WebView RSS and verify the exact 100 KiB JSON fixture. Idle was 134.2/218.0 MiB native/WebView; the response completed in under 100 ms without a visible freeze at 153.6/279.0 MiB. The earlier 1 MiB text scenario caused a 1–2 second UI stall.
+- [x] Execute exactly 20 MiB and 20 MiB + 1 byte scenarios. Exactly 20 MiB made the UI permanently unresponsive and prevented normal close; 20 MiB + 1 byte returned `Response exceeds the 20 MB preview limit.`. RSS was not captured.
+- [x] Execute the delayed-header fixture. After approximately one second Purr became unresponsive, then eventually displayed the response; there was no separately visible headers/TTFB state.
+- [x] Execute the slow 20 MiB cancellation scenario. The response appeared canceled and the UI recovered temporarily, but the application later crashed. Available fixture-server byte logs also contained Yaak/other-client traffic and were not treated as attributable Purr measurements.
+- [x] On completed JSON responses up to 1 MiB, verify Pretty, jq `.meta.fixture`, search for `purr-tail-marker`, and download; all returned the expected results/payload.
+- [x] Verify the 40-type GraphQL fixture and record responsiveness plus schema search, autocomplete, and hover behavior. All passed; observed RSS was 161.7 MiB native and 543.3 MiB WebView. The 1,200-type schema also worked without a reported issue.
+
+Implementation notes:
+- Added deterministic synthetic response and GraphQL generators, a local streaming fixture server, and a manual desktop measurement procedure under `tests/performance/` and `scripts/performance/`.
+- Saved the current full-copy Node baseline in `tests/performance/baseline-current.md`; the 100 MiB case peaked at 912.5 MiB RSS on the recorded machine and demonstrates the retained source/base64/decoded/parsed/formatted representations.
+- Extracted jq/JSONPath behavior into a reusable versioned JSON fixture and added a native compatibility test for the current 20 MiB + 1 byte rejection.
+- Performance values are observational only. Normal CI tests assert deterministic fixture shape and compatibility semantics without RSS or timing thresholds.
+- Product-owner desktop testing recorded a 1–2 second UI stall at 1 MiB, an unrecoverable UI hang/reported crash at exactly 20 MiB, a later crash after canceling the slow 20 MiB response, and correct handling of the 20 MiB + 1 byte limit error.
+- Small completed JSON operations and the 1,200-type synthetic GraphQL schema remained functional. Exact timing/RSS and detailed editor-operation observations were not captured for the 1,200-type run; the 40-type run was measured separately below.
+- Clean-state measurements recorded 134.2/218.0 MiB native/WebView RSS at idle, 153.6/279.0 MiB after the responsive sub-100-ms 100 KiB response, and 161.7/543.3 MiB during the successful 40-type GraphQL workflow.
+- Workspace loading was noticeably prolonged after the earlier large-response/crash tests. The cause was not isolated in this measurement phase.
+- The 100 MiB desktop request was deliberately not repeated after the 20 MiB boundary caused an unsafe hang/crash. Its representation-cost baseline is recorded by the separate 100 MiB Node run; this is not a missing acceptance check.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Later response phases must preserve a diagnostic case for the post-cancellation crash and distinguish native process failure, WebView failure, and an indefinitely blocked UI. Multi-client fixture-server logs must not be attributed to Purr without a unique request/run identifier.
+- Investigate the large WebView RSS increase during the successful 40-type GraphQL workflow and the prolonged workspace loading observed after large-response/crash tests; do not assume causality until history/local-state and WebView recovery paths are measured separately.
+- Later response phases must rerun the same baseline on the same machine/build mode; the recorded Node values must not become CI thresholds.
+
 - **Objective:** establish the current behavior and memory baseline before choosing thresholds.
 - **Files/modules affected:** `tests/response.test.ts`, native HTTP tests, a new performance fixture/runner under `tests/performance/` or `scripts/`; response/request/GraphQL docs.
 - **Changes:** add deterministic synthetic bodies at roughly 100 KiB, 1 MiB, 20 MiB, and 100 MiB; record native RSS, WebView RSS, time to headers, time to first visible page, completed download time, search time, pretty/query time, and cancellation latency. Extract current jq/JSONPath cases into reusable conformance fixtures. Record representative small/large GraphQL introspection samples without real service data.
@@ -842,6 +926,33 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** S–M, one PR. It should touch little production code.
 
 ### Phase 1 — stabilize repository and dependency rules
+
+Status: PARTIALLY DONE
+
+Implemented in: Existing npm/Cargo scripts, `.gitignore`, and test commands predate this plan; no dedicated phase commit/reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Run a clean npm install using the selected package manager and verify the lockfile is unchanged.
+- [ ] Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy`, and `cargo test`.
+- [ ] Run an OSS Tauri development/build smoke check using only public configuration.
+
+Manual verification:
+- [ ] Clone the repository into a new directory, install dependencies with the selected package manager, and launch the OSS build without a sibling private checkout.
+- [ ] Open an existing workspace, send one REST request and one GraphQL request, then restart Purr and confirm the workspace still restores.
+- [ ] Inspect the public Tauri configuration used by the build and confirm it contains no developer signing identity or release credential.
+
+Implementation notes:
+- The repository currently contains both npm and Yarn artifacts, and Tauri development invokes Yarn; import restrictions, public package exports, and OSS CI are not in place.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Keep package-manager conversion isolated from dependency upgrades.
 
 - **Objective:** make the public repo a deterministic dependency before introducing extension code.
 - **Files/modules affected:** `package.json`, lockfiles, `src-tauri/tauri.conf.json`, ESLint config, CI skeleton, architecture docs.
@@ -852,6 +963,33 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 2 — split stable HTTP exchange contracts from feature services
 
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Run response, GraphQL, dynamic-variable, persistence, and UI tests using both v1 inline and v2 response-reference fixtures.
+- [ ] Run `npm run typecheck`, `npm run lint`, and `npm run build` after removing service-owned HTTP types from public runtime exports.
+- [ ] Add restore fixtures proving a pre-migration local execution opens without data loss.
+
+Manual verification:
+- [ ] Launch Purr with a workspace created before the phase, open its last response/history entry, and confirm status, headers, body, and timeline match the previous behavior.
+- [ ] Send a JSON REST request, use Pretty/Raw/Hex/Base64 views, then restart Purr and verify the saved response is still available.
+- [ ] Run a GraphQL request that returns top-level `data`, `errors`, and `extensions`; confirm the Response, Errors, and Extensions tabs remain unchanged.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- The transitional inline adapter remains until Phase 6 replaces desktop body IPC.
+
 - **Objective:** stop treating `services/http-client.ts` and `HttpResult` as the public data model.
 - **Files/modules affected:** new `src/domain/http.ts`; `http-client.ts`; request-workbench response consumers; project projection/history tests.
 - **Changes:** introduce provider-neutral HTTP metadata/timeline types and a transitional `ResponseContentRef`. Keep a compatibility adapter that can wrap the existing inline `{text, bodyBase64}` response, so no UI changes are required yet. Remove service-layer types from runtime model exports.
@@ -860,6 +998,33 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** M, one PR.
 
 ### Phase 3 — add frontend ports and the OSS composition root
+
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Add import-boundary tests proving feature/domain modules do not import `@tauri-apps/*`.
+- [ ] Run browser tests with memory/browser adapters injected through the composition root.
+- [ ] Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, and Rust tests.
+
+Manual verification:
+- [ ] Launch the browser development build and create, save, reopen, and delete a workspace using the browser persistence adapter.
+- [ ] Launch desktop Purr, open an existing workspace, switch environment, send a request, and verify cookies and response history still behave as before.
+- [ ] Start OAuth authorization for a test provider/local callback, cancel it, and confirm the app returns to the request editor without a stuck authorization state.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Keep direct platform calls behind adapters before adding optional modules.
 
 - **Objective:** centralize platform selection and make private composition possible without adding private code.
 - **Files/modules affected:** `src/app/create-purr-app.tsx`, `src/app/composition/*`, `src/application/ports/*`, `src/platform/{tauri,browser}/*`, current `src/storage/native-backend.ts`, direct Tauri callers.
@@ -870,6 +1035,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 4 — mechanically modularize the Rust crate
 
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Compare the registered Tauri command list before and after the moves.
+- [ ] Run `cargo fmt --check`, `cargo clippy`, `cargo test`, and the TypeScript build/test suite.
+- [ ] Run regression fixtures for HTTP transport, OpenAPI import, encrypted persistence, legacy migration, OAuth callback validation, and safe project-file paths.
+
+Manual verification:
+- [ ] Launch Purr, open an existing workspace, send a REST request, and confirm headers, cookies, redirects, and response download behavior are unchanged.
+- [ ] Import an OpenAPI file, folder, URL, and pasted text fixture; confirm the resulting workspace opens and persists normally.
+- [ ] Attach or open a project directory, edit a request, save it, modify it outside Purr, and confirm the existing reload/change behavior still works.
+- [ ] Start and cancel an OAuth authorization attempt and confirm the loopback callback workflow remains available.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Behavior changes to HTTP/content storage belong to Phases 5–9, not to mechanical move commits.
+
 - **Objective:** create cohesive native boundaries before adding the content engine.
 - **Files/modules affected:** all current `src-tauri/src/*.rs` modules, without intentional behavior/schema changes.
 - **Changes:** move HTTP, import, persistence, project-files, legacy, and security code into the target capability modules; make commands thin; keep `oauth.rs` flat; preserve command names and serde shapes. Split `importing.rs` and persistence files along the mapping in section J.
@@ -878,6 +1071,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** L mechanically, preferably 3 sequential PRs: import split, persistence/security split, command/composition split.
 
 ### Phase 5 — implement encrypted native response content storage
+
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Run Rust migration tests for v1 response bodies, staging/adoption, cleanup, quota/TTL, and chunk reads across boundaries.
+- [ ] Run tamper, reordering, and corruption tests proving encrypted chunks fail closed.
+- [ ] Run persistence/history TypeScript tests plus `cargo fmt --check`, `cargo clippy`, `cargo test`, `npm run typecheck`, and `npm run build`.
+
+Manual verification:
+- [ ] Open a workspace created before the migration, open a saved response/history entry, restart Purr, and confirm the body is still readable.
+- [ ] Use a delayed local fixture response, quit or force-close Purr during capture, restart it, and confirm no incomplete response appears as a valid history body.
+- [ ] Delete an execution/history entry and then the workspace; confirm its response body is no longer available while another workspace's history remains available.
+- [ ] Verify an encrypted local database does not expose a recognizable response string from a prepared fixture when inspected outside Purr.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Phase 6 switches transport to these references; preserve the current preview limit until that isolated transport change is verified.
 
 - **Objective:** make Rust able to own a response incrementally without a complete in-memory body.
 - **Files/modules affected:** new Rust `content/*`, `persistence/response_bodies.rs`, `security/cipher.rs`, DB migration, thin response commands, TS `ResponseContentPort` adapter.
@@ -888,6 +1109,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 6 — switch native HTTP to response handles and real cancellation
 
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Add native transport tests proving completion IPC contains metadata/content reference and no complete `bodyBase64`.
+- [ ] Add cancellation race tests for cancel-before-headers, cancel-during-download, complete-while-canceling, and redirect cleanup.
+- [ ] Run HTTP, cookie/redirect, binary payload, persistence, TypeScript build/type/lint, and Rust fmt/clippy/test checks.
+
+Manual verification:
+- [ ] Prepare a local endpoint that streams chunks slowly; send it in desktop Purr, observe progress, cancel mid-download, and confirm the UI returns to idle without a new completed history entry.
+- [ ] Send a request that redirects across origins and verify the final request still masks sensitive headers/query values and preserves the existing cookie behavior.
+- [ ] Send a binary response with repeated `Set-Cookie` headers; verify response metadata, cookies, duration, and download action remain correct.
+- [ ] Restart Purr after a completed request and confirm the response/history remains accessible through its new content reference.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Progressive large-body rendering is activated in Phase 7; this phase retains the current capture limit.
+
 - **Objective:** remove response base64 from desktop IPC and stop network work when the user cancels.
 - **Files/modules affected:** Rust `http/*`, `commands/http.rs`, `commands/response.rs`; TS Tauri HTTP adapter and execute flow.
 - **Changes:** add request operation ID, `start_http`/`cancel_http`, cancellation token map, header/progress/completion channel, encrypted chunk append, `ResponseContentRef` completion result, and release of intermediate redirect bodies. Keep redirect/cookie/security policy in the TypeScript execute use case. Preserve the 20 MiB cap in this phase to isolate the contract change.
@@ -896,6 +1145,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** L, one focused PR after Phase 5.
 
 ### Phase 7 — add bounded/virtualized response presentation
+
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Add UI tests for the small CodeMirror path and the large virtualized line/byte viewer path.
+- [ ] Run a 100 MiB fixture regression proving page reads, search navigation, and scrolling do not create a full-body JavaScript string.
+- [ ] Run response, GraphQL, dynamic-variable, browser-adapter, typecheck, lint, build, and Rust checks.
+
+Manual verification:
+- [ ] Prepare a 100 MiB text fixture with identifiable first, middle, and last lines; open it and confirm each location can be reached without the app freezing.
+- [ ] Use find/next/previous on a repeated marker near the start and end of that fixture; confirm match navigation remains correct while scrolling.
+- [ ] Send a small JSON response and confirm Pretty, Raw, copy, field context actions, GraphQL Errors, and Extensions still use the familiar presentation.
+- [ ] Open the same large response after restarting Purr and confirm the viewer loads only visible content while its metadata/history stays usable.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Native search/format/query operations replace remaining full-content helpers in Phase 8.
 
 - **Objective:** keep WebView memory proportional to the visible response rather than total content.
 - **Files/modules affected:** split `response-viewer.tsx`; `response-code-viewer.tsx`; new response content hooks/viewer; GraphQL response panels; dynamic variable resolver.
@@ -906,6 +1183,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 8 — move large response inspect/search/format/query to Rust
 
+Status: PARTIALLY DONE
+
+Implemented in: Existing TypeScript `model/response.ts` implements response inspection, formatting, and the documented jq/JSONPath subset; no native phase commit/reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Run the shared jq/JSONPath conformance fixtures against both TypeScript and Rust implementations.
+- [ ] Add bounded-operation tests for search cancellation, invalid encoding, oversized query results, recursive selectors, JSON/XML/NDJSON formatting, and derived-content lifecycle.
+- [ ] Run response/UI/persistence tests plus `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy`, and `cargo test`.
+
+Manual verification:
+- [ ] Prepare JSON and NDJSON fixtures larger than the full-tree parse tier; run supported jq and JSONPath expressions and confirm results/pages are correct without an app freeze.
+- [ ] Use text and regex search on a large response, cancel a long-running search, and confirm the previous response view stays usable.
+- [ ] Format a large JSON and XML response, switch between Pretty/Raw/Hex/Base64 windows, and confirm only the requested portion is shown.
+- [ ] Trigger an unsupported large recursive expression and confirm Purr shows a clear bounded-operation error rather than hanging or exhausting memory.
+
+Implementation notes:
+- Existing TypeScript behavior is a semantic reference only; it does not satisfy native bounded processing or cross-runtime conformance.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Do not advertise full jq/JSONPath compatibility while only the existing subset is implemented.
+
 - **Objective:** provide useful large-response tools without reconstructing full content in JS.
 - **Files/modules affected:** Rust `response/*`; TypeScript `model/response.ts` becomes small-value helpers plus port calls; search/query UI.
 - **Changes:** implement prefix-based content inspection, bounded decoding, line index, literal/regex search with limits, range hex/base64, JSON/XML/NDJSON formatting, and exact current jq/JSONPath subset. Return scalar/page/content-ref results. Cache derived pretty content with dependency/lifecycle metadata.
@@ -914,6 +1219,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** L across several PRs: inspect/read/search, formatting, then query engines.
 
 ### Phase 9 — remove remaining body round trips
+
+Status: PARTIALLY DONE
+
+Implemented in: Existing `downloads.rs`, response media previews, and binary/multipart request support use base64/full-body paths; no handle-based phase commit/reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Add direct-save tests proving response content is written from a content ID without base64 returning to JavaScript.
+- [ ] Add byte-for-byte native request-body tests for large binary, multipart files, redirect replay, stale handle, and handle cleanup cases.
+- [ ] Run media/range protocol tests, request body/auth tests, UI tests, TypeScript checks, and Rust checks.
+
+Manual verification:
+- [ ] Download a large binary response and verify the chosen file's hash matches the fixture while Purr remains responsive during save.
+- [ ] Preview a range-capable image, audio, and video fixture; seek audio/video and confirm media loads without a base64 data URL failure.
+- [ ] Upload a large binary file and a multipart form with a file to a local echo fixture; verify received bytes, filenames, and content types exactly match the source.
+- [ ] Send a 307/308 redirecting upload fixture and confirm the request body is replayed once with the expected headers and no stale-file error.
+
+Implementation notes:
+- Existing user-facing paths work for ordinary payloads but still perform the memory-expensive body round trips targeted by this phase.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Keep small inline text bodies simple; only scoped large/file bodies require native handles.
 
 - **Objective:** cover native download, media preview, and large request bodies with handles.
 - **Files/modules affected:** current `downloads.rs`, response preview/download components, request body/file UI, `prepareWireRequest`, Rust `http/request_body.rs`, platform file/body port.
@@ -924,6 +1257,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 10 — profile and isolate GraphQL analysis
 
+Status: PARTIALLY DONE
+
+Implemented in: Existing TypeScript GraphQL request/schema/editor flow; no profiling, worker, or native-schema-service phase commit/reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Record schema parse duration, UI long tasks, and memory for the Phase 0 small/large schema fixtures.
+- [ ] Add worker request-ID/cancellation tests and regression tests for completion, hover, diagnostics, operation generation, and schema navigation.
+- [ ] Run GraphQL unit/UI tests, `npm run typecheck`, `npm run lint`, `npm run build`, and Rust checks if a native service is introduced.
+
+Manual verification:
+- [ ] Open a large synthetic SDL and introspection schema, type a query, and verify completion, hover, diagnostics, and field filling remain responsive.
+- [ ] Switch between two linked schemas while a query editor is open and confirm suggestions/navigation are from the active schema only.
+- [ ] Run an introspection request, pin its SDL, restart Purr, and confirm the schema explorer and offline pinned source still open correctly.
+- [ ] If a worker is added, rapidly edit a query and confirm stale diagnostics/completions do not appear after the latest edit.
+
+Implementation notes:
+- Existing GraphQL functionality is the behavioral baseline; it has not been profiled or moved off the UI thread.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Add Rust `graphql/*` only if the measured worker path cannot meet responsiveness/memory requirements.
+
 - **Objective:** improve large-schema responsiveness based on evidence without duplicating GraphQL semantics.
 - **Files/modules affected:** GraphQL model/editor/explorer and optional worker; Rust only if the second tier is justified.
 - **Changes:** collect Phase 0 schema metrics; first move parse/validate/language-service work to a Web Worker with versioned request IDs and cancellation. If WebView memory is still above the agreed budget, design the narrower Rust `GraphqlSchemaService` described in B.5 and migrate explorer pages before editor hints.
@@ -932,6 +1293,33 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** M for profiling/worker; separate L project only if justified.
 
 ### Phase 11 — migrate the canonical integration envelope
+
+Status: PARTIALLY DONE
+
+Implemented in: Existing `integrationDefinitionSchema` stores `{provider, endpoint, credentials}`; no `enabled`, `configVersion`, generic `config`, or unknown-provider round-trip migration reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Add canonical/YAML fixtures for legacy endpoint integrations, unknown provider config, disabled integrations, and secret refs.
+- [ ] Run projection/restore validation proving unknown config round-trips without mutation and cross-workspace secret refs fail.
+- [ ] Run persistence, import, TypeScript type/lint/build, and Rust checks.
+
+Manual verification:
+- [ ] Open a workspace with a legacy integration YAML fixture, save it, and inspect the resulting YAML to confirm it migrates without losing credentials or unrelated fields.
+- [ ] Open and save a fixture for an unavailable/private provider with nested config; confirm Purr preserves it, shows it as unavailable, and does not expose credential values.
+- [ ] Disable and re-enable the unavailable provider, restart Purr, and confirm its configuration remains intact.
+
+Implementation notes:
+- The existing shape reserves provider data but cannot safely preserve arbitrary future private configuration.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Provider-specific validation and settings UI remain adapter work in later phases.
 
 - **Objective:** make persisted integration configuration safe for unknown public/private providers.
 - **Files/modules affected:** `src/domain/project.ts`, YAML codec/projection, migrations/fixtures, integration resource UI placeholder.
@@ -942,6 +1330,33 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 12 — implement extension API and immutable registries
 
+Status: PARTIALLY DONE
+
+Implemented in: Existing native import-adapter registry is a related precursor; no public extension API, immutable provider registry, or external conformance harness reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Add conformance tests for a fake external module importing only documented public exports.
+- [ ] Add boot tests for duplicate module/provider IDs, incompatible API versions, registry freeze, and zero optional modules.
+- [ ] Run package export/build tests plus TypeScript unit/UI/type/lint/build and Rust checks.
+
+Manual verification:
+- [ ] Launch the OSS app with no optional module configured and confirm all existing workspace/request/GraphQL workflows still start normally.
+- [ ] Run the example external fake-module shell, open its integration settings surface, and confirm only its declared provider contribution appears.
+- [ ] Attempt to load an intentionally incompatible/duplicate fake module and confirm startup reports the precise module conflict without partially registering it.
+
+Implementation notes:
+- The import registry demonstrates a registry pattern but is not an extension boundary and must not be treated as completion of this phase.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Keep the exported API limited to the real Jaeger/observability use case in Phases 13–14.
+
 - **Objective:** provide the single supported build-time registration seam.
 - **Files/modules affected:** `src/integrations/{contracts,registry}.ts`, `src/extension-api/*`, `src/app/composition/*`, package exports, conformance tests.
 - **Changes:** implement only module, integration-provider, trace-provider, and correlation registries needed for the next phase; validate IDs/API versions/duplicates; freeze at startup; expose a curated barrel and test kit. Do not export runtime `Workspace` or feature components.
@@ -950,6 +1365,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** M, one PR.
 
 ### Phase 13 — add provider-neutral observability use case and UI
+
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Add domain tests proving trace/span/log models import no React, Tauri, storage, or vendor DTOs.
+- [ ] Add UI/application tests using at least two fake providers without provider-ID branches in core code.
+- [ ] Run response, observability, type/lint/build, and Rust checks.
+
+Manual verification:
+- [ ] Configure two fake provider integrations, send a request with a fixture `traceparent` or B3 header, and confirm the Trace tab shows the normalized trace from the selected integration.
+- [ ] Open a response with no correlation data and confirm the Trace tab explains that no trace was found rather than exposing a vendor-specific error.
+- [ ] Start a deliberately delayed fake trace lookup, cancel or navigate away, and confirm the response view remains usable with no stale trace result.
+- [ ] Use trace/log pagination/search fixtures and confirm service, operation, timestamps, status, and attributes render without provider field names leaking into the UI.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Keep persistence/cache minimal until a real provider demonstrates the required lifecycle.
 
 - **Objective:** prove that Trace/Span/Log are independent of any vendor.
 - **Files/modules affected:** `domain/observability.ts`, application use cases, new observability feature components, response-tab extraction, fake provider tests.
@@ -960,6 +1403,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 14 — implement Jaeger as the public validation adapter
 
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Add Jaeger adapter fixtures for configuration validation, correlation extraction, normalized trace/span mapping, errors, pagination, and cancellation.
+- [ ] Run extension conformance tests with Jaeger plus a second fake provider, then remove Jaeger from core-module composition in a build test.
+- [ ] Run OSS build, TypeScript tests/type/lint, and Rust checks.
+
+Manual verification:
+- [ ] Prepare a local Jaeger instance or documented fixture endpoint containing a known trace and configure it through the new integration settings.
+- [ ] Send a request carrying the trace ID through `traceparent`/B3 or a configured response header; open the Trace tab and verify spans, service names, duration, hierarchy, and error status against Jaeger.
+- [ ] Disable the Jaeger integration, restart Purr, and confirm the saved configuration persists while trace lookup becomes unavailable without breaking ordinary requests.
+- [ ] Run the OSS build with Jaeger removed from the core module list and confirm Purr still launches and sends HTTP/GraphQL requests.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Other public providers must use the same contracts; do not add Jaeger branches to core UI/application logic.
+
 - **Objective:** validate contracts, registry, configuration, credentials, normalized mapping, and UI end to end with a real public provider.
 - **Files/modules affected:** `src/integrations/builtins/jaeger/*`, core module composition, integration settings, observability tests/docs.
 - **Changes:** implement Jaeger configuration schema/editor, HTTP adapter, trace mapping, correlation integration, errors/cancellation, and fixtures. Use the public HTTP and credential ports only.
@@ -969,6 +1440,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 ### Phase 15 — expose reusable frontend and Rust composition surfaces
 
+Status: PARTIALLY DONE
+
+Implemented in: Existing `purr_lib` Rust library target; no `core_builder()`, public frontend package exports, compiled core artifact, or external-shell phase commit/reference.
+
+Started: Pre-plan
+
+Completed: —
+
+Automated verification:
+- [ ] Build the OSS app and the deterministic core JavaScript/type/CSS artifact from a clean checkout.
+- [ ] Run an example external shell that imports only `./app`, `./extension-api`, and `./styles`, with one fake frontend module and one test native plugin.
+- [ ] Run package export checks, React-singleton check, TypeScript tests/type/lint/build, and Rust fmt/clippy/test.
+
+Manual verification:
+- [ ] Launch the normal OSS binary and verify existing workspaces, REST/GraphQL requests, persistence, downloads, and OAuth still work with the thin public `main.rs`.
+- [ ] Launch the example consumer shell using its own Tauri configuration/capabilities and confirm it renders Purr with the fake module but without copying public source files.
+- [ ] Inspect the consumer build output and confirm public styles/assets load and no duplicate-React hook error occurs.
+- [ ] Remove the example consumer checkout and confirm the public OSS build remains independently runnable.
+
+Implementation notes:
+- `purr_lib` is already a Rust crate boundary, but it currently owns the concrete Tauri run/composition and is not a reusable official-build surface.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Phase 16 consumes these exports from the real private repository.
+
 - **Objective:** make the exact public source consumable by the official shell.
 - **Files/modules affected:** root package exports/build, `src/app/create-purr-app.tsx`, Rust `lib.rs`, `composition.rs`, `main.rs`, OSS Tauri config.
 - **Changes:** expose `./app`, `./extension-api`, `./styles`; add the deterministic core library/CSS/type build; keep React a single peer instance; document supported imports; export `core_builder()` and a run helper that accepts the caller's Tauri context; make the OSS `main.rs` a thin caller; support adding Tauri plugins before run. Keep public app build as the contract test.
@@ -977,6 +1476,34 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 - **Scope:** M, one PR.
 
 ### Phase 16 — create `purr-commercial` and official build composition
+
+Status: TODO
+
+Implemented in: —
+
+Started: —
+
+Completed: —
+
+Automated verification:
+- [ ] Run the private compatibility script against the exact public SHA/API versions in `core-version.json`.
+- [ ] Build/test the official shell with a commercial provider and verify imports are limited to documented public exports/APIs.
+- [ ] Run the public OSS build in a checkout with no private sibling, then run official build/signing smoke checks with credentials injected only by CI/local secure configuration.
+
+Manual verification:
+- [ ] Prepare sibling `purr/` and `purr-commercial/` checkouts at the pinned revisions; launch OSS Purr from the public checkout and confirm it works with no private directory present.
+- [ ] Launch the official shell and verify its commercial provider is available while the same provider is absent from the OSS build.
+- [ ] Open a workspace containing commercial integration configuration in OSS Purr, save/reopen it, then open it in the official build and confirm the configuration was preserved.
+- [ ] Inspect both build directories and confirm official composition did not modify/copy public application source or require public signing credentials.
+
+Implementation notes:
+- None yet.
+
+Deviations from plan:
+- None.
+
+Known follow-ups:
+- Release signing, notarization, and publication remain pipeline work but must use this composed build rather than source overlays.
 
 - **Objective:** establish the real repository boundary after the public API is proven.
 - **Files/modules affected:** new private repo only, except public compatibility notes if defects are found.
