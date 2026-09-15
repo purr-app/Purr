@@ -18,6 +18,7 @@ import {
 import { SessionCookieJar } from "./model/cookie-jar";
 import { useAuthRuntime } from "./hooks/use-auth-runtime";
 import type { InlineHttpResponse } from "../../domain/http";
+import type { HttpTransportProgress } from "../../application/ports/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
 import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest } from "../workspaces/services/dynamic-variable-resolver";
@@ -31,6 +32,7 @@ function ResponseArea({
   graphql,
   onCreateVariable,
   onCancel,
+  progress,
 }: {
   response: InlineHttpResponse | null;
   error: string;
@@ -38,8 +40,9 @@ function ResponseArea({
   graphql: boolean;
   onCreateVariable?: (candidate: ResponseVariableCandidate) => void;
   onCancel: () => void;
+  progress: HttpTransportProgress | null;
 }) {
-  if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} />;
+  if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} progress={progress} />;
   if (error) return <ErrorResponse message={error} />;
   if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} />;
   return <EmptyResponse />;
@@ -94,7 +97,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   onSessionChange: (patch: Partial<RequestSession>) => void;
   actionsRef: Ref<RequestActions>;
 }) {
-  const { httpTransport } = useApplicationServices();
+  const { httpTransport, responseContent } = useApplicationServices();
   const workspaceAuthEntries = useMemo(() => getWorkspaceAuthProfiles(workspaceConfig, requestKind), [requestKind, workspaceConfig]);
   const workspaceProfiles = useMemo(() => workspaceAuthEntries.map((entry) => ({ id: entry.id, name: entry.name || workspaceName, auth: entry.value })), [workspaceAuthEntries, workspaceName]);
   const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, requestKind,
@@ -115,6 +118,8 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   const setCanvasFocus = (canvasFocus: RequestSession["canvasFocus"]) => onSessionChange({ canvasFocus });
   const sendingRef = useRef(false);
   const executionRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const [progress, setProgress] = useState<HttpTransportProgress | null>(null);
   useEffect(() => setUrlInvalid(false), [documentId, draft.url]);
   const authRuntime = useAuthRuntime(
     draft,
@@ -137,7 +142,11 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
         : undefined;
     })(),
   });
-  const resolveFor = async (root: DynamicVariableRequest, rootEnvironmentId: string | null) => resolveDynamicVariables({
+  const resolveFor = async (
+    root: DynamicVariableRequest,
+    rootEnvironmentId: string | null,
+    execution?: { signal: AbortSignal; onProgress: (value: HttpTransportProgress) => void },
+  ) => resolveDynamicVariables({
     root,
     environmentId: rootEnvironmentId,
     documents: sourceDocuments,
@@ -147,7 +156,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     execute: async (document, resolvedVariables, sourceEnvironmentId) => {
       const scoped = await variablesForEnvironment(sourceEnvironmentId);
       const sensitive = scoped.filter((variable) => variable.sensitive).map((variable) => variable.name);
-      return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig), contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive), cookieJar, authRuntime, httpTransport);
+      return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig), contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive), cookieJar, authRuntime, httpTransport, responseContent, execution);
     },
   });
   const send = async (graphqlOperationName?: string) => {
@@ -172,8 +181,11 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     setUrlInvalid(false);
     setCanvasFocus("response");
     const execution = ++executionRef.current;
+    const abort = new AbortController();
+    abortRef.current = abort;
     sendingRef.current = true;
     setSending(true);
+    setProgress(null);
     setError("");
     try {
       const normalizedDraft: RequestDraft = {
@@ -185,12 +197,19 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       const outgoing = graphqlOperationName && normalizedDraft.graphql
         ? { ...normalizedDraft, graphql: { ...normalizedDraft.graphql, operationName: graphqlOperationName } }
         : normalizedDraft;
-      const dynamic = await resolveFor({ id: documentId, name: documentName, kind: requestKind, request: outgoing }, environmentId);
+      const reportProgress = (value: HttpTransportProgress) => {
+        if (execution === executionRef.current) setProgress(value);
+      };
+      const dynamic = await resolveFor(
+        { id: documentId, name: documentName, kind: requestKind, request: outgoing },
+        environmentId,
+        { signal: abort.signal, onProgress: reportProgress },
+      );
       if (execution !== executionRef.current) return;
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
-      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport);
+      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress });
       if (execution !== executionRef.current) return;
       setResponse(result);
     } catch (cause) {
@@ -200,14 +219,20 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     } finally {
       if (execution !== executionRef.current) return;
       sendingRef.current = false;
+      abortRef.current = null;
+      setProgress(null);
       setSending(false);
     }
   };
   const cancelSend = () => {
     if (!sendingRef.current && !sending) return;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    authRuntime.cancel();
     executionRef.current += 1;
     sendingRef.current = false;
     setSending(false);
+    setProgress(null);
     if (!response) setCanvasFocus("request");
   };
 
@@ -255,7 +280,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     />
   );
   const responsePane = (
-    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} />
+    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} />
   );
 
   return (

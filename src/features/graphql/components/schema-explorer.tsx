@@ -71,7 +71,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
-  const { httpTransport } = useApplicationServices();
+  const { httpTransport, responseContent } = useApplicationServices();
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -129,6 +129,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
         cookieJar,
         runtime,
         httpTransport,
+        responseContent,
       );
       if (result.status < 200 || result.status >= 300) throw new Error(`Introspection failed: HTTP ${result.status} ${result.statusText}`);
       install(result.text, "introspection", result.url);

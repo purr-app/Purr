@@ -73,6 +73,9 @@ export type InlineHttpResponse = {
   localAddress?: string;
   remoteAddress?: string;
   timeline: HttpTimeline;
+  // Phase 6 compatibility presentation. Persistence projects this field back
+  // to the v2 exchange so native response bytes are never duplicated locally.
+  sourceExchange?: HttpExchange;
 };
 
 export type StoredHttpResponse = InlineHttpResponse | HttpExchange;
@@ -147,6 +150,12 @@ export function createInlineHttpResponse(response: InlineHttpResponse): InlineHt
 export function isInlineHttpResponse(response: StoredHttpResponse): response is InlineHttpResponse {
   return "text" in response && typeof response.text === "string"
     && "bodyBase64" in response && typeof response.bodyBase64 === "string";
+}
+
+export function responseForPersistence(response: StoredHttpResponse): StoredHttpResponse {
+  return isInlineHttpResponse(response) && response.sourceExchange
+    ? response.sourceExchange
+    : response;
 }
 
 export function storedHttpResponseStartedAt(response: StoredHttpResponse) {

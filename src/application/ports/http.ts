@@ -1,10 +1,9 @@
-import type { HttpRequestSnapshot } from "../../domain/http";
+import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
 
-export type HttpTransportResponse = {
+type HttpTransportMetadata = {
   status: number;
   statusText: string;
   headers: [string, string][];
-  bodyBase64: string;
   durationMs: number;
   headersDurationMs?: number;
   downloadDurationMs?: number;
@@ -13,6 +12,24 @@ export type HttpTransportResponse = {
   remoteAddress?: string;
 };
 
+// Inline completion remains valid for browser/test adapters during migration.
+// Desktop completion returns only the opaque native content reference.
+export type HttpTransportResponse = HttpTransportMetadata & (
+  | { bodyBase64: string; content?: never }
+  | { content: ResponseContentRef; bodyBase64?: never }
+);
+
+export type HttpTransportProgress = {
+  receivedBytes: number;
+  totalBytes?: number;
+};
+
+export type HttpTransportOptions = {
+  signal?: AbortSignal;
+  onProgress?: (progress: HttpTransportProgress) => void;
+};
+
 export type HttpTransportPort = (
   request: HttpRequestSnapshot,
+  options?: HttpTransportOptions,
 ) => Promise<HttpTransportResponse>;

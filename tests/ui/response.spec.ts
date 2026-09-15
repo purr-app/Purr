@@ -13,7 +13,7 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
-        if (command !== "send_http") throw new Error("Unexpected command");
+        if (command !== "start_http") throw new Error("Unexpected command");
         return {
           status: 200,
           statusText: "OK",
@@ -204,7 +204,7 @@ test("HTML and simple media render safely while binary responses use the native 
     (window as any).__download = null;
     (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
       if (command === "save_response_body") { (window as any).__download = args; return "/Users/test/quarterly report.pdf"; }
-      if (command !== "send_http") throw new Error(`Unexpected command: ${command}`);
+      if (command !== "start_http") throw new Error(`Unexpected command: ${command}`);
       const path = new URL(args.request.url).pathname;
       if (path === "/page") return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "text/html; charset=utf-8"]], bodyBase64: btoa('<!doctype html><html><body><h1>Purr HTML</h1><script>document.body.textContent="unsafe"</script></body></html>') };
       if (path === "/pixel.png") return { status: 200, statusText: "OK", durationMs: 4, headers: [["content-type", "image/png"]], bodyBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" };

@@ -1,5 +1,5 @@
 import { credentialSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
-import { restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
+import { responseForPersistence, restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
 import { serializeResource } from "../storage/yaml";
 import { createRequestAuth, base64Bytes, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
@@ -216,7 +216,7 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
       }, secure, workspace.id, `drafts/${document.id}`)) });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
         ...(definition ? { definition: serializeResource(definition), editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)) } : {}) } });
-      if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: document.lastResponse } });
+      if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: responseForPersistence(document.lastResponse) } });
     } else {
       if (document.saved) resources.push({ id: document.id, kind: "schema", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), source: schemaSource(document),

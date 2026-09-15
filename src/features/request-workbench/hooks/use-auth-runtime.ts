@@ -37,7 +37,7 @@ export function useAuthRuntime(
   setContext: Dispatch<SetStateAction<AuthContext>>,
   onInheritedAuthChange?: (profileId: string, auth: RequestAuth) => void,
 ) {
-  const { httpTransport, oauthCallback } = useApplicationServices();
+  const { httpTransport, responseContent, oauthCallback } = useApplicationServices();
   const [busy, setBusy] = useState(false);
   const [authorizing, setAuthorizing] = useState(false);
   const [error, setError] = useState("");
@@ -107,6 +107,7 @@ export function useAuthRuntime(
                 sessionId,
                 oauthCallback,
                 httpTransport,
+                responseContent,
                 abort.signal,
               )
             : await fetchOAuthToken(
@@ -114,6 +115,8 @@ export function useAuthRuntime(
                 action,
                 undefined,
                 httpTransport,
+                responseContent,
+                abort.signal,
               );
           if (pending.current?.sessionId !== sessionId) return null;
           const update = (auth: RequestAuth) =>
@@ -171,6 +174,7 @@ export function useAuthRuntime(
       httpTransport,
       oauthCallback,
       onInheritedAuthChange,
+      responseContent,
       setDraft,
       setContext,
     ],

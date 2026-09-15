@@ -7,7 +7,7 @@ async function mockSuccessfulRequest(page: Page) {
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
-        if (command !== "send_http") throw new Error("Unexpected command");
+        if (command !== "start_http") throw new Error("Unexpected command");
         return {
           status: 200,
           statusText: "OK",
@@ -142,9 +142,11 @@ test("pending requests hide an existing response, disable tabs, and cancel with 
   await page.addInitScript(() => {
     (window as any).isTauri = true;
     (window as any).__requestCount = 0;
+    (window as any).__cancelCount = 0;
     const response = { status: 200, statusText: "OK", durationMs: 12, httpVersion: "HTTP/2", headers: [["content-type", "application/json"]], bodyBase64: btoa('{"ready":true}') };
     (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string) => {
-      if (command !== "send_http") throw new Error("Unexpected command");
+      if (command === "cancel_http") { (window as any).__cancelCount += 1; return; }
+      if (command !== "start_http") throw new Error("Unexpected command");
       (window as any).__requestCount += 1;
       if ((window as any).__requestCount === 1) return response;
       return new Promise((resolve) => { (window as any).__finishPendingRequest = () => resolve(response); });
@@ -170,6 +172,7 @@ test("pending requests hide an existing response, disable tabs, and cancel with 
 
   await page.keyboard.press("Escape");
   await expect(pending).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__cancelCount)).toBe(1);
   await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
   await page.evaluate(() => (window as any).__finishPendingRequest());
   await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();

@@ -25,7 +25,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | 3 | Add frontend ports and OSS composition root | DONE | Phase 3 working tree based on `27cc0a8` | PASS — 127 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner acceptance after browser persistence, desktop responses/cookies, OpenAPI import/base URL, health request, and OAuth opener verification |
 | 4 | Mechanically modularize the Rust crate | DONE | Phase 4 working tree based on `f5f8362` | PASS — 129 TypeScript tests, 51 UI tests, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner desktop smoke verification on 2026-09-15 |
 | 5 | Implement encrypted native response content storage | DONE | Phase 5 working tree based on `c430458` | PASS — 129 TypeScript tests, 51 UI tests, 46 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner compatibility and persistence verification on 2026-09-15 |
-| 6 | Switch native HTTP to response handles and real cancellation | TODO | — | Not run | Not run |
+| 6 | Switch native HTTP to response handles and real cancellation | DONE | Phase 6 working tree based on `b9724b0` | PASS — 132 TypeScript tests, 51 UI tests, 51 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner accepted all desktop streaming/cancel, redirects/cookies/binary, GraphQL/OAuth, restart, and content-reference scenarios on 2026-09-15 |
 | 7 | Add bounded/virtualized response presentation | TODO | — | Not run | Not run |
 | 8 | Move large response inspect/search/format/query to Rust | PARTIALLY DONE | Existing TypeScript response helpers and jq/JSONPath subset; no native phase reference | Existing response tests only; native conformance not run | Not recorded |
 | 9 | Remove remaining body round trips | PARTIALLY DONE | Existing base64 download/media/binary request paths; no handle-based phase reference | Existing request/response tests only | Not recorded |
@@ -1236,33 +1236,42 @@ Known follow-ups:
 
 ### Phase 6 — switch native HTTP to response handles and real cancellation
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 6 working tree based on `b9724b0`
 
-Started: —
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-15
 
 Automated verification:
-- [ ] Add native transport tests proving completion IPC contains metadata/content reference and no complete `bodyBase64`.
-- [ ] Add cancellation race tests for cancel-before-headers, cancel-during-download, complete-while-canceling, and redirect cleanup.
-- [ ] Run HTTP, cookie/redirect, binary payload, persistence, TypeScript build/type/lint, and Rust fmt/clippy/test checks.
+- [x] Add native transport tests proving completion IPC contains metadata/content reference and no complete `bodyBase64`.
+- [x] Add cancellation race tests for cancel-before-headers, cancel-during-download, complete-while-canceling, and redirect cleanup.
+- [x] Run HTTP, cookie/redirect, binary payload, persistence, TypeScript build/type/lint, and Rust fmt/clippy/test checks.
 
 Manual verification:
-- [ ] Prepare a local endpoint that streams chunks slowly; send it in desktop Purr, observe progress, cancel mid-download, and confirm the UI returns to idle without a new completed history entry.
-- [ ] Send a request that redirects across origins and verify the final request still masks sensitive headers/query values and preserves the existing cookie behavior.
-- [ ] Send a binary response with repeated `Set-Cookie` headers; verify response metadata, cookies, duration, and download action remain correct.
-- [ ] Restart Purr after a completed request and confirm the response/history remains accessible through its new content reference.
+- [x] Run `npm run fixture:responses`; first complete `/response/json?size=102400`, then change the same request to `/response/json?size=20971520&chunkSize=65536&delayMs=25`. Confirm the pending message reports downloaded MiB, press Escape mid-download, and confirm the UI returns to the prior completed response while the fixture server logs fewer than 20,971,520 sent bytes (product-owner verified 2026-09-15).
+- [x] After that cancellation, wait for “Saved locally”, restart Purr, reopen the request, and confirm the prior 102,400-byte response is restored rather than the cancelled response (product-owner verified 2026-09-15).
+- [x] Add a manual `Authorization` header and query API-key auth named `api_key`, send `/redirect/cross-origin`, and confirm the final JSON contains `authorization: null`, `apiKey: null`, and no cross-origin cookie; then send `/cookies/echo` on `127.0.0.1` and confirm `purr-redirect=kept` was retained for the original origin (product-owner verified 2026-09-15).
+- [x] Send `/response/binary?size=102400&cookies=repeated`; confirm status/protocol/duration/size are present, both `purr-binary-first` and `purr-binary-second` appear in Cookie, and Download writes a 102,400-byte file (product-owner verified 2026-09-15).
+- [x] Send `/response/json?size=1048576`, verify Pretty and search for `purr-tail-marker`, wait for “Saved locally”, restart Purr, reopen the same request, and confirm the response is readable with the same status, size, and marker through its persisted content reference (product-owner verified 2026-09-15).
+- [x] Send a GraphQL request to `/graphql/result` and confirm Data, Errors, and Extensions still render; load `/graphql/introspection?types=40` into a schema and confirm schema search/autocomplete still work (product-owner verified 2026-09-15).
+- [x] Configure OAuth Client Credentials with token URL `http://127.0.0.1:43119/oauth/token`, any synthetic client ID/secret, obtain the token, and confirm the Auth UI shows `purr-fixture-access-token` without a transport/content error (product-owner verified 2026-09-15).
 
 Implementation notes:
-- None yet.
+- Replaced `send_http` with operation-scoped `start_http`/`cancel_http`. Rust observes cancellation before headers, during network reads, and while backpressured chunk writes are pending; operation cleanup is idempotent and bounded cancellation tombstones cover cancel/start command ordering.
+- Native capture writes 256 KiB batches through an eight-job async queue to the existing encrypted content worker. Header/progress events are coalesced by 100 ms or 1 MiB, completion carries only metadata and `ResponseContentRef`, and the 20 MiB compatibility ceiling remains enforced.
+- The TypeScript use case retains redirect, credential-masking, cookie, and timeline policy. It releases every intermediate redirect handle and materializes only the final handle through 192 KiB range reads for the current viewer. `projectWorkspace` strips that presentation and persists/adopts the v2 exchange, so body text/base64 is not duplicated in new desktop execution records.
+- Added synthetic cross-origin redirect, repeated-cookie binary, and OAuth token fixtures for the manual checklist. Updated request, response, persistence, and system architecture documentation.
+- Automated verification passed: `npm test` (132), `npm run test:ui` (51), `npm run typecheck`, `npm run lint`, `npm run build`, `npm run check:repo`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` (51).
+- Product owner accepted every manual Phase 6 scenario on 2026-09-15. No blocking regression was reported.
 
 Deviations from plan:
 - None.
 
 Known follow-ups:
-- Progressive large-body rendering is activated in Phase 7; this phase retains the current capture limit.
+- Phase 7 removes the transitional full inline presentation for large responses; this phase deliberately retains the current 20 MiB capture/viewer behavior while eliminating the complete HTTP body from completion IPC and Rust memory.
+- Phase 9 replaces the inline download round trip with direct handle-based save. Until then the compatibility viewer keeps current download/media behavior.
 
 - **Objective:** remove response base64 from desktop IPC and stop network work when the user cancels.
 - **Files/modules affected:** Rust `http/*`, `commands/http.rs`, `commands/response.rs`; TS Tauri HTTP adapter and execute flow.

@@ -52,7 +52,7 @@ async function mockDesktop(page: Page) {
     (window as any).__requests = [];
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
-        if (command !== "send_http") return;
+        if (command !== "start_http") return;
         (window as any).__requests.push(args.request);
         const payload = JSON.parse(atob(args.request.bodyBase64));
         if ((window as any).__holdGraphqlRequest && payload.operationName !== "IntrospectionQuery") {

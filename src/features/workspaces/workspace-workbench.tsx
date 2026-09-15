@@ -12,6 +12,7 @@ import type { RequestAuth } from "../request-workbench/model/request-auth";
 import type { RequestDraft } from "../request-workbench/model/request";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
+import { materializeHttpExchange } from "../request-workbench/services/http-client";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
 import { importCurl, isCurlCommand, type CurlImport } from "../request-workbench/model/curl-import";
 import { CommandPalette, type PaletteAction } from "./components/command-palette";
@@ -148,6 +149,29 @@ export function WorkspaceWorkbench() {
     ? { ...emptyRequestSession, response: currentDocument.lastResponse, canvasFocus: "response" }
     : emptyRequestSession;
   const session = sessions[sessionKey] ?? restoredSession;
+  const referencedResponse = currentDocument?.lastResponse && !isInlineHttpResponse(currentDocument.lastResponse)
+    ? currentDocument.lastResponse
+    : null;
+  useEffect(() => {
+    if (!referencedResponse || sessions[sessionKey]?.response) return;
+    let active = true;
+    void materializeHttpExchange(referencedResponse, services.responseContent)
+      .then((response) => {
+        if (!active) return;
+        setSessions((current) => current[sessionKey]?.response
+          ? current
+          : { ...current, [sessionKey]: { ...emptyRequestSession, response, canvasFocus: "response" } });
+      })
+      .catch((cause) => {
+        if (!active) return;
+        setSessions((current) => ({ ...current, [sessionKey]: {
+          ...emptyRequestSession,
+          error: cause instanceof Error ? cause.message : String(cause),
+          canvasFocus: "response",
+        } }));
+      });
+    return () => { active = false; };
+  }, [referencedResponse?.content.id, services.responseContent, sessionKey]);
   const cookieJar = useMemo(() => {
     if (!workspace) return null;
     const existing = jars.current.get(workspace.id);
@@ -665,7 +689,7 @@ export function WorkspaceWorkbench() {
                       workspaceProfiles: getWorkspaceAuthProfiles(workspace.requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
-                    }, cookieJar!, runtime, services.httpTransport);
+                    }, cookieJar!, runtime, services.httpTransport, services.responseContent);
                   } });
                 update((current) => ({ ...current, dynamicVariableCache: resolution.cache }));
               } catch (cause) {

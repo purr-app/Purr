@@ -5,7 +5,21 @@ use reqwest::{
     Client, Method, Url,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::{
+    future::pending,
+    time::{Duration, Instant},
+};
+use tokio::sync::watch;
+
+use crate::content::{
+    actor::ResponseContentHandle,
+    contracts::{ContentMetadata, ResponseContentRef},
+};
+
+const MAX_RESPONSE_BYTES: u64 = 20 * 1024 * 1024;
+const WRITE_BATCH_BYTES: usize = 256 * 1024;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const PROGRESS_BYTES: u64 = 1024 * 1024;
 
 pub struct HttpClient(pub Client);
 
@@ -21,7 +35,7 @@ impl Default for HttpClient {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpRequest {
     url: String,
@@ -30,19 +44,38 @@ pub struct HttpRequest {
     body_base64: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpResponse {
     status: u16,
     status_text: String,
     headers: Vec<(String, String)>,
-    body_base64: String,
+    content: ResponseContentRef,
     duration_ms: u128,
     headers_duration_ms: u128,
     download_duration_ms: u128,
     http_version: String,
     local_address: Option<String>,
     remote_address: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HttpEvent {
+    Headers {
+        status: u16,
+        headers: Vec<(String, String)>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
+    },
+    Progress {
+        received_bytes: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
+    },
+    Complete {
+        response: Box<HttpResponse>,
+    },
 }
 
 pub fn http_url(value: &str) -> Result<Url, String> {
@@ -56,7 +89,83 @@ pub fn http_url(value: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-pub async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpResponse, String> {
+async fn cancelled(receiver: &mut watch::Receiver<bool>) {
+    loop {
+        if *receiver.borrow() {
+            return;
+        }
+        if receiver.changed().await.is_err() {
+            pending::<()>().await;
+        }
+    }
+}
+
+fn request_error(error: reqwest::Error) -> String {
+    // Never include reqwest's URL-bearing errors: query strings can contain API keys.
+    if error.is_timeout() {
+        "Request timed out."
+    } else if error.is_connect() {
+        "Connection failed. Check the host, network and TLS certificate."
+    } else {
+        "Could not send the HTTP request."
+    }
+    .into()
+}
+
+fn content_metadata(headers: &[(String, String)]) -> ContentMetadata {
+    let Some(value) = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value)
+    else {
+        return ContentMetadata {
+            media_type: None,
+            charset: None,
+        };
+    };
+    let mut parts = value.split(';');
+    let media_type = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let charset = parts.find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches('"').to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+    });
+    ContentMetadata {
+        media_type,
+        charset,
+    }
+}
+
+async fn append_batch(
+    content: &ResponseContentHandle,
+    content_id: &str,
+    bytes: Vec<u8>,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<(), String> {
+    let write = content.append(content_id.into(), bytes);
+    tokio::pin!(write);
+    tokio::select! {
+        _ = cancelled(cancellation) => Err("Request cancelled.".into()),
+        result = &mut write => result,
+    }
+}
+
+pub async fn perform_http(
+    request: HttpRequest,
+    client: &Client,
+    content: &ResponseContentHandle,
+    mut cancellation: watch::Receiver<bool>,
+    emit: impl Fn(HttpEvent),
+) -> Result<HttpResponse, String> {
+    if *cancellation.borrow() {
+        return Err("Request cancelled.".into());
+    }
     let url = http_url(&request.url)?;
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|_| "Invalid HTTP method.")?;
@@ -74,17 +183,14 @@ pub async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpR
                 .map_err(|_| "Invalid body encoding.")?,
         );
     }
+
     let started = Instant::now();
-    // Never include reqwest's URL-bearing errors: query strings can contain API keys.
-    let mut response = builder.send().await.map_err(|err| {
-        if err.is_timeout() {
-            "Request timed out."
-        } else if err.is_connect() {
-            "Connection failed. Check the host, network and TLS certificate."
-        } else {
-            "Could not send the HTTP request."
-        }
-    })?;
+    let send = builder.send();
+    tokio::pin!(send);
+    let mut response = tokio::select! {
+        _ = cancelled(&mut cancellation) => return Err("Request cancelled.".into()),
+        result = &mut send => result.map_err(request_error)?,
+    };
     let headers_duration = started.elapsed();
     let remote_address = response.remote_addr().map(|address| address.to_string());
     let local_address = response
@@ -101,7 +207,7 @@ pub async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpR
         _ => "HTTP",
     }
     .to_string();
-    let headers = response
+    let headers: Vec<(String, String)> = response
         .headers()
         .iter()
         .map(|(name, value)| {
@@ -111,79 +217,179 @@ pub async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpR
             )
         })
         .collect();
-    let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "Could not read the response body.")?
-    {
-        if body.len() + chunk.len() > 20 * 1024 * 1024 {
-            return Err("Response exceeds the 20 MB preview limit.".into());
+    let total_bytes = response.content_length();
+    emit(HttpEvent::Headers {
+        status: status.as_u16(),
+        headers: headers.clone(),
+        total_bytes,
+    });
+
+    let staging = content.create_staging(content_metadata(&headers)).await?;
+    let content_id = staging.id;
+    let capture = async {
+        let mut pending_bytes = Vec::with_capacity(WRITE_BATCH_BYTES);
+        let mut received_bytes = 0_u64;
+        let mut reported_bytes = 0_u64;
+        let mut last_progress = Instant::now();
+        loop {
+            let next = tokio::select! {
+                _ = cancelled(&mut cancellation) => return Err("Request cancelled.".into()),
+                result = response.chunk() => result.map_err(|_| "Could not read the response body.")?,
+            };
+            let Some(chunk) = next else { break };
+            received_bytes = received_bytes
+                .checked_add(chunk.len() as u64)
+                .ok_or("Response exceeds the 20 MB preview limit.")?;
+            if received_bytes > MAX_RESPONSE_BYTES {
+                return Err("Response exceeds the 20 MB preview limit.".into());
+            }
+            pending_bytes.extend_from_slice(&chunk);
+            while pending_bytes.len() >= WRITE_BATCH_BYTES {
+                let remainder = pending_bytes.split_off(WRITE_BATCH_BYTES);
+                append_batch(content, &content_id, pending_bytes, &mut cancellation).await?;
+                pending_bytes = remainder;
+            }
+            if received_bytes.saturating_sub(reported_bytes) >= PROGRESS_BYTES
+                || last_progress.elapsed() >= PROGRESS_INTERVAL
+            {
+                emit(HttpEvent::Progress {
+                    received_bytes,
+                    total_bytes,
+                });
+                reported_bytes = received_bytes;
+                last_progress = Instant::now();
+            }
         }
-        body.extend_from_slice(&chunk);
+        if !pending_bytes.is_empty() {
+            append_batch(content, &content_id, pending_bytes, &mut cancellation).await?;
+        }
+        if received_bytes != reported_bytes {
+            emit(HttpEvent::Progress {
+                received_bytes,
+                total_bytes,
+            });
+        }
+        let finish = content.finish(content_id.clone());
+        tokio::pin!(finish);
+        tokio::select! {
+            _ = cancelled(&mut cancellation) => Err("Request cancelled.".into()),
+            result = &mut finish => result,
+        }
     }
+    .await;
+
+    let reference = match capture {
+        Ok(reference) => reference,
+        Err(error) => {
+            let _ = content.release(content_id).await;
+            return Err(error);
+        }
+    };
     let duration = started.elapsed();
-    Ok(HttpResponse {
+    let result = HttpResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").into(),
         headers,
-        body_base64: STANDARD.encode(body),
+        content: reference,
         duration_ms: duration.as_millis(),
         headers_duration_ms: headers_duration.as_millis(),
         download_duration_ms: duration.saturating_sub(headers_duration).as_millis(),
         http_version,
         local_address,
         remote_address,
-    })
+    };
+    emit(HttpEvent::Complete {
+        response: Box::new(result.clone()),
+    });
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{content::store::ResponseContentStore, security::RootKeyStore};
     use std::{
         io::{Read, Write},
         net::TcpListener,
+        sync::{Arc, Mutex},
+        thread,
     };
+    use tempfile::TempDir;
+
+    #[derive(Default)]
+    struct MemoryRootKey(Mutex<Option<String>>);
+    impl RootKeyStore for MemoryRootKey {
+        fn get_root_key(&self) -> Result<Option<String>, String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn set_root_key(&self, value: &str) -> Result<(), String> {
+            *self.0.lock().unwrap() = Some(value.into());
+            Ok(())
+        }
+    }
+
+    fn content_handle(directory: &TempDir) -> ResponseContentHandle {
+        ResponseContentHandle::for_test(
+            ResponseContentStore::open(
+                &directory.path().join("state.sqlite3"),
+                &MemoryRootKey::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn request(url: String) -> HttpRequest {
+        HttpRequest {
+            url,
+            method: "GET".into(),
+            headers: Vec::new(),
+            body_base64: None,
+        }
+    }
 
     #[tokio::test]
-    async fn native_transport_preserves_headers_and_binary_payload() {
+    async fn native_completion_uses_a_content_reference_and_preserves_binary_metadata() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
+        let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            let mut buffer = [0; 1024];
-            loop {
-                let count = stream.read(&mut buffer).unwrap();
-                bytes.extend_from_slice(&buffer[..count]);
-                if let Some(index) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
-                    if bytes.len() >= index + 4 + 4 {
-                        assert_eq!(&bytes[index + 4..], &[0, 1, 255, 128]);
-                        break;
-                    }
-                }
-            }
-            let headers = String::from_utf8_lossy(&bytes).to_lowercase();
-            assert!(headers.contains("authorization: bearer test-token"));
-            assert!(headers.contains("cookie: sid=session"));
-            stream.write_all(b"HTTP/1.1 200 OK\r\nSet-Cookie: first=1; Path=/\r\nSet-Cookie: second=2; HttpOnly\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\0\x01\xff\x80").unwrap();
+            let mut request = [0_u8; 4096];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]).to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer test-token"));
+            assert!(request.contains("cookie: sid=session"));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nSet-Cookie: first=1; Path=/\r\nSet-Cookie: second=2; HttpOnly\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\0\x01\xff\x80").unwrap();
         });
-        let request = HttpRequest {
-            url: format!("http://{address}/echo"),
-            method: "POST".into(),
-            headers: vec![
-                ("Authorization".into(), "Bearer test-token".into()),
-                ("Cookie".into(), "sid=session".into()),
-            ],
-            body_base64: Some(STANDARD.encode([0, 1, 255, 128])),
-        };
-        let result = perform_http(request, &HttpClient::default().0)
-            .await
-            .unwrap();
+        let directory = TempDir::new().unwrap();
+        let content = content_handle(&directory);
+        let (_, cancellation) = watch::channel(false);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let emitted = events.clone();
+        let result = perform_http(
+            HttpRequest {
+                url: format!("http://{address}/echo"),
+                method: "POST".into(),
+                headers: vec![
+                    ("Authorization".into(), "Bearer test-token".into()),
+                    ("Cookie".into(), "sid=session".into()),
+                ],
+                body_base64: Some(STANDARD.encode([0, 1, 255, 128])),
+            },
+            &HttpClient::default().0,
+            &content,
+            cancellation,
+            move |event| emitted.lock().unwrap().push(event),
+        )
+        .await
+        .unwrap();
         assert_eq!(result.status, 200);
+        assert_eq!(result.content.byte_length, 4);
+        assert!(result.content.complete);
+        assert_eq!(
+            result.content.media_type.as_deref(),
+            Some("application/octet-stream")
+        );
         assert_eq!(
             result
                 .headers
@@ -192,10 +398,25 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(
-            STANDARD.decode(result.body_base64).unwrap(),
-            [0, 1, 255, 128]
-        );
+        let serialized = serde_json::to_value(&result).unwrap();
+        assert!(serialized.get("bodyBase64").is_none());
+        let window = content
+            .read_range(
+                result.content.id.clone(),
+                crate::content::contracts::ByteRange {
+                    offset: 0,
+                    length: 4,
+                },
+                "base64".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(STANDARD.decode(window.content).unwrap(), [0, 1, 255, 128]);
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, HttpEvent::Complete { .. })));
         assert_eq!(result.http_version, "HTTP/1.1");
         assert_eq!(result.remote_address, Some(address.to_string()));
         assert!(result
@@ -208,25 +429,140 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_preview_rejects_one_byte_over_twenty_mebibytes() {
+    async fn cancellation_before_headers_aborts_the_request() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            thread::sleep(Duration::from_millis(250));
+        });
+        let directory = TempDir::new().unwrap();
+        let content = content_handle(&directory);
+        let (cancel, cancellation) = watch::channel(false);
+        let task = tokio::spawn({
+            let content = content.clone();
+            async move {
+                perform_http(
+                    request(format!("http://{address}/slow")),
+                    &HttpClient::default().0,
+                    &content,
+                    cancellation,
+                    |_| {},
+                )
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), accepted_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        cancel.send(true).unwrap();
+        assert_eq!(task.await.unwrap().unwrap_err(), "Request cancelled.");
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_download_releases_partial_content() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+        let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n",
+                )
                 .unwrap();
+            stream.write_all(&vec![b'x'; 64 * 1024]).unwrap();
+            first_tx.send(()).unwrap();
+            thread::sleep(Duration::from_millis(250));
+            let _ = stream.write_all(&vec![b'y'; 64 * 1024]);
+        });
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let content = content_handle(&directory);
+        let (cancel, cancellation) = watch::channel(false);
+        let task = tokio::spawn({
+            let content = content.clone();
+            async move {
+                perform_http(
+                    request(format!("http://{address}/stream")),
+                    &HttpClient::default().0,
+                    &content,
+                    cancellation,
+                    |_| {},
+                )
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), first_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancel.send(true).unwrap();
+        assert_eq!(task.await.unwrap().unwrap_err(), "Request cancelled.");
+        let database = rusqlite::Connection::open(path).unwrap();
+        let rows: u64 = database
+            .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn completed_content_remains_valid_when_cancel_arrives_at_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let directory = TempDir::new().unwrap();
+        let content = content_handle(&directory);
+        let (cancel, cancellation) = watch::channel(false);
+        let cancel_at_completion = cancel.clone();
+        let result = perform_http(
+            request(format!("http://{address}/complete")),
+            &HttpClient::default().0,
+            &content,
+            cancellation,
+            move |event| {
+                if matches!(event, HttpEvent::Complete { .. }) {
+                    let _ = cancel_at_completion.send(true);
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status, 204);
+        assert_eq!(result.content.byte_length, 0);
+        assert_eq!(content.inspect(result.content.id).await.unwrap().size, 0);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn response_preview_rejects_one_byte_over_twenty_mebibytes_without_leaking_content() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 4096];
             let _ = stream.read(&mut request).unwrap();
             let size = 20 * 1024 * 1024 + 1;
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             let chunk = [b'x'; 64 * 1024];
             let mut remaining = size;
             while remaining > 0 {
@@ -237,17 +573,27 @@ mod tests {
                 remaining -= length;
             }
         });
-        let request = HttpRequest {
-            url: format!("http://{address}/oversized"),
-            method: "GET".into(),
-            headers: vec![],
-            body_base64: None,
-        };
-        let error = perform_http(request, &HttpClient::default().0)
-            .await
-            .err()
-            .expect("oversized response must fail");
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let content = content_handle(&directory);
+        let (_, cancellation) = watch::channel(false);
+        let error = perform_http(
+            request(format!("http://{address}/oversized")),
+            &HttpClient::default().0,
+            &content,
+            cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error, "Response exceeds the 20 MB preview limit.");
+        let database = rusqlite::Connection::open(path).unwrap();
+        let rows: u64 = database
+            .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0);
         server.join().unwrap();
     }
 
@@ -258,8 +604,7 @@ mod tests {
             "ftp://example.com",
             "https://user:password@example.com",
         ] {
-            assert!(http_url(value).is_err());
+            assert!(http_url(value).is_err(), "{value}");
         }
-        assert!(http_url("http://127.0.0.1:8000").is_ok());
     }
 }

@@ -1,10 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { z } from "zod";
 
-import type { HttpTransportResponse } from "../../application/ports/http";
+import type { HttpTransportProgress, HttpTransportResponse } from "../../application/ports/http";
 import type { PlatformAdapters } from "../../application/ports/platform";
 import type {
   FileChange,
@@ -180,6 +180,70 @@ const linePageSchema = z.object({
   complete: z.boolean(),
 });
 
+const contentReferenceSchema = z.object({
+  id: z.string().min(1),
+  byteLength: z.number().int().nonnegative(),
+  mediaType: z.string().optional(),
+  charset: z.string().optional(),
+  complete: z.boolean(),
+});
+const transportMetadataSchema = z.object({
+  status: z.number().int(),
+  statusText: z.string(),
+  headers: z.array(z.tuple([z.string(), z.string()])),
+  durationMs: z.number().nonnegative(),
+  headersDurationMs: z.number().nonnegative().optional(),
+  downloadDurationMs: z.number().nonnegative().optional(),
+  httpVersion: z.string().optional(),
+  localAddress: z.string().optional(),
+  remoteAddress: z.string().optional(),
+});
+const transportResponseSchema = z.union([
+  transportMetadataSchema.extend({ bodyBase64: z.string() }),
+  transportMetadataSchema.extend({ content: contentReferenceSchema }),
+]);
+
+type NativeHttpEvent =
+  | { type: "headers"; totalBytes?: number }
+  | { type: "progress"; receivedBytes: number; totalBytes?: number }
+  | { type: "complete" };
+
+function supportsTauriChannels() {
+  return typeof (globalThis as typeof globalThis & {
+    window?: { __TAURI_INTERNALS__?: { transformCallback?: unknown } };
+  }).window?.__TAURI_INTERNALS__?.transformCallback === "function";
+}
+
+async function startHttp(
+  request: HttpRequestSnapshot,
+  options?: { signal?: AbortSignal; onProgress?: (progress: HttpTransportProgress) => void },
+): Promise<HttpTransportResponse> {
+  options?.signal?.throwIfAborted();
+  const operationId = crypto.randomUUID();
+  const cancel = () => {
+    void invoke<void>("cancel_http", { operationId }).catch(() => {});
+  };
+  options?.signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const channel = supportsTauriChannels()
+      ? new Channel<NativeHttpEvent>((event) => {
+          if (event.type === "headers")
+            options?.onProgress?.({ receivedBytes: 0, totalBytes: event.totalBytes });
+          if (event.type === "progress")
+            options?.onProgress?.({ receivedBytes: event.receivedBytes, totalBytes: event.totalBytes });
+        })
+      : undefined;
+    const response = await invoke<unknown>("start_http", {
+      operationId,
+      request,
+      ...(channel ? { onEvent: channel } : {}),
+    });
+    return transportResponseSchema.parse(response) as HttpTransportResponse;
+  } finally {
+    options?.signal?.removeEventListener("abort", cancel);
+  }
+}
+
 function rejectAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
 }
@@ -235,8 +299,7 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
   return {
     persistenceBackend: new TauriPersistence(),
     secureStore,
-    httpTransport: (request: HttpRequestSnapshot) =>
-      invoke<HttpTransportResponse>("send_http", { request }),
+    httpTransport: startHttp,
     responseContent: new TauriResponseContent(),
     oauthCallback: {
       authorize: (input) => invoke<string>("authorize_oauth", input),

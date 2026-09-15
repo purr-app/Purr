@@ -1,4 +1,4 @@
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type OutgoingHttpHeaders, type ServerResponse } from "node:http";
 import { once } from "node:events";
 
 import {
@@ -89,6 +89,15 @@ const server = createServer(async (request, response) => {
     });
     return;
   }
+  if (url.pathname === "/oauth/token") {
+    respondJson(response, 200, {
+      access_token: "purr-fixture-access-token",
+      token_type: "Bearer",
+      expires_in: 3600,
+      scope: "fixture.read",
+    });
+    return;
+  }
   if (url.pathname === "/cookies/set") {
     respondJsonWithHeaders(response, 200, { fixture: "purr-cookie", set: true }, {
       "set-cookie": "purr-phase3=ok; Path=/; HttpOnly; SameSite=Lax",
@@ -99,6 +108,24 @@ const server = createServer(async (request, response) => {
     respondJson(response, 200, {
       fixture: "purr-cookie",
       cookie: request.headers.cookie ?? "",
+    });
+    return;
+  }
+  if (url.pathname === "/redirect/cross-origin") {
+    response.writeHead(302, {
+      "cache-control": "no-store",
+      location: `http://localhost:${port}/redirect/final?api_key=fixture-redirect-secret`,
+      "set-cookie": "purr-redirect=kept; Path=/; HttpOnly; SameSite=Lax",
+    });
+    response.end();
+    return;
+  }
+  if (url.pathname === "/redirect/final") {
+    respondJson(response, 200, {
+      fixture: "purr-cross-origin-redirect",
+      authorization: request.headers.authorization ?? null,
+      cookie: request.headers.cookie ?? null,
+      apiKey: url.searchParams.get("api_key"),
     });
     return;
   }
@@ -113,8 +140,10 @@ const server = createServer(async (request, response) => {
         "/response/binary?size=104857600",
         "/graphql/introspection?types=1200",
         "/graphql/result",
+        "/oauth/token",
         "/cookies/set",
         "/cookies/echo",
+        "/redirect/cross-origin",
       ],
     });
     return;
@@ -126,13 +155,20 @@ const server = createServer(async (request, response) => {
     const delayMs = boundedInteger(url, "delayMs", 0, 0, 10_000);
     const headersDelayMs = boundedInteger(url, "headersDelayMs", 0, 0, 60_000);
     if (headersDelayMs) await new Promise((resolve) => setTimeout(resolve, headersDelayMs));
-    response.writeHead(200, {
+    const headers: OutgoingHttpHeaders = {
       "access-control-allow-origin": "*",
       "cache-control": "no-store",
       "content-length": size,
       "content-type": contentTypes[kind],
       "x-purr-fixture": "synthetic",
-    });
+    };
+    if (url.searchParams.get("cookies") === "repeated") {
+      headers["set-cookie"] = [
+        "purr-binary-first=one; Path=/; HttpOnly; SameSite=Lax",
+        "purr-binary-second=two; Path=/; SameSite=Lax",
+      ];
+    }
+    response.writeHead(200, headers);
     if (request.method === "HEAD") {
       response.end();
       return;

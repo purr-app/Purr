@@ -4,6 +4,7 @@ import { CircleAlert } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { Kbd } from "../../../shared/components/ui/kbd";
 import { cn } from "../../../shared/lib/cn";
+import type { HttpTransportProgress } from "../../../application/ports/http";
 
 const responseLabels = ["Response", "Headers", "Cookie", "Timeline", "Trace", "Request"] as const;
 
@@ -28,7 +29,14 @@ export function ErrorResponse({ message }: { message: string }) {
   </ResponseStateShell>;
 }
 
-export function PendingResponse({ graphql, onCancel }: { graphql: boolean; onCancel: () => void }) {
+function progressLabel(progress: HttpTransportProgress | null) {
+  if (!progress) return "Waiting for response…";
+  const received = `${(progress.receivedBytes / 1024 / 1024).toFixed(1)} MiB`;
+  if (!progress.totalBytes) return `Downloading ${received}…`;
+  return `Downloading ${received} / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MiB…`;
+}
+
+export function PendingResponse({ graphql, onCancel, progress }: { graphql: boolean; onCancel: () => void; progress: HttpTransportProgress | null }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const started = performance.now();
@@ -48,7 +56,7 @@ export function PendingResponse({ graphql, onCancel }: { graphql: boolean; onCan
     <div role="status" className="flex h-full min-h-0 items-center justify-center bg-purr-codefield p-ui-6">
       <div className="flex flex-wrap items-center justify-center gap-ui-3 rounded-ui-xl border border-border-subtle bg-purr-surface px-ui-4 py-ui-2 font-code text-ui-sm shadow-button">
         <span data-pending-indicator className={cn("size-ui-2 animate-pulse rounded-full", graphql ? "bg-action-graphql" : "bg-action-emerald")} aria-hidden="true" />
-        <span data-pending-message className="text-content-secondary">Waiting for response…</span>
+        <span data-pending-message className="text-content-secondary">{progressLabel(progress)}</span>
         <span data-response-elapsed className={cn(graphql ? "text-action-graphql" : "text-action-emerald")}>{elapsed.toFixed(1)} ms</span>
         <span aria-hidden="true" className="text-content-quaternary">·</span>
         <span data-pending-hint className="inline-flex items-center gap-ui-1 text-content-tertiary">

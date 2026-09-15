@@ -30,10 +30,13 @@ The default base URL is `http://127.0.0.1:43119`. Override the port with `PURR_F
 | Small GraphQL introspection | `/graphql/introspection?types=40` |
 | Large GraphQL introspection | `/graphql/introspection?types=1200` |
 | GraphQL response tabs | `/graphql/result` |
+| Synthetic OAuth token response | `/oauth/token` |
 | Set a local test cookie | `/cookies/set` |
 | Confirm request cookie propagation | `/cookies/echo` |
+| Cross-origin redirect security fixture | `/redirect/cross-origin` |
+| Binary with repeated cookies | `/response/binary?size=102400&cookies=repeated` |
 
-Every response endpoint accepts `size`, `chunkSize`, `delayMs`, and `headersDelayMs`. The server caps bodies at 128 MiB and logs requested/sent bytes. If Purr truly aborts a request, the log shows fewer sent bytes; current UI cancellation is expected to let the native request continue.
+Every response endpoint accepts `size`, `chunkSize`, `delayMs`, and `headersDelayMs`. The server caps bodies at 128 MiB and logs requested/sent bytes. After Phase 6, cancelling a native request should log fewer sent bytes.
 
 ## Desktop measurements
 

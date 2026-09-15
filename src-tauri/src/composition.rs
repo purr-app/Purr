@@ -21,6 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(http::HttpClient::default())
+        .manage(http::HttpOperationState::default())
         .manage(oauth::OAuthCallbacks::default())
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
@@ -36,7 +37,8 @@ pub fn run() {
             commands::response::response_content_read_range,
             commands::response::response_content_read_lines,
             commands::response::response_content_release,
-            commands::http::send_http,
+            commands::http::start_http,
+            commands::http::cancel_http,
             commands::importing::import_collection,
             oauth::authorize_oauth,
             oauth::cancel_oauth,

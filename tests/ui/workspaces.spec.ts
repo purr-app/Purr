@@ -34,7 +34,7 @@ async function mockDesktop(page: Page, delayed = false) {
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
         (window as any).__commands.push(command);
-        if (command !== "send_http") return;
+        if (command !== "start_http") return;
         (window as any).__requests.push(args.request);
         const response = { status: 200, statusText: "OK", durationMs: 42, httpVersion: "HTTP/2", headers: [["content-type", "application/json"], ["set-cookie", "persisted=one; Secure; HttpOnly; Path=/"]], bodyBase64: btoa('{"source":"first-document"}') };
         if (delayed) return new Promise((resolve) => { (window as any).__finishRequest = () => resolve(response); });

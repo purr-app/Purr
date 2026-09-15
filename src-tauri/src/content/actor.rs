@@ -5,12 +5,9 @@ use super::{
     store::ResponseContentStore,
 };
 use crate::security::PlatformRootKeyStore;
-use std::{
-    path::PathBuf,
-    sync::{mpsc, Mutex},
-};
+use std::{path::PathBuf, sync::Mutex};
 use tauri::Manager;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 type StoreJob = Box<dyn FnOnce(&mut ResponseContentStore) + Send>;
 
@@ -21,12 +18,17 @@ pub struct ResponseContentHandle {
 
 impl ResponseContentHandle {
     fn start(path: PathBuf) -> Result<Self, String> {
-        let mut store = ResponseContentStore::open(&path, &PlatformRootKeyStore)?;
-        let (sender, receiver) = mpsc::channel::<StoreJob>();
+        Self::start_store(ResponseContentStore::open(&path, &PlatformRootKeyStore)?)
+    }
+
+    fn start_store(mut store: ResponseContentStore) -> Result<Self, String> {
+        // The bounded queue is the backpressure boundary between async network
+        // reads and blocking SQLite/encryption work.
+        let (sender, mut receiver) = mpsc::channel::<StoreJob>(8);
         std::thread::Builder::new()
             .name("purr-response-content".into())
             .spawn(move || {
-                while let Ok(job) = receiver.recv() {
+                while let Some(job) = receiver.blocking_recv() {
                     job(&mut store);
                 }
             })
@@ -43,13 +45,13 @@ impl ResponseContentHandle {
             .send(Box::new(move |store| {
                 let _ = sender.send(operation(store));
             }))
+            .await
             .map_err(|_| "Response storage worker is unavailable")?;
         receiver
             .await
             .map_err(|_| "Response storage worker stopped")?
     }
 
-    #[allow(dead_code)] // Native HTTP starts using the writer API in Phase 6.
     pub async fn create_staging(
         &self,
         metadata: ContentMetadata,
@@ -57,12 +59,10 @@ impl ResponseContentHandle {
         self.call(move |store| store.create_staging(metadata)).await
     }
 
-    #[allow(dead_code)]
     pub async fn append(&self, id: String, bytes: Vec<u8>) -> Result<(), String> {
         self.call(move |store| store.append(&id, &bytes)).await
     }
 
-    #[allow(dead_code)]
     pub async fn finish(&self, id: String) -> Result<ResponseContentRef, String> {
         self.call(move |store| store.finish(&id)).await
     }
@@ -93,6 +93,13 @@ impl ResponseContentHandle {
 
     pub async fn release(&self, id: String) -> Result<(), String> {
         self.call(move |store| store.release(&id)).await
+    }
+}
+
+#[cfg(test)]
+impl ResponseContentHandle {
+    pub(crate) fn for_test(store: ResponseContentStore) -> Result<Self, String> {
+        Self::start_store(store)
     }
 }
 

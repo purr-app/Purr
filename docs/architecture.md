@@ -118,10 +118,10 @@ Request editor
   → WireRequest + redacted display request
   → TypeScript cookie/redirect policy
   → ApplicationServices.httpTransport
-  → Tauri adapter → Rust send_http
-  → WireResponse
-  → InlineHttpResponse compatibility view
-  → response viewer + latest execution persistence
+  → Tauri adapter → Rust start_http / cancel_http
+  → encrypted staging chunks + response metadata/content reference
+  → bounded compatibility materialization for the current viewer
+  → response viewer + v2 exchange persistence/content adoption
 ```
 
 See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-lifecycle.md) for ordering and edge cases.
@@ -144,7 +144,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 
 ## Current architectural limitations
 
-- UI cancellation invalidates ownership of a pending completion but does not abort the native HTTP request.
+- The current response viewer still materializes a completed native handle into an inline body. Phase 7 replaces that compatibility step with bounded/virtualized presentation for large responses.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.

@@ -53,7 +53,7 @@ executeRequest()
   ↓
 executeHttp() → cookie merge + redirect policy
   ↓
-ApplicationServices.httpTransport → Tauri send_http
+ApplicationServices.httpTransport → Tauri start_http / cancel_http
 ```
 
 `RequestWorkbench` creates `effectiveDraft` with `applyWorkspaceRequestConfig` before resolving dynamic variables. Dependency requests are executed through the same `executeRequest` path. `prepareWireRequest` performs static interpolation for the final request and separately with masked variable values for the display request.
@@ -158,13 +158,16 @@ Rust redirects are disabled so this policy remains in one TypeScript layer. See 
 
 ## Frontend/native boundary
 
-The IPC request is `WireRequest`: final URL, method, duplicate-preserving header tuples, and optional base64 body. The Rust `send_http` command:
+The IPC request is `WireRequest`: final URL, method, duplicate-preserving header tuples, and optional base64 body. The Rust `start_http` command:
 
 - validates HTTP(S), host, method, headers, body encoding, and URL credentials;
 - sends with Reqwest using a fixed timeout and redirects disabled;
 - preserves duplicate response headers;
-- buffers at most the configured 20 MiB response preview;
-- returns bytes as base64 plus status, protocol, addresses, and transport timings.
+- streams at most the configured 20 MiB response preview into encrypted native chunks through a bounded worker queue;
+- emits coalesced header/progress events and returns an opaque content reference plus status, protocol, addresses, and transport timings;
+- observes `cancel_http` before headers and throughout download/storage, releasing partial content on failure or cancellation.
+
+The desktop completion IPC never contains the complete response body. The current compatibility viewer reads a completed handle in bounded windows; Phase 7 replaces that materialization for large responses.
 
 Rust intentionally does not understand workspace inheritance, `RequestDraft`, template variables, auth schemes, logical body modes, cookies, or redirect credential policy.
 

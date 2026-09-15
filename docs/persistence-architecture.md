@@ -49,10 +49,10 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Sidebar width/order/open state | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Local layout preference |
 | Request/response layout and split ratios | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Local layout preference |
 | Active environment | `Workspace.activeEnvironmentId` | encrypted `workspace_local_state/state` | No | No | Machine/session choice |
-| Latest execution | `RequestDocument.lastResponse` | encrypted `request_executions` + `response_bodies` | No | Potentially | Restore latest response without polluting Git |
+| Latest execution | `RequestDocument.lastResponse` | encrypted `request_executions` + adopted `response_contents` chunks; legacy `response_bodies` | No | Potentially | Restore latest response without polluting Git |
 | Older execution history | not hydrated in ordinary runtime | same native tables | No | Potentially | Local indexed history backend |
 | Response headers | `InlineHttpResponse.headers` / `HttpExchange.response.headers` | encrypted execution payload | No | Potentially | Runtime evidence can contain tokens/cookies |
-| Response body | `InlineHttpResponse.bodyBase64/text`; future `HttpExchange.content` reference | encrypted legacy `response_bodies`; native `response_contents` + encrypted chunks | No | Potentially | Large/sensitive execution data |
+| Response body | `HttpExchange.content` reference; transitional materialized viewer value | encrypted legacy `response_bodies`; native `response_contents` + encrypted chunks | No | Potentially | Large/sensitive execution data |
 | Cookie metadata | `SessionCookie` | local `cookie_metadata` index columns | No | Metadata only | Queryable local jar inventory |
 | Cookie values/full record | `SessionCookieJar` | encrypted `cookie_jar` payload | No | Yes | Session credential material |
 | Canonical attachment | live `File` in `RequestBody` | content-addressed `assets/<sha256>.bin` | Yes | Not assumed; user-controlled | Required to reproduce saved request |
@@ -149,6 +149,8 @@ The Rust watcher uses `RecursiveMode::Recursive` for each registered project roo
 Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated legacy `response_bodies`, `cookie_metadata`, `secret_values`, and the Phase 5 `response_contents`/`response_content_chunks` store. SQLite runs with WAL, full synchronous behavior, foreign keys, and a busy timeout.
 
 Native response content has an explicit `staging`, `ready`, or `adopted` state. Chunks are at most 256 KiB and independently encrypted with AAD bound to their content identity and position. The content worker removes expired unowned records. Persisting a v2 execution adopts matching ready content in the same SQLite transaction; deleting that execution or workspace deletes its metadata and cascading chunks. Legacy inline `response_bodies` remain readable and are not deleted by the schema migration.
+
+Native HTTP now creates staging content after receiving headers and appends through a bounded worker queue. Completion IPC returns only metadata and the opaque reference. Cancellation, read failure, size-limit failure, or compatibility-materialization failure releases the unadopted content; successful execution persistence adopts it.
 
 General local-record payloads are AES-GCM encrypted with context/AAD bound to workspace/table/record identity. Execution document/time/status and cookie metadata columns remain plaintext indexes; execution bodies, full execution payloads, cookie values, drafts, and session state are encrypted.
 

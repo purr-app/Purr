@@ -1,4 +1,5 @@
 import type { OAuthCallbackPort } from "../../../application/ports/platform";
+import type { ResponseContentPort } from "../../../application/ports/response-content";
 import {
   base64Bytes,
   encodeBasicAuth,
@@ -73,6 +74,8 @@ export async function fetchOAuthToken(
   grant: "initial" | "refresh",
   code?: { code: string; verifier: string },
   transport?: HttpTransport,
+  content?: ResponseContentPort,
+  signal?: AbortSignal,
 ): Promise<OAuthToken> {
   requireOAuthUrl(config.tokenUrl);
   if (!config.clientId.trim()) throw new Error("Enter a Client ID.");
@@ -116,7 +119,7 @@ export async function fetchOAuthToken(
       headers,
       bodyBase64: base64Bytes(new TextEncoder().encode(params.toString())),
     },
-    { transport, followRedirects: false },
+    { transport, content, signal, followRedirects: false },
   );
   // OAuth response bodies can contain secrets. Expose only a known error identifier.
   let data: Record<string, unknown>;
@@ -193,6 +196,7 @@ export async function authorizeOAuth(
   sessionId: string,
   callback: OAuthCallbackPort,
   transport: HttpTransport,
+  content?: ResponseContentPort,
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
@@ -236,5 +240,7 @@ export async function authorizeOAuth(
     "initial",
     { code, verifier: pkce.verifier },
     transport,
+    content,
+    signal,
   );
 }

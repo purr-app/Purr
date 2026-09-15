@@ -6,26 +6,28 @@ This document owns the path from native response bytes to frontend rendering, se
 
 ```text
 Reqwest response in src-tauri/src/http/transport.rs
-  → WireResponse over Tauri IPC
+  → encrypted staging chunks in response_contents
+  → metadata + ResponseContentRef over completion IPC
   → executeHttp() redirect/cookie loop
-  → base64 bytes decoded to Uint8Array + UTF-8 text
-  → domain InlineHttpResponse with final URL, byte size, and HttpTimeline
+  → intermediate redirect handles released
+  → bounded range reads into the Phase 6 inline compatibility view
+  → domain HttpExchange retained beside that presentation
   → RequestWorkbench document session
   → ResponseViewer classification and presentation
-  → latest execution projected to encrypted local storage
+  → v2 exchange projected to local storage and content adopted atomically
 ```
 
-`WireResponse` contains status, status text, duplicate-preserving headers, base64 body bytes, transport duration, header/download timings, HTTP version, and optional local/remote socket addresses. `executeHttp` adds final URL, decoded `text`, actual byte size, and the frontend timeline, then wraps the result in the domain-owned `InlineHttpResponse` compatibility shape. Redirects are resolved in TypeScript, so the final response describes the last hop while timeline redirect entries retain hop metadata.
+Desktop transport completion contains status, status text, duplicate-preserving headers, an opaque content reference, transport duration, header/download timings, HTTP version, and optional local/remote socket addresses. It never contains a complete `bodyBase64`. `executeHttp` adds final URL and the frontend timeline. Until Phase 7 changes presentation, it reads the completed handle in 192 KiB windows and creates the domain-owned `InlineHttpResponse` compatibility shape for the current viewer. Its `sourceExchange` is projected back to a body-free v2 exchange before persistence.
 
-`src/domain/http.ts` also defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. Desktop HTTP responses remain inline until Phase 6 switches transport ownership. The Phase 5 native content store and bounded read adapter are available in parallel but do not yet receive HTTP bodies.
+`src/domain/http.ts` defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. New desktop HTTP responses use this ownership model. Legacy/browser test adapters can still return inline completion while the migration remains incremental.
 
 The UTF-8 text decode is permissive. Binary-safe operations such as image/media display, hex/base64 rendering, and download use `bodyBase64`, not a text re-encoding.
 
 ## Native response boundary
 
-`src-tauri/src/http/transport.rs` disables Reqwest redirects and streams up to 20 MiB into the response preview. It preserves repeated response headers including `Set-Cookie`, measures header/download/total transport time, and sanitizes transport errors so the request URL/query is not echoed into an error string.
+`src-tauri/src/http/transport.rs` disables Reqwest redirects and streams up to 20 MiB through a bounded queue into encrypted response chunks. It holds no complete response body and emits coalesced header/progress/completion events. It preserves repeated response headers including `Set-Cookie`, measures header/download/total transport time, and sanitizes transport errors so the request URL/query is not echoed into an error string.
 
-`src-tauri/src/content/` owns the parallel encrypted response-content engine. It stores bounded chunks with a response-specific derived key and AAD bound to content ID, chunk index, byte offset, length, and crypto version. Content remains unreadable while `staging`, becomes readable when `ready`, and is adopted atomically when its execution record is persisted. Bounded inspect, byte-range, and line-page operations cross the `ResponseContentPort`; HTTP capture starts using the writer in Phase 6.
+`src-tauri/src/content/` owns the encrypted response-content engine. It stores bounded chunks with a response-specific derived key and AAD bound to content ID, chunk index, byte offset, length, and crypto version. Content remains unreadable while `staging`, becomes readable when `ready`, and is adopted atomically when its execution record is persisted. Bounded inspect, byte-range, and line-page operations cross the `ResponseContentPort`. Cancellation or capture failure releases staging content before returning.
 
 Rust does not choose a viewer, parse JSON, calculate cookie policy, normalize redirects, extract variables, or persist history. Those remain TypeScript/application responsibilities.
 
@@ -122,13 +124,13 @@ Startup `read` hydrates only the newest execution for each document. `list_reque
 
 ## GraphQL response interpretation
 
-A GraphQL request still produces an ordinary inline HTTP response. `ResponseViewer` parses a JSON object and conditionally separates top-level `errors` and `extensions`; `data` remains visible in the Response body. HTTP status and transport failure semantics are unchanged. Purr does not convert GraphQL application errors into native transport errors.
+A GraphQL request uses the same native content reference as REST and is materialized only by the current compatibility presentation. `ResponseViewer` parses a JSON object and conditionally separates top-level `errors` and `extensions`; `data` remains visible in the Response body. HTTP status and transport failure semantics are unchanged. Purr does not convert GraphQL application errors into native transport errors.
 
 ## Pending, errors, and cancellation
 
 `RequestSession` in `request-workbench.tsx` owns `sending`, `response`, and `error` per document. Sending shows the pending state. Validation/dynamic/auth failures and sanitized native failures populate Error without creating a response. An ordinary non-2xx HTTP response remains a response.
 
-Every send captures an execution counter. A newer send or Escape increments it; completion from the older counter is discarded. Component unmount similarly prevents stale ownership. This is UI cancellation only: no abort signal crosses IPC, and the underlying native request can continue until it completes or hits the fixed timeout.
+Every send captures an execution counter and an `AbortController`. Escape aborts the active transport, invokes `cancel_http` for its opaque operation ID, returns the UI to idle, and prevents a completed history entry. Rust observes cancellation before headers and while reading or writing chunks; partial staging content is released. Late completion ownership still follows the originating document, so navigating to another document does not itself cancel an in-flight request.
 
 ## Safe display invariants
 
@@ -149,7 +151,7 @@ Every send captures an execution counter. A newer send or Escape increments it; 
 - `src/features/request-workbench/services/download-response.ts` — browser/native download selection.
 - `src/features/request-workbench/request-workbench.tsx` — per-document response/error ownership and stale-completion guard.
 - `src/application/project-projection.ts` — latest-response local projection and hydration.
-- `src-tauri/src/http/transport.rs` — current inline native response bytes, headers, timings, and errors.
+- `src-tauri/src/http/transport.rs` and `http/operations.rs` — streaming capture, progress, operation cancellation, headers, timings, and sanitized errors.
 - `src-tauri/src/content/` — encrypted content lifecycle, bounded reads, and the dedicated storage worker.
 - `src-tauri/src/persistence/local_records.rs` and `response_bodies.rs` — execution persistence, atomic content adoption, deletion, and history pagination.
 - `src-tauri/src/commands/response.rs` — native response-content IPC and inline save boundary.
