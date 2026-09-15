@@ -192,7 +192,7 @@ impl FilesystemWorkspaceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{local_state::LocalStateStore, secure_store::tests::MemoryRootKeyStore};
+    use crate::{persistence::local_records::LocalStateStore, security::tests::MemoryRootKeyStore};
     #[test]
     fn interrupted_file_commit_replays_idempotently_before_local_transaction_finishes() {
         let dir = tempfile::tempdir().unwrap();

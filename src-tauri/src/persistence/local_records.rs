@@ -1,4 +1,4 @@
-use crate::secure_store::{validate_secret_ref, LocalCipher, RootCiphers, RootKeyStore};
+use crate::security::{validate_secret_ref, LocalCipher, RootCiphers, RootKeyStore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -573,7 +573,7 @@ impl LocalStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secure_store::tests::MemoryRootKeyStore;
+    use crate::security::tests::MemoryRootKeyStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_value(label: &str) -> String {

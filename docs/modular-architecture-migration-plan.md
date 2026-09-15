@@ -23,7 +23,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | 1 | Stabilize repository and dependency rules | DONE | `ce48ae1` | PASS — clean npm install, repository policy, unit/UI/type/lint/build, Rust checks, Tauri dev/app build | COMPLETE — OSS launch, REST/GraphQL, restart, persistence, and secret/YAML behavior passed |
 | 2 | Split stable HTTP exchange contracts | DONE | Phase 2 working tree based on `ce48ae1` | PASS — 123 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, fmt, clippy, repository policy | COMPLETE — legacy response restore, REST viewers/restart, and GraphQL response tabs passed |
 | 3 | Add frontend ports and OSS composition root | DONE | Phase 3 working tree based on `27cc0a8` | PASS — 127 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner acceptance after browser persistence, desktop responses/cookies, OpenAPI import/base URL, health request, and OAuth opener verification |
-| 4 | Mechanically modularize the Rust crate | TODO | — | Not run | Not run |
+| 4 | Mechanically modularize the Rust crate | DONE | Phase 4 working tree based on `f5f8362` | PASS — 129 TypeScript tests, 51 UI tests, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner desktop smoke verification on 2026-09-15 |
 | 5 | Implement encrypted native response content storage | TODO | — | Not run | Not run |
 | 6 | Switch native HTTP to response handles and real cancellation | TODO | — | Not run | Not run |
 | 7 | Add bounded/virtualized response presentation | TODO | — | Not run | Not run |
@@ -1152,33 +1152,37 @@ Known follow-ups:
 
 ### Phase 4 — mechanically modularize the Rust crate
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 4 working tree on `architecture-migration`, based on `f5f8362`.
 
-Started: —
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-15
 
 Automated verification:
-- [ ] Compare the registered Tauri command list before and after the moves.
-- [ ] Run `cargo fmt --check`, `cargo clippy`, `cargo test`, and the TypeScript build/test suite.
-- [ ] Run regression fixtures for HTTP transport, OpenAPI import, encrypted persistence, legacy migration, OAuth callback validation, and safe project-file paths.
+- [x] Added a command-registration guard for the unchanged 21 IPC command names and verified the command attribute stays in `commands/` or the intentionally flat OAuth boundary.
+- [x] Ran `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` (38 tests), plus 129 TypeScript tests, 51 Playwright tests, typecheck, lint, build, and repository policy.
+- [x] Ran existing Rust regression coverage for HTTP transport, OpenAPI import, encrypted persistence/secret vault, legacy migration, OAuth callback validation, and safe project-file paths.
 
 Manual verification:
-- [ ] Launch Purr, open an existing workspace, send a REST request, and confirm headers, cookies, redirects, and response download behavior are unchanged.
-- [ ] Import an OpenAPI file, folder, URL, and pasted text fixture; confirm the resulting workspace opens and persists normally.
-- [ ] Attach or open a project directory, edit a request, save it, modify it outside Purr, and confirm the existing reload/change behavior still works.
-- [ ] Start and cancel an OAuth authorization attempt and confirm the loopback callback workflow remains available.
+- [x] Launch Purr, open an existing workspace, send a REST request, and confirm headers, cookies, redirects, and response download behavior are unchanged (product-owner verified 2026-09-15).
+- [x] Import an OpenAPI file, folder, URL, and pasted text fixture; confirm the resulting workspace opens and persists normally (product-owner verified 2026-09-15).
+- [x] Attach or open a project directory, edit a request, save it, modify it outside Purr, and confirm the existing reload/change behavior still works (product-owner verified 2026-09-15).
+- [x] Start and cancel an OAuth authorization attempt and confirm the loopback callback workflow remains available (product-owner verified 2026-09-15).
 
 Implementation notes:
-- None yet.
+- Moved the native sources into `commands/`, `http/`, `importing/`, `persistence/`, and `security/`; `composition.rs` now owns the builder, managed state, plugins, and the registered command list.
+- HTTP transport, import normalization, local encrypted records, canonical project files, legacy retirement, and security retain their existing implementations and tests. Command names, serde DTOs, local database schema, and product behavior were not intentionally changed.
+- `commands/http.rs`, `commands/importing.rs`, `commands/persistence.rs`, and `commands/response.rs` are now the Tauri command adapters. OAuth remains intentionally flat as specified by the target architecture.
+- Product owner completed the required desktop smoke verification on 2026-09-15; no blocking regression was reported.
 
 Deviations from plan:
-- None.
+- The internal implementation of the existing large import and persistence coordinators remains co-located as `importing/mod.rs` and `persistence/runtime.rs`. Splitting their private helpers into the future `source`/`references`/`openapi`/`project` and watcher/journal/migration files would create a much larger move-only diff with no new boundary exposed to callers. The capability boundaries and thin command adapters are in place; split those internals only when the Phase 5 content store or a later import change gives each resulting file an independent owner.
 
 Known follow-ups:
 - Behavior changes to HTTP/content storage belong to Phases 5–9, not to mechanical move commits.
+- Record the implementation commit reference when this working-tree phase is committed.
 
 - **Objective:** create cohesive native boundaries before adding the content engine.
 - **Files/modules affected:** all current `src-tauri/src/*.rs` modules, without intentional behavior/schema changes.

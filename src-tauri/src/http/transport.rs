@@ -56,15 +56,7 @@ pub fn http_url(value: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-#[tauri::command]
-pub async fn send_http(
-    request: HttpRequest,
-    client: tauri::State<'_, HttpClient>,
-) -> Result<HttpResponse, String> {
-    perform_http(request, &client.0).await
-}
-
-async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpResponse, String> {
+pub async fn perform_http(request: HttpRequest, client: &Client) -> Result<HttpResponse, String> {
     let url = http_url(&request.url)?;
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|_| "Invalid HTTP method.")?;

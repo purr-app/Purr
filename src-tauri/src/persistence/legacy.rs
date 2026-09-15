@@ -1,5 +1,5 @@
 // Read-only adapter for the v1 monolith. New saves use persistence/project_files.
-use crate::secure_store::LocalCipher;
+use crate::security::LocalCipher;
 use serde_json::{json, Value};
 use std::{fs, io::Write, path::Path};
 
@@ -116,7 +116,7 @@ pub fn archive_and_retire(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secure_store::{tests::MemoryRootKeyStore, RootCiphers};
+    use crate::security::{tests::MemoryRootKeyStore, RootCiphers};
     #[test]
     fn legacy_archive_is_authenticated_recoverable_and_retirement_is_restart_safe() {
         let directory = tempfile::tempdir().unwrap();

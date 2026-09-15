@@ -1510,14 +1510,6 @@ pub async fn import(
     Ok(build_project(model, &workspace_id))
 }
 
-#[tauri::command]
-pub async fn import_collection(
-    source: ImportSource,
-    workspace_id: String,
-) -> Result<NormalizedImportResult, String> {
-    import(source, workspace_id).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
