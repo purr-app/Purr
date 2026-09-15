@@ -1,7 +1,8 @@
 import { validateProject, type Project, type ProjectResource } from "../domain/project";
 import { createWorkspace, validateWorkspace, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
 import { decodeFiles } from "../storage/file-codec";
-import type { FileChange, LocalChange, LocalRecord, PersistenceBackend, SecureStore, StoredWorkspace } from "../storage/contracts";
+import type { SecureStore } from "./ports/credentials";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace } from "./ports/persistence";
 import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource } from "../storage/yaml";
 import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, restoreGlobalVariables, restoreWorkspace } from "./project-projection";
 import { CachedSecureStore } from "../storage/secrets";
@@ -40,7 +41,7 @@ export class WorkspacePersistence {
   private deleted = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
-  constructor(readonly backend: PersistenceBackend, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
+  constructor(readonly backend: PersistencePort, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
   private readProject(snapshot: StoredWorkspace, index = true): Project {
     if (!snapshot.files["purr.yaml"]) throw new Error("Workspace manifest is missing. Existing local data has not been changed.");
     const manifest = deserializeManifestFile(snapshot.files["purr.yaml"].content); const workspace = manifest.value;

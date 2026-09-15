@@ -53,7 +53,7 @@ executeRequest()
   ↓
 executeHttp() → cookie merge + redirect policy
   ↓
-nativeTransport() → Tauri send_http
+ApplicationServices.httpTransport → Tauri send_http
 ```
 
 `RequestWorkbench` creates `effectiveDraft` with `applyWorkspaceRequestConfig` before resolving dynamic variables. Dependency requests are executed through the same `executeRequest` path. `prepareWireRequest` performs static interpolation for the final request and separately with masked variable values for the display request.
@@ -207,7 +207,8 @@ Each send owns an execution counter. A later send or Escape cancellation invalid
 - `src/features/workspaces/model/environment.ts` — active-field static interpolation.
 - `src/features/workspaces/services/dynamic-variable-resolver.ts` — dependency execution and caching.
 - `src/features/request-workbench/services/execute-request.ts` — auth and final wire/display preparation.
-- `src/features/request-workbench/services/http-client.ts` — cookie, redirect, DTO normalization, and native invocation.
+- `src/features/request-workbench/services/http-client.ts` — cookie, redirect, and transport-response normalization through `HttpTransportPort`.
+- `src/platform/tauri/application-services.ts` — native HTTP/OAuth/download command adapters.
 - `src/features/request-workbench/request-workbench.tsx` — send ownership, sessions, cancellation, and UI orchestration.
 - `src/features/request-workbench/model/curl-import.ts` — supported cURL parser/mapping.
 - `src/features/request-workbench/model/request-code.ts` — cURL/wget/HTTP rendering.

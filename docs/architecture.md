@@ -10,9 +10,9 @@ Purr is a local-first desktop API client. React owns editing and application orc
 React feature UI
   ↓
 runtime Workspace / RequestDraft / StoredHttpResponse
-  ↓
-TypeScript domain and application services
-  ↓ typed adapters and Tauri commands
+  ↓ ApplicationServices context
+TypeScript domain and application services → application ports
+  ↓ platform/browser or platform/tauri adapters
 Rust HTTP · OAuth callback · project files · encrypted SQLite · Keychain
 ```
 
@@ -47,9 +47,15 @@ canonical Project + local records + assets
 
 `src/application/workspace-persistence.ts` assigns canonical resources to files, calculates revisions/change sets, serializes writes, reconciles external changes, and calls the persistence adapter. `src/application/import-project.ts` validates and commits normalized imports.
 
+`src/application/ports/` owns the frontend contracts for HTTP transport, response content, persistence, credentials, OAuth callbacks, import normalization, downloads, file dialogs, workspace shell actions, and application lifecycle. These contracts contain no Tauri command names. `src/app/application-services-context.tsx` exposes one typed service object at the shell; feature hooks consume that context rather than constructing platform implementations or receiving a chain of service props.
+
+`src/app/create-purr-app.tsx` is the OSS application factory. `src/app/composition/routes.tsx` validates and freezes the current route descriptors before rendering, so a later extension registry can contribute namespaced routes without replacing `AppRouter`. Phase 3 does not expose this internal route composition as the extension API.
+
 ### Storage and native layers
 
-`src/storage/contracts.ts` defines `PersistenceBackend`, `FilesystemWorkspaceStore`, `LocalStateStore`, and `SecureStore`. `yaml.ts` owns the canonical YAML codec; `native-backend.ts` is the Tauri adapter; `browser-backend.ts` is the development adapter.
+`src/application/ports/persistence.ts` and `credentials.ts` define `PersistencePort`, `FilesystemWorkspaceStore`, `LocalStateStore`, and `SecureStore`. `src/storage/contracts.ts` temporarily re-exports those types for existing internal callers. `yaml.ts` owns the canonical YAML codec; `browser-backend.ts` is the IndexedDB development adapter. The native persistence implementation and every Tauri command string live in `src/platform/tauri/application-services.ts`; `storage/native-backend.ts` is a temporary compatibility re-export.
+
+`src/app/composition/core-services.ts` is the only platform-selection point. It chooses browser or desktop adapters once, constructs `WorkspacePersistence`, and supplies the frozen service object to the app factory. Browser and desktop keep their existing capability differences.
 
 Rust modules provide narrow privileged boundaries:
 
@@ -65,7 +71,7 @@ Rust modules provide narrow privileged boundaries:
 
 ## Dependency direction and invariants
 
-1. Feature components may depend on feature models/services, application services, domain types, storage contracts, and shared UI.
+1. Feature components may depend on feature models/services, application services and ports, domain types, storage contracts, and shared UI. They must not import Tauri packages or construct platform adapters.
 2. The canonical domain must not depend on UI, Tauri, storage implementation, or serialization details.
 3. Storage adapters implement contracts; projection decides what belongs to project files, local records, and the secret vault.
 4. Rust accepts final transport/file/secret operations. It does not reconstruct a `RequestDraft`, resolve template variables, apply workspace inheritance, choose auth, or serialize logical body modes.
@@ -73,7 +79,7 @@ Rust modules provide narrow privileged boundaries:
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
 
-ESLint enforces the boundaries that the current tree can satisfy without a refactor: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application services cannot add React or Tauri dependencies. `src/application/import-workspace.ts` is the single recorded legacy exception because it still invokes the native importer directly; Phase 3 replaces that import with an application port. Rules for future `src/platform/` and `src/extension-api/` directories are already reserved so those modules cannot reach feature UI or other implementation-owned paths.
+ESLint and architecture tests enforce the current boundaries: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application and feature modules cannot import Tauri packages; platform adapters cannot reach feature UI or the application composition root. A source scan also fails when an `invoke()` call appears outside `src/platform/tauri`. Rules for the future `src/extension-api/` directory remain reserved so it cannot expose implementation-owned paths.
 
 ## Public package and build identity
 
@@ -86,7 +92,8 @@ The checked-in Tauri configuration is the unsigned OSS build configuration. It c
 ### Load and save
 
 ```text
-NativePersistenceBackend.load()
+ApplicationServices.persistence.load()
+  → NativePersistenceBackend.load()
   → Rust scans registered project directories + reads local SQLite
   → WorkspacePersistence.readProject()
   → validateProject()
@@ -110,7 +117,8 @@ Request editor
   → static interpolation + GraphQL/auth/body preparation
   → WireRequest + redacted display request
   → TypeScript cookie/redirect policy
-  → Rust send_http
+  → ApplicationServices.httpTransport
+  → Tauri adapter → Rust send_http
   → WireResponse
   → InlineHttpResponse compatibility view
   → response viewer + latest execution persistence
@@ -157,12 +165,15 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 
 ## Key files
 
-- `src/App.tsx` — mounts the product shell.
-- `src/app/app-router.tsx` — chooses the application route.
+- `src/App.tsx` — creates the OSS product through `createPurrApp`.
+- `src/app/create-purr-app.tsx` — installs services, theme, and the shared router.
+- `src/app/composition/core-services.ts` — selects and assembles browser/desktop adapters.
+- `src/app/app-router.tsx` — renders validated immutable route descriptors.
 - `src/features/workspaces/workspace-workbench.tsx` — top-level workspace orchestration and feature composition.
 - `src/features/workspaces/hooks/use-workspaces.ts` — load, autosave, flush, and failure handling.
 - `src/domain/project.ts` — canonical schemas and cross-resource validation.
 - `src/application/project-projection.ts` — runtime/canonical/local/secret projection.
 - `src/application/workspace-persistence.ts` — file layout, revisions, commits, and external reconciliation.
-- `src/storage/contracts.ts` — adapter interfaces and local table names.
+- `src/application/ports/` — frontend platform contracts and local table names.
+- `src/platform/tauri/application-services.ts` — Tauri commands and desktop adapters.
 - `src-tauri/src/lib.rs` — complete native command registration map.

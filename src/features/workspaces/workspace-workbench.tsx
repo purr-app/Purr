@@ -27,13 +27,13 @@ import { EmptyWorkspace } from "./components/empty-workspace";
 import { Collapsible } from "../../shared/components/ui/collapsible";
 import { cn } from "../../shared/lib/cn";
 import { useWorkspaces } from "./hooks/use-workspaces";
-import { openWorkspaceFolder, workspacePersistence } from "./services/workspace-storage";
 import { secretRef } from "../../storage/secrets";
 import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
 import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
 import type { ImportSource } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
 import { isInlineHttpResponse } from "../../domain/http";
+import { useApplicationServices } from "../../app/application-services-context";
 import {
   cloneRequestDraft,
   closeDocument,
@@ -111,6 +111,8 @@ function pruneVariableCache(workspace: Workspace, globalVariables: readonly Vari
 }
 
 export function WorkspaceWorkbench() {
+  const services = useApplicationServices();
+  const { persistence } = services;
   const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave } = useWorkspaces();
   const [dialog, setDialog] = useState<Dialog>(null);
   const [sessions, setSessions] = useState<Record<string, RequestSession>>({});
@@ -197,7 +199,7 @@ export function WorkspaceWorkbench() {
           .map(([, entry]) => secretRef(workspace?.id ?? "global", `dynamic-variables/${variable.id}`, `cache/${entry.environmentId ?? "none"}`));
       return [];
     });
-    if (removed.length) void Promise.all(removed.map((reference) => workspacePersistence().secure.delete(reference))).catch(() => setActionError("Could not remove an obsolete variable secret."));
+    if (removed.length) void Promise.all(removed.map((reference) => persistence.secure.delete(reference))).catch(() => setActionError("Could not remove an obsolete variable secret."));
   };
   const updateDocument = (change: (document: RequestDocument) => RequestDocument) => {
     if (!currentDocument) return;
@@ -435,7 +437,7 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, activeEnvironmentId: environment.id, environments: [...current.environments, environment] }));
         openVariables(`environment:${environment.id}`, null, null);
       } else if (existing) {
-        const environment = await resolveEnvironmentSecrets(existing, workspacePersistence().secure);
+        const environment = await resolveEnvironmentSecrets(existing, persistence.secure);
         update((current) => ({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }));
         openVariables(`environment:${environment.id}`, null, null);
       } else openVariables("effective", null, null);
@@ -500,7 +502,7 @@ export function WorkspaceWorkbench() {
   const changeEnvironment = async (id: string | null, environments = workspace.environments) => {
     try {
       const selected = environments.find((item) => item.id === id);
-      const resolved = selected ? await resolveEnvironmentSecrets(selected, workspacePersistence().secure) : undefined;
+      const resolved = selected ? await resolveEnvironmentSecrets(selected, persistence.secure) : undefined;
       update((current) => ({ ...current,
     activeEnvironmentId: id, environments: environments.map((item) => item.id === resolved?.id ? resolved : item),
     documents: current.documents.map((document) => isRequestDocument(document) ? ({ ...document, request: { ...document.request, auth: {
@@ -511,7 +513,7 @@ export function WorkspaceWorkbench() {
   };
   const variablesForEnvironment = async (id: string | null) => {
     const environment = workspace.environments.find((item) => item.id === id);
-    const resolved = environment ? await resolveEnvironmentSecrets(environment, workspacePersistence().secure) : undefined;
+    const resolved = environment ? await resolveEnvironmentSecrets(environment, persistence.secure) : undefined;
     const environments = resolved ? workspace.environments.map((item) => item.id === resolved.id ? resolved : item) : workspace.environments;
     if (resolved && resolved !== environment) update((current) => ({ ...current, environments: current.environments.map((item) => item.id === resolved.id ? resolved : item) }));
     return getVariableNamespace({ ...workspace, environments }, store.globalVariables, id);
@@ -540,7 +542,7 @@ export function WorkspaceWorkbench() {
     }
   };
   const importWorkspace = async (source: ImportSource) => {
-    const imported = await importWorkspaceSource(source, workspacePersistence());
+    const imported = await importWorkspaceSource(source, persistence, services.imports);
     setStore((current) => current ? { ...current, activeWorkspaceId: imported.id,
       workspaces: [...current.workspaces.filter((candidate) => candidate.id !== imported.id), imported] } : current);
     setDialog(null);
@@ -556,7 +558,7 @@ export function WorkspaceWorkbench() {
     <div className="flex min-h-0 flex-1">
       <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
-        void openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
+        void services.workspaceShell.openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
       }} /></Collapsible>
       {workspace.ui.sidebarOpen && <div role="separator" tabIndex={0} aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin={12} aria-valuemax={28} aria-valuenow={Math.round(workspace.ui.sidebarWidth)} className="ui-focus-ring flex w-ui-1 shrink-0 touch-none cursor-col-resize" onPointerDown={(event) => {
         if (event.button !== 0) return;
@@ -663,7 +665,7 @@ export function WorkspaceWorkbench() {
                       workspaceProfiles: getWorkspaceAuthProfiles(workspace.requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
-                    }, cookieJar!, runtime);
+                    }, cookieJar!, runtime, services.httpTransport);
                   } });
                 update((current) => ({ ...current, dynamicVariableCache: resolution.cache }));
               } catch (cause) {

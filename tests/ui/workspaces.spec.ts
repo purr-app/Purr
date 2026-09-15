@@ -746,8 +746,8 @@ test("binary attachments restore their bytes from workspace storage", async ({ p
   await saved(page); await page.reload();
   await expect(page.getByText("payload.bin", { exact: true })).toBeVisible();
   const bytes = await page.evaluate(async () => {
-    const { loadWorkspaceStore } = await import("/src/features/workspaces/services/workspace-storage.ts" as string);
-    const store = await loadWorkspaceStore();
+    const { createCoreServices } = await import("/src/app/composition/core-services.ts" as string);
+    const store = await createCoreServices().persistence.load();
     return [...new Uint8Array(await store.workspaces[0].documents[0].request.body.binary.file.arrayBuffer())];
   });
   expect(bytes).toEqual([0, 127, 255, 42]);

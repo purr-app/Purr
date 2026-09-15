@@ -1,6 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
 import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, FileInput, FilePlus2, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2 } from "lucide-react";
-import { isTauri } from "@tauri-apps/api/core";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
 import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
@@ -9,6 +8,7 @@ import { cn } from "../../../shared/lib/cn";
 import { RequestTabBar } from "../../request-workbench/components/request-tab-bar";
 import { getDocumentDisplayName, type Workspace, type WorkspaceStore } from "../model/workspace";
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
+import { useApplicationServices } from "../../../app/application-services-context";
 
 const menuClass = "mt-ui-2 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
 const rowClass = "w-full justify-start font-normal";
@@ -25,6 +25,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   onEnvironment: (id: string | null) => void; onEditEnvironment: () => void; onNewEnvironment: () => void;
   onToggleSidebar: () => void; onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
 }) {
+  const { runtime } = useApplicationServices();
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [newWorkspaceOptionsOpen, setNewWorkspaceOptionsOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
@@ -32,7 +33,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   const cookieCount = cookieJar.list().length;
   const environment = workspace.environments.find((item) => item.id === workspace.activeEnvironmentId);
   const document = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const nativeMac = isTauri() && /mac/i.test(navigator.platform);
+  const nativeMac = runtime.kind === "desktop" && runtime.os === "macos";
   return <header data-tauri-drag-region className="ui-workspace-header grid h-ui-titlebar shrink-0 items-center gap-ui-2 border-b border-border-subtle bg-purr-surface px-ui-2">
     <div className={cn("flex min-w-0 items-center gap-ui-1", nativeMac && "pl-ui-traffic-lights")}>
       <Button variant="ghost" size="icon" aria-label={workspace.ui.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title="Toggle sidebar · Mod+B" onClick={onToggleSidebar}>

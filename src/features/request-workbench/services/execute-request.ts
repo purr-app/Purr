@@ -7,6 +7,7 @@ import { resolveRequestEnvironment } from "../../workspaces/model/environment";
 import { prepareGraphqlRequest } from "../../graphql/model/graphql";
 import { encodeBody, executeHttp, requireHttpUrl } from "./http-client";
 import type { HttpRequestSnapshot } from "../../../domain/http";
+import type { HttpTransportPort } from "../../../application/ports/http";
 
 export async function prepareWireRequest(draft: RequestDraft, context: AuthContext): Promise<{
   request: HttpRequestSnapshot;
@@ -61,7 +62,7 @@ export async function prepareWireRequest(draft: RequestDraft, context: AuthConte
 
 // HTTP and GraphQL (including introspection) share the same credential, cookie,
 // environment and native transport path.
-export async function executeRequest(draft: RequestDraft, context: AuthContext, jar: SessionCookieJar, runtime: AuthRuntime) {
+export async function executeRequest(draft: RequestDraft, context: AuthContext, jar: SessionCookieJar, runtime: AuthRuntime, transport: HttpTransportPort) {
   let effective = resolveAuth(draft.auth, context);
   if (effective.error) throw new Error(effective.error);
   if (effective.auth.type === "oauth2") {
@@ -77,6 +78,7 @@ export async function executeRequest(draft: RequestDraft, context: AuthContext, 
   }
   const prepared = await prepareWireRequest({ ...draft, auth: effective.auth }, context);
   return executeHttp(prepared.request, {
+    transport,
     jar: draft.useCookieJar ? jar : undefined,
     sensitiveHeaders: prepared.sensitiveHeaders,
     sensitiveQueryParams: prepared.sensitiveQueryParams,

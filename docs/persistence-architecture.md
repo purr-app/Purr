@@ -204,7 +204,8 @@ The last category is currently incomplete. Workspace auth runtime has an explici
 - `src/storage/contracts.ts` — persistence/local/secure interfaces and table names.
 - `src/storage/yaml.ts` — deterministic YAML serialization and compatible decoding.
 - `src/storage/secrets.ts` — credential refs and protected runtime traversal.
-- `src/storage/native-backend.ts` — Tauri storage and secure adapters.
+- `src/application/ports/{persistence,credentials}.ts` — storage and secret contracts.
+- `src/platform/tauri/application-services.ts` — Tauri storage and secure adapters; `src/storage/native-backend.ts` temporarily re-exports their class names.
 - `src/storage/browser-backend.ts` — browser development persistence.
 - `src-tauri/src/project_files.rs` — safe project path/file operations.
 - `src-tauri/src/local_state.rs` — SQLite schema, encryption, history, cookie indexes, and vault.

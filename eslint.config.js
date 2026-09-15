@@ -26,7 +26,6 @@ export default tseslint.config(
   },
   {
     files: ["src/application/**/*.{ts,tsx}"],
-    ignores: ["src/application/import-workspace.ts"],
     rules: {
       "no-restricted-imports": ["error", {
         paths: [
@@ -36,6 +35,17 @@ export default tseslint.config(
         patterns: [{
           group: ["react/*", "react-dom/*", "@tauri-apps/*"],
           message: "Application services must use application/storage contracts instead of UI or Tauri APIs.",
+        }],
+      }],
+    },
+  },
+  {
+    files: ["src/features/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        patterns: [{
+          group: ["@tauri-apps/*"],
+          message: "Feature code must use application ports instead of Tauri APIs.",
         }],
       }],
     },

@@ -1,14 +1,17 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
-import { WorkspaceWorkbench } from "../features/workspaces/workspace-workbench";
+import type { AppComposition } from "./composition/routes";
 
-export function AppRouter() {
+export function AppRouter({ composition }: { composition: AppComposition }) {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/workbench" element={<WorkspaceWorkbench />} />
-        <Route path="/" element={<Navigate to="/workbench" replace />} />
-        <Route path="*" element={<Navigate to="/workbench" replace />} />
+        {composition.routes.map((route) => {
+          const Component = route.component;
+          return <Route key={route.id} path={route.path} element={<Component />} />;
+        })}
+        <Route path="/" element={<Navigate to={composition.defaultPath} replace />} />
+        <Route path="*" element={<Navigate to={composition.defaultPath} replace />} />
       </Routes>
     </BrowserRouter>
   );

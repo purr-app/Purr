@@ -27,11 +27,21 @@ function boundedInteger(url: URL, name: string, fallback: number, minimum: numbe
 }
 
 function respondJson(response: ServerResponse, status: number, value: unknown) {
+  respondJsonWithHeaders(response, status, value, {});
+}
+
+function respondJsonWithHeaders(
+  response: ServerResponse,
+  status: number,
+  value: unknown,
+  headers: Record<string, string>,
+) {
   const body = Buffer.from(JSON.stringify(value));
   response.writeHead(status, {
     "access-control-allow-origin": "*",
     "content-length": body.length,
     "content-type": "application/json; charset=utf-8",
+    ...headers,
   });
   response.end(body);
 }
@@ -79,6 +89,19 @@ const server = createServer(async (request, response) => {
     });
     return;
   }
+  if (url.pathname === "/cookies/set") {
+    respondJsonWithHeaders(response, 200, { fixture: "purr-cookie", set: true }, {
+      "set-cookie": "purr-phase3=ok; Path=/; HttpOnly; SameSite=Lax",
+    });
+    return;
+  }
+  if (url.pathname === "/cookies/echo") {
+    respondJson(response, 200, {
+      fixture: "purr-cookie",
+      cookie: request.headers.cookie ?? "",
+    });
+    return;
+  }
   const match = /^\/response\/(text|json|ndjson|binary)$/.exec(url.pathname);
   if (!match) {
     respondJson(response, 404, {
@@ -90,6 +113,8 @@ const server = createServer(async (request, response) => {
         "/response/binary?size=104857600",
         "/graphql/introspection?types=1200",
         "/graphql/result",
+        "/cookies/set",
+        "/cookies/echo",
       ],
     });
     return;

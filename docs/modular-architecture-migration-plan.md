@@ -22,7 +22,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | 0 | Freeze measurements and compatibility fixtures | DONE | `10bf837` (tooling on `main`) and `c4c8c8d` | PASS — unit/UI/Rust suites, typecheck, lint, build, fmt, clippy, benchmark, fixture smoke | COMPLETE — safe response/GraphQL/RSS scenarios and current failure modes recorded |
 | 1 | Stabilize repository and dependency rules | DONE | `ce48ae1` | PASS — clean npm install, repository policy, unit/UI/type/lint/build, Rust checks, Tauri dev/app build | COMPLETE — OSS launch, REST/GraphQL, restart, persistence, and secret/YAML behavior passed |
 | 2 | Split stable HTTP exchange contracts | DONE | Phase 2 working tree based on `ce48ae1` | PASS — 123 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, fmt, clippy, repository policy | COMPLETE — legacy response restore, REST viewers/restart, and GraphQL response tabs passed |
-| 3 | Add frontend ports and OSS composition root | TODO | — | Not run | Not run |
+| 3 | Add frontend ports and OSS composition root | DONE | Phase 3 working tree based on `27cc0a8` | PASS — 127 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner acceptance after browser persistence, desktop responses/cookies, OpenAPI import/base URL, health request, and OAuth opener verification |
 | 4 | Mechanically modularize the Rust crate | TODO | — | Not run | Not run |
 | 5 | Implement encrypted native response content storage | TODO | — | Not run | Not run |
 | 6 | Switch native HTTP to response handles and real cancellation | TODO | — | Not run | Not run |
@@ -1108,34 +1108,40 @@ Known follow-ups:
 
 ### Phase 3 — add frontend ports and the OSS composition root
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 3 working tree on `architecture-migration`, based on `27cc0a8`.
 
-Started: —
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-15
 
 Automated verification:
-- [ ] Add import-boundary tests proving feature/domain modules do not import `@tauri-apps/*`.
-- [ ] Run browser tests with memory/browser adapters injected through the composition root.
-- [ ] Add router/shell tests proving immutable contributed-route inputs can be added later without replacing core routes or exposing router internals.
-- [ ] Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, and Rust tests.
+- [x] Added import-boundary tests proving domain/application/feature modules do not import `@tauri-apps/*` and `invoke()` calls stay inside `src/platform/tauri`.
+- [x] Verified memory adapters can be installed through the application-services context; the complete 51-test Playwright suite passed with browser persistence and mocked desktop adapters.
+- [x] Added composition tests proving core plus future route descriptors are validated and frozen, duplicate IDs/paths fail, and the shared router remains the renderer.
+- [x] `npm test` passed 127 tests; `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run check:repo` passed. `cargo test` passed 38 tests; `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` passed.
 
 Manual verification:
-- [ ] Launch the browser development build and create, save, reopen, and delete a workspace using the browser persistence adapter.
-- [ ] Launch desktop Purr, open an existing workspace, switch environment, send a request, and verify cookies and response history still behave as before.
-- [ ] Start OAuth authorization for a test provider/local callback, cancel it, and confirm the app returns to the request editor without a stuck authorization state.
+- [x] Launch the browser development build and create, save, reopen, and delete a workspace using the browser persistence adapter (product-owner verified 2026-09-15).
+- [x] Launch desktop Purr, open an existing workspace, switch environment, send `/cookies/set` then `/cookies/echo` from the synthetic fixture server, and verify the echo body contains `purr-phase3=ok`, the cookie and latest response persist across restart, and normal responses still work (product-owner verified 2026-09-15).
+- [x] From desktop Purr, use the workspace location action and confirm the project directory opens in Finder; import `tests/fixtures/openapi-phase-3.yaml` through the native file dialog and confirm its workspace/request survives restart (product-owner accepted 2026-09-15; import, generated base URL, and `/health` request explicitly verified).
+- [x] Start OAuth authorization for a test provider/local callback, cancel it, and confirm the app returns to the request editor without a stuck authorization state (product-owner accepted 2026-09-15; system browser opener explicitly verified).
 
 Implementation notes:
-- None yet.
+- Added application-owned HTTP/content/persistence/credential/platform ports and one `ApplicationServices` context at the shell.
+- Centralized browser/desktop selection in `core-services`; moved Tauri command strings, command DTO use, persistence, secure-store, OAuth callback, import, download, dialog, folder, and lifecycle calls into the Tauri platform adapter.
+- `createPurrApp` now installs services and renders a validated immutable route composition. Phase 12 registration remains unimplemented.
+- The first UI run exposed a synchronous `getCurrentWindow()` failure in the mocked desktop environment. Restoring the previous asynchronous catch boundary fixed startup; the subsequent full 51-test UI run passed.
+- Added deterministic local cookie set/echo fixture endpoints because the original response fixtures intentionally emitted no cookie headers, so they could not validate this desktop scenario.
+- Product owner accepted the completed manual verification on 2026-09-15. No blocking regression was reported.
 
 Deviations from plan:
-- None.
+- `storage/native-backend.ts` remains as a compatibility re-export and browser IndexedDB persistence remains implemented in `storage/browser-backend.ts`; actual platform selection and every Tauri call are centralized. This avoids an unrelated mechanical file move before Phase 4 while preserving one implementation of each backend.
 
 Known follow-ups:
-- Keep direct platform calls behind adapters before adding optional modules.
-- Phase 12 exposes the route/page/document registries; this phase only makes the public shell and router accept immutable composition inputs.
+- `ResponseContentPort` is deliberately unavailable in both adapters until Phase 5 implements encrypted native content ownership; current inline responses still use the existing download port.
+- Phase 12 exposes route/page/document registries; this phase only makes the public shell and router accept immutable validated composition inputs.
 
 - **Objective:** centralize platform selection and make private composition possible without adding private code.
 - **Files/modules affected:** `src/app/create-purr-app.tsx`, `src/app/composition/*`, `src/application/ports/*`, `src/platform/{tauri,browser}/*`, current `src/storage/native-backend.ts`, direct Tauri callers.

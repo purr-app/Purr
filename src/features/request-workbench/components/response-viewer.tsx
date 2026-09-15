@@ -47,6 +47,7 @@ import {
   type ResponseViewMode,
 } from "../model/response";
 import { downloadResponseBody } from "../services/download-response";
+import { useApplicationServices } from "../../../app/application-services-context";
 import type { InlineHttpResponse } from "../../../domain/http";
 import { ResponseCodeViewer } from "./response-code-viewer";
 import { formatHttpRequest } from "../model/request-code";
@@ -201,6 +202,7 @@ function safeHtmlPreview(value: string) {
 }
 
 function ResponseDownloadButton({ response, info, compact = false }: { response: InlineHttpResponse; info: ResponseBodyInfo; compact?: boolean }) {
+  const { downloads } = useApplicationServices();
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
@@ -210,7 +212,7 @@ function ResponseDownloadButton({ response, info, compact = false }: { response:
     <Button type="button" size={compact ? "sm" : "default"} variant="brand" disabled={saving} onClick={async () => {
       setSaving(true); setError(""); setResult("");
       try {
-        const path = await downloadResponseBody(response.bodyBase64, fileName, info.mediaType);
+        const path = await downloadResponseBody(downloads, response.bodyBase64, fileName, info.mediaType);
         if (path) setResult(`Saved to ${path}`);
       } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save the response."); }
       finally { setSaving(false); }

@@ -6,7 +6,8 @@ import { createRequestBody, type RequestBodyField } from "../features/request-wo
 import type { RequestDraft } from "../features/request-workbench/model/request";
 import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isRequestDocument, validateWorkspace,
   type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
-import type { LocalRecord, SecureStore } from "../storage/contracts";
+import type { SecureStore } from "./ports/credentials";
+import type { LocalRecord } from "./ports/persistence";
 import { decodeFiles, encodeFiles } from "../storage/file-codec";
 import { protectRuntime, resolveCredential, resolveRuntime, secretRef, storeCredential } from "../storage/secrets";
 

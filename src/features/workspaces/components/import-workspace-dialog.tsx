@@ -1,11 +1,11 @@
 import { useState, type DragEvent } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { FileInput, FolderOpen } from "lucide-react";
 import type { ImportSource } from "../../../importing/contracts";
 import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
 import { Modal } from "../../../shared/components/ui/modal";
 import { cn } from "../../../shared/lib/cn";
+import { useApplicationServices } from "../../../app/application-services-context";
 
 function sourceFromLocation(location: string): ImportSource {
   const value = location.trim();
@@ -13,6 +13,7 @@ function sourceFromLocation(location: string): ImportSource {
 }
 
 export function ImportWorkspaceDialog({ onImport, onClose }: { onImport: (source: ImportSource) => Promise<void>; onClose: () => void }) {
+  const { importDialog } = useApplicationServices();
   const [location, setLocation] = useState("");
   const [selectedSource, setSelectedSource] = useState<ImportSource | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -21,8 +22,8 @@ export function ImportWorkspaceDialog({ onImport, onClose }: { onImport: (source
 
   const choose = async (directory: boolean) => {
     try {
-      const selected = await open({ directory, multiple: false });
-      if (typeof selected !== "string") return;
+      const selected = await importDialog.choosePath(directory);
+      if (!selected) return;
       setLocation(selected);
       setSelectedSource(directory ? { kind: "directory", path: selected } : { kind: "file", path: selected });
       setError("");

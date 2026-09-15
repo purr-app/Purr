@@ -1,12 +1,6 @@
-import { AppRouter } from "./app/app-router";
-import { ThemeProvider } from "./shared/theme/theme-provider";
+import { createPurrApp } from "./app/create-purr-app";
+import { coreComposition } from "./app/composition/routes";
 
-function App() {
-  return (
-    <ThemeProvider>
-      <AppRouter />
-    </ThemeProvider>
-  );
-}
+const App = createPurrApp({ composition: coreComposition });
 
 export default App;

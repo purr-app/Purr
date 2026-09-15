@@ -3,7 +3,7 @@ import { z } from "zod";
 export type HttpHeader = [string, string];
 
 // This snapshot describes the logical request shown in response history. The
-// native transport DTO remains adapter-owned until Phase 3 centralizes IPC.
+// native transport DTO remains adapter-owned at the platform boundary.
 export type HttpRequestSnapshot = {
   url: string;
   method: string;

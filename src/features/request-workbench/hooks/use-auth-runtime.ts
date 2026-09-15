@@ -15,11 +15,11 @@ import {
 } from "../model/request-auth";
 import {
   authorizeOAuth,
-  cancelOAuth,
   fetchOAuthToken,
   oauthIdentity,
   resolvedOAuth,
 } from "../services/oauth-client";
+import { useApplicationServices } from "../../../app/application-services-context";
 
 export type AuthRuntime = {
   busy: boolean;
@@ -37,6 +37,7 @@ export function useAuthRuntime(
   setContext: Dispatch<SetStateAction<AuthContext>>,
   onInheritedAuthChange?: (profileId: string, auth: RequestAuth) => void,
 ) {
+  const { httpTransport, oauthCallback } = useApplicationServices();
   const [busy, setBusy] = useState(false);
   const [authorizing, setAuthorizing] = useState(false);
   const [error, setError] = useState("");
@@ -59,10 +60,10 @@ export function useAuthRuntime(
     setAuthorizing(false);
     if (job) {
       job.abort.abort();
-      void cancelOAuth(job.sessionId).catch(() => {});
+      void oauthCallback.cancel(job.sessionId).catch(() => {});
       setError("Token request canceled.");
     }
-  }, []);
+  }, [oauthCallback]);
   useEffect(() => {
     if (pending.current?.identity !== identity) cancel();
     setError("");
@@ -75,10 +76,10 @@ export function useAuthRuntime(
       pending.current = null;
       if (job) {
         job.abort.abort();
-        void cancelOAuth(job.sessionId).catch(() => {});
+        void oauthCallback.cancel(job.sessionId).catch(() => {});
       }
     };
-  }, []);
+  }, [oauthCallback]);
 
   const run = useCallback(
     (action: "initial" | "refresh"): Promise<OAuthToken | null> => {
@@ -101,8 +102,19 @@ export function useAuthRuntime(
         try {
           const config = resolvedOAuth(sourceConfig, snapshot.context);
           const token = isAuthorize
-            ? await authorizeOAuth(config, sessionId, abort.signal)
-            : await fetchOAuthToken(config, action);
+            ? await authorizeOAuth(
+                config,
+                sessionId,
+                oauthCallback,
+                httpTransport,
+                abort.signal,
+              )
+            : await fetchOAuthToken(
+                config,
+                action,
+                undefined,
+                httpTransport,
+              );
           if (pending.current?.sessionId !== sessionId) return null;
           const update = (auth: RequestAuth) =>
             oauthIdentity(auth.oauth2) === key
@@ -155,7 +167,13 @@ export function useAuthRuntime(
       pending.current = { sessionId, identity: key, abort, promise };
       return promise;
     },
-    [onInheritedAuthChange, setDraft, setContext],
+    [
+      httpTransport,
+      oauthCallback,
+      onInheritedAuthChange,
+      setDraft,
+      setContext,
+    ],
   );
 
   const token =

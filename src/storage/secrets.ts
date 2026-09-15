@@ -1,5 +1,5 @@
 import { secretRefSchema, type Credential, type SecretRef } from "../domain/project";
-import type { SecureStore } from "./contracts";
+import type { SecureStore } from "../application/ports/credentials";
 
 export function secretRef(workspace: string, owner: string, field: string): SecretRef {
   return secretRefSchema.parse(`purr/${workspace}/${owner}/${field}`);

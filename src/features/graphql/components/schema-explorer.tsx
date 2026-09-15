@@ -14,6 +14,7 @@ import { executeRequest } from "../../request-workbench/services/execute-request
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { normalizeSchema, parseGraphqlSchema } from "../model/graphql";
 import { GraphqlCodeEditor } from "./graphql-code-editor";
+import { useApplicationServices } from "../../../app/application-services-context";
 
 type RootKind = "query" | "mutation" | "subscription";
 type SearchResult = { path: string; type: GraphQLNamedType; field?: GraphQLField<unknown, unknown> | GraphQLInputField };
@@ -70,6 +71,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
+  const { httpTransport } = useApplicationServices();
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -121,7 +123,13 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
     if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError("");
     try {
       const request = applyWorkspaceRequestConfig({ ...schemaDraft, url: endpoint, graphql: { ...schemaDraft.graphql!, query: getIntrospectionQuery(), variables: "", operationName: "IntrospectionQuery" } }, "graphql", workspaceConfig);
-      const result = await executeRequest(request, context, cookieJar, runtime);
+      const result = await executeRequest(
+        request,
+        context,
+        cookieJar,
+        runtime,
+        httpTransport,
+      );
       if (result.status < 200 || result.status >= 300) throw new Error(`Introspection failed: HTTP ${result.status} ${result.statusText}`);
       install(result.text, "introspection", result.url);
     } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }

@@ -1,32 +1,15 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getPublicSuffix } from "tough-cookie";
 import { createInlineHttpResponse, type HttpRequestSnapshot, type InlineHttpResponse } from "../../../domain/http";
+import type {
+  HttpTransportPort,
+  HttpTransportResponse,
+} from "../../../application/ports/http";
 import { base64Bytes } from "../model/request-auth";
 import type { SessionCookieJar } from "../model/cookie-jar";
 
 export type WireRequest = HttpRequestSnapshot;
-export type WireResponse = {
-  status: number;
-  statusText: string;
-  headers: [string, string][];
-  bodyBase64: string;
-  durationMs: number;
-  headersDurationMs?: number;
-  downloadDurationMs?: number;
-  httpVersion?: string;
-  localAddress?: string;
-  remoteAddress?: string;
-};
-export type HttpTransport = (request: WireRequest) => Promise<WireResponse>;
-export const nativeTransport: HttpTransport = (request) => {
-  if (!isTauri())
-    return Promise.reject(
-      new Error(
-        "Send requests and authorize OAuth in the Purr desktop app (npm run tauri dev).",
-      ),
-    );
-  return invoke<WireResponse>("send_http", { request });
-};
+export type WireResponse = HttpTransportResponse;
+export type HttpTransport = HttpTransportPort;
 export function requireHttpUrl(value: string): URL {
   let url: URL;
   try {
@@ -99,7 +82,11 @@ export async function executeHttp(
       headers = headers.filter(([name]) => name.toLowerCase() !== "cookie");
       if (cookies) headers.push(["Cookie", cookies]);
     }
-    const response = await (options.transport ?? nativeTransport)({
+    if (!options.transport)
+      throw new Error(
+        "Send requests and authorize OAuth in the Purr desktop app (npm run tauri dev).",
+      );
+    const response = await options.transport({
       ...current,
       headers,
     });
