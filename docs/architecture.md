@@ -9,7 +9,7 @@ Purr is a local-first desktop API client. React owns editing and application orc
 ```text
 React feature UI
   ↓
-runtime Workspace / RequestDraft / HttpResult
+runtime Workspace / RequestDraft / StoredHttpResponse
   ↓
 TypeScript domain and application services
   ↓ typed adapters and Tauri commands
@@ -24,7 +24,7 @@ The browser adapter exists for development and tests. It is not a transparent re
 
 `src/features/workspaces/model/workspace.ts` defines the mutable runtime aggregate used by the UI. It contains canonical-looking definitions together with open documents, unsaved edits, editor state, latest responses, cookies, caches, and layout state. This type is convenient runtime state, not a file format.
 
-`src/features/request-workbench/model/request.ts` defines `RequestDraft`; request body/auth/workspace configuration are split into neighboring model files. `HttpResult` in `services/http-client.ts` is the normalized frontend response.
+`src/features/request-workbench/model/request.ts` defines `RequestDraft`; request body/auth/workspace configuration are split into neighboring model files. `src/domain/http.ts` owns provider-neutral request snapshots, response metadata, timelines, opaque content references, and the transitional inline response contract. The runtime workspace accepts both legacy inline responses and versioned response-reference descriptors while migration is in progress.
 
 ### Canonical domain layer
 
@@ -112,7 +112,7 @@ Request editor
   → TypeScript cookie/redirect policy
   → Rust send_http
   → WireResponse
-  → HttpResult
+  → InlineHttpResponse compatibility view
   → response viewer + latest execution persistence
 ```
 

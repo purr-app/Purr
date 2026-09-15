@@ -8,11 +8,12 @@ import type { SessionCookieJar } from "../model/cookie-jar";
 import { formatRequestCode, type RequestCodeFormat } from "../model/request-code";
 import type { RequestDraft } from "../model/request";
 import type { AuthContext } from "../model/request-auth";
-import { maskCookieHeader, mergeCookieHeader, type WireRequest } from "../services/http-client";
+import { maskCookieHeader, mergeCookieHeader } from "../services/http-client";
+import type { HttpRequestSnapshot } from "../../../domain/http";
 import { prepareWireRequest } from "../services/execute-request";
 import { ResponseCodeViewer } from "./response-code-viewer";
 
-function withCookies(request: WireRequest, jar: SessionCookieJar, enabled: boolean, masked = false): WireRequest {
+function withCookies(request: HttpRequestSnapshot, jar: SessionCookieJar, enabled: boolean, masked = false): HttpRequestSnapshot {
   if (!enabled) return request;
   const manual = request.headers.filter(([name]) => name.toLowerCase() === "cookie").map(([, value]) => value).join("; ");
   const cookies = mergeCookieHeader(manual, jar.header(request.url, "strict"));
@@ -29,8 +30,8 @@ export function RequestCodeDialog({ draft, context, cookieJar, onClose }: {
   onClose: () => void;
 }) {
   const [format, setFormat] = useState<RequestCodeFormat>("curl");
-  const [request, setRequest] = useState<WireRequest | null>(null);
-  const [displayRequest, setDisplayRequest] = useState<WireRequest | null>(null);
+  const [request, setRequest] = useState<HttpRequestSnapshot | null>(null);
+  const [displayRequest, setDisplayRequest] = useState<HttpRequestSnapshot | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);

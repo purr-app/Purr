@@ -47,7 +47,7 @@ import {
   type ResponseViewMode,
 } from "../model/response";
 import { downloadResponseBody } from "../services/download-response";
-import type { HttpResult } from "../services/http-client";
+import type { InlineHttpResponse } from "../../../domain/http";
 import { ResponseCodeViewer } from "./response-code-viewer";
 import { formatHttpRequest } from "../model/request-code";
 
@@ -78,7 +78,7 @@ const responseTabs: readonly {
 ];
 
 type GraphqlError = { message: string; path?: Array<string | number>; locations?: Array<{ line: number; column: number }>; extensions?: Record<string, unknown> };
-function inspectGraphqlResponse(response: HttpResult) {
+function inspectGraphqlResponse(response: InlineHttpResponse) {
   try {
     const parsed: unknown = JSON.parse(response.text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
@@ -87,7 +87,7 @@ function inspectGraphqlResponse(response: HttpResult) {
   } catch { return undefined; }
 }
 
-function responseWithJson(response: HttpResult, value: unknown): HttpResult {
+function responseWithJson(response: InlineHttpResponse, value: unknown): InlineHttpResponse {
   const text = JSON.stringify(value ?? null, null, 2);
   return { ...response, text, bodyBase64: base64Bytes(new TextEncoder().encode(text)), size: new TextEncoder().encode(text).length };
 }
@@ -189,7 +189,7 @@ function responseCanPreview(kind: ResponseBodyKind) {
   return kind === "html" || kind === "image" || kind === "audio" || kind === "video";
 }
 
-function responseDataUrl(response: HttpResult, mediaType: string) {
+function responseDataUrl(response: InlineHttpResponse, mediaType: string) {
   return `data:${mediaType || "application/octet-stream"};base64,${response.bodyBase64}`;
 }
 
@@ -200,7 +200,7 @@ function safeHtmlPreview(value: string) {
     : `${policy}${value}`;
 }
 
-function ResponseDownloadButton({ response, info, compact = false }: { response: HttpResult; info: ResponseBodyInfo; compact?: boolean }) {
+function ResponseDownloadButton({ response, info, compact = false }: { response: InlineHttpResponse; info: ResponseBodyInfo; compact?: boolean }) {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
@@ -220,7 +220,7 @@ function ResponseDownloadButton({ response, info, compact = false }: { response:
   </div>;
 }
 
-function ResponsePreview({ response, info }: { response: HttpResult; info: ResponseBodyInfo }) {
+function ResponsePreview({ response, info }: { response: InlineHttpResponse; info: ResponseBodyInfo }) {
   const source = responseDataUrl(response, info.mediaType);
   if (info.kind === "html") return <iframe title="HTML response preview" sandbox="" referrerPolicy="no-referrer"
     className="h-full w-full border-0 bg-content-primary" srcDoc={safeHtmlPreview(response.text)} />;
@@ -235,7 +235,7 @@ function ResponsePreview({ response, info }: { response: HttpResult; info: Respo
   </div>;
 }
 
-function BinaryResponsePanel({ response, info }: { response: HttpResult; info: ResponseBodyInfo }) {
+function BinaryResponsePanel({ response, info }: { response: InlineHttpResponse; info: ResponseBodyInfo }) {
   const fileName = getResponseFileName(response.headers, response.url, info.mediaType);
   return <div className="flex h-full items-center justify-center bg-purr-codefield p-ui-4">
     <div className="flex max-w-ui-dialog flex-col items-center gap-ui-3 text-center">
@@ -263,7 +263,7 @@ function findResponseField(root: unknown, key: string, base = "$", seen = new Se
   return undefined;
 }
 
-function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", onCreateVariable, findQuery, findMatchIndex, onFindMatchCount }: { response: HttpResult; prettyResponse?: HttpResult; prettyLabel?: string; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; findQuery?: string; findMatchIndex?: number; onFindMatchCount?: (count: number) => void }) {
+function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", onCreateVariable, findQuery, findMatchIndex, onFindMatchCount }: { response: InlineHttpResponse; prettyResponse?: InlineHttpResponse; prettyLabel?: string; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; findQuery?: string; findMatchIndex?: number; onFindMatchCount?: (count: number) => void }) {
   const rawInfo = useMemo(
     () => inspectResponseBody(response.headers, response.text),
     [response.headers, response.text],
@@ -436,7 +436,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
   );
 }
 
-function ResponseHeadersPanel({ response }: { response: HttpResult }) {
+function ResponseHeadersPanel({ response }: { response: InlineHttpResponse }) {
   const text = response.headers
     .map(([name, value]) => `${name}: ${value}`)
     .join("\n");
@@ -471,7 +471,7 @@ function ResponseHeadersPanel({ response }: { response: HttpResult }) {
   );
 }
 
-function ResponseRequestPanel({ response }: { response: HttpResult }) {
+function ResponseRequestPanel({ response }: { response: InlineHttpResponse }) {
   const [revealed, setRevealed] = useState(false);
   const request = revealed ? response.timeline.request : response.timeline.displayRequest ?? response.timeline.request;
   const value = useMemo(() => formatHttpRequest(request), [request]);
@@ -534,7 +534,7 @@ function ResponseHeaderValue({ name, value }: { name: string; value: string }) {
   );
 }
 
-function ResponseCookiesPanel({ response }: { response: HttpResult }) {
+function ResponseCookiesPanel({ response }: { response: InlineHttpResponse }) {
   const cookies = useMemo(
     () => getResponseCookies(response.headers),
     [response.headers],
@@ -680,7 +680,7 @@ function maskedHeader(name: string, value: string) {
   return value;
 }
 
-function ResponseTimelinePanel({ response }: { response: HttpResult }) {
+function ResponseTimelinePanel({ response }: { response: InlineHttpResponse }) {
   const { timeline } = response;
   const [showBreakdown, setShowBreakdown] = useState(false);
   const isSecure = timeline.request.url.startsWith("https:");
@@ -877,7 +877,7 @@ function ResponseTimelinePanel({ response }: { response: HttpResult }) {
   );
 }
 
-function NetworkDetailsPopover({ response }: { response: HttpResult }) {
+function NetworkDetailsPopover({ response }: { response: InlineHttpResponse }) {
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(closeTimer.current), []);
@@ -1090,7 +1090,7 @@ function ResponseFindBar({
   );
 }
 
-export function ResponseViewer({ response, graphql = false, onCreateVariable }: { response: HttpResult; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
+export function ResponseViewer({ response, graphql = false, onCreateVariable }: { response: InlineHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
   const [tab, setTab] = useState<ResponseTab>("response");
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");

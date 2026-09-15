@@ -33,6 +33,7 @@ import { resolveEnvironmentSecrets } from "../../application/environment-secrets
 import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
 import type { ImportSource } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
+import { isInlineHttpResponse } from "../../domain/http";
 import {
   cloneRequestDraft,
   closeDocument,
@@ -141,7 +142,7 @@ export function WorkspaceWorkbench() {
   const variables = useMemo(() => workspace ? getEffectiveVariableValues(workspace, store?.globalVariables ?? []) : {}, [store?.globalVariables, workspace?.activeEnvironmentId, workspace?.environments, workspace?.variables]);
   const contextKey = useMemo(() => crypto.randomUUID(), [workspace?.id, workspace?.activeEnvironmentId, workspace?.environments]);
   const sessionKey = `${workspace?.id}:${currentDocument?.id}`;
-  const restoredSession: RequestSession = currentDocument?.lastResponse
+  const restoredSession: RequestSession = currentDocument?.lastResponse && isInlineHttpResponse(currentDocument.lastResponse)
     ? { ...emptyRequestSession, response: currentDocument.lastResponse, canvasFocus: "response" }
     : emptyRequestSession;
   const session = sessions[sessionKey] ?? restoredSession;

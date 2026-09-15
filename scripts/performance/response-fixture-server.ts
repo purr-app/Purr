@@ -71,6 +71,14 @@ const server = createServer(async (request, response) => {
     }
     return;
   }
+  if (url.pathname === "/graphql/result") {
+    respondJson(response, 200, {
+      data: { fixture: "purr-v1" },
+      errors: [{ message: "Synthetic partial result", path: ["fixture"], extensions: { code: "SYNTHETIC" } }],
+      extensions: { fixture: "purr-extension" },
+    });
+    return;
+  }
   const match = /^\/response\/(text|json|ndjson|binary)$/.exec(url.pathname);
   if (!match) {
     respondJson(response, 404, {
@@ -81,6 +89,7 @@ const server = createServer(async (request, response) => {
         "/response/ndjson?size=20971520",
         "/response/binary?size=104857600",
         "/graphql/introspection?types=1200",
+        "/graphql/result",
       ],
     });
     return;

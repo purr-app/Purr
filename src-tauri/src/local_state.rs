@@ -447,14 +447,22 @@ impl LocalStateStore {
                 if record.table == "request_executions" {
                     if let Some(response) = value.get_mut("response").and_then(Value::as_object_mut)
                     {
-                        let body = serde_json::json!({ "text": response.remove("text"), "bodyBase64": response.remove("bodyBase64") });
-                        let plain =
-                            serde_json::to_vec(&body).map_err(|_| "Invalid response body")?;
-                        let payload = self.cipher.encrypt(
-                            &plain,
-                            &format!("{workspace}/response_bodies/{}", record.id),
-                        )?;
-                        tx.execute("INSERT OR IGNORE INTO response_bodies(workspace_id,execution_id,payload) VALUES(?1,?2,?3)",params![workspace,record.id,payload]).map_err(db_error)?;
+                        if response.contains_key("text") || response.contains_key("bodyBase64") {
+                            let body = serde_json::json!({ "text": response.remove("text"), "bodyBase64": response.remove("bodyBase64") });
+                            let plain =
+                                serde_json::to_vec(&body).map_err(|_| "Invalid response body")?;
+                            let payload = self.cipher.encrypt(
+                                &plain,
+                                &format!("{workspace}/response_bodies/{}", record.id),
+                            )?;
+                            tx.execute("INSERT INTO response_bodies(workspace_id,execution_id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,execution_id) DO UPDATE SET payload=excluded.payload",params![workspace,record.id,payload]).map_err(db_error)?;
+                        } else {
+                            tx.execute(
+                                "DELETE FROM response_bodies WHERE workspace_id=?1 AND execution_id=?2",
+                                params![workspace, record.id],
+                            )
+                            .map_err(db_error)?;
+                        }
                     }
                 }
                 let plain = serde_json::to_vec(&value).map_err(|_| "Invalid local data")?;
@@ -477,7 +485,11 @@ impl LocalStateStore {
                 let payload = self.cipher.encrypt(&plain, &context)?;
                 tx.execute(&format!("INSERT INTO {}(workspace_id,id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,id) DO UPDATE SET payload=excluded.payload,updated_at=CURRENT_TIMESTAMP", record.table), params![workspace, record.id, payload]).map_err(db_error)?;
                 if record.table == "request_executions" {
-                    tx.execute("UPDATE request_executions SET document_id=?3,started_at=?4,status=?5 WHERE workspace_id=?1 AND id=?2", params![workspace,record.id,value["documentId"].as_str(),value["response"]["timeline"]["startedAtMs"].as_i64(),value["response"]["status"].as_i64()]).map_err(db_error)?;
+                    let response = &value["response"];
+                    let status = response["status"]
+                        .as_i64()
+                        .or_else(|| response["response"]["status"].as_i64());
+                    tx.execute("UPDATE request_executions SET document_id=?3,started_at=?4,status=?5 WHERE workspace_id=?1 AND id=?2", params![workspace,record.id,value["documentId"].as_str(),response["timeline"]["startedAtMs"].as_i64(),status]).map_err(db_error)?;
                 }
                 if record.table == "cookie_jar" {
                     tx.execute("INSERT INTO cookie_metadata(workspace_id,id,name,domain,path,expires,secure,http_only,same_site,host_only,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(workspace_id,id) DO UPDATE SET name=excluded.name,domain=excluded.domain,path=excluded.path,expires=excluded.expires,secure=excluded.secure,http_only=excluded.http_only,same_site=excluded.same_site,host_only=excluded.host_only,enabled=excluded.enabled",
@@ -816,6 +828,73 @@ mod tests {
         assert!(LocalStateStore::open(&directory.path().join("state.db"), &secure).is_err());
         assert!(!secure.has_key());
     }
+
+    #[test]
+    fn referenced_execution_round_trips_without_inline_body_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let secure = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&directory.path().join("state.db"), &secure).unwrap();
+        let response = serde_json::json!({
+            "protocolVersion": 2,
+            "request": {
+                "url": "https://fixture.invalid/large-response",
+                "method": "GET",
+                "headers": [],
+                "bodyBase64": null
+            },
+            "response": {
+                "url": "https://fixture.invalid/large-response",
+                "status": 206,
+                "statusText": "Partial Content",
+                "headers": [["content-type", "application/json"]],
+                "byteLength": 1048576,
+                "durationMs": 10
+            },
+            "content": {
+                "id": "fixture-content-0001",
+                "byteLength": 1048576,
+                "mediaType": "application/json",
+                "complete": true
+            },
+            "timeline": {
+                "startedAtMs": 1700000001000_i64,
+                "prepareMs": 1,
+                "waitingMs": 2,
+                "downloadMs": 7,
+                "completedAtMs": 1700000001010_i64,
+                "request": {
+                    "url": "https://fixture.invalid/large-response",
+                    "method": "GET",
+                    "headers": [],
+                    "bodyBase64": null
+                },
+                "followRedirects": true,
+                "usesCookieJar": false,
+                "timeoutMs": 60000
+            }
+        });
+        let execution = LocalRecord {
+            table: "request_executions".into(),
+            id: "request-reference".into(),
+            value: serde_json::json!({ "documentId": "request", "response": response }),
+        };
+
+        store.write("workspace", &[execution]).unwrap();
+        let loaded = store.read("workspace").unwrap();
+        assert_eq!(loaded[0].value["response"], response);
+        assert!(loaded[0].value["response"].get("text").is_none());
+        assert!(loaded[0].value["response"].get("bodyBase64").is_none());
+        let history = store.history("workspace", "request", i64::MAX, 10).unwrap();
+        assert_eq!(history[0]["status"], 206);
+        let body_count = store
+            .db
+            .query_row("SELECT COUNT(*) FROM response_bodies", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(body_count, 0);
+    }
+
     #[test]
     fn sqlite_v1_upgrades_without_losing_records_and_future_versions_fail_closed() {
         let directory = tempfile::tempdir().unwrap();

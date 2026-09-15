@@ -7,7 +7,7 @@ This plan is based on the current TypeScript and Rust code, tests, persistence f
 
 1. `purr` remains a complete public application and also exposes a narrow build-time extension API.
 2. `purr-commercial` contains only commercial modules and the official composition shell. It never copies the application source.
-3. Frontend composition uses explicit contracts, registries, and an application composition root. It does not use a DI framework or a runtime plugin marketplace.
+3. Frontend composition uses explicit contracts, registries, and an application composition root. Build-time modules may contribute providers, namespaced pages/navigation, module-owned application logic, and extension document/protocol types through named contracts. It does not use a DI framework, arbitrary UI injection, or a runtime plugin marketplace.
 4. Rust becomes the bounded engine for native transport, encrypted content storage, large response decoding/search/format/query, large request-body streaming, imports, filesystem work, OAuth callbacks, and secure storage.
 5. TypeScript keeps interactive request composition, canonical project schemas, UI state, GraphQL editor intelligence, and application policy. Moving those wholesale to Rust would create a second application model and a second request-building path.
 6. Large response support is built around an opaque native content reference. Merely moving `JSON.parse` to Rust while still returning the complete formatted result to React would not solve the memory problem.
@@ -19,9 +19,9 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 
 | Phase | Name | Status | Implemented in | Automated verification | Manual verification |
 | --- | --- | --- | --- | --- | --- |
-| 0 | Freeze measurements and compatibility fixtures | DONE | `10bf837` (tooling on `main`) plus Phase 0 working tree based on merge `f86cd15` | PASS — unit/UI/Rust suites, typecheck, lint, build, fmt, clippy, benchmark, fixture smoke | COMPLETE — safe response/GraphQL/RSS scenarios and current failure modes recorded |
-| 1 | Stabilize repository and dependency rules | DONE | Working tree based on `c4c8c8d` (Phase 1 implementation; commit pending) | PASS — clean npm install, repository policy, unit/UI/type/lint/build, Rust checks, Tauri dev/app build | COMPLETE — OSS launch, REST/GraphQL, restart, persistence, and secret/YAML behavior passed |
-| 2 | Split stable HTTP exchange contracts | TODO | — | Not run | Not run |
+| 0 | Freeze measurements and compatibility fixtures | DONE | `10bf837` (tooling on `main`) and `c4c8c8d` | PASS — unit/UI/Rust suites, typecheck, lint, build, fmt, clippy, benchmark, fixture smoke | COMPLETE — safe response/GraphQL/RSS scenarios and current failure modes recorded |
+| 1 | Stabilize repository and dependency rules | DONE | `ce48ae1` | PASS — clean npm install, repository policy, unit/UI/type/lint/build, Rust checks, Tauri dev/app build | COMPLETE — OSS launch, REST/GraphQL, restart, persistence, and secret/YAML behavior passed |
+| 2 | Split stable HTTP exchange contracts | DONE | Phase 2 working tree based on `ce48ae1` | PASS — 123 unit/integration, 51 UI, 38 Rust tests; typecheck, lint, build, fmt, clippy, repository policy | COMPLETE — legacy response restore, REST viewers/restart, and GraphQL response tabs passed |
 | 3 | Add frontend ports and OSS composition root | TODO | — | Not run | Not run |
 | 4 | Mechanically modularize the Rust crate | TODO | — | Not run | Not run |
 | 5 | Implement encrypted native response content storage | TODO | — | Not run | Not run |
@@ -179,7 +179,7 @@ This is a target shape, not a command to create every empty directory immediatel
 src/
   App.tsx                         # OSS entry using createPurrApp(coreModules)
   app/
-    app-router.tsx
+    app-router.tsx                 # core routes + immutable contributed pages
     create-purr-app.tsx           # public app factory
     composition/
       core-modules.ts             # public built-ins only
@@ -190,6 +190,7 @@ src/
     http.ts                       # HttpExchange metadata + ResponseContentRef
     observability.ts              # Trace, Span, LogRecord, correlation refs
     integration.ts                # provider-neutral IDs/config envelope
+    extension-document.ts         # opaque, versioned config for contributed document types
 
   application/
     ports/
@@ -198,6 +199,7 @@ src/
       persistence.ts
       credentials.ts
       clock.ts                    # only if deterministic tests need it
+      extension-state.ts          # encrypted module-scoped local state, only when needed
     requests/
       prepare-request.ts          # extracted current request policy
       execute-request.ts
@@ -211,8 +213,8 @@ src/
     importing/
 
   integrations/
-    contracts.ts                  # factories and capability contracts
-    registry.ts                   # duplicate-safe immutable registries
+    contracts.ts                  # provider and build-time contribution contracts
+    registry.ts                   # duplicate-safe immutable capability registries
     builtins/
       jaeger/                     # first public validation adapter
       # tempo/, loki/ only when implemented
@@ -242,6 +244,7 @@ src/
       model/                      # editor/runtime models, not exported SDK
     graphql/
     observability/                # provider-neutral UI when implemented
+    extensions/                   # core-owned page/document hosts and unavailable states
 
   storage/                        # YAML/file codecs; shrink as adapters move to platform/
   shared/                         # UI primitives, theme, general utilities
@@ -487,6 +490,8 @@ integrations -> integration contracts + public domain/application ports
 extension-api -> selected domain/contracts/testing exports
 app composition -> core features + adapters + integrations
 private modules -> public extension-api
+private module UI -> public extension-api/UI primitives + that module's private services
+extension hosts -> frozen page/document contribution descriptors, never module internals
 ```
 
 Allowed native directions:
@@ -506,8 +511,12 @@ Forbidden dependencies:
 - public source importing `purr-commercial`, Datadog, CloudWatch, New Relic, Splunk, licensing, or enterprise policy modules;
 - domain importing React, Tauri, SQLite, YAML, filesystem paths, CodeMirror, reqwest, or vendor DTOs;
 - core UI switching on provider IDs such as `if (provider === "datadog")`;
+- core router, sidebar, or workbench importing a private page/editor component directly;
 - providers mutating global registries after app startup;
 - provider adapters reading `Workspace`, `RequestDraft`, or `LocalRecord.value` directly;
+- contributed pages/editors receiving the mutable runtime `Workspace`, raw `PersistenceBackend`, raw `SecureStore`, or unrestricted application service container;
+- private protocol/vendor types being added to core document, response, or navigation unions;
+- extension modules replacing the core router, request pipeline, persistence coordinator, or security policy through monkey patches/middleware;
 - Tauri commands deciding workspace inheritance, variables, auth policy, or canonical persistence ownership;
 - response operations returning arbitrarily large strings/arrays through IPC;
 - private Rust code reaching into non-public modules of `purr_lib`;
@@ -530,6 +539,7 @@ Public code contains the full useful OSS product:
 - native HTTP/body/content engine, search/format/query capabilities;
 - provider-neutral observability domain and UI;
 - integration contracts, registries, composition root, extension API, and conformance tests;
+- core-owned hosts and generic envelopes for namespaced extension pages/navigation and contributed workspace document types;
 - public built-ins such as Jaeger, Tempo, and Loki when each is actually implemented;
 - public app entry, icons/config appropriate for the OSS build, CI, and release artifacts.
 
@@ -539,7 +549,9 @@ Private code may contain:
 
 - Datadog, CloudWatch, New Relic, Splunk, SaaS, and enterprise provider adapters;
 - licensing, entitlement, organization/team policy, enterprise auth, and credential-provider modules;
-- private UI components attached through declared public slots/contracts;
+- private UI components attached through named page, document, settings, or provider contributions;
+- private pages, navigation entries, settings surfaces, workspace document editors, and protocol-specific presentation registered through named contributions;
+- module-owned application services and protocol clients built only from constrained public ports or their own private native plugin;
 - optional Tauri plugins/commands needed by private providers;
 - the official composition entry, official branding/config, signing/notarization workflow, and release publication configuration;
 - compatibility manifest and tests against a pinned public core revision.
@@ -554,6 +566,8 @@ It must not contain copied core components, workspace/request models, storage im
 - Licensing and entitlement concepts stay private unless the OSS product later needs a generic capability policy. Core must not contain dormant commercial checks.
 - Official branding/build metadata can be private, but the public build must have valid independent identity and config.
 - A provider that only calls an HTTP API should normally be TypeScript and use the public transport/credential ports. Add a private native plugin only for privileged native APIs, native SDKs, or a measured memory/security need.
+- Private feature logic may remain entirely module-owned. It becomes a core dependency only when it implements a narrow public capability contract; merely showing a private page does not require exporting its service through core.
+- A new request protocol is a contributed document type with an opaque canonical envelope and its own editor/controller. It does not expand the core `RequestDraft` or `HttpExchange` with vendor/protocol fields. If it reuses HTTP, it calls the public HTTP execution ports; if it needs sockets, streaming, or an SDK, its module owns a namespaced Tauri plugin.
 
 ## E. Extension model
 
@@ -598,14 +612,90 @@ interface ExtensionRegistrar {
   correlationExtractors: CorrelationExtractorRegistrar;
   schemaRegistries: SchemaRegistryRegistrar;
   credentialProviders: CredentialProviderRegistrar;
+  pages: ExtensionPageRegistrar;
+  documentTypes: WorkspaceDocumentTypeRegistrar;
 }
 ```
 
-Only implement registrar properties when a real use case arrives. The initial implementation needs integration, trace, and correlation registrations for Jaeger; do not create empty registries for every possible product idea.
+The baseline external-module proof needs integration, trace, correlation, page/navigation, and document-type registration. Log, schema-registry, credential-provider, response-panel, or policy registries are added only with their first real use case; do not create empty registries for every possible product idea.
 
 Registration occurs once in `createPurrApp()`. The builder rejects duplicate module/provider IDs, validates API versions, and freezes registries before rendering. No module discovery, dynamic loading, service locator, or global singleton is needed.
 
 Separate non-React provider contracts from optional React UI contributions. A provider manifest supplies label/icon/capabilities and a config validator. An optional settings editor receives typed form state and public UI primitives through documented imports; domain and application services never import that component.
+
+#### E.2.1 Named UI pages and module-owned logic
+
+The official build must be able to add a complete private feature page without replacing `AppRouter`, forking the shell, or importing private code from the public repository. Use a namespaced page contribution rather than a generic component slot:
+
+```ts
+type ExtensionPageContribution = {
+  id: string;                    // unique within the module
+  routeSegment: string;          // core creates /extensions/<module-id>/<segment>
+  title: string;
+  navigation?: {
+    area: "primary" | "workspace" | "settings";
+    label: string;
+    icon?: ExtensionIcon;
+    order?: number;
+  };
+  create(context: ExtensionModuleContext): ExtensionPage;
+};
+
+type ExtensionModuleContext = {
+  moduleId: string;
+  http: HttpTransportPort;
+  responseContent: ResponseContentPort;
+  localState?: ModuleScopedStatePort;
+  logger: ExtensionLogger;
+};
+```
+
+`ExtensionPage` owns its React component and module-private hooks/services. It imports React, documented Purr UI primitives/tokens, and public extension contracts; core domain/application code never imports it. The router derives and validates the full path, the navigation host renders its descriptor, and unloading the module removes both atomically. Contributions cannot shadow `/workbench`, `/`, or another module's route.
+
+The context is capability-limited. It has no mutable `Workspace`, raw persistence backend, arbitrary secret lookup, registry mutation, router replacement, or unrestricted service locator. Integration/provider factories receive a credential resolver scoped to their integration and declared keys. A private page can call its own private service directly; it registers that service with core only if a core workflow needs a stable, provider-neutral capability.
+
+When a private feature needs native code, the private composition root constructs its typed TypeScript adapter for that module's namespaced Tauri plugin and captures the adapter in the page/controller factory. The public registrar does not expose a generic `invoke(command, payload)` capability, and neither the plugin command DTOs nor the private service interface enter the core API unless a provider-neutral core workflow actually needs them.
+
+These are trusted build-time modules shipped in a selected binary, not a security sandbox for third-party code. Import/export restrictions, scoped contexts, and registries keep architecture stable; they cannot make arbitrary React/JavaScript loaded into the process hostile-code-safe. Supporting untrusted plugins would require a separate process/permission design and is outside this plan.
+
+Settings are initially ordinary contributed pages with `navigation.area: "settings"`. Add a narrower inline settings section or response-panel contract only when a concrete feature must appear inside an existing core screen. Each such surface gets explicit props and lifecycle; there is no `render(slotName, anything)` API.
+
+#### E.2.2 Extension document types and new protocols
+
+Do not model every future protocol as another branch in `RequestDraft`. Add one public opaque envelope that the canonical project/YAML layer can preserve without understanding module fields:
+
+```ts
+type ExtensionDocumentDefinition = {
+  kind: "extension";
+  id: EntityId;
+  name: string;
+  folderId?: EntityId;
+  extensionType: string;         // globally stable, for example commercial.grpc
+  configVersion: number;
+  config: JsonObject;            // no secret values or filesystem paths
+};
+
+interface WorkspaceDocumentTypeContribution {
+  extensionType: string;
+  ownerModuleId: string;
+  label: string;
+  validateAndMigrate(configVersion: number, config: JsonObject): ValidatedConfig;
+  create(context: ExtensionModuleContext): ExtensionDocumentController;
+}
+```
+
+The core document host owns identity, folders, tabs, dirty/saved lifecycle, unavailable-module state, and opaque canonical round-trip. The module-owned controller owns its editor, protocol actions, application logic, and presentation. It updates only its validated `config`; encrypted session/cache data uses a module- and document-scoped state port. Secrets use public `Credential`/`SecretRef` conventions plus a scoped resolver. A later asset contract may expose opaque project asset refs, never absolute paths.
+
+HTTP and GraphQL continue through the single core request-composition path. A contributed protocol such as gRPC, WebSocket, MQTT, or a proprietary SaaS workflow may:
+
+- reuse public HTTP/content ports when their semantics fit;
+- return provider-neutral execution metadata/content references when the standard response UI fits;
+- own a specialized bounded streaming/session UI when request/response semantics do not fit;
+- invoke its own namespaced Tauri plugin for sockets, streaming, native SDKs, or privileged OS access.
+
+Core does not pretend all protocols are HTTP and does not add `if (extensionType === "commercial.grpc")` branches. When the module is absent, OSS Purr preserves the definition and shows an unavailable document with safe rename/move/delete actions; it never discards or interprets the opaque config.
+
+Cross-cutting core behavior uses separate named contracts only when there is a concrete requirement. For example, an enterprise request policy could later receive redacted prepared-request metadata and return allow/deny diagnostics. It must not become generic middleware that mutates request bodies, secrets, persistence, or navigation.
 
 ### E.3 Observability domain and provider contracts
 
@@ -758,7 +848,7 @@ purr
   -> no private dependency
 ```
 
-The private repo owns only composition scaffolding: its own `index.html`, Vite entry, package/Cargo manifests, `tauri.conf.json`, official branding, and `main.rs`. That small shell is expected duplication; no feature, domain, persistence, or workbench source is duplicated.
+The private repo owns composition scaffolding plus commercial modules: its own `index.html`, Vite entry, package/Cargo manifests, `tauri.conf.json`, official branding, `main.rs`, private provider/protocol adapters, module-owned services, and contributed UI. That shell and the commercial features are expected private source; no public feature, domain, persistence, shell, router, or workbench source is duplicated.
 
 Initially the public root package can expose `./app`, `./extension-api`, and `./styles` through `package.json`. Do not extract `packages/integration-api`. Add a public `build:core` library build that emits JavaScript, type declarations, one compiled/tokenized CSS entry, and its font/assets into a deterministic ignored output directory. The private Vite build consumes those exports, so its Tailwind scan does not need to know public source paths. Keep React/React DOM as peer/singleton dependencies for the consumed build (and normal development dependencies for the OSS app) to prevent a second React instance. The normal public app build remains a separate first-class build target.
 
@@ -797,7 +887,7 @@ Official development runs from the private shell. Its frontend dependency resolv
 purr_lib = { path = "../../purr/src-tauri" }
 ```
 
-The precise Cargo relative path depends on whether the private manifest is at the root or under `src-tauri`; CI must use the same sibling checkout layout. The private app imports `createPurrApp`, compiled public styles, and `extension-api`, then supplies `commercialModules`. Its `main.rs` augments `purr_lib::core_builder()` with private Tauri plugins and calls the public run helper with the private crate's `tauri::generate_context!()` result.
+The precise Cargo relative path depends on whether the private manifest is at the root or under `src-tauri`; CI must use the same sibling checkout layout. The private app imports `createPurrApp`, compiled public styles, and `extension-api`, then supplies `commercialModules`. Those modules may register providers, pages/navigation, private services, and extension document/protocol types through the same build-time call. Its `main.rs` augments `purr_lib::core_builder()` with private Tauri plugins and calls the public run helper with the private crate's `tauri::generate_context!()` result.
 
 For local hot reload, a private `dev` script starts the public `build:core --watch` task and the private Vite/Tauri task together. This is build orchestration, not source copying. The public package output is the same artifact shape that CI consumes.
 
@@ -863,6 +953,7 @@ Requirements to establish now:
 - unique command/plugin namespaces for private native modules;
 - API version in every extension manifest and a checked compatibility manifest;
 - conformance tests owned publicly so private CI can verify providers without public CI seeing private code;
+- conformance coverage for every declared contribution kind: providers, page/routes, document types, scoped state, and any namespaced native commands;
 - one package manager and committed lockfiles;
 - separate OSS and official bundle identifiers, updater endpoints/public keys, branding, and release channels;
 - no signing identity or signing key committed in `tauri.conf.json`; CI injects release credentials;
@@ -878,7 +969,7 @@ Each phase is intended to be one reviewable PR unless explicitly split. Every PR
 
 Status: DONE
 
-Implemented in: `10bf837` (performance tooling committed on `main`) plus the Phase 0 working tree based on merge `f86cd15`.
+Implemented in: `10bf837` (performance tooling on `main`) and `c4c8c8d` (Phase 0 fixtures, tests, baseline, and tracking).
 
 Started: 2026-09-15
 
@@ -929,7 +1020,7 @@ Known follow-ups:
 
 Status: DONE
 
-Implemented in: Working tree based on `c4c8c8d` (Phase 1 implementation; commit pending).
+Implemented in: `ce48ae1`.
 
 Started: 2026-09-15
 
@@ -975,32 +1066,38 @@ Known follow-ups:
 
 ### Phase 2 — split stable HTTP exchange contracts from feature services
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 2 working tree on `architecture-migration`, based on `ce48ae1`.
 
-Started: —
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-15
 
 Automated verification:
-- [ ] Run response, GraphQL, dynamic-variable, persistence, and UI tests using both v1 inline and v2 response-reference fixtures.
-- [ ] Run `npm run typecheck`, `npm run lint`, and `npm run build` after removing service-owned HTTP types from public runtime exports.
-- [ ] Add restore fixtures proving a pre-migration local execution opens without data loss.
+- [x] Run response, GraphQL, dynamic-variable, persistence, and UI coverage with synthetic v1 inline and v2 response-reference contracts: `npm test` passed 123 tests and `npm run test:ui` passed 51 tests. A local smoke request to the new `/graphql/result` verification endpoint returned the expected `data`, `errors`, and `extensions` envelope.
+- [x] Run `npm run typecheck`, `npm run lint`, and `npm run build` after removing service-owned HTTP types from runtime model imports; all passed. `npm run check:repo` also passed.
+- [x] Add restore fixtures proving a pre-migration local execution opens without data loss. TypeScript restore/reprojection tests preserve both fixtures; `cargo test` passed 38 tests, including native v2 descriptor/history round-trip. `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` passed.
 
 Manual verification:
-- [ ] Launch Purr with a workspace created before the phase, open its last response/history entry, and confirm status, headers, body, and timeline match the previous behavior.
-- [ ] Send a JSON REST request, use Pretty/Raw/Hex/Base64 views, then restart Purr and verify the saved response is still available.
-- [ ] Run a GraphQL request that returns top-level `data`, `errors`, and `extensions`; confirm the Response, Errors, and Extensions tabs remain unchanged.
+- [x] Launch Purr with a workspace created before the phase, open a request with a saved last response, and confirm its status, headers, body, and Timeline values match the pre-phase data.
+- [x] With `npm run fixture:responses` running, send `GET http://127.0.0.1:43119/response/json?size=102400`; use Pretty, Raw, Hex, and Base64, restart Purr, reopen the request, and confirm the same response remains available.
+- [x] Create a GraphQL request to `http://127.0.0.1:43119/graphql/result` with query `{ fixture }`; confirm Response/Data shows `purr-v1`, Errors shows `Synthetic partial result`, and Extensions shows `purr-extension`.
 
 Implementation notes:
-- None yet.
+- `src/domain/http.ts` now owns `HttpRequestSnapshot`, response metadata, timeline, opaque `ResponseContentRef`, versioned `HttpExchange`, and the transitional `InlineHttpResponse` shape.
+- Runtime workspace/history accepts validated v1 inline and v2 reference responses. Invalid execution records are ignored so an isolated damaged response cannot prevent its workspace from opening.
+- Current transport and response viewers still use the inline compatibility shape. The native HTTP command, body limit, response parsing, rendering, and request behavior are unchanged.
+- Synthetic fixtures contain only `fixture.invalid`, loopback addresses, deterministic payloads, and opaque test IDs.
+- Product-owner verification confirmed legacy response restoration, all REST response representations after restart, and GraphQL Data/Errors/Extensions behavior with no observed regression.
 
 Deviations from plan:
-- None.
+- `src-tauri/src/local_state.rs` received a minimal compatibility branch although the initial affected-files list emphasized TypeScript. This was necessary because native persistence otherwise extracted null inline body fields from v2 descriptors and failed to index their nested status, corrupting the contract during a real desktop round trip. No storage schema, command, or content-engine behavior was added.
 
 Known follow-ups:
 - The transitional inline adapter remains until Phase 6 replaces desktop body IPC.
+- V2 content references are preserved by workspace persistence but are not materialized by the current response UI; Phase 3 introduces the content port and Phase 6 begins returning native references.
+- The large inline response persistence/amplification issue observed after stress tests remains assigned to Phases 5–9; Phase 2 does not change response memory ownership or performance.
 
 - **Objective:** stop treating `services/http-client.ts` and `HttpResult` as the public data model.
 - **Files/modules affected:** new `src/domain/http.ts`; `http-client.ts`; request-workbench response consumers; project projection/history tests.
@@ -1022,6 +1119,7 @@ Completed: —
 Automated verification:
 - [ ] Add import-boundary tests proving feature/domain modules do not import `@tauri-apps/*`.
 - [ ] Run browser tests with memory/browser adapters injected through the composition root.
+- [ ] Add router/shell tests proving immutable contributed-route inputs can be added later without replacing core routes or exposing router internals.
 - [ ] Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`, and Rust tests.
 
 Manual verification:
@@ -1037,10 +1135,11 @@ Deviations from plan:
 
 Known follow-ups:
 - Keep direct platform calls behind adapters before adding optional modules.
+- Phase 12 exposes the route/page/document registries; this phase only makes the public shell and router accept immutable composition inputs.
 
 - **Objective:** centralize platform selection and make private composition possible without adding private code.
 - **Files/modules affected:** `src/app/create-purr-app.tsx`, `src/app/composition/*`, `src/application/ports/*`, `src/platform/{tauri,browser}/*`, current `src/storage/native-backend.ts`, direct Tauri callers.
-- **Changes:** define `HttpTransportPort`, `ResponseContentPort`, `PersistencePort`, `CredentialResolver/SecureStore`, OAuth/import/download ports; adapt existing implementations; pass a service object through app context/hooks. Move Tauri command strings and DTOs into one platform boundary. `App.tsx` calls the public factory with core modules.
+- **Changes:** define `HttpTransportPort`, `ResponseContentPort`, `PersistencePort`, `CredentialResolver/SecureStore`, OAuth/import/download ports; adapt existing implementations; pass a service object through app context/hooks. Move Tauri command strings and DTOs into one platform boundary. `App.tsx` calls the public factory with core modules. Make the shell/router consume immutable composition inputs so Phase 12 can add namespaced pages without replacing `AppRouter`.
 - **Risk:** a giant prop-drilling refactor. Use one typed application-services context at the shell, not a DI container and not service parameters on every leaf.
 - **Verification:** browser tests inject memory adapters; a guard test fails if feature/domain code imports `@tauri-apps/*`; desktop behavior remains unchanged.
 - **Scope:** M–L; split into platform centralization and shell wiring if the diff exceeds a comfortable review.
@@ -1332,6 +1431,7 @@ Deviations from plan:
 
 Known follow-ups:
 - Provider-specific validation and settings UI remain adapter work in later phases.
+- The generic extension-document envelope and unavailable-document host are Phase 12 work because they belong to module/document registration rather than integration configuration.
 
 - **Objective:** make persisted integration configuration safe for unknown public/private providers.
 - **Files/modules affected:** `src/domain/project.ts`, YAML codec/projection, migrations/fixtures, integration resource UI placeholder.
@@ -1351,13 +1451,15 @@ Started: Pre-plan
 Completed: —
 
 Automated verification:
-- [ ] Add conformance tests for a fake external module importing only documented public exports.
-- [ ] Add boot tests for duplicate module/provider IDs, incompatible API versions, registry freeze, and zero optional modules.
+- [ ] Add conformance tests for a fake external module importing only documented public exports and contributing a provider, namespaced page/navigation entry, module-owned service, and extension document type.
+- [ ] Add boot tests for duplicate module/provider/page/document-type IDs, route collisions, incompatible API versions, registry freeze, and zero optional modules.
+- [ ] Add canonical/local-state tests proving an unknown extension document round-trips unchanged in OSS, shows an unavailable state, and becomes editable again when its module is restored.
 - [ ] Run package export/build tests plus TypeScript unit/UI/type/lint/build and Rust checks.
 
 Manual verification:
 - [ ] Launch the OSS app with no optional module configured and confirm all existing workspace/request/GraphQL workflows still start normally.
-- [ ] Run the example external fake-module shell, open its integration settings surface, and confirm only its declared provider contribution appears.
+- [ ] Run the example external fake-module shell, open its contributed navigation entry/page, execute its module-owned sample action, and confirm no public source file imports that module.
+- [ ] Create and save its fake protocol/document, restart, remove the fake module and confirm the unavailable document remains renameable/moveable/deletable with config intact; restore the module and confirm the editor/config returns.
 - [ ] Attempt to load an intentionally incompatible/duplicate fake module and confirm startup reports the precise module conflict without partially registering it.
 
 Implementation notes:
@@ -1367,14 +1469,15 @@ Deviations from plan:
 - None.
 
 Known follow-ups:
-- Keep the exported API limited to the real Jaeger/observability use case in Phases 13–14.
+- Keep settings embedded inside existing screens, response panels, workspace actions, and request-policy hooks out of the API until a concrete module needs each named surface.
+- Phases 13–14 still validate the provider/observability half of the same module API with Jaeger.
 
-- **Objective:** provide the single supported build-time registration seam.
-- **Files/modules affected:** `src/integrations/{contracts,registry}.ts`, `src/extension-api/*`, `src/app/composition/*`, package exports, conformance tests.
-- **Changes:** implement only module, integration-provider, trace-provider, and correlation registries needed for the next phase; validate IDs/API versions/duplicates; freeze at startup; expose a curated barrel and test kit. Do not export runtime `Workspace` or feature components.
-- **Risk:** the API becomes a dump of internals. Every export needs a real external use case and an ownership/versioning note.
-- **Verification:** fake external module registers without internal imports; duplicates and incompatible API versions fail at boot; app with zero optional modules is fully functional.
-- **Scope:** M, one PR.
+- **Objective:** provide the single supported build-time registration seam for provider modules and independently owned feature modules.
+- **Files/modules affected:** `src/integrations/{contracts,registry}.ts`, `src/extension-api/*`, `src/app/composition/*`, `src/app/app-router.tsx`, generic extension document domain/host files, package exports, conformance tests.
+- **Changes:** implement module, integration-provider, trace-provider, correlation, page/navigation, and workspace-document-type registries; add the opaque extension-document envelope and unavailable host; validate IDs/API versions/routes/duplicates; freeze at startup; expose a curated barrel, public UI primitives, and test kit. Provider/page/document factories receive constrained contexts. Do not export runtime `Workspace`, raw storage/secrets, the router, or core feature components.
+- **Risk:** the API becomes a dump of internals or a universal plugin framework. Keep page routes namespaced, document persistence opaque, services module-owned, and every cross-core hook named. Split provider registries and page/document composition into two sequential PRs if review size grows.
+- **Verification:** a fake external module registers a provider, page, private service action, and document type without internal imports; an unknown document survives without the module; duplicates and incompatible API versions fail atomically; the app with zero optional modules is fully functional.
+- **Scope:** L, preferably two sequential PRs: base/provider registries, then page/document composition.
 
 ### Phase 13 — add provider-neutral observability use case and UI
 
@@ -1462,12 +1565,12 @@ Completed: —
 
 Automated verification:
 - [ ] Build the OSS app and the deterministic core JavaScript/type/CSS artifact from a clean checkout.
-- [ ] Run an example external shell that imports only `./app`, `./extension-api`, and `./styles`, with one fake frontend module and one test native plugin.
+- [ ] Run an example external shell that imports only `./app`, `./extension-api`, and `./styles`, with one fake module contributing a page/navigation entry, module-owned service, extension document type, and one test native plugin.
 - [ ] Run package export checks, React-singleton check, TypeScript tests/type/lint/build, and Rust fmt/clippy/test.
 
 Manual verification:
 - [ ] Launch the normal OSS binary and verify existing workspaces, REST/GraphQL requests, persistence, downloads, and OAuth still work with the thin public `main.rs`.
-- [ ] Launch the example consumer shell using its own Tauri configuration/capabilities and confirm it renders Purr with the fake module but without copying public source files.
+- [ ] Launch the example consumer shell using its own Tauri configuration/capabilities and confirm its page, navigation entry, fake protocol/document editor, module-owned action, and native-plugin call work without copying public source files.
 - [ ] Inspect the consumer build output and confirm public styles/assets load and no duplicate-React hook error occurs.
 - [ ] Remove the example consumer checkout and confirm the public OSS build remains independently runnable.
 
@@ -1484,7 +1587,7 @@ Known follow-ups:
 - **Files/modules affected:** root package exports/build, `src/app/create-purr-app.tsx`, Rust `lib.rs`, `composition.rs`, `main.rs`, OSS Tauri config.
 - **Changes:** expose `./app`, `./extension-api`, `./styles`; add the deterministic core library/CSS/type build; keep React a single peer instance; document supported imports; export `core_builder()` and a run helper that accepts the caller's Tauri context; make the OSS `main.rs` a thin caller; support adding Tauri plugins before run. Keep public app build as the contract test.
 - **Risk:** Vite/Tailwind asset resolution and Tauri context assumptions from a sibling dependency. Add an example consumer fixture inside public CI before creating the private repo.
-- **Verification:** example shell composes one external fake module and a test native plugin without copying source; OSS build remains identical in behavior.
+- **Verification:** example shell composes one external fake provider/page/document module and a test native plugin without copying source; the extension imports only public exports and the OSS build remains identical in behavior.
 - **Scope:** M, one PR.
 
 ### Phase 16 — create `purr-commercial` and official build composition
@@ -1499,12 +1602,13 @@ Completed: —
 
 Automated verification:
 - [ ] Run the private compatibility script against the exact public SHA/API versions in `core-version.json`.
-- [ ] Build/test the official shell with a commercial provider and verify imports are limited to documented public exports/APIs.
+- [ ] Build/test the official shell with a commercial provider plus a private page/module-owned use case, and verify imports are limited to documented public exports/APIs.
 - [ ] Run the public OSS build in a checkout with no private sibling, then run official build/signing smoke checks with credentials injected only by CI/local secure configuration.
 
 Manual verification:
 - [ ] Prepare sibling `purr/` and `purr-commercial/` checkouts at the pinned revisions; launch OSS Purr from the public checkout and confirm it works with no private directory present.
 - [ ] Launch the official shell and verify its commercial provider is available while the same provider is absent from the OSS build.
+- [ ] Open a private navigation page and, if the first commercial module supplies one, create/reopen its protocol document; confirm the OSS build preserves that document as unavailable without interpreting its config.
 - [ ] Open a workspace containing commercial integration configuration in OSS Purr, save/reopen it, then open it in the official build and confirm the configuration was preserved.
 - [ ] Inspect both build directories and confirm official composition did not modify/copy public application source or require public signing credentials.
 
@@ -1542,11 +1646,11 @@ Avoid mixing these high-conflict files in broad migrations:
 
 | Current file/module | Current responsibility | Target | Refactor? | Reason |
 | --- | --- | --- | --- | --- |
-| `src/App.tsx`, `src/app/app-router.tsx` | Mount and route the whole app | Keep; call `app/create-purr-app.tsx` | Small | Public and official entries need one reusable app factory |
+| `src/App.tsx`, `src/app/app-router.tsx` | Mount and route the whole app | Keep; call `app/create-purr-app.tsx` and render immutable core/contributed routes | Small | Public and official entries need one reusable app factory; private pages must not replace the router |
 | `features/workspaces/workspace-workbench.tsx` | Workspace UI plus top-level request/schema/import/navigation orchestration | Keep UI; extract use cases/composition calls | Yes, incremental | It is the highest-conflict frontend composition point |
-| `features/workspaces/model/workspace.ts` | Mutable runtime aggregate, documents, layout, response/cache state | Keep internal to feature runtime | Small | Useful runtime model, unsuitable stable extension API |
+| `features/workspaces/model/workspace.ts` | Mutable runtime aggregate, documents, layout, response/cache state | Keep internal; add a generic extension-document runtime branch/host | Medium in Phase 12 | Useful runtime model, unsuitable stable extension API; extensions receive narrow document props rather than the aggregate |
 | `features/workspaces/hooks/use-workspaces.ts` | Load/autosave/flush/failure handling | Keep; depend on `PersistencePort` | Small | Existing lifecycle is sound; remove platform construction |
-| `src/domain/project.ts` | Canonical schemas and cross-resource validation | Keep; add integration-envelope migration | Small–medium | Already correct portable boundary |
+| `src/domain/project.ts` | Canonical schemas and cross-resource validation | Keep; add integration and opaque extension-document envelopes | Medium across Phases 11–12 | Unknown private config must round-trip without vendor unions or secret/path leakage |
 | `application/project-projection.ts` | Runtime ↔ canonical/local/assets/secrets | Keep | Small for content refs | Preserve one projection route; add v1/v2 response restoration |
 | `application/workspace-persistence.ts` | File layout, revisions, commits, reconciliation | Keep | Small | Good application service; depend on ports |
 | `application/environment-secrets.ts` | Lazy secret resolution for environments | Keep application-side | Small | Policy/ownership work, not a Rust performance target |
@@ -1570,7 +1674,9 @@ Avoid mixing these high-conflict files in broad migrations:
 | GraphQL editor components | CodeMirror language intelligence | Keep UI; optionally call worker | Small–medium | Tight editor integration and per-keystroke latency |
 | `graphql/components/schema-explorer.tsx` | Schema sources, introspection, cache, explorer, export | Split source/load use case from view | Yes, incremental | Future paged schema service needs a clear port |
 | `workspaces/services/dynamic-variable-resolver.ts` | Executes dependency request and applies jq/JSONPath | Use application execute/content-query ports | Medium | Must support native response refs without parsing a full string |
-| `src/shared/` | UI system, theme, general utilities | Keep | No broad change | Existing shared boundary is useful; do not turn it into a miscellaneous SDK |
+| `src/shared/` | UI system, theme, general utilities | Keep; curate explicitly supported UI primitives through `extension-api` | Small export review | Private pages need consistent UI without gaining access to every shared/internal helper |
+| New extension page/document hosts | Namespaced pages/navigation and opaque contributed document lifecycle | `features/extensions/*` plus app composition | New in Phase 12 | Supports full private feature UI and protocols without a shell/workbench fork |
+| New module-scoped state adapter | Encrypted local state for private module sessions/caches | Application port plus native/browser adapter, only when first needed | New, narrow | Modules must not receive raw local tables or create ad hoc plaintext storage |
 
 ### J.2 Rust mapping
 
@@ -1599,6 +1705,7 @@ Avoid mixing these high-conflict files in broad migrations:
 | TS import DTOs ↔ Rust import structs/`Value` | Native output is trusted by a TypeScript cast | `protocolVersion` + Zod parse + serialized fixture tests |
 | GraphQL introspection JSON | Full text parsed into JS schema | Keep current for normal sizes; future schema-service DTO is compact/paged and separate from HTTP domain |
 | Provider DTOs | Risk of leaking into core commands | Adapter/private-plugin-owned namespaced DTOs mapped to public domain at the adapter edge |
+| Extension protocol/native DTOs | Risk of adding private unions/commands to core | Module-owned DTOs and namespaced Tauri plugin commands; core sees only opaque document config and public execution/content summaries |
 
 ## K. Open-source readiness checklist
 
@@ -1658,7 +1765,8 @@ The limited scan is evidence about this checkout, not a complete history/securit
 - **Rust GraphQL language server:** conditional on profiling after a Web Worker. It is a separate product-sized effort because current editor behavior relies on the JS GraphQL ecosystem.
 - **Persistent content-addressed files/deduplication/compression:** postpone until chunked encrypted SQLite is measured with real history workloads. Correct bounded ownership matters before storage optimization.
 - **Logs, metrics, traces, and events in one generic telemetry interface:** avoid. Trace/Span/Log are related but have different query and presentation semantics. Add metrics/events only with real use cases.
-- **Generic arbitrary UI slots:** postpone. Add named settings/response/observability contributions when the first provider needs them; unrestricted React injection would make the SDK unstable.
+- **Generic arbitrary UI slots:** reject. Support namespaced pages/navigation and extension document hosts as first-class named contributions. Add inline settings sections, response panels, workspace actions, or observability surfaces only with concrete typed props when a real module needs them; unrestricted `slotName + ReactNode` injection would make the SDK unstable.
+- **One universal protocol provider interface:** reject. HTTP, WebSocket, gRPC, MQTT, and long-lived proprietary sessions have different lifecycles. Use the generic extension-document envelope/host for ownership and persistence, then give each real protocol the smallest execution/session contracts it needs while reusing public HTTP/content ports where they fit.
 - **Licensing hooks in public core:** postpone and keep private unless a generic OSS capability policy becomes a real requirement.
 - **Immediate creation of `purr-commercial`:** postpone until Phases 12–15 prove the public API and builder through Jaeger plus an example consumer. This avoids designing the public API around only hypothetical private needs.
 
@@ -1671,6 +1779,9 @@ The migration is complete only when all of these are mechanically verifiable:
 - public imports and Cargo dependencies contain no private module/provider/licensing reference;
 - private modules import only declared public package exports and public Rust builder/plugin APIs;
 - adding a trace provider requires an adapter, registration, configuration contribution, and tests, but no vendor branches in core UI/application code;
+- an external build-time module can add a namespaced navigation page, run module-owned application logic, and contribute a persisted workspace document/protocol type using only public exports and without replacing the router/workbench;
+- removing that module leaves the OSS app runnable and preserves its opaque document/integration configuration in an explicit unavailable state; restoring the module restores the feature;
+- protocol-specific UI, runtime types, native DTOs, and commands remain module-owned and do not expand core `RequestDraft`, `HttpExchange`, or Tauri command unions with vendor branches;
 - Trace/Span/Log domain files import no React, Tauri, reqwest, storage, or vendor DTOs;
 - Tauri commands are thin adapters and do not reconstruct `RequestDraft` or own workspace/auth policy;
 - desktop response bodies no longer cross IPC as complete base64/text values;

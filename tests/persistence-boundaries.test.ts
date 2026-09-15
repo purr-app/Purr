@@ -10,6 +10,7 @@ import { deserializeManifest, deserializeResource, serializeManifest, serializeR
 import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { executeHttp } from "../src/features/request-workbench/services/http-client";
+import { isInlineHttpResponse } from "../src/domain/http";
 
 function savedWorkspace() {
   const workspace = createWorkspace("Backend", "backend"); const document = workspace.documents[0];
@@ -450,7 +451,9 @@ test("response bodies and sent request credentials belong only to local executio
   const files = JSON.stringify(backend.snapshot.workspaces[0].files);
   for (const value of ["execution-secret", "response-cookie", "private-response", "lastResponse", "timeline"]) assert.ok(!files.includes(value));
   const restored = await new WorkspacePersistence(backend, secure).load(); assert.ok(isRequestDocument(restored.workspaces[0].documents[0]));
-  assert.equal(restored.workspaces[0].documents[0].lastResponse?.text, "private-response");
+  const lastResponse = restored.workspaces[0].documents[0].lastResponse;
+  assert.ok(lastResponse && isInlineHttpResponse(lastResponse));
+  assert.equal(lastResponse.text, "private-response");
 });
 
 test("importing into an existing workspace is additive and rejects conflicting IDs", async () => {

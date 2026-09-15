@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createHttpDocument, type Variable } from "../src/features/workspaces/model/workspace";
 import { inspectDynamicVariableGraph, resolveDynamicVariables, type DynamicVariableRequest } from "../src/features/workspaces/services/dynamic-variable-resolver";
-import type { HttpResult } from "../src/features/request-workbench/services/http-client";
+import { createInlineHttpResponse, type InlineHttpResponse } from "../src/domain/http";
 
 function document(id: string, name: string, url: string): DynamicVariableRequest {
   const request = createHttpDocument().request;
@@ -11,11 +11,11 @@ function document(id: string, name: string, url: string): DynamicVariableRequest
   return { id, name, kind: "http", request };
 }
 
-function result(request: DynamicVariableRequest, value: unknown): HttpResult {
+function result(request: DynamicVariableRequest, value: unknown): InlineHttpResponse {
   const text = JSON.stringify(value);
-  return { status: 200, statusText: "OK", headers: [["content-type", "application/json"]], bodyBase64: btoa(text), durationMs: 1,
+  return createInlineHttpResponse({ status: 200, statusText: "OK", headers: [["content-type", "application/json"]], bodyBase64: btoa(text), durationMs: 1,
     url: request.request.url, text, size: text.length, timeline: { startedAtMs: 1, prepareMs: 0, waitingMs: 1, downloadMs: 0, completedAtMs: 2,
-      request: { url: request.request.url, method: "GET", headers: [], bodyBase64: null }, followRedirects: true, usesCookieJar: false, timeoutMs: 60_000 } };
+      request: { url: request.request.url, method: "GET", headers: [], bodyBase64: null }, followRedirects: true, usesCookieJar: false, timeoutMs: 60_000 } });
 }
 
 function dynamic(id: string, name: string, source: string, expression = "$.value", refresh: "every-time" | "session" | "cache" = "every-time"): Variable {

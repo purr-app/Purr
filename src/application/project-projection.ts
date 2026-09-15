@@ -1,4 +1,5 @@
 import { credentialSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
+import { restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
 import { serializeResource } from "../storage/yaml";
 import { createRequestAuth, base64Bytes, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
@@ -339,8 +340,10 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
         result.request = editor;
         result.savedRequest = result.request;
       }
-      const executions = records.filter((record) => record.table === "request_executions" && (record.value as { documentId: string }).documentId === document.id)
-        .map((record) => (record.value as { response: RequestDocument["lastResponse"] }).response).filter((response) => response !== null).sort((a, b) => b.timeline.startedAtMs - a.timeline.startedAtMs);
+      const executions = records.filter((record) => record.table === "request_executions" && (record.value as { documentId?: unknown }).documentId === document.id)
+        .map((record) => restoreStoredHttpResponse((record.value as { response?: unknown }).response))
+        .filter((response): response is StoredHttpResponse => response !== null)
+        .sort((a, b) => storedHttpResponseStartedAt(b) - storedHttpResponseStartedAt(a));
       result.lastResponse = executions[0] ?? null;
     }
     return result;

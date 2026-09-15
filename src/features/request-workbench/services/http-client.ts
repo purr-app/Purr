@@ -1,14 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getPublicSuffix } from "tough-cookie";
+import { createInlineHttpResponse, type HttpRequestSnapshot, type InlineHttpResponse } from "../../../domain/http";
 import { base64Bytes } from "../model/request-auth";
 import type { SessionCookieJar } from "../model/cookie-jar";
 
-export type WireRequest = {
-  url: string;
-  method: string;
-  headers: [string, string][];
-  bodyBase64: string | null;
-};
+export type WireRequest = HttpRequestSnapshot;
 export type WireResponse = {
   status: number;
   statusText: string;
@@ -20,24 +16,6 @@ export type WireResponse = {
   httpVersion?: string;
   localAddress?: string;
   remoteAddress?: string;
-};
-export type HttpTimeline = {
-  startedAtMs: number;
-  prepareMs: number;
-  waitingMs: number;
-  downloadMs: number;
-  completedAtMs: number;
-  request: WireRequest;
-  displayRequest?: WireRequest;
-  followRedirects: boolean;
-  usesCookieJar: boolean;
-  timeoutMs: number;
-};
-export type HttpResult = WireResponse & {
-  url: string;
-  text: string;
-  size: number;
-  timeline: HttpTimeline;
 };
 export type HttpTransport = (request: WireRequest) => Promise<WireResponse>;
 export const nativeTransport: HttpTransport = (request) => {
@@ -100,7 +78,7 @@ export async function executeHttp(
     displayRequest?: WireRequest;
     followRedirects?: boolean;
   } = {},
-): Promise<HttpResult> {
+): Promise<InlineHttpResponse> {
   const current = { ...request, headers: [...request.headers] };
   const initial = requireHttpUrl(current.url);
   const started = Date.now();
@@ -203,7 +181,7 @@ export async function executeHttp(
         ...headers.filter(([name]) => name.toLowerCase() === "cookie").map(([name, value]): [string, string] => [name, maskCookieHeader(value)]),
       ],
     } : undefined;
-    return {
+    return createInlineHttpResponse({
       ...response,
       url: current.url || initial.toString(),
       text: new TextDecoder().decode(bytes),
@@ -221,7 +199,7 @@ export async function executeHttp(
         usesCookieJar: Boolean(options.jar),
         timeoutMs: 60_000,
       },
-    };
+    });
   }
   throw new Error("Request failed.");
 }

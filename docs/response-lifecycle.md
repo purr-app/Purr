@@ -9,13 +9,15 @@ Reqwest response in src-tauri/src/http.rs
   → WireResponse over Tauri IPC
   → executeHttp() redirect/cookie loop
   → base64 bytes decoded to Uint8Array + UTF-8 text
-  → HttpResult with final URL, byte size, and HttpTimeline
+  → domain InlineHttpResponse with final URL, byte size, and HttpTimeline
   → RequestWorkbench document session
   → ResponseViewer classification and presentation
   → latest execution projected to encrypted local storage
 ```
 
-`WireResponse` contains status, status text, duplicate-preserving headers, base64 body bytes, transport duration, header/download timings, HTTP version, and optional local/remote socket addresses. `executeHttp` adds final URL, decoded `text`, actual byte size, and the frontend timeline. Redirects are resolved in TypeScript, so the final `HttpResult` describes the last hop while timeline redirect entries retain hop metadata.
+`WireResponse` contains status, status text, duplicate-preserving headers, base64 body bytes, transport duration, header/download timings, HTTP version, and optional local/remote socket addresses. `executeHttp` adds final URL, decoded `text`, actual byte size, and the frontend timeline, then wraps the result in the domain-owned `InlineHttpResponse` compatibility shape. Redirects are resolved in TypeScript, so the final response describes the last hop while timeline redirect entries retain hop metadata.
+
+`src/domain/http.ts` also defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. Phase 2 only establishes and validates this contract. Desktop responses remain inline until native content storage and the response-content port are implemented in later phases.
 
 The UTF-8 text decode is permissive. Binary-safe operations such as image/media display, hex/base64 rendering, and download use `bodyBase64`, not a text re-encoding.
 
@@ -40,7 +42,7 @@ Rust does not choose a viewer, parse JSON, calculate cookie policy, normalize re
 
 Content-Type is authoritative when present. Safe sniffing is intentionally narrower when it is absent: valid JSON, obvious HTML, XML-like text, then ordinary text without NUL/replacement characters; otherwise binary. YAML, CSV, and NDJSON generally require a matching content type. Invalid text under a declared JSON content type remains a JSON-classified response but has no `parsedJson` value for query tools.
 
-`HttpResult.size` is computed from decoded response bytes. `url` is the final URL after redirects. Headers remain tuple arrays so duplicate fields survive.
+`InlineHttpResponse.size` is computed from decoded response bytes. `url` is the final URL after redirects. Headers remain tuple arrays so duplicate fields survive.
 
 ## Response viewer
 
@@ -105,7 +107,7 @@ Sensitive header/query names travel beside the display request so redirect metad
 
 ## Execution history
 
-On save, `projectWorkspace` emits the current `lastResponse` as a `request_executions` local record keyed by document and start time. `WorkspacePersistence` preserves older execution records instead of deleting them when the runtime projection contains only the latest result.
+On save, `projectWorkspace` emits the current `lastResponse` as a `request_executions` local record keyed by document and start time. `WorkspacePersistence` preserves older execution records instead of deleting them when the runtime projection contains only the latest result. Restoration validates both the unversioned v1 inline shape and the versioned v2 `HttpExchange` descriptor. An invalid execution is ignored instead of preventing its workspace from opening; valid descriptors are preserved on the next projection.
 
 Rust stores:
 
@@ -117,7 +119,7 @@ Startup `read` hydrates only the newest execution for each document. `list_reque
 
 ## GraphQL response interpretation
 
-A GraphQL request still produces an ordinary `HttpResult`. `ResponseViewer` parses a JSON object and conditionally separates top-level `errors` and `extensions`; `data` remains visible in the Response body. HTTP status and transport failure semantics are unchanged. Purr does not convert GraphQL application errors into native transport errors.
+A GraphQL request still produces an ordinary inline HTTP response. `ResponseViewer` parses a JSON object and conditionally separates top-level `errors` and `extensions`; `data` remains visible in the Response body. HTTP status and transport failure semantics are unchanged. Purr does not convert GraphQL application errors into native transport errors.
 
 ## Pending, errors, and cancellation
 
@@ -135,7 +137,8 @@ Every send captures an execution counter. A newer send or Escape increments it; 
 
 ## Key files
 
-- `src/features/request-workbench/services/http-client.ts` — response DTOs, redirect loop, byte decode, timeline, and final `HttpResult`.
+- `src/domain/http.ts` — stable HTTP exchange contracts, opaque response content reference, inline compatibility type, and tolerant v1/v2 restore validation.
+- `src/features/request-workbench/services/http-client.ts` — native wire DTOs, redirect loop, byte decode, timeline construction, and inline compatibility adaptation.
 - `src/features/request-workbench/model/response.ts` — content classification, formatting, cookie parsing, filenames, and query subset.
 - `src/features/request-workbench/components/response-viewer.tsx` — tabs, viewers, response find, query UI, GraphQL sections, and reveal policy.
 - `src/features/request-workbench/components/response-code-viewer.tsx` — CodeMirror languages, syntax theme, folding, and body search.

@@ -1,4 +1,4 @@
-import type { WireRequest } from "../services/http-client";
+import type { HttpRequestSnapshot } from "../../../domain/http";
 
 export type RequestCodeFormat = "curl" | "wget" | "http";
 
@@ -6,14 +6,14 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function requestBody(request: WireRequest) {
+function requestBody(request: HttpRequestSnapshot) {
   if (!request.bodyBase64) return "";
   const bytes = Uint8Array.from(atob(request.bodyBase64), (character) => character.charCodeAt(0));
   const text = new TextDecoder().decode(bytes);
   return text.includes("\uFFFD") ? `<binary body: ${bytes.length} bytes>` : text;
 }
 
-export function formatHttpRequest(request: WireRequest) {
+export function formatHttpRequest(request: HttpRequestSnapshot) {
   const url = new URL(request.url);
   const target = `${url.pathname || "/"}${url.search}`;
   const hasHost = request.headers.some(([name]) => name.toLowerCase() === "host");
@@ -29,7 +29,7 @@ export function formatHttpRequest(request: WireRequest) {
   ].join("\n");
 }
 
-export function formatCurlRequest(request: WireRequest) {
+export function formatCurlRequest(request: HttpRequestSnapshot) {
   const body = requestBody(request);
   return [
     "curl",
@@ -40,7 +40,7 @@ export function formatCurlRequest(request: WireRequest) {
   ].join(" \\\n");
 }
 
-export function formatWgetRequest(request: WireRequest) {
+export function formatWgetRequest(request: HttpRequestSnapshot) {
   const body = requestBody(request);
   return [
     "wget",
@@ -52,7 +52,7 @@ export function formatWgetRequest(request: WireRequest) {
   ].join(" \\\n");
 }
 
-export function formatRequestCode(request: WireRequest, format: RequestCodeFormat) {
+export function formatRequestCode(request: HttpRequestSnapshot, format: RequestCodeFormat) {
   if (format === "curl") return formatCurlRequest(request);
   if (format === "wget") return formatWgetRequest(request);
   return formatHttpRequest(request);

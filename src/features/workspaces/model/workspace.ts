@@ -9,7 +9,7 @@ export type { RequestScope, WorkspaceRequestConfig, WorkspaceSharedAuth, Workspa
 import { graphqlEditorSections, requestEditorSections, type RequestEditorSection } from "../../request-workbench/model/request-editor-section";
 import { getHttpMethodStyle } from "../../../shared/model/http-method";
 import type { WorkbenchView } from "../../request-workbench/components/request-tab-bar";
-import type { HttpResult } from "../../request-workbench/services/http-client";
+import type { StoredHttpResponse } from "../../../domain/http";
 import type { SessionCookie } from "../../request-workbench/model/cookie-jar";
 import type { ProjectResource, RequestDefinition, SchemaDefinition, SecretRef } from "../../../domain/project";
 
@@ -50,7 +50,7 @@ export type RequestDocument = DocumentBase & {
   kind: RequestDocumentKind;
   request: RequestDraft;
   savedRequest: RequestDraft | null;
-  lastResponse: HttpResult | null;
+  lastResponse: StoredHttpResponse | null;
   sentAt: string | null;
   ui: { requestSection: RequestEditorSection };
 };

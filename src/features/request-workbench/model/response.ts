@@ -1,5 +1,5 @@
 import { prettifyBodyCode } from "./request-body";
-import type { HttpResult } from "../services/http-client";
+import type { InlineHttpResponse } from "../../../domain/http";
 
 export type ResponseBodyKind = "json" | "ndjson" | "yaml" | "csv" | "xml" | "html" | "text" | "image" | "audio" | "video" | "binary";
 export type ResponseViewMode = "pretty" | "prettify" | "raw" | "hex" | "base64";
@@ -166,7 +166,7 @@ export function formatHexResponse(bodyBase64: string) {
 }
 
 export function formatResponseBody(
-  response: Pick<HttpResult, "text" | "bodyBase64">,
+  response: Pick<InlineHttpResponse, "text" | "bodyBase64">,
   info: ResponseBodyInfo,
   mode: ResponseViewMode,
   queriedJson?: unknown,

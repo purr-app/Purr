@@ -1,5 +1,5 @@
 import type { RequestDraft } from "../../request-workbench/model/request";
-import type { HttpResult } from "../../request-workbench/services/http-client";
+import type { InlineHttpResponse } from "../../../domain/http";
 import { queryResponseJson } from "../../request-workbench/model/response";
 import type { DynamicVariableCacheEntry, RequestDocumentKind, Variable } from "../model/workspace";
 
@@ -28,7 +28,7 @@ type ResolveOptions = {
   environmentId: string | null;
   documents: readonly DynamicVariableRequest[];
   variablesForEnvironment: (environmentId: string | null) => Promise<readonly Variable[]>;
-  execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null) => Promise<HttpResult>;
+  execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null) => Promise<InlineHttpResponse>;
   persistentCache: Record<string, DynamicVariableCacheEntry>;
   sessionCache: Map<string, DynamicVariableCacheEntry>;
   forceVariableIds?: ReadonlySet<string>;

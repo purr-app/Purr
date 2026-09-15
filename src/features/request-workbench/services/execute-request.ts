@@ -6,11 +6,11 @@ import type { SessionCookieJar } from "../model/cookie-jar";
 import { resolveRequestEnvironment } from "../../workspaces/model/environment";
 import { prepareGraphqlRequest } from "../../graphql/model/graphql";
 import { encodeBody, executeHttp, requireHttpUrl } from "./http-client";
-import type { WireRequest } from "./http-client";
+import type { HttpRequestSnapshot } from "../../../domain/http";
 
 export async function prepareWireRequest(draft: RequestDraft, context: AuthContext): Promise<{
-  request: WireRequest;
-  displayRequest: WireRequest;
+  request: HttpRequestSnapshot;
+  displayRequest: HttpRequestSnapshot;
   sensitiveHeaders: string[];
   sensitiveQueryParams: string[];
 }> {
@@ -38,7 +38,7 @@ export async function prepareWireRequest(draft: RequestDraft, context: AuthConte
   const authResult = getAuthBindingForRequest(outgoing.auth, outgoing.url, context);
   if (authResult.error) throw new Error(authResult.error);
   requireHttpUrl(outgoing.url);
-  const makeRequest = async (source: RequestDraft, sourceContext: AuthContext, maskCredentials: boolean): Promise<WireRequest> => {
+  const makeRequest = async (source: RequestDraft, sourceContext: AuthContext, maskCredentials: boolean): Promise<HttpRequestSnapshot> => {
     const binding = getAuthBindingForRequest(source.auth, source.url, sourceContext).binding;
     const sensitiveQuery = maskCredentials && binding?.target === "query" ? binding.name.toLowerCase() : "";
     const url = new URL(applyRequestQueryParamsToUrl(source.url, getRequestQueryParams(source, sourceContext)));

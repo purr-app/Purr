@@ -51,8 +51,8 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Active environment | `Workspace.activeEnvironmentId` | encrypted `workspace_local_state/state` | No | No | Machine/session choice |
 | Latest execution | `RequestDocument.lastResponse` | encrypted `request_executions` + `response_bodies` | No | Potentially | Restore latest response without polluting Git |
 | Older execution history | not hydrated in ordinary runtime | same native tables | No | Potentially | Local indexed history backend |
-| Response headers | `HttpResult.headers` | encrypted execution payload | No | Potentially | Runtime evidence can contain tokens/cookies |
-| Response body | `HttpResult.bodyBase64/text` | encrypted `response_bodies` | No | Potentially | Large/sensitive execution data |
+| Response headers | `InlineHttpResponse.headers` / `HttpExchange.response.headers` | encrypted execution payload | No | Potentially | Runtime evidence can contain tokens/cookies |
+| Response body | `InlineHttpResponse.bodyBase64/text`; future `HttpExchange.content` reference | encrypted `response_bodies` | No | Potentially | Large/sensitive execution data |
 | Cookie metadata | `SessionCookie` | local `cookie_metadata` index columns | No | Metadata only | Queryable local jar inventory |
 | Cookie values/full record | `SessionCookieJar` | encrypted `cookie_jar` payload | No | Yes | Session credential material |
 | Canonical attachment | live `File` in `RequestBody` | content-addressed `assets/<sha256>.bin` | Yes | Not assumed; user-controlled | Required to reproduce saved request |
@@ -171,7 +171,7 @@ There are distinct migration responsibilities:
 - encrypted envelope/key migration in native secure/local modules;
 - runtime record payload migration before strict restoration.
 
-The last category is currently incomplete. Workspace auth runtime has an explicit `version: 1` parser and resets invalid runtime tokens safely. Drafts, document session state, workspace UI state, dynamic cache, cookie records, and schema cache do not all have equivalent application-level shape versions. A schema-incompatible value can make `restoreWorkspace`/`validateWorkspace` reject the whole workspace. Any change to these record shapes must add tolerant decoding/migration and a regression fixture; deleting user state is not an acceptable automatic migration.
+The last category is currently incomplete. Workspace auth runtime has an explicit `version: 1` parser and resets invalid runtime tokens safely. Request execution restore validates both legacy inline responses and `protocolVersion: 2` opaque-content descriptors; malformed execution records are skipped so they cannot block the workspace. Drafts, document session state, workspace UI state, dynamic cache, cookie records, and schema cache do not all have equivalent application-level shape versions. A schema-incompatible value in one of those records can still make `restoreWorkspace`/`validateWorkspace` reject the whole workspace. Any change to these record shapes must add tolerant decoding/migration and a regression fixture; deleting user state is not an acceptable automatic migration.
 
 ## Failure and recovery rules
 

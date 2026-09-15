@@ -17,9 +17,7 @@ import {
 } from "./model/request-auth";
 import { SessionCookieJar } from "./model/cookie-jar";
 import { useAuthRuntime } from "./hooks/use-auth-runtime";
-import {
-  type HttpResult,
-} from "./services/http-client";
+import type { InlineHttpResponse } from "../../domain/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
 import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest } from "../workspaces/services/dynamic-variable-resolver";
@@ -33,7 +31,7 @@ function ResponseArea({
   onCreateVariable,
   onCancel,
 }: {
-  response: HttpResult | null;
+  response: InlineHttpResponse | null;
   error: string;
   sending: boolean;
   graphql: boolean;
@@ -47,7 +45,7 @@ function ResponseArea({
 }
 
 export type RequestSession = {
-  response: HttpResult | null;
+  response: InlineHttpResponse | null;
   error: string;
   sending: boolean;
   canvasFocus: "request" | "response";
@@ -110,7 +108,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
   const { sending, response, error, canvasFocus } = session;
   const setSending = (sending: boolean) => onSessionChange({ sending });
-  const setResponse = (response: HttpResult | null) => onSessionChange({ response });
+  const setResponse = (response: InlineHttpResponse | null) => onSessionChange({ response });
   const setError = (error: string) => onSessionChange({ error });
   const setCanvasFocus = (canvasFocus: RequestSession["canvasFocus"]) => onSessionChange({ canvasFocus });
   const sendingRef = useRef(false);
