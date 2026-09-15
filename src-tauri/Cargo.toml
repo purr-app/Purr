@@ -51,3 +51,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
   "NSData",
 ] }
+
+# Keep Purr itself debuggable while avoiding debug-mode network, crypto, and
+# SQLite throughput that is orders of magnitude slower than the signed build.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

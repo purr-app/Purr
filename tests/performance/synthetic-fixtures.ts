@@ -23,6 +23,7 @@ const fixtures: Record<Exclude<SyntheticResponseKind, "binary">, { prefix: strin
     suffix: '","tail":"purr-tail-marker"}\n',
   },
 };
+const middleMarker = Buffer.from("purr-middle-marker");
 
 function fixtureParts(kind: SyntheticResponseKind) {
   return kind === "binary" ? { prefix: "", suffix: "" } : fixtures[kind];
@@ -54,10 +55,13 @@ export function syntheticFixtureChunk(
   const prefixBytes = Buffer.from(prefix);
   const suffixBytes = Buffer.from(suffix);
   const suffixOffset = totalBytes - suffixBytes.length;
+  const middleOffset = Math.floor((totalBytes - middleMarker.length) / 2);
   for (let index = 0; index < length; index++) {
     const absolute = offset + index;
     if (absolute < prefixBytes.length) chunk[index] = prefixBytes[absolute];
     else if (absolute >= suffixOffset) chunk[index] = suffixBytes[absolute - suffixOffset];
+    else if (absolute >= middleOffset && absolute < middleOffset + middleMarker.length)
+      chunk[index] = middleMarker[absolute - middleOffset];
   }
   return chunk;
 }

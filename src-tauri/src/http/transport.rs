@@ -6,18 +6,19 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     future::pending,
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
 
 use crate::content::{
-    actor::ResponseContentHandle,
+    actor::{PendingContentWrite, ResponseContentHandle},
     contracts::{ContentMetadata, ResponseContentRef},
 };
 
-const MAX_RESPONSE_BYTES: u64 = 20 * 1024 * 1024;
-const WRITE_BATCH_BYTES: usize = 256 * 1024;
+const MAX_RESPONSE_BYTES: u64 = 128 * 1024 * 1024;
+const WRITE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const PROGRESS_BYTES: u64 = 1024 * 1024;
 
@@ -42,6 +43,41 @@ pub struct HttpRequest {
     method: String,
     headers: Vec<(String, String)>,
     body_base64: Option<String>,
+    #[serde(default)]
+    response_storage: ResponseStoragePolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseStoragePolicy {
+    #[serde(default)]
+    protection: ResponseContentProtection,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ResponseContentProtection {
+    #[default]
+    Encrypted,
+    Plaintext,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpPipelineTimings {
+    setup_ms: f64,
+    network_ms: f64,
+    encryption_ms: f64,
+    sqlite_write_ms: f64,
+    storage_backpressure_ms: f64,
+    native_total_ms: f64,
+}
+
+impl HttpResponse {
+    pub fn include_setup_timing(&mut self, setup: Duration) {
+        self.pipeline_timings.setup_ms += milliseconds(setup);
+        self.pipeline_timings.native_total_ms += milliseconds(setup);
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -57,10 +93,15 @@ pub struct HttpResponse {
     http_version: String,
     local_address: Option<String>,
     remote_address: Option<String>,
+    pipeline_timings: HttpPipelineTimings,
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum HttpEvent {
     Headers {
         status: u16,
@@ -142,18 +183,36 @@ fn content_metadata(headers: &[(String, String)]) -> ContentMetadata {
     }
 }
 
-async fn append_batch(
+async fn enqueue_batch(
     content: &ResponseContentHandle,
     content_id: &str,
     bytes: Vec<u8>,
     cancellation: &mut watch::Receiver<bool>,
-) -> Result<(), String> {
-    let write = content.append(content_id.into(), bytes);
-    tokio::pin!(write);
+) -> Result<(PendingContentWrite, Duration), String> {
+    let started = Instant::now();
+    let enqueue = content.enqueue_append(content_id.into(), bytes);
+    tokio::pin!(enqueue);
     tokio::select! {
         _ = cancelled(cancellation) => Err("Request cancelled.".into()),
-        result = &mut write => result,
+        result = &mut enqueue => result.map(|pending| (pending, started.elapsed())),
     }
+}
+
+async fn await_write(
+    pending: PendingContentWrite,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<(crate::content::store::ContentWriteTiming, Duration), String> {
+    let started = Instant::now();
+    let wait = pending.wait();
+    tokio::pin!(wait);
+    tokio::select! {
+        _ = cancelled(cancellation) => Err("Request cancelled.".into()),
+        result = &mut wait => result.map(|timing| (timing, started.elapsed())),
+    }
+}
+
+fn milliseconds(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
 }
 
 pub async fn perform_http(
@@ -167,6 +226,9 @@ pub async fn perform_http(
         return Err("Request cancelled.".into());
     }
     let url = http_url(&request.url)?;
+    if request.response_storage.protection != ResponseContentProtection::Encrypted {
+        return Err("Plaintext response storage is not enabled in this build.".into());
+    }
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|_| "Invalid HTTP method.")?;
     let mut builder = client.request(method, url);
@@ -228,9 +290,13 @@ pub async fn perform_http(
     let content_id = staging.id;
     let capture = async {
         let mut pending_bytes = Vec::with_capacity(WRITE_BATCH_BYTES);
+        let mut pending_writes = VecDeque::new();
         let mut received_bytes = 0_u64;
         let mut reported_bytes = 0_u64;
         let mut last_progress = Instant::now();
+        let mut storage_backpressure = Duration::ZERO;
+        let mut encryption = Duration::ZERO;
+        let mut sqlite_write = Duration::ZERO;
         loop {
             let next = tokio::select! {
                 _ = cancelled(&mut cancellation) => return Err("Request cancelled.".into()),
@@ -239,14 +305,29 @@ pub async fn perform_http(
             let Some(chunk) = next else { break };
             received_bytes = received_bytes
                 .checked_add(chunk.len() as u64)
-                .ok_or("Response exceeds the 20 MB preview limit.")?;
+                .ok_or("Response exceeds the 128 MiB capture limit.")?;
             if received_bytes > MAX_RESPONSE_BYTES {
-                return Err("Response exceeds the 20 MB preview limit.".into());
+                return Err("Response exceeds the 128 MiB capture limit.".into());
             }
             pending_bytes.extend_from_slice(&chunk);
             while pending_bytes.len() >= WRITE_BATCH_BYTES {
                 let remainder = pending_bytes.split_off(WRITE_BATCH_BYTES);
-                append_batch(content, &content_id, pending_bytes, &mut cancellation).await?;
+                let (pending, waited) =
+                    enqueue_batch(content, &content_id, pending_bytes, &mut cancellation).await?;
+                storage_backpressure += waited;
+                pending_writes.push_back(pending);
+                if pending_writes.len() >= 2 {
+                    let (timing, waited) = await_write(
+                        pending_writes
+                            .pop_front()
+                            .expect("pending response write"),
+                        &mut cancellation,
+                    )
+                    .await?;
+                    storage_backpressure += waited;
+                    encryption += timing.encryption;
+                    sqlite_write += timing.sqlite;
+                }
                 pending_bytes = remainder;
             }
             if received_bytes.saturating_sub(reported_bytes) >= PROGRESS_BYTES
@@ -260,8 +341,12 @@ pub async fn perform_http(
                 last_progress = Instant::now();
             }
         }
+        let network_completed = started.elapsed().saturating_sub(storage_backpressure);
         if !pending_bytes.is_empty() {
-            append_batch(content, &content_id, pending_bytes, &mut cancellation).await?;
+            let (pending, waited) =
+                enqueue_batch(content, &content_id, pending_bytes, &mut cancellation).await?;
+            storage_backpressure += waited;
+            pending_writes.push_back(pending);
         }
         if received_bytes != reported_bytes {
             emit(HttpEvent::Progress {
@@ -269,34 +354,51 @@ pub async fn perform_http(
                 total_bytes,
             });
         }
+        for pending in pending_writes {
+            let (timing, waited) = await_write(pending, &mut cancellation).await?;
+            storage_backpressure += waited;
+            encryption += timing.encryption;
+            sqlite_write += timing.sqlite;
+        }
         let finish = content.finish(content_id.clone());
         tokio::pin!(finish);
         tokio::select! {
             _ = cancelled(&mut cancellation) => Err("Request cancelled.".into()),
             result = &mut finish => result,
-        }
+        }.map(|reference| (reference, network_completed, encryption, sqlite_write, storage_backpressure))
     }
     .await;
 
-    let reference = match capture {
-        Ok(reference) => reference,
-        Err(error) => {
-            let _ = content.release(content_id).await;
-            return Err(error);
-        }
-    };
-    let duration = started.elapsed();
+    let (reference, network_duration, encryption, sqlite_write, storage_backpressure) =
+        match capture {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = content.release(content_id).await;
+                return Err(error);
+            }
+        };
+    let native_total = started.elapsed();
     let result = HttpResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").into(),
         headers,
         content: reference,
-        duration_ms: duration.as_millis(),
+        duration_ms: network_duration.as_millis(),
         headers_duration_ms: headers_duration.as_millis(),
-        download_duration_ms: duration.saturating_sub(headers_duration).as_millis(),
+        download_duration_ms: network_duration
+            .saturating_sub(headers_duration)
+            .as_millis(),
         http_version,
         local_address,
         remote_address,
+        pipeline_timings: HttpPipelineTimings {
+            setup_ms: 0.0,
+            network_ms: milliseconds(network_duration),
+            encryption_ms: milliseconds(encryption),
+            sqlite_write_ms: milliseconds(sqlite_write),
+            storage_backpressure_ms: milliseconds(storage_backpressure),
+            native_total_ms: milliseconds(native_total),
+        },
     };
     emit(HttpEvent::Complete {
         response: Box::new(result.clone()),
@@ -345,7 +447,73 @@ mod tests {
             method: "GET".into(),
             headers: Vec::new(),
             body_base64: None,
+            response_storage: ResponseStoragePolicy::default(),
         }
+    }
+
+    #[test]
+    fn progress_events_use_frontend_camel_case_fields() {
+        let value = serde_json::to_value(HttpEvent::Progress {
+            received_bytes: 1024,
+            total_bytes: Some(2048),
+        })
+        .unwrap();
+        assert_eq!(value["type"], "progress");
+        assert_eq!(value["receivedBytes"], 1024);
+        assert_eq!(value["totalBytes"], 2048);
+        assert!(value.get("received_bytes").is_none());
+    }
+
+    #[test]
+    fn response_storage_policy_defaults_encrypted_and_accepts_future_plaintext_value() {
+        let encrypted: HttpRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com",
+            "method": "GET",
+            "headers": [],
+            "bodyBase64": null
+        }))
+        .unwrap();
+        assert_eq!(
+            encrypted.response_storage.protection,
+            ResponseContentProtection::Encrypted
+        );
+        let plaintext: HttpRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com",
+            "method": "GET",
+            "headers": [],
+            "bodyBase64": null,
+            "responseStorage": { "protection": "plaintext" }
+        }))
+        .unwrap();
+        assert_eq!(
+            plaintext.response_storage.protection,
+            ResponseContentProtection::Plaintext
+        );
+    }
+
+    #[tokio::test]
+    async fn plaintext_response_storage_fails_closed_until_implemented() {
+        let directory = TempDir::new().unwrap();
+        let content = content_handle(&directory);
+        let (_, cancellation) = watch::channel(false);
+        let error = perform_http(
+            HttpRequest {
+                response_storage: ResponseStoragePolicy {
+                    protection: ResponseContentProtection::Plaintext,
+                },
+                ..request("https://example.com".into())
+            },
+            &HttpClient::default().0,
+            &content,
+            cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "Plaintext response storage is not enabled in this build."
+        );
     }
 
     #[tokio::test]
@@ -375,6 +543,7 @@ mod tests {
                     ("Cookie".into(), "sid=session".into()),
                 ],
                 body_base64: Some(STANDARD.encode([0, 1, 255, 128])),
+                response_storage: ResponseStoragePolicy::default(),
             },
             &HttpClient::default().0,
             &content,
@@ -385,6 +554,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.status, 200);
         assert_eq!(result.content.byte_length, 4);
+        assert!(result.pipeline_timings.native_total_ms >= result.pipeline_timings.network_ms);
         assert!(result.content.complete);
         assert_eq!(
             result.content.media_type.as_deref(),
@@ -554,14 +724,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_preview_rejects_one_byte_over_twenty_mebibytes_without_leaking_content() {
+    async fn response_capture_rejects_one_byte_over_limit_without_leaking_content() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 4096];
             let _ = stream.read(&mut request).unwrap();
-            let size = 20 * 1024 * 1024 + 1;
+            let size = MAX_RESPONSE_BYTES as usize + 1;
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             let chunk = [b'x'; 64 * 1024];
             let mut remaining = size;
@@ -586,7 +756,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(error, "Response exceeds the 20 MB preview limit.");
+        assert_eq!(error, "Response exceeds the 128 MiB capture limit.");
         let database = rusqlite::Connection::open(path).unwrap();
         let rows: u64 = database
             .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {

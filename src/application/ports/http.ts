@@ -1,5 +1,27 @@
 import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
 
+export type ResponseContentProtection = "encrypted" | "plaintext";
+export type ResponseStoragePolicy = {
+  protection: ResponseContentProtection;
+};
+
+// Plaintext is intentionally not selectable yet. Keeping the resolved policy
+// at the transport boundary lets future workspace/folder/document inheritance
+// change storage without teaching Rust about the workspace tree.
+export const defaultResponseStoragePolicy: ResponseStoragePolicy = {
+  protection: "encrypted",
+};
+
+export type HttpPipelineTimings = {
+  setupMs: number;
+  networkMs: number;
+  encryptionMs: number;
+  sqliteWriteMs: number;
+  storageBackpressureMs: number;
+  nativeTotalMs: number;
+  ipcMs?: number;
+};
+
 type HttpTransportMetadata = {
   status: number;
   statusText: string;
@@ -10,6 +32,7 @@ type HttpTransportMetadata = {
   httpVersion?: string;
   localAddress?: string;
   remoteAddress?: string;
+  pipelineTimings?: HttpPipelineTimings;
 };
 
 // Inline completion remains valid for browser/test adapters during migration.
@@ -27,6 +50,7 @@ export type HttpTransportProgress = {
 export type HttpTransportOptions = {
   signal?: AbortSignal;
   onProgress?: (progress: HttpTransportProgress) => void;
+  responseStorage?: ResponseStoragePolicy;
 };
 
 export type HttpTransportPort = (

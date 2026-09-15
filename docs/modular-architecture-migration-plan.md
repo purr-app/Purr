@@ -26,7 +26,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | 4 | Mechanically modularize the Rust crate | DONE | Phase 4 working tree based on `f5f8362` | PASS — 129 TypeScript tests, 51 UI tests, 38 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner desktop smoke verification on 2026-09-15 |
 | 5 | Implement encrypted native response content storage | DONE | Phase 5 working tree based on `c430458` | PASS — 129 TypeScript tests, 51 UI tests, 46 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner compatibility and persistence verification on 2026-09-15 |
 | 6 | Switch native HTTP to response handles and real cancellation | DONE | Phase 6 working tree based on `b9724b0` | PASS — 132 TypeScript tests, 51 UI tests, 51 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner accepted all desktop streaming/cancel, redirects/cookies/binary, GraphQL/OAuth, restart, and content-reference scenarios on 2026-09-15 |
-| 7 | Add bounded/virtualized response presentation | TODO | — | Not run | Not run |
+| 7 | Add bounded/virtualized response presentation | DONE | Phase 7 working tree based on `7e3492c` | PASS — 137 TypeScript tests, 54 UI tests, 54 Rust tests; typecheck, lint, build, repository policy, fmt, clippy, diff check | COMPLETE — product-owner accepted bounded navigation/search/restart and exact 1 MiB behavior on 2026-09-16; sub-threshold pathological lines explicitly deferred to Phase 8 |
 | 8 | Move large response inspect/search/format/query to Rust | PARTIALLY DONE | Existing TypeScript response helpers and jq/JSONPath subset; no native phase reference | Existing response tests only; native conformance not run | Not recorded |
 | 9 | Remove remaining body round trips | PARTIALLY DONE | Existing base64 download/media/binary request paths; no handle-based phase reference | Existing request/response tests only | Not recorded |
 | 10 | Profile and isolate GraphQL analysis | PARTIALLY DONE | Existing GraphQL parse/schema/editor flow; no profiling or worker phase reference | Existing GraphQL tests only | Not recorded |
@@ -395,7 +395,7 @@ Starting tuning values, held in one internal `ResponseLimits` struct rather than
 
 - encrypted chunk: 256 KiB;
 - maximum IPC byte/text window: 256 KiB;
-- full CodeMirror response document: at most 1 MiB;
+- full CodeMirror response document: smaller than 1 MiB; the exact 1 MiB boundary is bounded because a single-line body at that size measurably blocks WebView layout;
 - progress emission: at most every 100 ms or 1 MiB;
 - full-tree native JSON operation: explicit bounded tier, initially 32 MiB;
 - larger JSON: supported streaming/indexed operations only, with an explicit unsupported-expression error rather than unbounded allocation.
@@ -1282,37 +1282,56 @@ Known follow-ups:
 
 ### Phase 7 — add bounded/virtualized response presentation
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 7 working tree on `architecture-migration`, based on `7e3492c`.
 
-Started: —
+Started: 2026-09-15
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Add UI tests for the small CodeMirror path and the large virtualized line/byte viewer path.
-- [ ] Run a 100 MiB fixture regression proving page reads, search navigation, and scrolling do not create a full-body JavaScript string.
-- [ ] Run response, GraphQL, dynamic-variable, browser-adapter, typecheck, lint, build, and Rust checks.
+- [x] UI coverage proves the existing small-response Pretty/query/context-action path and the bounded byte-page path remain separate, including a compact legacy-inline JSON scalar preview, the exact 1 MiB native boundary, Response-tab reopening, and request-processing diagnostics.
+- [x] Synthetic 100 MiB coverage proves aligned first/middle/last page reads, repeated previous/next search navigation, and restart restoration never construct a full-body JavaScript string; native transport tests cover pipelined encrypted capture, cancellation, size failure, and fail-closed plaintext policy.
+- [x] TypeScript tests (137), full UI tests (54), Rust tests (54), typecheck, lint, production build, repository policy, Rust fmt/clippy, and diff checks passed after the exact-boundary correction on 2026-09-16.
 
 Manual verification:
-- [ ] Prepare a 100 MiB text fixture with identifiable first, middle, and last lines; open it and confirm each location can be reached without the app freezing.
-- [ ] Use find/next/previous on a repeated marker near the start and end of that fixture; confirm match navigation remains correct while scrolling.
-- [ ] Send a small JSON response and confirm Pretty, Raw, copy, field context actions, GraphQL Errors, and Extensions still use the familiar presentation.
-- [ ] Open the same large response after restarting Purr and confirm the viewer loads only visible content while its metadata/history stays usable.
+- [x] Run `npm run fixture:responses`, send `/response/text?size=104857600`, and confirm the initial page contains `purr-synthetic-start`; move the Response position control near the middle and confirm `purr-middle-marker`; click Last and confirm `purr-tail-marker`. The UI must remain responsive during each jump (product-owner accepted Last/navigation and no-freeze behavior 2026-09-16).
+- [x] In that 100 MiB response press Cmd/Ctrl+F, search for `purr-tail-marker`, and confirm the counter reaches `1/1`; click Previous and Next and confirm the tail page remains selected without a freeze or growing list of loaded pages (product-owner accepted search navigation 2026-09-16).
+- [x] Send a JSON response smaller than 1 MiB; confirm Pretty, Raw, copy, jq `.meta.fixture`, field context actions, and Download still work without a UI freeze. Send `/graphql/result` and confirm Data, Errors, and Extensions still render (product-owner accepted functional behavior and no-freeze result 2026-09-16; compact-preview presentation quality is a non-blocking follow-up).
+- [x] In a freshly rebuilt `npm run tauri dev`, repeat a small REST request, `/response/text?size=1048576`, a tiny GraphQL response twice, and the 100 MiB response. Confirm the exact 1 MiB response immediately opens the bounded viewer, then switch Headers → Response and verify the application does not freeze. Inspect Timeline diagnostics and confirm background storage does not freeze navigation (product-owner accepted the corrected exact-boundary behavior on 2026-09-16; a 999 KiB one-line response still reproduces the CodeMirror layout stall and is explicitly assigned to Phase 8).
+- [x] Wait for “Saved locally” on the 100 MiB response, restart Purr, reopen the request, and confirm the bounded viewer opens at the first page; click Last and confirm the tail marker, then verify Headers, Timeline, Request, status, and 100 MiB size remain available. While jumping between pages, confirm WebKit RSS does not grow continuously with every visited position (product-owner accepted this checklist item 2026-09-16).
 
 Implementation notes:
-- None yet.
+- Native responses smaller than 1 MiB retain the existing `InlineHttpResponse`/CodeMirror behavior. Responses at or above 1 MiB remain `HttpExchange` values in request sessions and after restoration; `WorkspaceWorkbench` no longer materializes them during load. The exact boundary was moved to the bounded path after diagnostics showed native work completed in 42 ms but a one-line 1 MiB text body blocked CodeMirror/WebView layout for about one second on initial display and every Response-tab reopen.
+- Added a read-only 192 KiB byte-window viewer with text, hex, and base64 modes; first/previous/position/next/last navigation; bounded temporary TypeScript search; and an explicit disabled full-body Copy action. Only the current page and bounded search match metadata are retained.
+- Raised native transport/content capture limits from 20 MiB to 128 MiB so the 100 MiB validation case can complete. Streaming, encrypted 256 KiB storage chunks, cancellation, and response-handle IPC remain unchanged.
+- Added deterministic `purr-middle-marker` content to synthetic text/JSON/NDJSON fixtures. No private or working data is present.
+- Updated architecture, request lifecycle, response lifecycle, persistence, and performance-fixture documentation.
+- Product-owner testing confirmed the 100 MiB response no longer freezes the UI and restart restoration works, but exposed snake_case progress events (`NaN MiB`), ~15.9 s debug capture, a repeated-search/last-page alignment defect, and a visible 1 MiB CodeMirror stall. Those blocking Phase 7 findings were corrected and retested; the distinct 999 KiB pathological-line limitation is accepted for Phase 8.
+- Corrective implementation serializes progress fields in camelCase and runtime-validates them, uses 8 MiB storage batches with reconstructible response content on WAL `synchronous=NORMAL`, optimizes the Rust dev hot path, scans through 4 MiB text windows, aligns the final/search page, performs one bounded materialization read for responses smaller than 1 MiB, and shortens large JSON scalars only in the default Pretty preview.
+- The 128 MiB capture regression improved from approximately 14 seconds to 1.22 seconds in the optimized dev test profile; this is diagnostic evidence, not a CI timing threshold.
+- Follow-up product-owner testing accepted the corrected loader, Last navigation, repeated tail search, and non-freezing 1 MiB response. The first GraphQL request still took up to one second, later GraphQL requests about 200 ms, and ordinary local responses remained perceptibly slower at roughly 400 ms than other clients; elapsed-time semantics were also misleading.
+- Response encryption/SQLite writes now form a bounded two-batch native pipeline that overlaps network reads. Completion still requires a readable handle, but history/workspace adoption remains asynchronous and never blocks the response UI. The response summary reports network time, while Timeline exposes native setup, network, encryption, SQLite, storage backpressure, IPC, content read/decrypt/decode, and response-ready diagnostics.
+- Product-owner diagnostics for the problematic exact 1 MiB text response reported 4.0 ms network, 7.5 ms encryption, 2.4 ms SQLite write, 9.9 ms storage backpressure, 5.0 ms IPC, 22.0 ms read/decrypt/decode, and 42.0 ms response-ready time. The remaining approximately one-second freeze therefore occurred in frontend presentation, where CodeMirror with line wrapping synchronously laid out a nearly one-million-character line. The exact 1 MiB native boundary now stays on the existing byte-window viewer; no additional virtualization dependency is justified.
+- Added an application-owned response-storage policy resolver with document-over-nearest-folder-over-workspace precedence and encrypted default. The preference is reserved for local settings, never project YAML; the current product sends encrypted and the native boundary rejects plaintext until mixed-mode storage is deliberately implemented. Secrets remain encrypted independently of this future policy.
 
 Deviations from plan:
-- None.
+- Large GraphQL Data/Errors/Extensions extraction and dynamic-variable querying through `ResponseContentPort` remain in Phase 8. The existing port reserves native `format`/`query` but does not implement them yet; implementing those operations here would pull Phase 8 forward. Phase 7 instead keeps small responses unchanged and fails GraphQL introspection, OAuth token, or dynamic-variable body consumers at or above 1 MiB with a bounded, explicit error rather than materializing the body.
+- Product-owner performance feedback pulled bounded background write pipelining, request-stage diagnostics, and the response-storage policy contract into Phase 7. The actual plaintext store format and settings UI remain postponed; enabling them here would require a new persistence migration and security UX beyond the requested foundation.
+- The original threshold allowed exactly 1 MiB into CodeMirror. It was changed to an exclusive inline limit after the exact-boundary fixture reproduced a presentation freeze. This is a boundary correction rather than a new architecture: the same `HttpExchange`, `ResponseContentPort`, and `LargeResponseViewer` path is used, while Phase 8 remains responsible for restoring Pretty/query operations to bounded bodies.
 
 Known follow-ups:
-- Native search/format/query operations replace remaining full-content helpers in Phase 8.
+- Phase 8 replaces the temporary bounded TypeScript search with native search and adds bounded formatting/query extraction for large JSON/GraphQL/dynamic-variable consumers.
+- Phase 9 adds direct handle-based download; full-body copy/download remain unavailable in the large viewer until a bounded native operation exists.
+- Phase 8 should still move search into Rust to eliminate remaining text-window IPC and provide encoding-correct native matching; the Phase 7 scanner is a bounded compatibility implementation.
+- A future response-protection feature must persist workspace/folder/document preferences as local settings, add a versioned plaintext chunk representation beside encrypted chunks, migrate/clean mixed content safely, and preserve unconditional encryption for credentials, cookies, OAuth tokens, and secret-backed values.
+- Phase 8 must replace the total-size-only presentation decision with native content hints that include the longest observed line. A response below 1 MiB can still freeze CodeMirror when nearly all bytes form one line; the product owner accepted this as a non-blocking Phase 7 limitation on 2026-09-16.
+- Phase 8 must revise `LinePage.lines: string[]` before treating it as stable API. A logical line may exceed the IPC/window limit, so Rust must return bounded line segments with byte offsets, logical line identity, continuation flags, and cursors instead of rejecting the page or returning one unbounded string.
 
 - **Objective:** keep WebView memory proportional to the visible response rather than total content.
 - **Files/modules affected:** split `response-viewer.tsx`; `response-code-viewer.tsx`; new response content hooks/viewer; GraphQL response panels; dynamic variable resolver.
-- **Changes:** retain CodeMirror for content up to 1 MiB; use a read-only line/byte virtualized viewer above it; request pages through `ResponseContentPort`; show loading/progress/complete state; make Copy full body an explicit streamed native/clipboard operation or disable it above a safe limit with a clear action. GraphQL errors/extensions use bounded/native extraction for large bodies. Dynamic variables query through the response port when their dependency returns a native ref.
+- **Changes:** retain CodeMirror for native content smaller than 1 MiB; use a read-only line/byte virtualized viewer at or above that boundary; request pages through `ResponseContentPort`; show loading/progress/complete state; make Copy full body an explicit streamed native/clipboard operation or disable it above a safe limit with a clear action. GraphQL errors/extensions use bounded/native extraction for large bodies. Dynamic variables query through the response port when their dependency returns a native ref.
 - **Risk:** cursor/search/context-menu behavior differs between viewers. Define shared line/match/field-action models and e2e tests before replacing the large path.
 - **Verification:** 100 MiB text can show first/last pages without a 100 MiB JS string; scrolling does not grow unbounded; small-body visual behavior remains the same; browser/mock adapter passes tests.
 - **Scope:** L, split into viewer extraction and large-viewer activation.
@@ -1330,6 +1349,8 @@ Completed: —
 Automated verification:
 - [ ] Run the shared jq/JSONPath conformance fixtures against both TypeScript and Rust implementations.
 - [ ] Add bounded-operation tests for search cancellation, invalid encoding, oversized query results, recursive selectors, JSON/XML/NDJSON formatting, and derived-content lifecycle.
+- [ ] Add native tests for a sub-threshold response containing one line larger than the line window and for a multi-million-line response; every returned row/segment and IPC page must remain within configured byte/count limits.
+- [ ] Add UI coverage proving content-aware routing keeps a 999 KiB pathological line out of CodeMirror, a virtualized multi-million-line response retains only visible rows plus bounded overscan in the DOM, and a segmented giant line never becomes one DOM text node.
 - [ ] Run response/UI/persistence tests plus `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy`, and `cargo test`.
 
 Manual verification:
@@ -1337,21 +1358,113 @@ Manual verification:
 - [ ] Use text and regex search on a large response, cancel a long-running search, and confirm the previous response view stays usable.
 - [ ] Format a large JSON and XML response, switch between Pretty/Raw/Hex/Base64 windows, and confirm only the requested portion is shown.
 - [ ] Trigger an unsupported large recursive expression and confirm Purr shows a clear bounded-operation error rather than hanging or exhausting memory.
+- [ ] Open a 999 KiB response containing one giant line and confirm it selects the bounded viewer from native content hints, remains responsive, shows the line in bounded segments, and clearly states that wrapping and syntax highlighting are disabled.
+- [ ] Open a response with at least two million short lines, scroll near the beginning/middle/end, and confirm the UI remains responsive while browser inspection shows only visible rows plus bounded overscan rather than millions of DOM nodes.
 
 Implementation notes:
 - Existing TypeScript behavior is a semantic reference only; it does not satisfy native bounded processing or cross-runtime conformance.
+- Phase 7 deliberately deferred the remaining 999 KiB one-line CodeMirror stall. Total byte size is insufficient as a presentation heuristic. Phase 8 owns the durable fix because it already introduces native inspection, line indexing, and bounded read contracts.
+
+### Library reuse policy
+
+Before implementing any parser/query/formatting engine in Rust, evaluate mature existing crates and prefer composition over custom reimplementation.
+
+At minimum evaluate:
+
+- jq:
+  - `jaq-core`
+  - `jaq-std`
+  - `jaq-json`
+
+- JSONPath:
+  - evaluate maintained JSONPath crates and choose one only if its semantics can be adapted to Purr's existing supported subset
+
+- JSON:
+  - `serde_json`
+
+- XML parsing / writing / formatting:
+  - `quick-xml`
+
+- regex search:
+  - prefer the established Rust `regex` ecosystem unless required query semantics need something else
+
+The goal is NOT to preserve the current TypeScript implementation internally.
+The goal is to preserve Purr's observable query semantics where they are already documented/tested.
+
+Do not write a custom jq or JSONPath interpreter unless:
+1. no maintained crate can support the required semantics,
+2. an adapter around an existing crate would be more complex or unsafe,
+3. the deviation is explicitly documented.
+
+Before choosing a crate, evaluate:
+- maintenance/activity;
+- license compatibility with the public OSS repository;
+- API stability;
+- cancellation/bounded execution possibilities;
+- streaming vs full-tree requirements;
+- memory behavior on large documents;
+- thread-safety;
+- malformed-input behavior;
+- compatibility with existing Phase 0 conformance fixtures.
+
+Record the selected crate and rationale in Implementation notes.
 
 Deviations from plan:
 - None.
 
 Known follow-ups:
 - Do not advertise full jq/JSONPath compatibility while only the existing subset is implemented.
+- Complete the line-segmentation and virtual-row work before Phase 12 freezes public extension exports. The current `readLines` implementation rejects a logical line longer than its configured window and its `string[]` result cannot represent a bounded continuation safely.
 
 - **Objective:** provide useful large-response tools without reconstructing full content in JS.
 - **Files/modules affected:** Rust `response/*`; TypeScript `model/response.ts` becomes small-value helpers plus port calls; search/query UI.
-- **Changes:** implement prefix-based content inspection, bounded decoding, line index, literal/regex search with limits, range hex/base64, JSON/XML/NDJSON formatting, and exact current jq/JSONPath subset. Return scalar/page/content-ref results. Cache derived pretty content with dependency/lifecycle metadata.
+- **Changes:** implement prefix-based content inspection, bounded decoding,
+  line indexing, bounded logical-line segmentation, literal/regex search with limits, and native
+  JSON/XML/NDJSON formatting/query adapters.
+
+  Native capture/inspection records presentation hints such as maximum observed
+  line bytes and line count when known. The UI uses those hints instead of total
+  body size alone when choosing CodeMirror versus the bounded viewer.
+
+  Replace an unbounded `string[]` line page with segment records containing a
+  logical line number/ID, byte start/end, bounded text, continuation flags, and
+  forward/backward cursors. A single giant logical line is therefore rendered as
+  independently pageable segments rather than one JavaScript string or DOM node.
+
+  The React viewer virtualizes rows so a response with millions of lines retains
+  only roughly 30–100 visible rows plus a small overscan window. Evaluate a mature
+  virtualizer such as `@tanstack/react-virtual` or `react-window`; keep it behind
+  Purr's viewer component and select it only after a small prototype verifies
+  variable-height/segment navigation and keyboard search behavior. Large-response
+  mode disables soft wrap and full-document syntax highlighting and shows an
+  explicit “Line wrapping disabled for large responses” notice. Bounded per-page
+  highlighting may be added later if measurements show it is safe.
+
+  Prefer mature third-party Rust crates for language/parser/evaluator
+  functionality instead of custom implementations.
+
+  In particular:
+  - jq should be implemented through an embedded jq-compatible engine
+    such as `jaq-core`/`jaq-std`/`jaq-json`, subject to conformance testing;
+  - JSONPath should use a maintained crate behind Purr's own adapter if
+    its semantics can satisfy the existing supported subset;
+  - JSON parsing/serialization should use `serde_json`;
+  - XML parsing/writing should use a mature streaming library such as
+    `quick-xml`;
+  - regex search should use a mature bounded-safe regex engine.
+
+  Third-party engines must remain behind Purr-owned contracts and must
+  not leak their AST/value/error types into application/UI layers.
+
+  Preserve currently documented/tested Purr semantics through Phase 0
+  conformance fixtures rather than preserving the old implementation.
+
+- No custom parser/interpreter is introduced for jq, JSONPath, JSON, XML,
+  or regex without a documented evaluation showing why available mature
+  crates are unsuitable.
+
 - **Risk:** semantic drift and unbounded recursive JSON work. Reuse Phase 0 fixtures, set explicit parse limits, stream supported large expressions, and reject unsupported large expressions rather than loading them blindly.
-- **Verification:** TypeScript and Rust conformance results match; large searches can cancel; query result larger than the IPC limit is another handle; invalid encoding/data produces a typed error, not process failure.
+- **Verification:** TypeScript and Rust conformance results match; large searches can cancel; query result larger than the IPC limit is another handle; invalid encoding/data produces a typed error, not process failure; neither millions of logical lines nor one giant line create unbounded IPC strings or DOM nodes.
 - **Scope:** L across several PRs: inspect/read/search, formatting, then query engines.
 
 ### Phase 9 — remove remaining body round trips
@@ -1789,6 +1902,7 @@ The limited scan is evidence about this checkout, not a complete history/securit
 - **Full jq/JSONPath compatibility:** postpone until explicitly selected as a product feature. First preserve the documented subset and its fixtures.
 - **Rust GraphQL language server:** conditional on profiling after a Web Worker. It is a separate product-sized effort because current editor behavior relies on the JS GraphQL ecosystem.
 - **Persistent content-addressed files/deduplication/compression:** postpone until chunked encrypted SQLite is measured with real history workloads. Correct bounded ownership matters before storage optimization.
+- **Full syntax highlighting and soft wrapping for large responses:** postpone until the segmented/virtualized viewer is measured. The safe default is no full-document highlighting and no wrapping; a giant logical line must never be handed to CodeMirror or rendered as one DOM text node merely to preserve editor-like presentation.
 - **Logs, metrics, traces, and events in one generic telemetry interface:** avoid. Trace/Span/Log are related but have different query and presentation semantics. Add metrics/events only with real use cases.
 - **Generic arbitrary UI slots:** reject. Support namespaced pages/navigation and extension document hosts as first-class named contributions. Add inline settings sections, response panels, workspace actions, or observability surfaces only with concrete typed props when a real module needs them; unrestricted `slotName + ReactNode` injection would make the SDK unstable.
 - **One universal protocol provider interface:** reject. HTTP, WebSocket, gRPC, MQTT, and long-lived proprietary sessions have different lifecycles. Use the generic extension-document envelope/host for ownership and persistence, then give each real protocol the smallest execution/session contracts it needs while reusing public HTTP/content ports where they fit.

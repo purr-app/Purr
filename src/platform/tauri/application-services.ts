@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { z } from "zod";
 
-import type { HttpTransportProgress, HttpTransportResponse } from "../../application/ports/http";
+import { defaultResponseStoragePolicy, type HttpTransportOptions, type HttpTransportResponse } from "../../application/ports/http";
 import type { PlatformAdapters } from "../../application/ports/platform";
 import type {
   FileChange,
@@ -197,16 +197,32 @@ const transportMetadataSchema = z.object({
   httpVersion: z.string().optional(),
   localAddress: z.string().optional(),
   remoteAddress: z.string().optional(),
+  pipelineTimings: z.object({
+    setupMs: z.number().finite().nonnegative(),
+    networkMs: z.number().finite().nonnegative(),
+    encryptionMs: z.number().finite().nonnegative(),
+    sqliteWriteMs: z.number().finite().nonnegative(),
+    storageBackpressureMs: z.number().finite().nonnegative(),
+    nativeTotalMs: z.number().finite().nonnegative(),
+  }).optional(),
 });
 const transportResponseSchema = z.union([
   transportMetadataSchema.extend({ bodyBase64: z.string() }),
   transportMetadataSchema.extend({ content: contentReferenceSchema }),
 ]);
 
-type NativeHttpEvent =
-  | { type: "headers"; totalBytes?: number }
-  | { type: "progress"; receivedBytes: number; totalBytes?: number }
-  | { type: "complete" };
+const nativeHttpEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("headers"),
+    totalBytes: z.number().finite().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("progress"),
+    receivedBytes: z.number().finite().nonnegative(),
+    totalBytes: z.number().finite().nonnegative().optional(),
+  }),
+  z.object({ type: z.literal("complete") }),
+]);
 
 function supportsTauriChannels() {
   return typeof (globalThis as typeof globalThis & {
@@ -216,17 +232,21 @@ function supportsTauriChannels() {
 
 async function startHttp(
   request: HttpRequestSnapshot,
-  options?: { signal?: AbortSignal; onProgress?: (progress: HttpTransportProgress) => void },
+  options?: HttpTransportOptions,
 ): Promise<HttpTransportResponse> {
   options?.signal?.throwIfAborted();
   const operationId = crypto.randomUUID();
+  const invokedAt = performance.now();
   const cancel = () => {
     void invoke<void>("cancel_http", { operationId }).catch(() => {});
   };
   options?.signal?.addEventListener("abort", cancel, { once: true });
   try {
     const channel = supportsTauriChannels()
-      ? new Channel<NativeHttpEvent>((event) => {
+      ? new Channel<unknown>((candidate) => {
+          const parsed = nativeHttpEventSchema.safeParse(candidate);
+          if (!parsed.success) return;
+          const event = parsed.data;
           if (event.type === "headers")
             options?.onProgress?.({ receivedBytes: 0, totalBytes: event.totalBytes });
           if (event.type === "progress")
@@ -235,10 +255,21 @@ async function startHttp(
       : undefined;
     const response = await invoke<unknown>("start_http", {
       operationId,
-      request,
+      request: {
+        ...request,
+        responseStorage: options?.responseStorage ?? defaultResponseStoragePolicy,
+      },
       ...(channel ? { onEvent: channel } : {}),
     });
-    return transportResponseSchema.parse(response) as HttpTransportResponse;
+    const parsed = transportResponseSchema.parse(response) as HttpTransportResponse;
+    if (!parsed.pipelineTimings) return parsed;
+    return {
+      ...parsed,
+      pipelineTimings: {
+        ...parsed.pipelineTimings,
+        ipcMs: Math.max(0, performance.now() - invokedAt - parsed.pipelineTimings.nativeTotalMs),
+      },
+    };
   } finally {
     options?.signal?.removeEventListener("abort", cancel);
   }

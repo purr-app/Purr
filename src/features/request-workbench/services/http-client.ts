@@ -4,20 +4,24 @@ import {
   type HttpExchange,
   type HttpRequestSnapshot,
   type InlineHttpResponse,
+  type StoredHttpResponse,
 } from "../../../domain/http";
 import type {
   HttpTransportProgress,
   HttpTransportPort,
   HttpTransportResponse,
+  HttpPipelineTimings,
+  ResponseStoragePolicy,
 } from "../../../application/ports/http";
 import type { ResponseContentPort } from "../../../application/ports/response-content";
 import { base64Bytes } from "../model/request-auth";
 import type { SessionCookieJar } from "../model/cookie-jar";
+import { inlineResponseLimitBytes } from "./response-content-reader";
 
 export type WireRequest = HttpRequestSnapshot;
 export type WireResponse = HttpTransportResponse;
 export type HttpTransport = HttpTransportPort;
-const materializationWindowBytes = 192 * 1024;
+const materializationWindowBytes = inlineResponseLimitBytes;
 
 function isReferencedResponse(
   response: HttpTransportResponse,
@@ -118,13 +122,19 @@ export async function executeHttp(
     content?: ResponseContentPort;
     signal?: AbortSignal;
     onProgress?: (progress: HttpTransportProgress) => void;
+    responseStorage?: ResponseStoragePolicy;
   } = {},
-): Promise<InlineHttpResponse> {
+): Promise<StoredHttpResponse> {
   const current = { ...request, headers: [...request.headers] };
   const initial = requireHttpUrl(current.url);
   const started = Date.now();
+  const displayStarted = performance.now();
   let crossedOrigin = false;
   let crossedSite = false;
+  let transportMs = 0;
+  let waitingMs = 0;
+  let downloadMs = 0;
+  let processing: HttpPipelineTimings | undefined;
   for (let hop = 0; hop <= 10; hop++) {
     throwIfAborted(options.signal);
     const url = requireHttpUrl(current.url);
@@ -150,7 +160,11 @@ export async function executeHttp(
         ...current,
         headers,
       },
-      { signal: options.signal, onProgress: options.onProgress },
+      {
+        signal: options.signal,
+        onProgress: options.onProgress,
+        responseStorage: options.responseStorage,
+      },
     );
     if (options.signal?.aborted) {
       if (isReferencedResponse(response) && options.content)
@@ -158,6 +172,36 @@ export async function executeHttp(
       throwIfAborted(options.signal);
     }
     const completedAtMs = Date.now();
+    const hopTransportMs = Math.max(0, Number(response.durationMs) || 0);
+    const hopWaitingMs = Math.max(
+      0,
+      Math.min(
+        hopTransportMs,
+        Number(response.headersDurationMs ?? hopTransportMs) || 0,
+      ),
+    );
+    const hopDownloadMs = Math.max(
+      0,
+      Math.min(
+        hopTransportMs - hopWaitingMs,
+        Number(response.downloadDurationMs ?? hopTransportMs - hopWaitingMs) || 0,
+      ),
+    );
+    transportMs += hopTransportMs;
+    waitingMs += hopWaitingMs;
+    downloadMs += hopDownloadMs;
+    if (response.pipelineTimings) {
+      const previous = processing;
+      processing = {
+        setupMs: (previous?.setupMs ?? 0) + response.pipelineTimings.setupMs,
+        networkMs: (previous?.networkMs ?? 0) + response.pipelineTimings.networkMs,
+        encryptionMs: (previous?.encryptionMs ?? 0) + response.pipelineTimings.encryptionMs,
+        sqliteWriteMs: (previous?.sqliteWriteMs ?? 0) + response.pipelineTimings.sqliteWriteMs,
+        storageBackpressureMs: (previous?.storageBackpressureMs ?? 0) + response.pipelineTimings.storageBackpressureMs,
+        nativeTotalMs: (previous?.nativeTotalMs ?? 0) + response.pipelineTimings.nativeTotalMs,
+        ipcMs: (previous?.ipcMs ?? 0) + (response.pipelineTimings.ipcMs ?? 0),
+      };
+    }
     options.jar?.receive(url.toString(), response.headers);
     const location = response.headers.find(
       ([name]) => name.toLowerCase() === "location",
@@ -209,22 +253,7 @@ export async function executeHttp(
       current.url = next.toString();
       continue;
     }
-    const transportMs = Math.max(0, Number(response.durationMs) || 0);
-    const waitingMs = Math.max(
-      0,
-      Math.min(
-        transportMs,
-        Number(response.headersDurationMs ?? transportMs) || 0,
-      ),
-    );
-    const downloadMs = Math.max(
-      0,
-      Math.min(
-        transportMs - waitingMs,
-        Number(response.downloadDurationMs ?? transportMs - waitingMs) || 0,
-      ),
-    );
-    const totalMs = Math.max(transportMs, completedAtMs - started);
+    const elapsedMs = Math.max(transportMs, completedAtMs - started);
     const displayRequest = options.displayRequest ? {
       ...options.displayRequest,
       // Never replace the already-redacted URL with the request that actually
@@ -239,15 +268,19 @@ export async function executeHttp(
     } : undefined;
     const timeline = {
         startedAtMs: started,
-        prepareMs: Math.max(0, totalMs - waitingMs - downloadMs),
+        prepareMs: Math.max(0, elapsedMs - waitingMs - downloadMs),
         waitingMs,
         downloadMs,
-        completedAtMs: started + totalMs,
+        completedAtMs,
         request: { url: current.url, method: current.method, headers, bodyBase64: current.bodyBase64 },
         displayRequest,
         followRedirects: options.followRedirects !== false,
         usesCookieJar: Boolean(options.jar),
         timeoutMs: 60_000,
+        processing: processing ? {
+          ...processing,
+          displayReadyMs: performance.now() - displayStarted,
+        } : undefined,
       };
     const responseUrl = current.url || initial.toString();
     if (isReferencedResponse(response)) {
@@ -262,7 +295,7 @@ export async function executeHttp(
           statusText: response.statusText,
           headers: response.headers,
           byteLength: response.content.byteLength,
-          durationMs: totalMs,
+          durationMs: transportMs,
           headersDurationMs: response.headersDurationMs,
           downloadDurationMs: response.downloadDurationMs,
           httpVersion: response.httpVersion,
@@ -272,8 +305,26 @@ export async function executeHttp(
         content: response.content,
         timeline,
       };
+      // Keep the exact boundary on the bounded path as well. A 1 MiB body can
+      // be a single line, and mounting that line in CodeMirror synchronously
+      // blocks the WebView even though native capture has already completed.
+      if (exchange.content.byteLength >= inlineResponseLimitBytes) return exchange;
       try {
-        return await materializeHttpExchange(exchange, options.content, options.signal);
+        const readStarted = performance.now();
+        const materialized = await materializeHttpExchange(exchange, options.content, options.signal);
+        if (materialized.timeline.processing) {
+          materialized.timeline.processing.contentReadMs = performance.now() - readStarted;
+          materialized.timeline.processing.displayReadyMs = performance.now() - displayStarted;
+          materialized.timeline.completedAtMs = Date.now();
+          materialized.timeline.prepareMs = Math.max(
+            0,
+            materialized.timeline.completedAtMs
+              - materialized.timeline.startedAtMs
+              - materialized.timeline.waitingMs
+              - materialized.timeline.downloadMs,
+          );
+        }
+        return materialized;
       } catch (cause) {
         await options.content.release(response.content).catch(() => {});
         throw cause;
@@ -287,7 +338,7 @@ export async function executeHttp(
       url: responseUrl,
       text: new TextDecoder().decode(bytes),
       size: bytes.length,
-      durationMs: totalMs,
+      durationMs: transportMs,
       timeline,
     });
   }

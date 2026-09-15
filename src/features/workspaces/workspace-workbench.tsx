@@ -12,7 +12,6 @@ import type { RequestAuth } from "../request-workbench/model/request-auth";
 import type { RequestDraft } from "../request-workbench/model/request";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
-import { materializeHttpExchange } from "../request-workbench/services/http-client";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
 import { importCurl, isCurlCommand, type CurlImport } from "../request-workbench/model/curl-import";
 import { CommandPalette, type PaletteAction } from "./components/command-palette";
@@ -33,7 +32,6 @@ import { resolveEnvironmentSecrets } from "../../application/environment-secrets
 import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
 import type { ImportSource } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
-import { isInlineHttpResponse } from "../../domain/http";
 import { useApplicationServices } from "../../app/application-services-context";
 import {
   cloneRequestDraft,
@@ -145,33 +143,10 @@ export function WorkspaceWorkbench() {
   const variables = useMemo(() => workspace ? getEffectiveVariableValues(workspace, store?.globalVariables ?? []) : {}, [store?.globalVariables, workspace?.activeEnvironmentId, workspace?.environments, workspace?.variables]);
   const contextKey = useMemo(() => crypto.randomUUID(), [workspace?.id, workspace?.activeEnvironmentId, workspace?.environments]);
   const sessionKey = `${workspace?.id}:${currentDocument?.id}`;
-  const restoredSession: RequestSession = currentDocument?.lastResponse && isInlineHttpResponse(currentDocument.lastResponse)
+  const restoredSession: RequestSession = currentDocument?.lastResponse
     ? { ...emptyRequestSession, response: currentDocument.lastResponse, canvasFocus: "response" }
     : emptyRequestSession;
   const session = sessions[sessionKey] ?? restoredSession;
-  const referencedResponse = currentDocument?.lastResponse && !isInlineHttpResponse(currentDocument.lastResponse)
-    ? currentDocument.lastResponse
-    : null;
-  useEffect(() => {
-    if (!referencedResponse || sessions[sessionKey]?.response) return;
-    let active = true;
-    void materializeHttpExchange(referencedResponse, services.responseContent)
-      .then((response) => {
-        if (!active) return;
-        setSessions((current) => current[sessionKey]?.response
-          ? current
-          : { ...current, [sessionKey]: { ...emptyRequestSession, response, canvasFocus: "response" } });
-      })
-      .catch((cause) => {
-        if (!active) return;
-        setSessions((current) => ({ ...current, [sessionKey]: {
-          ...emptyRequestSession,
-          error: cause instanceof Error ? cause.message : String(cause),
-          canvasFocus: "response",
-        } }));
-      });
-    return () => { active = false; };
-  }, [referencedResponse?.content.id, services.responseContent, sessionKey]);
   const cookieJar = useMemo(() => {
     if (!workspace) return null;
     const existing = jars.current.get(workspace.id);

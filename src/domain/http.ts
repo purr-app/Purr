@@ -36,6 +36,17 @@ export type HttpTimeline = {
   followRedirects: boolean;
   usesCookieJar: boolean;
   timeoutMs: number;
+  processing?: {
+    setupMs: number;
+    networkMs: number;
+    encryptionMs: number;
+    sqliteWriteMs: number;
+    storageBackpressureMs: number;
+    nativeTotalMs: number;
+    ipcMs?: number;
+    contentReadMs?: number;
+    displayReadyMs?: number;
+  };
 };
 
 // The ID is deliberately opaque. A platform adapter may interpret it as native
@@ -98,6 +109,17 @@ const timelineSchema = z.object({
   followRedirects: z.boolean(),
   usesCookieJar: z.boolean(),
   timeoutMs: z.number().finite(),
+  processing: z.object({
+    setupMs: z.number().finite().nonnegative(),
+    networkMs: z.number().finite().nonnegative(),
+    encryptionMs: z.number().finite().nonnegative(),
+    sqliteWriteMs: z.number().finite().nonnegative(),
+    storageBackpressureMs: z.number().finite().nonnegative(),
+    nativeTotalMs: z.number().finite().nonnegative(),
+    ipcMs: z.number().finite().nonnegative().optional(),
+    contentReadMs: z.number().finite().nonnegative().optional(),
+    displayReadyMs: z.number().finite().nonnegative().optional(),
+  }).optional(),
 }).passthrough();
 const responseMetadataSchema = z.object({
   url: z.string(),

@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const ENCRYPTED_TABLES: [&str; 12] = [
@@ -41,8 +41,8 @@ impl Default for ResponseLimits {
     fn default() -> Self {
         Self {
             chunk_bytes: 256 * 1024,
-            max_window_bytes: 256 * 1024,
-            max_content_bytes: 20 * 1024 * 1024,
+            max_window_bytes: 4 * 1024 * 1024,
+            max_content_bytes: 128 * 1024 * 1024,
             max_retained_bytes: None,
             staging_ttl_seconds: 60 * 60,
         }
@@ -53,6 +53,12 @@ pub struct ResponseContentStore {
     db: Connection,
     cipher: LocalCipher,
     limits: ResponseLimits,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ContentWriteTiming {
+    pub encryption: Duration,
+    pub sqlite: Duration,
 }
 
 impl ResponseContentStore {
@@ -69,7 +75,10 @@ impl ResponseContentStore {
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| "Cannot configure response storage")?;
         db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
+            // Response bodies are reconstructible runtime data. NORMAL keeps WAL
+            // transactions atomic while avoiding a disk sync for every streamed
+            // append; canonical project data continues to use FULL durability.
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
         )
         .map_err(|_| "Cannot configure response storage")?;
         LocalStateStore::migrate(&mut db)?;
@@ -113,11 +122,13 @@ impl ResponseContentStore {
     }
 
     #[allow(dead_code)]
-    pub fn append(&mut self, id: &str, bytes: &[u8]) -> Result<(), String> {
+    pub fn append(&mut self, id: &str, bytes: &[u8]) -> Result<ContentWriteTiming, String> {
         validate_id(id)?;
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(ContentWriteTiming::default());
         }
+        let started = Instant::now();
+        let mut encryption = Duration::ZERO;
         let (state, mut offset): (String, u64) = self
             .db
             .query_row(
@@ -135,7 +146,7 @@ impl ResponseContentStore {
             .checked_add(bytes.len() as u64)
             .ok_or("Response is too large")?;
         if next_length > self.limits.max_content_bytes {
-            return Err("Response exceeds the 20 MB preview limit.".into());
+            return Err("Response exceeds the 128 MiB capture limit.".into());
         }
         if let Some(maximum) = self.limits.max_retained_bytes {
             let retained: u64 = self
@@ -161,7 +172,9 @@ impl ResponseContentStore {
         for (relative_index, chunk) in bytes.chunks(self.limits.chunk_bytes).enumerate() {
             let index = first_index + relative_index as u64;
             let aad = chunk_aad(id, index, offset, chunk.len() as u64);
+            let encryption_started = Instant::now();
             let sealed = self.cipher.seal(chunk, &aad)?;
+            encryption += encryption_started.elapsed();
             transaction.execute(
                 "INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 params![id, index, offset, chunk.len() as u64, sealed.version, sealed.nonce.as_slice(), sealed.ciphertext],
@@ -176,7 +189,11 @@ impl ResponseContentStore {
             .map_err(|_| "Cannot update response content")?;
         transaction
             .commit()
-            .map_err(|_| "Cannot commit response content".to_string())
+            .map_err(|_| "Cannot commit response content".to_string())?;
+        Ok(ContentWriteTiming {
+            encryption,
+            sqlite: started.elapsed().saturating_sub(encryption),
+        })
     }
 
     #[allow(dead_code)]
@@ -221,7 +238,7 @@ impl ResponseContentStore {
         let requested =
             usize::try_from(range.length).map_err(|_| "Response window is too large")?;
         if requested > self.limits.max_window_bytes {
-            return Err("Response window exceeds the 256 KiB limit".into());
+            return Err("Response window exceeds the configured limit".into());
         }
         let end = range
             .offset
@@ -327,7 +344,7 @@ impl ResponseContentStore {
             lines.push(line.strip_suffix('\r').unwrap_or(line).to_string());
         }
         if consumed == 0 && !window.complete {
-            return Err("Response line exceeds the 256 KiB window limit".into());
+            return Err("Response line exceeds the configured window limit".into());
         }
         let next = offset + consumed as u64;
         let complete = next >= info.size;

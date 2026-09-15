@@ -36,6 +36,7 @@ import { formatPayloadSize } from "../model/request-body";
 import { base64Bytes } from "../model/request-auth";
 import {
   formatResponseBody,
+  formatBoundedJsonPreview,
   getResponseFileName,
   getResponseCookies,
   getResponseQuerySuggestions,
@@ -48,11 +49,30 @@ import {
 } from "../model/response";
 import { downloadResponseBody } from "../services/download-response";
 import { useApplicationServices } from "../../../app/application-services-context";
-import type { InlineHttpResponse } from "../../../domain/http";
+import {
+  isInlineHttpResponse,
+  type InlineHttpResponse,
+  type StoredHttpResponse,
+} from "../../../domain/http";
 import { ResponseCodeViewer } from "./response-code-viewer";
 import { formatHttpRequest } from "../model/request-code";
+import { LargeResponseViewer } from "./large-response-viewer";
 
 export type ResponseVariableCandidate = { name: string; value: string; jsonPath: string; jq: string; dynamic: boolean };
+
+type ResponseDetails = Omit<
+  InlineHttpResponse,
+  "bodyBase64" | "text" | "sourceExchange"
+>;
+
+function responseDetails(response: StoredHttpResponse): ResponseDetails {
+  if (isInlineHttpResponse(response)) return response;
+  return {
+    ...response.response,
+    size: response.content.byteLength,
+    timeline: response.timeline,
+  };
+}
 
 type ResponseTab =
   | "response"
@@ -151,9 +171,11 @@ function statusClass(status: number) {
 function CopyResponseButton({
   value,
   label,
+  getValue,
 }: {
-  value: string;
+  value?: string;
   label: string;
+  getValue?: () => string;
 }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -164,10 +186,10 @@ function CopyResponseButton({
       size="sm"
       variant="ghost"
       aria-label={label}
-      disabled={!value}
+      disabled={!value && !getValue}
       onClick={async () => {
         try {
-          await navigator.clipboard.writeText(value);
+          await navigator.clipboard.writeText(getValue ? getValue() : value ?? "");
           setCopied(true);
           clearTimeout(timer.current);
           timer.current = setTimeout(() => setCopied(false), 1800);
@@ -310,11 +332,24 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
         : getResponseQuerySuggestions(prettyInfo.parsedJson, queryLanguage),
     [prettyInfo.parsedJson, queryLanguage],
   );
+  const boundedJsonPreview = useMemo(() => {
+    if (
+      mode !== "pretty"
+      || prettyInfo.kind !== "json"
+      || prettyInfo.parsedJson === undefined
+      || presentation.size < 256 * 1024
+    ) return undefined;
+    return formatBoundedJsonPreview(
+      queryResult.error || queryResult.value === undefined
+        ? prettyInfo.parsedJson
+        : queryResult.value,
+    );
+  }, [mode, presentation.size, prettyInfo, queryResult.error, queryResult.value]);
   const content = useMemo(
-    () => mode === "pretty"
+    () => boundedJsonPreview?.text ?? (mode === "pretty"
       ? formatResponseBody(presentation, prettyInfo, mode, queryResult.error ? undefined : queryResult.value)
-      : formatResponseBody(response, rawInfo, mode),
-    [mode, presentation, prettyInfo, queryResult.error, queryResult.value, rawInfo, response],
+      : formatResponseBody(response, rawInfo, mode)),
+    [boundedJsonPreview?.text, mode, presentation, prettyInfo, queryResult.error, queryResult.value, rawInfo, response],
   );
   const info = mode === "pretty" ? prettyInfo : rawInfo;
   const visualPreview = mode === "pretty" && responseCanPreview(rawInfo.kind);
@@ -403,10 +438,21 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
               />
             </>
           ) : null}
-          {visualPreview ? <ResponseDownloadButton response={response} info={rawInfo} compact /> : !binaryOverview ? <CopyResponseButton value={content} label="Copy response body" /> : null}
+          {visualPreview ? <ResponseDownloadButton response={response} info={rawInfo} compact /> : !binaryOverview ? <CopyResponseButton
+            value={boundedJsonPreview ? undefined : content}
+            getValue={boundedJsonPreview ? () => formatResponseBody(presentation, prettyInfo, mode, queryResult.error ? undefined : queryResult.value) : undefined}
+            label="Copy response body"
+          /> : null}
         </div>
       </div>
-      {queryResult.error ? (
+      {boundedJsonPreview?.hiddenValues ? (
+        <p
+          role="status"
+          className="m-ui-0 border-b border-border-subtle px-ui-3 py-ui-2 font-code text-ui-xs text-content-tertiary"
+        >
+          {boundedJsonPreview.hiddenValues} large JSON value{boundedJsonPreview.hiddenValues === 1 ? " is" : "s are"} shortened in the preview. Raw and Copy use the complete response.
+        </p>
+      ) : queryResult.error ? (
         <p
           role="alert"
           className="m-ui-0 border-b border-border-subtle px-ui-3 py-ui-2 font-code text-ui-xs text-accent-orange"
@@ -438,7 +484,7 @@ function ResponseBodyPanel({ response, prettyResponse, prettyLabel = "Pretty", o
   );
 }
 
-function ResponseHeadersPanel({ response }: { response: InlineHttpResponse }) {
+function ResponseHeadersPanel({ response }: { response: ResponseDetails }) {
   const text = response.headers
     .map(([name, value]) => `${name}: ${value}`)
     .join("\n");
@@ -473,7 +519,7 @@ function ResponseHeadersPanel({ response }: { response: InlineHttpResponse }) {
   );
 }
 
-function ResponseRequestPanel({ response }: { response: InlineHttpResponse }) {
+function ResponseRequestPanel({ response }: { response: ResponseDetails }) {
   const [revealed, setRevealed] = useState(false);
   const request = revealed ? response.timeline.request : response.timeline.displayRequest ?? response.timeline.request;
   const value = useMemo(() => formatHttpRequest(request), [request]);
@@ -536,7 +582,7 @@ function ResponseHeaderValue({ name, value }: { name: string; value: string }) {
   );
 }
 
-function ResponseCookiesPanel({ response }: { response: InlineHttpResponse }) {
+function ResponseCookiesPanel({ response }: { response: ResponseDetails }) {
   const cookies = useMemo(
     () => getResponseCookies(response.headers),
     [response.headers],
@@ -682,10 +728,11 @@ function maskedHeader(name: string, value: string) {
   return value;
 }
 
-function ResponseTimelinePanel({ response }: { response: InlineHttpResponse }) {
+function ResponseTimelinePanel({ response }: { response: ResponseDetails }) {
   const { timeline } = response;
   const [showBreakdown, setShowBreakdown] = useState(false);
   const isSecure = timeline.request.url.startsWith("https:");
+  const elapsedMs = Math.max(0, timeline.completedAtMs - timeline.startedAtMs);
   const phases = [
     {
       label: "Prepare",
@@ -723,7 +770,7 @@ function ResponseTimelinePanel({ response }: { response: InlineHttpResponse }) {
           </div>
           <div className="flex items-center gap-ui-2">
             <span className="font-code text-ui-xs font-medium text-content-primary">
-              {response.durationMs} ms total
+              {elapsedMs} ms until response ready
             </span>
             <Button
               type="button"
@@ -767,7 +814,7 @@ function ResponseTimelinePanel({ response }: { response: InlineHttpResponse }) {
               const start = phases
                 .slice(0, index)
                 .reduce((total, entry) => total + entry.duration, 0);
-              const scale = Math.max(response.durationMs, 1);
+              const scale = Math.max(elapsedMs, 1);
               return (
                 <div key={phase.label} className="flex items-center gap-ui-2">
                   <span className="w-method-popover shrink-0 font-code text-ui-xs text-content-tertiary">
@@ -793,6 +840,33 @@ function ResponseTimelinePanel({ response }: { response: InlineHttpResponse }) {
                 </div>
               );
             })}
+          </div>
+        ) : null}
+        {timeline.processing ? (
+          <div
+            className="mt-ui-3 border-t border-border-subtle pt-ui-3"
+            aria-label="Request processing diagnostics"
+          >
+            <p className="m-ui-0 mb-ui-2 font-code text-ui-xs text-content-tertiary">
+              Native storage overlaps the network where possible; rows are diagnostic timings, not a sequential waterfall.
+            </p>
+            <dl className="grid gap-x-ui-4 gap-y-ui-1 font-code text-ui-xs sm:grid-cols-2">
+              {[
+                ["Native setup", timeline.processing.setupMs],
+                ["Network", timeline.processing.networkMs],
+                ["Encryption", timeline.processing.encryptionMs],
+                ["SQLite write", timeline.processing.sqliteWriteMs],
+                ["Storage backpressure", timeline.processing.storageBackpressureMs],
+                ["Tauri IPC", timeline.processing.ipcMs],
+                ["Read/decrypt + decode", timeline.processing.contentReadMs],
+                ["Response ready", timeline.processing.displayReadyMs],
+              ].filter((entry): entry is [string, number] => entry[1] !== undefined).map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between gap-ui-3">
+                  <dt className="text-content-tertiary">{label}</dt>
+                  <dd className="m-ui-0 text-content-secondary">{value.toFixed(1)} ms</dd>
+                </div>
+              ))}
+            </dl>
           </div>
         ) : null}
       </div>
@@ -879,7 +953,7 @@ function ResponseTimelinePanel({ response }: { response: InlineHttpResponse }) {
   );
 }
 
-function NetworkDetailsPopover({ response }: { response: InlineHttpResponse }) {
+function NetworkDetailsPopover({ response }: { response: ResponseDetails }) {
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(closeTimer.current), []);
@@ -1092,7 +1166,10 @@ function ResponseFindBar({
   );
 }
 
-export function ResponseViewer({ response, graphql = false, onCreateVariable }: { response: InlineHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
+export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable }: { response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
+  const response = useMemo(() => responseDetails(storedResponse), [storedResponse]);
+  const inlineResponse = isInlineHttpResponse(storedResponse) ? storedResponse : null;
+  const referencedResponse = isInlineHttpResponse(storedResponse) ? null : storedResponse;
   const [tab, setTab] = useState<ResponseTab>("response");
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -1100,8 +1177,8 @@ export function ResponseViewer({ response, graphql = false, onCreateVariable }: 
   const [findMatchCount, setFindMatchCount] = useState(0);
   const responsePanelRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
-  const graphqlResult = useMemo(() => graphql ? inspectGraphqlResponse(response) : undefined, [graphql, response]);
-  const graphqlDataResponse = useMemo(() => graphqlResult && "data" in graphqlResult ? responseWithJson(response, graphqlResult.data) : undefined, [graphqlResult, response]);
+  const graphqlResult = useMemo(() => graphql && inlineResponse ? inspectGraphqlResponse(inlineResponse) : undefined, [graphql, inlineResponse]);
+  const graphqlDataResponse = useMemo(() => graphqlResult && inlineResponse && "data" in graphqlResult ? responseWithJson(inlineResponse, graphqlResult.data) : undefined, [graphqlResult, inlineResponse]);
   const tabs: readonly { value: ResponseTab; label: string; icon?: LucideIcon; disabled?: boolean }[] = graphql ? [
     { value: "response" as const, label: "Response" },
     ...(graphqlResult?.errors.length ? [{ value: "errors" as const, label: "Errors" }] : []),
@@ -1138,7 +1215,7 @@ export function ResponseViewer({ response, graphql = false, onCreateVariable }: 
   useEffect(() => {
     setTab("response");
     closeFind();
-  }, [closeFind, response.bodyBase64, response.timeline.startedAtMs]);
+  }, [closeFind, storedResponse, response.timeline.startedAtMs]);
   useEffect(() => {
     if (!findOpen || !searchable) return;
     if (tab === "response") {
@@ -1253,7 +1330,10 @@ export function ResponseViewer({ response, graphql = false, onCreateVariable }: 
         aria-labelledby={`response-tab-${tab}`}
         className="min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        {tab === "response" ? <ResponseBodyPanel response={response} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null}
+        {tab === "response" ? inlineResponse
+          ? <ResponseBodyPanel response={inlineResponse} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} />
+          : referencedResponse ? <LargeResponseViewer exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
+          : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}

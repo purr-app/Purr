@@ -1,5 +1,8 @@
 import type { RequestDraft } from "../../request-workbench/model/request";
-import type { InlineHttpResponse } from "../../../domain/http";
+import {
+  isInlineHttpResponse,
+  type StoredHttpResponse,
+} from "../../../domain/http";
 import { queryResponseJson } from "../../request-workbench/model/response";
 import type { DynamicVariableCacheEntry, RequestDocumentKind, Variable } from "../model/workspace";
 
@@ -28,7 +31,7 @@ type ResolveOptions = {
   environmentId: string | null;
   documents: readonly DynamicVariableRequest[];
   variablesForEnvironment: (environmentId: string | null) => Promise<readonly Variable[]>;
-  execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null) => Promise<InlineHttpResponse>;
+  execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null) => Promise<StoredHttpResponse>;
   persistentCache: Record<string, DynamicVariableCacheEntry>;
   sessionCache: Map<string, DynamicVariableCacheEntry>;
   forceVariableIds?: ReadonlySet<string>;
@@ -126,6 +129,8 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
         try {
           const dependency = await resolveDocument(sourceDocument, sourceEnvironmentId, [...path, { document, variable }]);
           const response = await options.execute(sourceDocument, dependency.values, sourceEnvironmentId);
+          if (!isInlineHttpResponse(response))
+            throw new Error(`Dynamic variable “${variable.name}” cannot query a response at or above 1 MiB yet.`);
           let parsed: unknown;
           try { parsed = JSON.parse(response.text); }
           catch { throw new Error(`Dynamic variable “${variable.name}” expected a JSON response from ${sourceDocument.name}.`); }

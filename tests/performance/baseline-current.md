@@ -74,6 +74,36 @@ The product owner ran these scenarios against the current pre-optimization deskt
 - Fixture-server logs contained Yaak/other-client traffic, so no sent-byte value from that log is recorded or treated as Purr cancellation evidence.
 - These observations establish the starting behavior. Phase 0 does not attempt to diagnose or fix it.
 
+## Phase 7 product-owner observations before request-stage diagnostics
+
+Recorded on 2026-09-16 after the bounded viewer and first corrective pass, before the background-write/timing instrumentation added later in Phase 7:
+
+- the progress loader showed finite downloaded/total values;
+- the 100 MiB Last action opened the tail page and search for `purr-tail-marker` navigated to the correct page without a freeze;
+- `/response/json?size=1048576` completed without a UI freeze and the response tools remained functional; the compact scalar presentation was visually ambiguous because the shortened value resembled original response content;
+- the first small GraphQL query could take up to about one second, while subsequent runs were around 200 ms;
+- ordinary local requests still felt slow and averaged roughly 400 ms to become visible, while the compared clients reported the same local responses in under 20 ms;
+- the response time displayed by Purr did not clearly distinguish network time from native storage and frontend work.
+
+The next Phase 7 retest must use the Timeline processing diagnostics rather than infer the bottleneck from one aggregate duration. These values remain observational and are not CI thresholds.
+
+## Phase 7 exact-boundary diagnostics
+
+Recorded on 2026-09-16 after background response writes and request-stage diagnostics were added:
+
+| Stage | Exact 1 MiB text response |
+| --- | ---: |
+| Native setup | 0.0 ms |
+| Network | 4.0 ms |
+| Encryption | 7.5 ms |
+| SQLite write | 2.4 ms |
+| Storage backpressure | 9.9 ms |
+| Tauri IPC | 5.0 ms |
+| Read/decrypt + decode | 22.0 ms |
+| Response ready | 42.0 ms |
+
+The response summary reported 3 ms and the connection/download breakdown reported 1 ms/2 ms. Despite this bounded native and IPC time, `/response/text?size=1048576` visibly froze the WebView at the loader and froze it again for about one second whenever the Response tab was reopened. The fixture is nearly one million characters on one line. Code inspection confirmed that the exact threshold was still materialized (`> 1 MiB` selected the bounded path) and then passed to line-wrapped CodeMirror, which must synchronously measure the pathological line. The Phase 7 correction makes 1 MiB an exclusive inline limit: exact 1 MiB native responses use the existing 192 KiB byte-window viewer. This observation remains a manual diagnostic and does not create a CI timing threshold.
+
 ## Persistence amplification hypothesis
 
 Code inspection after the manual run found a plausible amplification path, but Phase 0 did not profile it sufficiently to claim a single root cause:

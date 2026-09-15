@@ -11,6 +11,7 @@ import type { AuthContext, RequestAuth } from "../../request-workbench/model/req
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
 import { useAuthRuntime } from "../../request-workbench/hooks/use-auth-runtime";
 import { executeRequest } from "../../request-workbench/services/execute-request";
+import { isInlineHttpResponse } from "../../../domain/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { normalizeSchema, parseGraphqlSchema } from "../model/graphql";
 import { GraphqlCodeEditor } from "./graphql-code-editor";
@@ -131,6 +132,10 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
         httpTransport,
         responseContent,
       );
+      if (!isInlineHttpResponse(result)) {
+        await responseContent.release(result.content).catch(() => {});
+        throw new Error("GraphQL introspection responses at or above 1 MiB are not supported yet.");
+      }
       if (result.status < 200 || result.status >= 300) throw new Error(`Introspection failed: HTTP ${result.status} ${result.statusText}`);
       install(result.text, "introspection", result.url);
     } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }

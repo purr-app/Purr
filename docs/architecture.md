@@ -60,7 +60,7 @@ canonical Project + local records + assets
 Rust modules provide narrow privileged boundaries:
 
 - `src-tauri/src/http/`: validated HTTP(S) transport without automatic redirects.
-- `src-tauri/src/content/`: encrypted response-content chunks, lifecycle, bounded reads, and a dedicated SQLite worker.
+- `src-tauri/src/content/`: response-content chunks, lifecycle, bounded reads, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
 - `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
@@ -78,6 +78,7 @@ Rust modules provide narrow privileged boundaries:
 5. Canonical definitions remain deterministic and Git-friendly. Runtime/session data and secret values must not leak into them.
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
+8. Response protection is resolved by the TypeScript application layer before transport. Future workspace/folder/document preferences are local-only and default to encrypted; shared project files cannot disable encryption, and response policy never applies to credentials or secrets.
 
 ESLint and architecture tests enforce the current boundaries: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application and feature modules cannot import Tauri packages; platform adapters cannot reach feature UI or the application composition root. A source scan also fails when an `invoke()` call appears outside `src/platform/tauri`. Rules for the future `src/extension-api/` directory remain reserved so it cannot expose implementation-owned paths.
 
@@ -119,8 +120,9 @@ Request editor
   → TypeScript cookie/redirect policy
   → ApplicationServices.httpTransport
   → Tauri adapter → Rust start_http / cancel_http
-  → encrypted staging chunks + response metadata/content reference
-  → bounded compatibility materialization for the current viewer
+  → bounded background encryption/SQLite pipeline
+  → ready encrypted content reference + request-stage diagnostics
+  → <1 MiB compatibility materialization or ≥1 MiB bounded content pages
   → response viewer + v2 exchange persistence/content adoption
 ```
 
@@ -144,7 +146,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 
 ## Current architectural limitations
 
-- The current response viewer still materializes a completed native handle into an inline body. Phase 7 replaces that compatibility step with bounded/virtualized presentation for large responses.
+- Responses at or above 1 MiB use a bounded page viewer without full-body Pretty, jq/JSONPath, structured GraphQL tabs, preview, copy, or direct handle download. Phases 8–9 add those operations without restoring full-body WebView copies.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.

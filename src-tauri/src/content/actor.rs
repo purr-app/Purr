@@ -2,7 +2,7 @@ use super::{
     contracts::{
         ByteRange, ContentInfo, ContentMetadata, ContentWindow, LinePage, ResponseContentRef,
     },
-    store::ResponseContentStore,
+    store::{ContentWriteTiming, ResponseContentStore},
 };
 use crate::security::PlatformRootKeyStore;
 use std::{path::PathBuf, sync::Mutex};
@@ -14,6 +14,16 @@ type StoreJob = Box<dyn FnOnce(&mut ResponseContentStore) + Send>;
 #[derive(Clone)]
 pub struct ResponseContentHandle {
     sender: mpsc::Sender<StoreJob>,
+}
+
+pub struct PendingContentWrite(oneshot::Receiver<Result<ContentWriteTiming, String>>);
+
+impl PendingContentWrite {
+    pub async fn wait(self) -> Result<ContentWriteTiming, String> {
+        self.0
+            .await
+            .map_err(|_| "Response storage worker stopped")?
+    }
 }
 
 impl ResponseContentHandle {
@@ -59,8 +69,19 @@ impl ResponseContentHandle {
         self.call(move |store| store.create_staging(metadata)).await
     }
 
-    pub async fn append(&self, id: String, bytes: Vec<u8>) -> Result<(), String> {
-        self.call(move |store| store.append(&id, &bytes)).await
+    pub async fn enqueue_append(
+        &self,
+        id: String,
+        bytes: Vec<u8>,
+    ) -> Result<PendingContentWrite, String> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Box::new(move |store| {
+                let _ = sender.send(store.append(&id, &bytes));
+            }))
+            .await
+            .map_err(|_| "Response storage worker is unavailable")?;
+        Ok(PendingContentWrite(receiver))
     }
 
     pub async fn finish(&self, id: String) -> Result<ResponseContentRef, String> {

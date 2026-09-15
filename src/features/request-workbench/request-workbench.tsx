@@ -17,7 +17,7 @@ import {
 } from "./model/request-auth";
 import { SessionCookieJar } from "./model/cookie-jar";
 import { useAuthRuntime } from "./hooks/use-auth-runtime";
-import type { InlineHttpResponse } from "../../domain/http";
+import type { StoredHttpResponse } from "../../domain/http";
 import type { HttpTransportProgress } from "../../application/ports/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
@@ -34,7 +34,7 @@ function ResponseArea({
   onCancel,
   progress,
 }: {
-  response: InlineHttpResponse | null;
+  response: StoredHttpResponse | null;
   error: string;
   sending: boolean;
   graphql: boolean;
@@ -49,7 +49,7 @@ function ResponseArea({
 }
 
 export type RequestSession = {
-  response: InlineHttpResponse | null;
+  response: StoredHttpResponse | null;
   error: string;
   sending: boolean;
   canvasFocus: "request" | "response";
@@ -113,7 +113,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
   const { sending, response, error, canvasFocus } = session;
   const setSending = (sending: boolean) => onSessionChange({ sending });
-  const setResponse = (response: InlineHttpResponse | null) => onSessionChange({ response });
+  const setResponse = (response: StoredHttpResponse | null) => onSessionChange({ response });
   const setError = (error: string) => onSessionChange({ error });
   const setCanvasFocus = (canvasFocus: RequestSession["canvasFocus"]) => onSessionChange({ canvasFocus });
   const sendingRef = useRef(false);

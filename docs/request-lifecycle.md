@@ -163,11 +163,11 @@ The IPC request is `WireRequest`: final URL, method, duplicate-preserving header
 - validates HTTP(S), host, method, headers, body encoding, and URL credentials;
 - sends with Reqwest using a fixed timeout and redirects disabled;
 - preserves duplicate response headers;
-- streams at most the configured 20 MiB response preview into encrypted native chunks through a bounded worker queue;
+- streams at most the configured 128 MiB response capture into encrypted native chunks through a bounded worker queue, grouping up to 8 MiB per storage transaction while retaining 256 KiB encrypted chunks;
 - emits coalesced header/progress events and returns an opaque content reference plus status, protocol, addresses, and transport timings;
 - observes `cancel_http` before headers and throughout download/storage, releasing partial content on failure or cancellation.
 
-The desktop completion IPC never contains the complete response body. The current compatibility viewer reads a completed handle in bounded windows; Phase 7 replaces that materialization for large responses.
+The desktop completion IPC never contains the complete response body. Responses smaller than 1 MiB retain the compatibility viewer; responses at or above 1 MiB remain opaque handles and the UI reads only bounded pages.
 
 Rust intentionally does not understand workspace inheritance, `RequestDraft`, template variables, auth schemes, logical body modes, cookies, or redirect credential policy.
 

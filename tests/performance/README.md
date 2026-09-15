@@ -38,16 +38,21 @@ The default base URL is `http://127.0.0.1:43119`. Override the port with `PURR_F
 
 Every response endpoint accepts `size`, `chunkSize`, `delayMs`, and `headersDelayMs`. The server caps bodies at 128 MiB and logs requested/sent bytes. After Phase 6, cancelling a native request should log fewer sent bytes.
 
+For Phase 7, use `/response/text?size=104857600` as the 100 MiB bounded-viewer case. It contains `purr-synthetic-start`, `purr-middle-marker`, and `purr-tail-marker` at deterministic positions. Confirm first/previous/position/next/last navigation and search for the tail marker. The 100 KiB case covers the small-response CodeMirror path; exact 1 MiB native responses cover the lower boundary of the bounded viewer. The capture limit is now 128 MiB. The 20 MiB limit observations below are the frozen Phase 0 baseline, not the current expected behavior.
+
+`tauri dev` uses an optimized Rust dev profile for its network, encryption, SQLite, and Purr hot loops while retaining debug information. This keeps local measurements representative enough for interactive testing; final release comparisons should still use the signed/release profile.
+
 ## Desktop measurements
 
 Use a release-like desktop build when comparing phases. Record the Purr process and its WebKit WebContent process separately in Activity Monitor or an equivalent process tool. Use the same build mode and close unrelated Purr windows before every run.
 
 1. Record idle native RSS and WebView RSS after opening an empty workspace.
 2. Send each JSON/text fixture once and record time from Send to visible response, peak native RSS, peak WebView RSS, and RSS after closing the response tab.
-3. For the delayed-header endpoint, record that the current UI exposes no separate headers/TTFB state before the complete body arrives.
-4. For exactly 20 MiB, record whether the response opens. For 20 MiB + 1 byte, record the expected `Response exceeds the 20 MB preview limit.` error.
-5. Send the slow stream, press Escape after approximately one second, and compare the idle UI with server `sent` output. The current expected baseline is that the UI discards completion while native download continues.
+3. For the delayed-header endpoint, record time to headers and first visible response state.
+4. For the Phase 0 baseline, retain the recorded 20 MiB and 20 MiB + 1 byte results. For current Phase 7 behavior, open the 100 MiB bounded-viewer fixture and record first-page latency and responsiveness while jumping to the middle and end.
+5. Send the slow stream, press Escape after approximately one second, and compare the idle UI with server `sent` output. The current expected behavior is that native download and chunk writes stop.
 6. For a completed response, record Pretty, jq `.meta.fixture`, search for `purr-tail-marker`, and download duration.
 7. Load small and large GraphQL introspection endpoints into schema documents; record time to usable explorer and subjective editor responsiveness while requesting completion/hover.
+8. Open the response Timeline and record the available processing diagnostics: Native setup, Network, Encryption, SQLite write, Storage backpressure, Tauri IPC, Read/decrypt + decode, and Response ready. `Read/decrypt + decode` appears for the inline response path below 1 MiB; bounded responses do not materialize the full body. These stages can overlap and are diagnostic; do not add hard timing assertions to CI.
 
 Record results in `tests/performance/baseline-current.md`. Do not add absolute performance thresholds to normal CI from a single-machine run.

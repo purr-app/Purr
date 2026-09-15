@@ -32,9 +32,11 @@ test("synthetic response fixtures are exact, deterministic, and structurally val
     assert.equal(createHash("sha256").update(first).digest("hex"), createHash("sha256").update(second).digest("hex"));
   }
   assert.equal(JSON.parse(syntheticFixtureText("json", bytes)).tail, "purr-tail-marker");
+  assert.match(JSON.parse(syntheticFixtureText("json", bytes)).payload, /purr-middle-marker/);
   const ndjson = syntheticFixtureText("ndjson", bytes).trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(ndjson.at(-1).tail, "purr-tail-marker");
   assert.match(syntheticFixtureText("text", bytes), /purr-tail-marker/);
+  assert.match(syntheticFixtureText("text", bytes), /purr-middle-marker/);
 });
 
 test("synthetic GraphQL fixtures contain no external data and scale deterministically", () => {

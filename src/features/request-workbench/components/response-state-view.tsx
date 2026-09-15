@@ -31,9 +31,15 @@ export function ErrorResponse({ message }: { message: string }) {
 
 function progressLabel(progress: HttpTransportProgress | null) {
   if (!progress) return "Waiting for response…";
-  const received = `${(progress.receivedBytes / 1024 / 1024).toFixed(1)} MiB`;
-  if (!progress.totalBytes) return `Downloading ${received}…`;
-  return `Downloading ${received} / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MiB…`;
+  const receivedBytes = Number.isFinite(progress.receivedBytes)
+    ? progress.receivedBytes
+    : 0;
+  const totalBytes = progress.totalBytes !== undefined && Number.isFinite(progress.totalBytes)
+    ? progress.totalBytes
+    : undefined;
+  const received = `${(receivedBytes / 1024 / 1024).toFixed(1)} MiB`;
+  if (!totalBytes) return `Downloading ${received}…`;
+  return `Downloading ${received} / ${(totalBytes / 1024 / 1024).toFixed(1)} MiB…`;
 }
 
 export function PendingResponse({ graphql, onCancel, progress }: { graphql: boolean; onCancel: () => void; progress: HttpTransportProgress | null }) {

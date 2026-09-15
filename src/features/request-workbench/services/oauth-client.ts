@@ -1,5 +1,6 @@
 import type { OAuthCallbackPort } from "../../../application/ports/platform";
 import type { ResponseContentPort } from "../../../application/ports/response-content";
+import { isInlineHttpResponse } from "../../../domain/http";
 import {
   base64Bytes,
   encodeBasicAuth,
@@ -121,6 +122,10 @@ export async function fetchOAuthToken(
     },
     { transport, content, signal, followRedirects: false },
   );
+  if (!isInlineHttpResponse(result)) {
+    await content?.release(result.content).catch(() => {});
+    throw new Error("Token endpoint responses at or above the 1 MiB safety limit are not supported yet.");
+  }
   // OAuth response bodies can contain secrets. Expose only a known error identifier.
   let data: Record<string, unknown>;
   try {

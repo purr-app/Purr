@@ -6,18 +6,19 @@ This document owns the path from native response bytes to frontend rendering, se
 
 ```text
 Reqwest response in src-tauri/src/http/transport.rs
-  → encrypted staging chunks in response_contents
+  → bounded background encryption/SQLite pipeline
+  → encrypted staging chunks in response_contents become ready
   → metadata + ResponseContentRef over completion IPC
   → executeHttp() redirect/cookie loop
   → intermediate redirect handles released
-  → bounded range reads into the Phase 6 inline compatibility view
-  → domain HttpExchange retained beside that presentation
+  → <1 MiB: bounded reads into the inline compatibility view
+  → ≥1 MiB: domain HttpExchange retained without body materialization
   → RequestWorkbench document session
-  → ResponseViewer classification and presentation
+  → CodeMirror small-body viewer or bounded large-body page viewer
   → v2 exchange projected to local storage and content adopted atomically
 ```
 
-Desktop transport completion contains status, status text, duplicate-preserving headers, an opaque content reference, transport duration, header/download timings, HTTP version, and optional local/remote socket addresses. It never contains a complete `bodyBase64`. `executeHttp` adds final URL and the frontend timeline. Until Phase 7 changes presentation, it reads the completed handle in 192 KiB windows and creates the domain-owned `InlineHttpResponse` compatibility shape for the current viewer. Its `sourceExchange` is projected back to a body-free v2 exchange before persistence.
+Desktop transport completion contains status, status text, duplicate-preserving headers, an opaque content reference, network duration, header/download timings, processing diagnostics, HTTP version, and optional local/remote socket addresses. It never contains a complete `bodyBase64`. `executeHttp` adds final URL and the frontend timeline. Responses smaller than 1 MiB are materialized through one bounded native read into the domain-owned `InlineHttpResponse` compatibility shape. Responses at or above 1 MiB remain `HttpExchange` values in the session and are never converted to full-body text or base64. Keeping the exact boundary bounded avoids a pathological CodeMirror layout when a 1 MiB textual body consists of one extremely long line. An inline response's `sourceExchange` is projected back to a body-free v2 exchange before persistence.
 
 `src/domain/http.ts` defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. New desktop HTTP responses use this ownership model. Legacy/browser test adapters can still return inline completion while the migration remains incremental.
 
@@ -25,11 +26,13 @@ The UTF-8 text decode is permissive. Binary-safe operations such as image/media 
 
 ## Native response boundary
 
-`src-tauri/src/http/transport.rs` disables Reqwest redirects and streams up to 20 MiB through a bounded queue into encrypted response chunks. It holds no complete response body and emits coalesced header/progress/completion events. It preserves repeated response headers including `Set-Cookie`, measures header/download/total transport time, and sanitizes transport errors so the request URL/query is not echoed into an error string.
+`src-tauri/src/http/transport.rs` disables Reqwest redirects and streams up to 128 MiB through a bounded queue into encrypted response chunks. Encryption and SQLite jobs run on the response-content worker and overlap network reads; at most two 8 MiB write batches are in flight before bounded backpressure pauses the network task. The WebView thread never encrypts or writes response bytes. Completion still requires a readable `ready` reference so Purr cannot display a response that silently fails to become persistable; later workspace/history adoption is asynchronous and is not part of request completion. The transport holds no complete response body and emits coalesced header/progress/completion events. It preserves repeated response headers including `Set-Cookie` and sanitizes transport errors so the request URL/query is not echoed into an error string.
 
 `src-tauri/src/content/` owns the encrypted response-content engine. It stores bounded chunks with a response-specific derived key and AAD bound to content ID, chunk index, byte offset, length, and crypto version. Content remains unreadable while `staging`, becomes readable when `ready`, and is adopted atomically when its execution record is persisted. Bounded inspect, byte-range, and line-page operations cross the `ResponseContentPort`. Cancellation or capture failure releases staging content before returning.
 
 Rust does not choose a viewer, parse JSON, calculate cookie policy, normalize redirects, extract variables, or persist history. Those remain TypeScript/application responsibilities.
+
+The transport accepts a resolved response-storage policy. The current product always sends `encrypted`; `plaintext` is reserved and fails closed until its store format, migration, cleanup, and UI are implemented. Future workspace/folder/document preferences are resolved in TypeScript before transport, so Rust receives one effective policy rather than workspace-tree knowledge. These preferences are local security settings and must not be loaded from shared project YAML. Credential and secret storage is always encrypted regardless of response policy.
 
 ## Classification and normalization
 
@@ -63,6 +66,14 @@ Content-Type is authoritative when present. Safe sniffing is intentionally narro
 
 The parent response state also presents status, protocol, addresses, total duration, and byte size. HTTP errors still have a normal response viewer; transport/preparation errors use the Error state.
 
+Responses at or above 1 MiB use `LargeResponseViewer`. It holds one 192 KiB text/hex/base64 page, exposes first/previous/position/next/last navigation, and scans search text through temporary 4 MiB bounded text windows while retaining only match offsets/snippets. It does not create a CodeMirror document or a complete JavaScript string. Full-body copy is disabled with an explicit message. Native search/format/query and handle-based download remain assigned to Phases 8–9.
+
+The current Phase 7 viewer selection still uses total byte size. A textual response just below 1 MiB can therefore enter CodeMirror and reproduce the same layout stall when almost the entire body is one logical line. Phase 8 replaces this heuristic with native maximum-line-length hints and a segmented `readLines` contract. Its React viewer will virtualize logical rows, keep only visible rows plus bounded overscan in the DOM, split a giant line into independently pageable segments, and disable soft wrapping and full-document syntax highlighting for large-response mode. The existing native `readLines` operation is not yet sufficient: it returns `string[]` and rejects a line longer than its configured byte window.
+
+Inline JSON responses at or above 256 KiB keep the existing Pretty/query/context-action model but shorten individual string values over 16 KiB in the default CodeMirror preview. Raw and Copy still use the complete body. This avoids constructing a megabyte-wide CodeMirror line for fixtures and real responses with large scalar fields.
+
+Large GraphQL bodies retain status, headers, request, cookie, and timeline tabs, but structured Data/Errors/Extensions extraction is unavailable at or above 1 MiB until the native bounded query work in Phase 8. Dynamic-variable source responses and GraphQL introspection fail with a clear size message instead of materializing an oversized body in the WebView.
+
 ## Rendering modes
 
 Textual bodies support the modes applicable to their kind:
@@ -79,7 +90,7 @@ Textual bodies support the modes applicable to their kind:
 
 ## Syntax highlighting
 
-`ResponseCodeViewer` is the single read-only code viewer. It uses CodeMirror 6 with:
+`ResponseCodeViewer` is the read-only code viewer for inline responses smaller than 1 MiB. It uses CodeMirror 6 with:
 
 - `@codemirror/lang-json` for JSON;
 - `@codemirror/lang-xml` for XML;
@@ -90,7 +101,7 @@ All response code themes come from `src/shared/theme/code-editor-theme.ts`; fold
 
 ## Find in response
 
-Cmd/Ctrl+F is intercepted only while Response, Headers, or Timeline is active. It opens a find control at the top-right with match count and previous/next navigation. Enter moves forward; Shift+Enter moves backward. Body matches use CodeMirror’s search state; Headers and Timeline use the viewer’s stable text-node highlighter. Search state is viewer-local and does not alter response content.
+Cmd/Ctrl+F is intercepted only while Response, Headers, or Timeline is active. It opens a find control at the top-right with match count and previous/next navigation. Enter moves forward; Shift+Enter moves backward. Inline body matches use CodeMirror’s search state. Large-body matches are found by a temporary bounded TypeScript scanner over 4 MiB native text windows and navigation loads only the aligned 192 KiB page containing the selected match; Phase 8 moves that scan behind the native content port. Headers and Timeline use the viewer’s stable text-node highlighter. Search state is viewer-local and does not alter response content.
 
 ## jq and JSONPath extraction
 
@@ -105,7 +116,7 @@ The result is rendered as formatted JSON or a scalar string. A JSON value contex
 
 ## Timeline and redirect data
 
-`HttpTimeline` records wall-clock start, preparation time, waiting/transport, download, total, redirects, and the prepared real/display request pair. Transport timings come from Rust; frontend preparation and multi-hop total are added in `executeHttp`.
+`HttpTimeline` records wall-clock start, preparation time, waiting/transport, download, total, redirects, and the prepared real/display request pair. The response summary reports network duration. Timeline exposes an easy-to-read diagnostic table for native setup, network, encryption, SQLite writes, bounded storage backpressure, Tauri IPC, bounded read/decrypt/decode, and response-ready time. Encryption and SQLite can overlap the network, so diagnostic rows are not summed as a sequential waterfall. These measurements are observational and must not become millisecond CI thresholds.
 
 Sensitive header/query names travel beside the display request so redirect metadata and Request/Timeline surfaces can mask credentials. Cross-origin redirect behavior and cookie capture are detailed in [Request lifecycle](request-lifecycle.md) and [Authentication and cookies](auth.md).
 

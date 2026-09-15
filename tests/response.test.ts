@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 import {
   formatHexResponse,
+  formatBoundedJsonPreview,
   formatResponseBody,
   getResponseCookies,
   getResponseFileName,
@@ -74,6 +75,15 @@ test("pretty, raw, hex and base64 response representations preserve payload data
     bodyBase64,
   );
   assert.match(formatHexResponse(bodyBase64), /^00000000  7b 22 6f 6b/);
+});
+
+test("large JSON scalar previews stay compact without changing the query model", () => {
+  const value = { meta: { fixture: "purr" }, payload: "x".repeat(1024 * 1024) };
+  const preview = formatBoundedJsonPreview(value);
+  assert.equal(preview.hiddenValues, 1);
+  assert.ok(preview.text.length < 1024);
+  assert.match(preview.text, /bytes hidden/);
+  assert.equal(value.payload.length, 1024 * 1024);
 });
 
 test("jq and JSONPath selectors extract nested response values", () => {

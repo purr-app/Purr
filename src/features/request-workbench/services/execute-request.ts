@@ -96,5 +96,6 @@ export async function executeRequest(
     content,
     signal: execution?.signal,
     onProgress: execution?.onProgress,
+    responseStorage: execution?.responseStorage,
   });
 }
