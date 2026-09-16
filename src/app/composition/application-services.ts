@@ -11,6 +11,7 @@ import type {
   ImportPort,
   OAuthCallbackPort,
   RuntimePlatform,
+  RequestBodyPort,
   WorkspaceShellPort,
 } from "../../application/ports/platform";
 import type { WorkspacePersistence } from "../../application/workspace-persistence";
@@ -24,6 +25,7 @@ export type ApplicationServices = Readonly<{
   oauthCallback: OAuthCallbackPort;
   imports: ImportPort;
   downloads: DownloadPort;
+  requestBodies: RequestBodyPort;
   importDialog: ImportDialogPort;
   workspaceShell: WorkspaceShellPort;
   lifecycle: ApplicationLifecyclePort;

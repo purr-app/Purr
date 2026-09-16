@@ -97,7 +97,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   onSessionChange: (patch: Partial<RequestSession>) => void;
   actionsRef: Ref<RequestActions>;
 }) {
-  const { httpTransport, responseContent } = useApplicationServices();
+  const { httpTransport, responseContent, requestBodies } = useApplicationServices();
   const workspaceAuthEntries = useMemo(() => getWorkspaceAuthProfiles(workspaceConfig, requestKind), [requestKind, workspaceConfig]);
   const workspaceProfiles = useMemo(() => workspaceAuthEntries.map((entry) => ({ id: entry.id, name: entry.name || workspaceName, auth: entry.value })), [workspaceAuthEntries, workspaceName]);
   const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, requestKind,
@@ -157,7 +157,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     execute: async (document, resolvedVariables, sourceEnvironmentId) => {
       const scoped = await variablesForEnvironment(sourceEnvironmentId);
       const sensitive = scoped.filter((variable) => variable.sensitive).map((variable) => variable.name);
-      return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig), contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive), cookieJar, authRuntime, httpTransport, responseContent, execution);
+      return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig), contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive), cookieJar, authRuntime, httpTransport, responseContent, execution, requestBodies);
     },
   });
   const send = async (graphqlOperationName?: string) => {
@@ -210,7 +210,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
-      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress });
+      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress }, requestBodies);
       if (execution !== executionRef.current) return;
       setResponse(result);
     } catch (cause) {

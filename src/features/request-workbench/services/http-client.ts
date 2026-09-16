@@ -2,7 +2,6 @@ import { getPublicSuffix } from "tough-cookie";
 import {
   createInlineHttpResponse,
   type HttpExchange,
-  type HttpRequestSnapshot,
   type InlineHttpResponse,
   type StoredHttpResponse,
 } from "../../../domain/http";
@@ -12,6 +11,7 @@ import type {
   HttpTransportResponse,
   HttpPipelineTimings,
   ResponseStoragePolicy,
+  PreparedHttpTransportRequest,
 } from "../../../application/ports/http";
 import type { ResponseContentPort } from "../../../application/ports/response-content";
 import { base64Bytes } from "../model/request-auth";
@@ -21,7 +21,7 @@ import {
   inlineResponseMaximumLineBytes,
 } from "./response-content-reader";
 
-export type WireRequest = HttpRequestSnapshot;
+export type WireRequest = PreparedHttpTransportRequest;
 export type WireResponse = HttpTransportResponse;
 export type HttpTransport = HttpTransportPort;
 const materializationWindowBytes = inlineResponseLimitBytes;
@@ -248,6 +248,8 @@ export async function executeHttp(
       ) {
         current.method = "GET";
         current.bodyBase64 = null;
+        current.bodySource = undefined;
+        current.bodySummary = undefined;
         current.headers = current.headers.filter(
           ([name]) =>
             !["content-type", "content-length"].includes(name.toLowerCase()),
@@ -264,6 +266,12 @@ export async function executeHttp(
       // but exposing a secret query variable is a much worse failure mode.
       url: options.displayRequest.url,
       method: current.method,
+      bodyBase64: current.bodyBase64 === null
+        ? null
+        : options.displayRequest.bodyBase64,
+      bodySummary: current.bodySummary
+        ? options.displayRequest.bodySummary
+        : undefined,
       headers: [
         ...options.displayRequest.headers.filter(([name]) => name.toLowerCase() !== "cookie"),
         ...headers.filter(([name]) => name.toLowerCase() === "cookie").map(([name, value]): [string, string] => [name, maskCookieHeader(value)]),
@@ -275,7 +283,13 @@ export async function executeHttp(
         waitingMs,
         downloadMs,
         completedAtMs,
-        request: { url: current.url, method: current.method, headers, bodyBase64: current.bodyBase64 },
+        request: {
+          url: current.url,
+          method: current.method,
+          headers,
+          bodyBase64: current.bodyBase64,
+          ...(current.bodySummary ? { bodySummary: current.bodySummary } : {}),
+        },
         displayRequest,
         followRedirects: options.followRedirects !== false,
         usesCookieJar: Boolean(options.jar),

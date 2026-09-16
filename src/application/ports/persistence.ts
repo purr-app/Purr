@@ -75,6 +75,10 @@ export interface PersistencePort
   writeGlobal(changes: LocalChange[]): Promise<void>;
   deleteWorkspace(id: string): Promise<void>;
   finishMigration(): Promise<void>;
+  readAttachment?(
+    workspaceId: string,
+    attachmentId: string,
+  ): Promise<Uint8Array>;
   attachDirectory?(
     id: string,
     directory: string,

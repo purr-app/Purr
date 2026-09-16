@@ -2,6 +2,7 @@ use crate::{
     persistence::response_bodies::{adopt_content, delete_execution_content},
     security::{validate_secret_ref, LocalCipher, RootCiphers, RootKeyStore},
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +24,11 @@ pub struct LocalRecord {
     pub id: String,
     pub value: Value,
 }
+pub struct LocalAttachment {
+    pub name: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
 pub struct LocalStateStore {
     pub db: Connection,
     cipher: LocalCipher,
@@ -32,6 +38,52 @@ fn db_error(_: rusqlite::Error) -> String {
     "Local database operation failed".into()
 }
 impl LocalStateStore {
+    fn attachment_fields(value: &Value) -> Result<(&str, &str, u64, &str, u64), String> {
+        if value["version"].as_u64() != Some(1) {
+            return Err("Damaged local attachment".into());
+        }
+        let name = value["name"].as_str().ok_or("Damaged local attachment")?;
+        let media_type = value["type"].as_str().ok_or("Damaged local attachment")?;
+        let last_modified = value["lastModified"]
+            .as_u64()
+            .ok_or("Damaged local attachment")?;
+        let encoded = value["base64"].as_str().ok_or("Damaged local attachment")?;
+        if encoded.len() % 4 != 0 {
+            return Err("Damaged local attachment".into());
+        }
+        let padding = if encoded.ends_with("==") {
+            2
+        } else if encoded.ends_with('=') {
+            1
+        } else {
+            0
+        };
+        let size = (encoded.len() as u64)
+            .checked_mul(3)
+            .ok_or("Local attachment is too large")?
+            / 4
+            - padding;
+        if value
+            .get("size")
+            .is_some_and(|stored| stored.as_u64() != Some(size))
+        {
+            return Err("Damaged local attachment".into());
+        }
+        Ok((name, media_type, last_modified, encoded, size))
+    }
+
+    fn attachment_metadata(value: &Value) -> Result<Value, String> {
+        let (name, media_type, last_modified, _, size) = Self::attachment_fields(value)?;
+        Ok(serde_json::json!({
+            "version": 1,
+            "native": true,
+            "name": name,
+            "type": media_type,
+            "lastModified": last_modified,
+            "size": size,
+        }))
+    }
+
     pub fn open(path: &Path, root_store: &dyn RootKeyStore) -> Result<Self, String> {
         let mut db = Connection::open(path).map_err(db_error)?;
         db.busy_timeout(std::time::Duration::from_secs(5))
@@ -443,6 +495,8 @@ impl LocalStateStore {
                     serde_json::from_slice(&plain).map_err(|_| "Damaged local record")?;
                 if *table == "request_executions" {
                     self.restore_response_body(workspace, &id, &mut value)?;
+                } else if *table == "attachments" {
+                    value = Self::attachment_metadata(&value)?;
                 }
                 records.push(LocalRecord {
                     table: table.to_string(),
@@ -452,6 +506,36 @@ impl LocalStateStore {
             }
         }
         Ok(records)
+    }
+    pub fn read_attachment(&self, workspace: &str, id: &str) -> Result<LocalAttachment, String> {
+        let payload: Vec<u8> = self
+            .db
+            .query_row(
+                "SELECT payload FROM attachments WHERE workspace_id=?1 AND id=?2",
+                params![workspace, id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .ok_or("Local attachment is unavailable")?;
+        let plain = self
+            .cipher
+            .decrypt(&payload, &format!("{workspace}/attachments/{id}"))?;
+        let value: Value =
+            serde_json::from_slice(&plain).map_err(|_| "Damaged local attachment")?;
+        let (name, media_type, _last_modified, encoded, expected_size) =
+            Self::attachment_fields(&value)?;
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|_| "Damaged local attachment")?;
+        if bytes.len() as u64 != expected_size {
+            return Err("Damaged local attachment".into());
+        }
+        Ok(LocalAttachment {
+            name: name.into(),
+            media_type: media_type.into(),
+            bytes,
+        })
     }
     pub fn write(&mut self, workspace: &str, records: &[LocalRecord]) -> Result<(), String> {
         let tx = self.db.transaction().map_err(db_error)?;
@@ -663,6 +747,42 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn attachment_reads_return_metadata_until_bytes_are_explicitly_requested() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&directory.path().join("state.db"), &root).unwrap();
+        let bytes = [0_u8, 1, 2, 254, 255];
+        store
+            .write(
+                "workspace",
+                &[LocalRecord {
+                    table: "attachments".into(),
+                    id: "attachment-1".into(),
+                    value: serde_json::json!({
+                        "version": 1,
+                        "name": "payload.bin",
+                        "type": "application/octet-stream",
+                        "lastModified": 1234,
+                        "size": bytes.len(),
+                        "base64": STANDARD.encode(bytes),
+                    }),
+                }],
+            )
+            .unwrap();
+
+        let records = store.read("workspace").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].value["native"], true);
+        assert_eq!(records[0].value["size"], bytes.len());
+        assert!(records[0].value.get("base64").is_none());
+
+        let attachment = store.read_attachment("workspace", "attachment-1").unwrap();
+        assert_eq!(attachment.name, "payload.bin");
+        assert_eq!(attachment.media_type, "application/octet-stream");
+        assert_eq!(attachment.bytes, bytes);
     }
 
     #[test]

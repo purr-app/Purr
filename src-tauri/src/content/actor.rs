@@ -7,7 +7,7 @@ use super::{
 };
 use crate::security::PlatformRootKeyStore;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{atomic::AtomicBool, Arc, Mutex},
 };
 use tauri::Manager;
@@ -104,6 +104,16 @@ impl ResponseContentHandle {
     ) -> Result<ContentWindow, String> {
         self.call(move |store| store.read_range(&id, range, &mode))
             .await
+    }
+
+    pub async fn read_bytes_range(&self, id: String, range: ByteRange) -> Result<Vec<u8>, String> {
+        self.call(move |store| store.read_bytes_range(&id, range))
+            .await
+    }
+
+    pub async fn save_to_path(&self, id: String, path: &Path) -> Result<u64, String> {
+        let path = path.to_path_buf();
+        self.call(move |store| store.save_to_path(&id, &path)).await
     }
 
     pub async fn read_lines(

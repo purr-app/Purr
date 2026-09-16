@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -55,4 +56,11 @@ test("synthetic GraphQL fixtures contain no external data and scale deterministi
   const introspection = syntheticGraphqlIntrospection(12);
   assert.equal(introspection.__schema.queryType.name, "Query");
   assert.equal(introspection.__schema.types.filter((type) => type.name.startsWith("FixtureType")).length, 12);
+});
+
+test("the media fixture core is a small synthetic MP4 without local paths", () => {
+  const video = readFileSync(new URL("./performance/fixtures/purr-synthetic-video.mp4", import.meta.url));
+  assert.ok(video.length < 32 * 1024);
+  assert.equal(video.subarray(4, 8).toString("ascii"), "ftyp");
+  assert.doesNotMatch(video.toString("latin1"), /\/Users\/|\\Users\\|https?:|token|secret/i);
 });

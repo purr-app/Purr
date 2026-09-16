@@ -12,6 +12,7 @@ use std::{
 };
 use tokio::sync::watch;
 
+use super::request_body::{stream_file, RequestBodyPart, RequestBodySource, RequestFileRef};
 use crate::content::{
     actor::{PendingContentWrite, ResponseContentHandle},
     contracts::{ContentMetadata, ResponseContentRef},
@@ -75,6 +76,8 @@ pub struct HttpRequest {
     method: String,
     headers: Vec<(String, String)>,
     body_base64: Option<String>,
+    #[serde(default)]
+    body_source: Option<RequestBodySource>,
     #[serde(default)]
     response_storage: ResponseStoragePolicy,
 }
@@ -247,10 +250,30 @@ fn milliseconds(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
 }
 
-pub async fn perform_http(
+#[cfg(test)]
+async fn perform_http(
     request: HttpRequest,
     client: &Client,
     content: &ResponseContentHandle,
+    cancellation: watch::Receiver<bool>,
+    emit: impl Fn(HttpEvent),
+) -> Result<HttpResponse, String> {
+    perform_http_with_files(
+        request,
+        client,
+        content,
+        &|_reference| Err("Native request file service is unavailable.".into()),
+        cancellation,
+        emit,
+    )
+    .await
+}
+
+pub async fn perform_http_with_files(
+    request: HttpRequest,
+    client: &Client,
+    content: &ResponseContentHandle,
+    resolve_file: &(impl Fn(&RequestFileRef) -> Result<std::path::PathBuf, String> + Sync),
     mut cancellation: watch::Receiver<bool>,
     emit: impl Fn(HttpEvent),
 ) -> Result<HttpResponse, String> {
@@ -263,8 +286,21 @@ pub async fn perform_http(
     }
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|_| "Invalid HTTP method.")?;
+    if request.body_base64.is_some() && request.body_source.is_some() {
+        return Err("Request body has multiple sources.".into());
+    }
+    let multipart = matches!(
+        request.body_source,
+        Some(RequestBodySource::Multipart { .. })
+    );
+    let streamed_body = request.body_source.is_some();
     let mut builder = client.request(method, url);
     for (name, value) in request.headers {
+        if (multipart && name.eq_ignore_ascii_case("content-type"))
+            || (streamed_body && name.eq_ignore_ascii_case("content-length"))
+        {
+            continue;
+        }
         let name =
             HeaderName::from_bytes(name.as_bytes()).map_err(|_| "Invalid HTTP header name.")?;
         let value = HeaderValue::from_str(&value).map_err(|_| "Invalid HTTP header value.")?;
@@ -276,6 +312,45 @@ pub async fn perform_http(
                 .decode(body)
                 .map_err(|_| "Invalid body encoding.")?,
         );
+    }
+    if let Some(source) = request.body_source {
+        builder = match source {
+            RequestBodySource::File { reference } => {
+                let path = resolve_file(&reference)?;
+                builder
+                    .header(reqwest::header::CONTENT_LENGTH, reference.size)
+                    .body(stream_file(&path)?)
+            }
+            RequestBodySource::Multipart { parts } => {
+                let mut form = reqwest::multipart::Form::new();
+                for part in parts {
+                    form = match part {
+                        RequestBodyPart::Text {
+                            name,
+                            value,
+                            media_type,
+                        } => {
+                            let part = reqwest::multipart::Part::text(value)
+                                .mime_str(&media_type)
+                                .map_err(|_| "Invalid multipart media type.")?;
+                            form.part(name, part)
+                        }
+                        RequestBodyPart::File { name, reference } => {
+                            let path = resolve_file(&reference)?;
+                            let part = reqwest::multipart::Part::stream_with_length(
+                                stream_file(&path)?,
+                                reference.size,
+                            )
+                            .file_name(reference.name.clone())
+                            .mime_str(&reference.media_type)
+                            .map_err(|_| "Invalid multipart file media type.")?;
+                            form.part(name, part)
+                        }
+                    };
+                }
+                builder.multipart(form)
+            }
+        };
     }
 
     let started = Instant::now();
@@ -455,6 +530,36 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            let Some(headers_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let header_text = String::from_utf8_lossy(&bytes[..headers_end]);
+            let length = header_text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if bytes.len() >= headers_end + 4 + length {
+                break;
+            }
+        }
+        bytes
+    }
+
     #[derive(Default)]
     struct MemoryRootKey(Mutex<Option<String>>);
     impl RootKeyStore for MemoryRootKey {
@@ -484,6 +589,7 @@ mod tests {
             method: "GET".into(),
             headers: Vec::new(),
             body_base64: None,
+            body_source: None,
             response_storage: ResponseStoragePolicy::default(),
         }
     }
@@ -526,6 +632,149 @@ mod tests {
             plaintext.response_storage.protection,
             ResponseContentProtection::Plaintext
         );
+    }
+
+    #[tokio::test]
+    async fn native_file_body_is_byte_exact_and_repeatable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let expected = vec![0, 1, 2, 127, 128, 254, 255, 42];
+        let expected_for_server = expected.clone();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                let split = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                let headers = String::from_utf8_lossy(&request[..split]);
+                let content_lengths: Vec<_> = headers
+                    .lines()
+                    .filter(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+                    .collect();
+                assert_eq!(
+                    content_lengths,
+                    [format!("content-length: {}", expected_for_server.len())]
+                );
+                assert_eq!(&request[split..], expected_for_server.as_slice());
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            }
+        });
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("payload.bin");
+        std::fs::write(&path, &expected).unwrap();
+        let reference = RequestFileRef {
+            id: "request-file-test".into(),
+            name: "payload.bin".into(),
+            size: expected.len() as u64,
+            media_type: "application/octet-stream".into(),
+        };
+        let content = content_handle(&directory);
+        for _ in 0..2 {
+            let (_, cancellation) = watch::channel(false);
+            let result = perform_http_with_files(
+                HttpRequest {
+                    url: format!("http://{address}/upload"),
+                    method: "POST".into(),
+                    headers: vec![
+                        ("Content-Type".into(), "application/octet-stream".into()),
+                        ("Content-Length".into(), "999".into()),
+                    ],
+                    body_base64: None,
+                    body_source: Some(RequestBodySource::File {
+                        reference: reference.clone(),
+                    }),
+                    response_storage: ResponseStoragePolicy::default(),
+                },
+                &HttpClient::default().0,
+                &content,
+                &|candidate| {
+                    (candidate == &reference)
+                        .then(|| path.clone())
+                        .ok_or("stale".into())
+                },
+                cancellation,
+                |_| {},
+            )
+            .await
+            .unwrap();
+            content.release(result.content.id).await.unwrap();
+        }
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn multipart_file_stream_preserves_name_type_and_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            let text = String::from_utf8_lossy(&request);
+            assert!(!text.contains("Content-Length: 999"));
+            assert!(text.contains("name=\"note\""));
+            assert!(text.contains("hello multipart"));
+            assert!(text.contains("name=\"upload\""));
+            assert!(text.contains("filename=\"payload.txt\""));
+            assert!(text.contains("Content-Type: text/plain"));
+            assert!(request.windows(6).any(|window| window == b"a\0b\xffz\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("payload.txt");
+        std::fs::write(&path, b"a\0b\xffz\n").unwrap();
+        let reference = RequestFileRef {
+            id: "request-file-multipart".into(),
+            name: "payload.txt".into(),
+            size: 6,
+            media_type: "text/plain".into(),
+        };
+        let content = content_handle(&directory);
+        let (_, cancellation) = watch::channel(false);
+        let result = perform_http_with_files(
+            HttpRequest {
+                url: format!("http://{address}/multipart"),
+                method: "POST".into(),
+                headers: vec![(
+                    "Content-Type".into(),
+                    "multipart/form-data; boundary=ignored".into(),
+                )],
+                body_base64: None,
+                body_source: Some(RequestBodySource::Multipart {
+                    parts: vec![
+                        RequestBodyPart::Text {
+                            name: "note".into(),
+                            value: "hello multipart".into(),
+                            media_type: "text/plain".into(),
+                        },
+                        RequestBodyPart::File {
+                            name: "upload".into(),
+                            reference: reference.clone(),
+                        },
+                    ],
+                }),
+                response_storage: ResponseStoragePolicy::default(),
+            },
+            &HttpClient::default().0,
+            &content,
+            &|candidate| {
+                (candidate == &reference)
+                    .then(|| path.clone())
+                    .ok_or("stale".into())
+            },
+            cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        content.release(result.content.id).await.unwrap();
+        server.join().unwrap();
     }
 
     #[tokio::test]
@@ -580,6 +829,7 @@ mod tests {
                     ("Cookie".into(), "sid=session".into()),
                 ],
                 body_base64: Some(STANDARD.encode([0, 1, 255, 128])),
+                body_source: None,
                 response_storage: ResponseStoragePolicy::default(),
             },
             &HttpClient::default().0,

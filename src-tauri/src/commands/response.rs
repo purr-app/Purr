@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::Deserialize;
 use std::fs;
 use tauri_plugin_dialog::DialogExt;
 
@@ -27,6 +28,24 @@ fn safe_file_name(value: &str) -> String {
     } else {
         cleaned.into()
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSuggestion {
+    file_name: String,
+    media_type: String,
+}
+
+fn extension_of(file_name: &str) -> String {
+    file_name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .unwrap_or("bin")
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(12)
+        .collect()
 }
 
 #[tauri::command]
@@ -58,6 +77,47 @@ pub async fn save_response_body(
     };
     let path = file.into_path().map_err(|error| error.to_string())?;
     fs::write(&path, bytes).map_err(|error| format!("Cannot save {}: {error}", path.display()))?;
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+pub async fn response_content_save(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    reference: ResponseContentRef,
+    suggestion: SaveSuggestion,
+) -> Result<Option<String>, String> {
+    let file_name = safe_file_name(&suggestion.file_name);
+    let extension = extension_of(&file_name);
+    let media_type: String = suggestion
+        .media_type
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '/' | '+' | '.' | '-')
+        })
+        .take(80)
+        .collect();
+    let description = if media_type.is_empty() {
+        "Response file"
+    } else {
+        &media_type
+    };
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save response")
+        .set_file_name(file_name);
+    if !extension.is_empty() {
+        dialog = dialog.add_filter(description, &[extension.as_str()]);
+    }
+    let Some(file) = dialog.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|error| error.to_string())?;
+    state
+        .handle(&app)?
+        .save_to_path(reference.id, &path)
+        .await?;
     Ok(Some(path.display().to_string()))
 }
 
@@ -166,11 +226,17 @@ pub async fn response_content_release(
 
 #[cfg(test)]
 mod tests {
-    use super::safe_file_name;
+    use super::{extension_of, safe_file_name};
 
     #[test]
     fn suggested_names_cannot_escape_the_save_dialog() {
         assert_eq!(safe_file_name("../../report?.pdf"), "-..-report-.pdf");
         assert_eq!(safe_file_name("..."), "response.bin");
+    }
+
+    #[test]
+    fn extensions_are_bounded_and_sanitized() {
+        assert_eq!(extension_of("archive.tar.gz"), "gz");
+        assert_eq!(extension_of("response.bad!type"), "badtype");
     }
 }

@@ -22,7 +22,7 @@ Desktop transport completion contains status, status text, duplicate-preserving 
 
 `src/domain/http.ts` defines the stable `HttpExchange` shape: a request snapshot, response metadata, opaque `ResponseContentRef`, and timeline. The descriptor carries `protocolVersion: 2`; its content ID never exposes a filesystem path or database key. New desktop HTTP responses use this ownership model. Legacy/browser test adapters can still return inline completion while the migration remains incremental.
 
-The UTF-8 text decode is permissive. Binary-safe operations such as image/media display, hex/base64 rendering, and download use `bodyBase64`, not a text re-encoding.
+The UTF-8 text decode is permissive. Inline compatibility responses retain original byte-derived base64 for binary-safe modes. Opaque native responses never reconstruct a full `bodyBase64`: bounded hex/base64 windows use native reads, downloads stream decrypted chunks directly to the selected file, and image/audio/video previews use the `purr-content` handle protocol.
 
 ## Native response boundary
 
@@ -68,7 +68,7 @@ The parent response state also presents status, protocol, addresses, total durat
 
 Responses at or above 1 MiB, and smaller native responses with a line at or above 64 KiB, use the native-backed read-only viewer with the same code typography and toolbar as inline responses. JSON up to 10 MiB opens in native Pretty automatically; this is a presentation policy, not an increased full-body IPC/CodeMirror threshold. The frontend receives logical-line previews through `readLines` with a `preview:<byte offset>` cursor. A long line retains at most 96 prefix bytes and 32 suffix bytes (UTF-8 cuts adjusted), its original byte extent, and `hiddenBytes`; the hidden-byte action explains the beta restriction rather than allocating the full line. The native reader scans past the hidden middle so subsequent JSON fields remain visible. Ordinary byte cursors retain the bounded 16 KiB segment API for other consumers.
 
-Preview pages contain at most 1,000 rows and 192 KiB of visible text; native reads remain bounded even when skipping a giant logical line. Scrolling appends pages, retaining at most 3,000 preview rows plus visible DOM/overscan through `@tanstack/react-virtual`. After older rows leave this buffer, a Return to beginning action is available; native Find can jump directly to any matching byte. A Load more fallback supports keyboard users and responses that do not fill the viewport. There is no fixed page/slider toolbar. Native JSON Pretty highlights only bounded visible row text with the existing Lezer parser and Purr syntax tokens. Soft wrapping stays off; shortened lines are explicitly marked. Hex/base64 remain bounded range views. Full-body copy and handle-based download remain assigned to Phase 9.
+Preview pages contain at most 1,000 rows and 192 KiB of visible text; native reads remain bounded even when skipping a giant logical line. Scrolling appends pages, retaining at most 3,000 preview rows plus visible DOM/overscan through `@tanstack/react-virtual`. After older rows leave this buffer, a Return to beginning action is available; native Find can jump directly to any matching byte. A Load more fallback supports keyboard users and responses that do not fill the viewport. There is no fixed page/slider toolbar. Native JSON Pretty highlights only bounded visible row text with the existing Lezer parser and Purr syntax tokens. Soft wrapping stays off; shortened lines are explicitly marked. Hex/base64 remain bounded range views. Full-body copy stays unavailable for opaque large content; Download writes the original handle directly through Rust.
 
 Literal and bounded regex search run in Rust over 4 MiB windows, retain only offsets/snippets in JavaScript, and can be cancelled. Unbounded regexes and matches above 64 KiB are rejected. Pretty formatting runs through `serde_json`/`serde-transcode`, `quick-xml`, or line-wise NDJSON handling. jq and JSONPath use native adapters and preserve Purr's documented subset. Results up to 256 KiB cross IPC as a value/window; larger results become temporary encrypted content references and use the same bounded viewer. JSON/NDJSON path queries above the 32 MiB full-tree tier use a validated byte-scan path, while recursive selectors and jq pipe operations that require the complete tree fail with a clear bounded-operation error.
 
@@ -83,12 +83,14 @@ Textual bodies support the modes applicable to their kind:
 - JSON and XML can be pretty-formatted or shown raw;
 - YAML, CSV, NDJSON, HTML, and text use textual code/raw presentation;
 - any body can be represented as hex or base64 through response helpers where exposed by the viewer;
-- images render from the original byte data URL;
-- audio/video use native media controls backed by original bytes;
+- inline images render from an original-byte data URL; referenced images load from the native handle protocol;
+- inline audio/video use original-byte data URLs; referenced audio/video use native controls and range requests against the handle protocol;
 - HTML preview is sandboxed and receives a restrictive CSP and no-referrer policy;
 - binary content receives a metadata/download presentation rather than unsafe text rendering.
 
-`downloadResponseBody` preserves original bytes. Desktop inline responses use the Tauri save dialog/command in `src-tauri/src/commands/response.rs`; browser development uses `showSaveFilePicker` when available and otherwise an object-URL download. Saving a native content reference directly is deferred until Phase 9.
+`downloadResponseBody` preserves original bytes. Desktop inline compatibility responses still use the base64 Tauri save command; browser development uses `showSaveFilePicker` when available and otherwise an object-URL download. A native `ResponseContentRef` uses `response_content_save`: Rust decrypts bounded chunks on the content worker, writes a temporary file beside the selected destination, syncs it, and atomically persists it without returning body bytes to JavaScript.
+
+Referenced image/audio/video content is exposed only through the `purr-content` custom protocol. The URL contains an opaque content ID, never a filesystem path. The protocol accepts `GET`/`HEAD`, verifies a ready registered handle and an `image/*`, `audio/*`, or `video/*` media type, supports one closed/open/suffix byte range, and returns `Accept-Ranges`, `Content-Range`, `no-store`, and `nosniff` headers. Invalid IDs, non-media content, methods, and ranges fail without exposing storage details. Audio/video controls therefore seek through bounded range reads; media bytes do not cross command JSON or become a full JavaScript string.
 
 ## Syntax highlighting
 
@@ -161,10 +163,12 @@ Every send captures an execution counter and an `AbortController`. Escape aborts
 - `src/features/request-workbench/components/response-viewer.tsx` — tabs, viewers, response find, query UI, GraphQL sections, and reveal policy.
 - `src/features/request-workbench/components/response-code-viewer.tsx` — CodeMirror languages, syntax theme, folding, and body search.
 - `src/features/request-workbench/components/response-state-view.tsx` — empty/pending/error/response state switch.
+- `src/features/request-workbench/components/native-response-content.tsx` — referenced media, binary metadata, and direct native-handle save actions.
 - `src/features/request-workbench/services/download-response.ts` — browser/native download selection.
 - `src/features/request-workbench/request-workbench.tsx` — per-document response/error ownership and stale-completion guard.
 - `src/application/project-projection.ts` — latest-response local projection and hydration.
 - `src-tauri/src/http/transport.rs` and `http/operations.rs` — streaming capture, progress, operation cancellation, headers, timings, and sanitized errors.
 - `src-tauri/src/content/` — encrypted content lifecycle, bounded reads, and the dedicated storage worker.
+- `src-tauri/src/content/protocol.rs` — allowlisted media handle protocol and byte-range validation.
 - `src-tauri/src/persistence/local_records.rs` and `response_bodies.rs` — execution persistence, atomic content adoption, deletion, and history pagination.
 - `src-tauri/src/commands/response.rs` — native response-content IPC and inline save boundary.

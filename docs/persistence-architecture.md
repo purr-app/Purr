@@ -56,12 +56,12 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Cookie metadata | `SessionCookie` | local `cookie_metadata` index columns | No | Metadata only | Queryable local jar inventory |
 | Cookie values/full record | `SessionCookieJar` | encrypted `cookie_jar` payload | No | Yes | Session credential material |
 | Canonical attachment | live `File` in `RequestBody` | content-addressed `assets/<sha256>.bin` | Yes | Not assumed; user-controlled | Required to reproduce saved request |
-| Attachment runtime/editor state | inactive/live body modes | encrypted draft/session record; `attachments` table reserved | No | Potentially | Preserve local editor state |
+| Attachment runtime/editor state | inactive/live body modes | encrypted `attachments` row referenced by draft/session records | No | Potentially | Preserve local editor state without repeating file bytes in every editor snapshot |
 | Integration definition | `extraResources` | `integrations/*.yaml` with credential refs | Yes | References only | Canonical extension-point shape; no runtime provider yet |
 | Integration credentials | no working provider runtime | intended `SecretRef`/vault | No | Yes | Must never be embedded when implemented |
 | Recent items | no current first-class UI projection | reserved encrypted `recent_items` table | No | No | Local navigation extension point |
 
-Do not infer that a declared local table or canonical schema means the product feature is complete. `attachments` and `recent_items` are available storage tables but are not current first-class projection flows; integrations have a canonical shape but no provider runtime/UI.
+Do not infer that a declared local table or canonical schema means the product feature is complete. `recent_items` is available storage but is not a current first-class projection flow; integrations have a canonical shape but no provider runtime/UI.
 
 ## Canonical project layout
 
@@ -102,6 +102,7 @@ Pinned GraphQL schemas have a YAML definition plus SDL sidecar. Imported OpenAPI
 Workspace
   → canonical Project                (definitions only)
   → LocalRecord[]                    (session/editor/cache/history)
+      → attachments/<digest>         (encrypted local working-copy bytes)
   → assets Record<path, base64>      (reproducible file payloads)
   → SecureStore writes/SecretRefs    (credential values)
 ```
@@ -155,6 +156,8 @@ Native HTTP now creates staging content after receiving headers and appends thro
 `ResponseStoragePolicy` is the future switch for encrypted versus plaintext response content. The current adapter always resolves to encrypted and Rust rejects plaintext, so this contract does not weaken current storage. Future preferences use document-over-folder-over-workspace precedence, live only in local settings keyed by stable IDs, and never affect `SecureStore`, credentials, OAuth tokens, cookies, or other sensitive local records. Enabling plaintext later requires an explicit chunk-format/schema migration and mixed-mode cleanup tests; it is not implemented by Phase 7.
 
 General local-record payloads are AES-GCM encrypted with context/AAD bound to workspace/table/record identity. Execution document/time/status and cookie metadata columns remain plaintext indexes; execution bodies, full execution payloads, cookie values, drafts, and session state are encrypted.
+
+Draft and inactive-editor request files are stored once in an immutable, content-and-metadata-addressed `attachments` record. Draft/session JSON contains only `__purrFileRef`; unchanged attachment IDs bypass repeated large JSON comparisons and writes. The first encoding yields between bounded chunks so autosave does not monopolize the WebView event loop. Native workspace reads replace the encrypted record's base64 field with a small metadata descriptor, so workspace restoration creates a lazy `File` without sending or decoding its bytes in the WebView. Explicit canonical save may read those bytes through raw IPC; native request execution instead decrypts the attachment in Rust and stages it directly into a short-lived transport handle. Legacy inline `__purrFile` records remain readable. Canonical saved attachments still use the Git-portable `assets/` projection.
 
 Ordinary `read` returns only the newest execution per document. `history` queries indexed metadata with a before cursor and 1–100 limit. `WorkspacePersistence` retains older native execution rows even though the runtime projection contains only latest responses.
 

@@ -37,6 +37,7 @@ import { base64Bytes } from "../model/request-auth";
 import {
   formatResponseBody,
   formatBoundedJsonPreview,
+  getResponseContentType,
   getResponseFileName,
   getResponseCookies,
   getResponseQuerySuggestions,
@@ -51,14 +52,39 @@ import { downloadResponseBody } from "../services/download-response";
 import { useApplicationServices } from "../../../app/application-services-context";
 import {
   isInlineHttpResponse,
+  type HttpExchange,
   type InlineHttpResponse,
   type StoredHttpResponse,
 } from "../../../domain/http";
 import { ResponseCodeViewer } from "./response-code-viewer";
 import { formatHttpRequest } from "../model/request-code";
 import { LargeResponseViewer } from "./large-response-viewer";
+import { NativeBinaryResponse, NativeMediaResponse } from "./native-response-content";
 
 export type ResponseVariableCandidate = { name: string; value: string; jsonPath: string; jq: string; dynamic: boolean };
+
+function ReferencedResponseBody({ exchange, graphql, findQuery, findMatchIndex, regularExpression, onFindMatchCount, onOpenFind }: {
+  exchange: HttpExchange;
+  graphql: boolean;
+  findQuery: string;
+  findMatchIndex: number;
+  regularExpression: boolean;
+  onFindMatchCount: (count: number) => void;
+  onOpenFind: () => void;
+}) {
+  const declaredMediaType = getResponseContentType(exchange.response.headers)
+    || exchange.content.mediaType
+    || "";
+  const info = inspectResponseBody(
+    declaredMediaType ? [["content-type", declaredMediaType]] : [],
+    "",
+  );
+  if (info.kind === "image" || info.kind === "audio" || info.kind === "video")
+    return <NativeMediaResponse exchange={exchange} kind={info.kind} />;
+  if (declaredMediaType && info.kind === "binary")
+    return <NativeBinaryResponse exchange={exchange} />;
+  return <LargeResponseViewer regularExpression={regularExpression} onOpenFind={onOpenFind} exchange={exchange} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={onFindMatchCount} />;
+}
 
 type ResponseDetails = Omit<
   InlineHttpResponse,
@@ -1340,7 +1366,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
       >
         {tab === "response" ? inlineResponse
           ? <ResponseBodyPanel response={inlineResponse} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} />
-          : referencedResponse ? <LargeResponseViewer regularExpression={regularExpression} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
+          : referencedResponse ? <ReferencedResponseBody regularExpression={regularExpression} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
           : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}

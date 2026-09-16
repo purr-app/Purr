@@ -21,11 +21,11 @@ fn set_macos_app_icon() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    crate::content::protocol::register(builder)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(http::HttpClient::default())
-        .manage(http::HttpOperationState::default())
+        .manage(http::HttpRuntimeState::default())
         .manage(oauth::OAuthCallbacks::default())
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
@@ -38,6 +38,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::exit_app,
             commands::response::save_response_body,
+            commands::response::response_content_save,
             commands::response::response_content_inspect,
             commands::response::response_content_read_range,
             commands::response::response_content_read_lines,
@@ -46,6 +47,11 @@ pub fn run() {
             commands::response::response_content_query,
             commands::response::cancel_response_content_operation,
             commands::response::response_content_release,
+            commands::http::request_file_create,
+            commands::http::request_file_append,
+            commands::http::request_file_finish,
+            commands::http::request_file_release,
+            commands::http::request_file_from_attachment,
             commands::http::start_http,
             commands::http::cancel_http,
             commands::importing::import_collection,
@@ -53,6 +59,7 @@ pub fn run() {
             oauth::cancel_oauth,
             commands::persistence::load_persistence,
             commands::persistence::load_project,
+            commands::persistence::read_local_attachment,
             commands::persistence::list_request_history,
             commands::persistence::reload_project_file,
             commands::persistence::commit_project,

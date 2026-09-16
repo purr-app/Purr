@@ -54,6 +54,17 @@ pub fn load_project(
 ) -> Result<Value, String> {
     runtime::load_project(app, state, id)
 }
+
+#[tauri::command]
+pub fn read_local_attachment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    workspace_id: String,
+    attachment_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let attachment = runtime::read_attachment(app, state, workspace_id, attachment_id)?;
+    Ok(tauri::ipc::Response::new(attachment.bytes))
+}
 #[tauri::command]
 pub fn list_request_history(
     app: tauri::AppHandle,

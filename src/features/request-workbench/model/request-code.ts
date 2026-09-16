@@ -7,10 +7,20 @@ function shellQuote(value: string) {
 }
 
 function requestBody(request: HttpRequestSnapshot) {
-  if (!request.bodyBase64) return "";
-  const bytes = Uint8Array.from(atob(request.bodyBase64), (character) => character.charCodeAt(0));
-  const text = new TextDecoder().decode(bytes);
-  return text.includes("\uFFFD") ? `<binary body: ${bytes.length} bytes>` : text;
+  if (request.bodyBase64) {
+    const bytes = Uint8Array.from(atob(request.bodyBase64), (character) => character.charCodeAt(0));
+    const text = new TextDecoder().decode(bytes);
+    return text.includes("\uFFFD") ? `<binary body: ${bytes.length} bytes>` : text;
+  }
+  if (request.bodySummary?.kind === "file")
+    return `<binary file: ${request.bodySummary.fileName}, ${request.bodySummary.byteLength} bytes>`;
+  if (request.bodySummary?.kind === "multipart") {
+    const files = request.bodySummary.files
+      .map((file) => `${file.fileName} (${file.byteLength} bytes, ${file.mediaType})`)
+      .join(", ");
+    return `<multipart body: ${request.bodySummary.partCount} parts${files ? `; files: ${files}` : ""}>`;
+  }
+  return "";
 }
 
 export function formatHttpRequest(request: HttpRequestSnapshot) {

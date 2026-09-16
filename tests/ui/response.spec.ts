@@ -624,3 +624,39 @@ test("HTML and simple media render safely while binary responses use the native 
   expect(download.extension).toBe("pdf");
   expect(atob(download.bodyBase64)).toBe("%PDF-1.7 binary");
 });
+
+test("referenced media uses the native protocol and saves directly from its content handle", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).isTauri = true;
+    (window as any).__nativeSave = null;
+    (window as any).__TAURI_INTERNALS__ = {
+      convertFileSrc: (path: string, protocol: string) => `${protocol}://localhost/${path}`,
+      invoke: async (command: string, args: any) => {
+        if (command === "response_content_save") {
+          (window as any).__nativeSave = args;
+          return "/Users/test/large-video.mp4";
+        }
+        if (command !== "start_http") throw new Error(`Unexpected command: ${command}`);
+        return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 5,
+          headers: [["content-type", "video/mp4"], ["content-disposition", "attachment; filename=large-video.mp4"]],
+          content: { id: "content-native-video", byteLength: 2 * 1024 * 1024, mediaType: "video/mp4", complete: true },
+        };
+      },
+    };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/large-video.mp4");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const response = page.getByRole("region", { name: "HTTP response" });
+  const video = response.getByLabel("Video response preview", { exact: true });
+  await expect(video).toHaveAttribute("src", "purr-content://localhost/content-native-video");
+  await response.getByRole("button", { name: "Download", exact: true }).click();
+  await expect(response.getByRole("status")).toContainText("Saved to /Users/test/large-video.mp4");
+  expect(await page.evaluate(() => (window as any).__nativeSave)).toEqual({
+    reference: { id: "content-native-video", byteLength: 2 * 1024 * 1024, mediaType: "video/mp4", complete: true },
+    suggestion: { fileName: "large-video.mp4", mediaType: "video/mp4" },
+  });
+});

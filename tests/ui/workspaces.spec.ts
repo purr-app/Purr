@@ -753,6 +753,36 @@ test("binary attachments restore their bytes from workspace storage", async ({ p
   expect(bytes).toEqual([0, 127, 255, 42]);
 });
 
+test("request code and form editing stay usable with an inactive file body", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/upload");
+  await page.getByRole("tab", { name: "Body", exact: true }).click();
+  await page.getByRole("tab", { name: "Binary", exact: true }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "large.bin",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.alloc(2 * 1024 * 1024, 42),
+  });
+
+  await page.getByRole("button", { name: "Open request code", exact: true }).click();
+  const code = page.getByRole("dialog", { name: "Request code" });
+  await expect(code.getByLabel("Request code viewer")).toContainText(
+    "<binary file: large.bin, 2097152 bytes>",
+  );
+  await code.getByRole("button", { name: "Close dialog", exact: true }).click();
+
+  await page.getByRole("tab", { name: "Form-Data", exact: true }).click();
+  const fieldName = page.getByLabel("name", { exact: true }).first();
+  await fieldName.fill("name");
+  await page.getByLabel("Value for name", { exact: true }).fill("test");
+  await expect(fieldName).toHaveValue("name");
+  await expect(page.getByLabel("Value for name", { exact: true })).toHaveValue("test");
+  await saved(page);
+  await page.reload();
+  await page.getByRole("tab", { name: "Binary", exact: true }).click();
+  await expect(page.getByText("large.bin", { exact: true })).toBeVisible();
+});
+
 test("damaged workspace data is reported without overwriting the original", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("purr.workspaces.v1", "broken-json"));
   await page.goto("/");

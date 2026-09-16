@@ -37,7 +37,7 @@ export function RequestCodeDialog({ draft, context, cookieJar, onClose }: {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     let current = true;
-    void prepareWireRequest(draft, context).then((prepared) => {
+    void prepareWireRequest(draft, context, { fileMode: "summary" }).then((prepared) => {
       if (current) {
         setRequest(withCookies(prepared.request, cookieJar, draft.useCookieJar));
         setDisplayRequest(withCookies(prepared.displayRequest, cookieJar, draft.useCookieJar, true));

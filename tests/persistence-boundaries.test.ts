@@ -11,6 +11,7 @@ import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { executeHttp } from "../src/features/request-workbench/services/http-client";
 import { isInlineHttpResponse } from "../src/domain/http";
+import type { FileChange, LocalChange } from "../src/application/ports/persistence";
 
 function savedWorkspace() {
   const workspace = createWorkspace("Backend", "backend"); const document = workspace.documents[0];
@@ -112,6 +113,141 @@ test("binary attachments persist exact bytes through resource files, not UI file
   assert.ok(isRequestDocument(restored.documents[0]));
   assert.deepEqual(new Uint8Array(await restored.documents[0].request.body.binary!.file.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
   await assert.rejects(restoreWorkspace(projected.project, [], secure, {}), /attachment is missing/);
+});
+
+test("working-copy attachments are referenced from small editor records and restored from the encrypted attachment table", async () => {
+  const { workspace, document } = savedWorkspace();
+  const file = new File(
+    [new Uint8Array([0, 255, 13, 10, 42])],
+    "working-copy.bin",
+    { type: "application/octet-stream", lastModified: 1234 },
+  );
+  document.request.body.type = "binary";
+  document.request.body.binary = {
+    file,
+    name: file.name,
+    size: file.size,
+    mimeType: file.type,
+  };
+  const secure = new MemorySecureStore();
+  const projected = await projectWorkspace(workspace, secure);
+  const attachments = projected.local.filter((record) => record.table === "attachments");
+  assert.equal(attachments.length, 1);
+  const editorRecords = projected.local.filter((record) =>
+    record.table === "drafts" || record.table === "document_session_state",
+  );
+  assert.ok(editorRecords.some((record) => JSON.stringify(record.value).includes("__purrFileRef")));
+  assert.ok(editorRecords.every((record) => !JSON.stringify(record.value).includes("__purrFile\"")));
+  assert.ok(editorRecords.every((record) => !JSON.stringify(record.value).includes("AP8NCio=")));
+
+  const restored = await restoreWorkspace(projected.project, projected.local, secure, projected.assets);
+  assert.ok(isRequestDocument(restored.documents[0]));
+  const restoredFile = restored.documents[0].request.body.binary?.file;
+  assert.ok(restoredFile);
+  assert.equal(restoredFile.name, file.name);
+  assert.deepEqual(
+    new Uint8Array(await restoredFile.arrayBuffer()),
+    new Uint8Array(await file.arrayBuffer()),
+  );
+
+  await assert.rejects(
+    restoreWorkspace(
+      projected.project,
+      projected.local.filter((record) => record.table !== "attachments"),
+      secure,
+      projected.assets,
+    ),
+    /attachment is missing or damaged/,
+  );
+});
+
+test("native attachment metadata opens without loading bytes and remains lazy across autosave", async () => {
+  const { workspace, document } = savedWorkspace();
+  const expected = new Uint8Array([7, 8, 9, 10]);
+  const file = new File([expected], "lazy.bin", {
+    type: "application/octet-stream",
+    lastModified: 1234,
+  });
+  document.request.body.type = "binary";
+  document.request.body.binary = {
+    file,
+    name: file.name,
+    size: file.size,
+    mimeType: file.type,
+  };
+  const secure = new MemorySecureStore();
+  const projected = await projectWorkspace(workspace, secure);
+  const attachment = projected.local.find((record) => record.table === "attachments");
+  assert.ok(attachment);
+  attachment.value = {
+    version: 1,
+    native: true,
+    name: file.name,
+    type: file.type,
+    lastModified: file.lastModified,
+    size: file.size,
+  };
+  let loads = 0;
+  const restored = await restoreWorkspace(
+    projected.project,
+    projected.local,
+    secure,
+    projected.assets,
+    async () => {
+      loads += 1;
+      return expected;
+    },
+  );
+  assert.equal(loads, 0);
+  assert.ok(isRequestDocument(restored.documents[0]));
+  const restoredFile = restored.documents[0].request.body.binary?.file;
+  assert.ok(restoredFile);
+  assert.equal(restoredFile.size, expected.length);
+  assert.equal(cloneRequestDraft(restored.documents[0].request).body.binary?.file, restoredFile);
+  await projectWorkspace(restored, secure);
+  assert.equal(loads, 0);
+  assert.deepEqual(new Uint8Array(await restoredFile.arrayBuffer()), expected);
+  assert.equal(loads, 1);
+});
+
+test("editing another body mode does not rewrite an unchanged working-copy attachment", async () => {
+  const { workspace, document } = savedWorkspace();
+  const file = new File([new Uint8Array([1, 2, 3, 4])], "retained.bin", {
+    type: "application/octet-stream",
+  });
+  document.request.body.type = "binary";
+  document.request.body.binary = {
+    file,
+    name: file.name,
+    size: file.size,
+    mimeType: file.type,
+  };
+  const backend = new MemoryPersistenceBackend();
+  const localBatches: LocalChange[][] = [];
+  const commit = backend.commit.bind(backend);
+  backend.commit = async (id: string, files: FileChange[], local: LocalChange[]) => {
+    localBatches.push(local);
+    return commit(id, files, local);
+  };
+  const persistence = new WorkspacePersistence(backend, new MemorySecureStore());
+  const store: WorkspaceStore = {
+    activeWorkspaceId: workspace.id,
+    workspaces: [workspace],
+  };
+  await persistence.save(store);
+  assert.ok(localBatches.flat().some((change) => change.table === "attachments"));
+
+  localBatches.length = 0;
+  document.request.body.type = "form-data";
+  document.request.body.formData[0] = {
+    ...document.request.body.formData[0],
+    enabled: true,
+    key: "name",
+    value: "test",
+  };
+  await persistence.save(store);
+  assert.ok(localBatches.length > 0);
+  assert.ok(localBatches.flat().every((change) => change.table !== "attachments"));
 });
 
 test("file watching reconciles a moved YAML resource without renaming it back or orphaning credential references", async () => {

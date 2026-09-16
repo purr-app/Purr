@@ -16,6 +16,7 @@ use regex::bytes::RegexBuilder;
 use regex_syntax::Parser as RegexParser;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
+    io::Write,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -305,6 +306,44 @@ impl ResponseContentStore {
             content,
             complete: end >= reference.byte_length,
         })
+    }
+
+    pub fn read_bytes_range(&self, id: &str, range: ByteRange) -> Result<Vec<u8>, String> {
+        self.read_plain_range(id, range.offset, range.length)
+    }
+
+    pub fn save_to_path(&self, id: &str, path: &Path) -> Result<u64, String> {
+        validate_id(id)?;
+        let reference = self.reference(id)?;
+        if !reference.complete {
+            return Err("Response content is incomplete".into());
+        }
+        let parent = path.parent().ok_or("Invalid response destination")?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "Cannot create the response destination")?;
+        let mut offset = 0_u64;
+        while offset < reference.byte_length {
+            let bytes = self.read_plain_range(
+                id,
+                offset,
+                (reference.byte_length - offset).min(self.limits.max_window_bytes as u64),
+            )?;
+            if bytes.is_empty() {
+                return Err("Response content ended unexpectedly".into());
+            }
+            temporary
+                .write_all(&bytes)
+                .map_err(|_| "Cannot write the response destination")?;
+            offset += bytes.len() as u64;
+        }
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|_| "Cannot finish the response destination")?;
+        temporary
+            .persist(path)
+            .map_err(|_| "Cannot replace the response destination")?;
+        Ok(offset)
     }
 
     fn read_plain_range(&self, id: &str, offset: u64, length: u64) -> Result<Vec<u8>, String> {
@@ -928,6 +967,33 @@ mod tests {
         assert!(!lines.segments[0].continues_to_next);
         store.release(&reference.id).unwrap();
         assert!(store.inspect(&reference.id).is_err());
+    }
+
+    #[test]
+    fn completed_content_saves_byte_for_byte_without_base64() {
+        let limits = ResponseLimits {
+            chunk_bytes: 3,
+            max_window_bytes: 5,
+            max_content_bytes: 64,
+            max_retained_bytes: None,
+            staging_ttl_seconds: 60,
+        };
+        let (directory, _root, mut store) = store(limits);
+        let reference = store
+            .create_staging(ContentMetadata {
+                media_type: Some("application/octet-stream".into()),
+                charset: None,
+            })
+            .unwrap();
+        let expected = [0, 1, 2, 3, 127, 128, 254, 255, 42, 10, 11];
+        store.append(&reference.id, &expected).unwrap();
+        store.finish(&reference.id).unwrap();
+        let destination = directory.path().join("download.bin");
+        assert_eq!(
+            store.save_to_path(&reference.id, &destination).unwrap(),
+            expected.len() as u64
+        );
+        assert_eq!(std::fs::read(destination).unwrap(), expected);
     }
 
     #[test]

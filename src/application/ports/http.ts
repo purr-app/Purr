@@ -1,5 +1,30 @@
 import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
 
+export type RequestFileRef = {
+  id: string;
+  name: string;
+  size: number;
+  mediaType: string;
+};
+
+export type PreparedRequestBody =
+  | { kind: "file"; reference: RequestFileRef }
+  | {
+      kind: "multipart";
+      parts: readonly (
+        | { kind: "text"; name: string; value: string; mediaType: string }
+        | { kind: "file"; name: string; reference: RequestFileRef }
+      )[];
+    };
+
+export type PreparedHttpTransportRequest = Omit<
+  HttpRequestSnapshot,
+  "bodyBase64"
+> & {
+  bodyBase64: string | null;
+  bodySource?: PreparedRequestBody;
+};
+
 export type ResponseContentProtection = "encrypted" | "plaintext";
 export type ResponseStoragePolicy = {
   protection: ResponseContentProtection;
@@ -54,6 +79,6 @@ export type HttpTransportOptions = {
 };
 
 export type HttpTransportPort = (
-  request: HttpRequestSnapshot,
+  request: PreparedHttpTransportRequest,
   options?: HttpTransportOptions,
 ) => Promise<HttpTransportResponse>;

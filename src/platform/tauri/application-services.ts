@@ -1,10 +1,10 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { z } from "zod";
 
-import { defaultResponseStoragePolicy, type HttpTransportOptions, type HttpTransportResponse } from "../../application/ports/http";
+import { defaultResponseStoragePolicy, type HttpTransportOptions, type HttpTransportResponse, type PreparedHttpTransportRequest, type RequestFileRef } from "../../application/ports/http";
 import type { PlatformAdapters } from "../../application/ports/platform";
 import type {
   FileChange,
@@ -21,8 +21,9 @@ import type {
   ResponseContentPort,
   SearchQuery,
 } from "../../application/ports/response-content";
-import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
+import type { ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
+import { getLocalAttachmentReference } from "../../storage/file-codec";
 
 class TauriSecureStore implements SecureStore {
   get(reference: SecretRef) {
@@ -143,6 +144,14 @@ class TauriPersistence implements PersistencePort {
     return invoke<void>("finish_legacy_migration");
   }
 
+  async readAttachment(workspaceId: string, attachmentId: string) {
+    const result = await invoke<ArrayBuffer | Uint8Array>(
+      "read_local_attachment",
+      { workspaceId, attachmentId },
+    );
+    return result instanceof Uint8Array ? result : new Uint8Array(result);
+  }
+
   watchChanges(listener: (id: string, paths: string[]) => void) {
     return listen<Array<{ id: string; paths: string[] }>>(
       "project-files-changed",
@@ -162,11 +171,6 @@ class TauriPersistence implements PersistencePort {
     return workspace;
   }
 }
-
-const unavailableContent = () =>
-  Promise.reject(
-    new Error("Native response content is not available before Phase 5."),
-  );
 
 const contentInfoSchema = z.object({
   size: z.number().int().nonnegative(),
@@ -267,7 +271,7 @@ function supportsTauriChannels() {
 }
 
 async function startHttp(
-  request: HttpRequestSnapshot,
+  request: PreparedHttpTransportRequest,
   options?: HttpTransportOptions,
 ): Promise<HttpTransportResponse> {
   options?.signal?.throwIfAborted();
@@ -422,7 +426,13 @@ class TauriResponseContent implements ResponseContentPort {
       ),
     );
   }
-  save = unavailableContent;
+  save(reference: ResponseContentRef, suggestion: { fileName: string; mediaType: string }) {
+    return invoke<string | null>("response_content_save", { reference, suggestion });
+  }
+
+  mediaUrl(reference: ResponseContentRef) {
+    return convertFileSrc(reference.id, "purr-content");
+  }
 
   async release(reference: ResponseContentRef) {
     await invoke<void>("response_content_release", { reference });
@@ -453,6 +463,45 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
           extension: extension ?? "bin",
         });
       },
+    },
+    requestBodies: {
+      stage: async (file, signal) => {
+        signal?.throwIfAborted();
+        const local = getLocalAttachmentReference(file);
+        if (local)
+          return invoke<RequestFileRef>("request_file_from_attachment", {
+            workspaceId: local.workspaceId,
+            attachmentId: local.attachmentId,
+          });
+        const pending = await invoke<RequestFileRef>("request_file_create", {
+          name: file.name,
+          size: file.size,
+          mediaType: file.type || "application/octet-stream",
+        });
+        try {
+          const chunkBytes = 256 * 1024;
+          for (let offset = 0; offset < file.size; offset += chunkBytes) {
+            signal?.throwIfAborted();
+            const chunk = new Uint8Array(
+              await file.slice(offset, Math.min(file.size, offset + chunkBytes)).arrayBuffer(),
+            );
+            await invoke<void>("request_file_append", chunk, {
+              headers: {
+                "x-purr-file-id": pending.id,
+                "x-purr-file-offset": String(offset),
+              },
+            });
+          }
+          signal?.throwIfAborted();
+          return await invoke<RequestFileRef>("request_file_finish", {
+            reference: pending,
+          });
+        } catch (cause) {
+          await invoke<void>("request_file_release", { reference: pending }).catch(() => {});
+          throw cause;
+        }
+      },
+      release: (reference) => invoke<void>("request_file_release", { reference }),
     },
     importDialog: {
       choosePath: async (directory) => {

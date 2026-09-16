@@ -665,7 +665,7 @@ export function WorkspaceWorkbench() {
                       workspaceProfiles: getWorkspaceAuthProfiles(workspace.requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
-                    }, cookieJar!, runtime, services.httpTransport, services.responseContent);
+                    }, cookieJar!, runtime, services.httpTransport, services.responseContent, undefined, services.requestBodies);
                   } });
                 update((current) => ({ ...current, dynamicVariableCache: resolution.cache }));
               } catch (cause) {

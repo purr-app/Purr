@@ -35,8 +35,17 @@ The default base URL is `http://127.0.0.1:43119`. Override the port with `PURR_F
 | Confirm request cookie propagation | `/cookies/echo` |
 | Cross-origin redirect security fixture | `/redirect/cross-origin` |
 | Binary with repeated cookies | `/response/binary?size=102400&cookies=repeated` |
+| Synthetic SVG with a long metadata line | `/media/image.svg` |
+| Synthetic two-second WAV | `/media/audio.wav` |
+| Synthetic two-second MP4 padded with a valid `free` box above 1 MiB | `/media/video.mp4` |
+| Binary/multipart upload hash echo | `POST /upload/echo` |
+| Repeatable upload body through redirect | `POST /upload/redirect307` or `/upload/redirect308` |
 
 Every response endpoint accepts `size`, `chunkSize`, `delayMs`, and `headersDelayMs`. The server caps bodies at 128 MiB and logs requested/sent bytes. After Phase 6, cancelling a native request should log fewer sent bytes.
+
+The three `/media/*` endpoints support `HEAD` and one closed, open, or suffix `Range` request and contain generated shapes/silence/pixels only. The checked-in 11 KiB MP4 core was generated from synthetic color frames; the server appends a valid zero-filled `free` box at runtime so the native response stays above the opaque-content threshold without committing a large binary fixture.
+
+Phase 9 upload checks can use any synthetic file. `POST /upload/echo` returns the whole-body byte count and SHA-256; for multipart it also returns each part's name, filename, content type, byte count, and SHA-256. The 307/308 endpoints hash the first body, redirect to the echo endpoint, and return `redirectReplay.matches: true` only when the repeated body is byte-identical. No uploaded bytes are persisted by the fixture server.
 
 For Phase 7, use `/response/text?size=104857600` as the 100 MiB bounded-viewer case. It contains `purr-synthetic-start`, `purr-middle-marker`, and `purr-tail-marker` at deterministic positions. Confirm first/previous/position/next/last navigation and search for the tail marker. The 100 KiB case covers the small-response CodeMirror path; exact 1 MiB native responses cover the lower boundary of the bounded viewer. The capture limit is now 128 MiB. The 20 MiB limit observations below are the frozen Phase 0 baseline, not the current expected behavior.
 

@@ -72,7 +72,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
-  const { httpTransport, responseContent } = useApplicationServices();
+  const { httpTransport, responseContent, requestBodies } = useApplicationServices();
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -131,6 +131,8 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
         runtime,
         httpTransport,
         responseContent,
+        undefined,
+        requestBodies,
       );
       if (!isInlineHttpResponse(result)) {
         await responseContent.release(result.content).catch(() => {});

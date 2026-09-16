@@ -42,6 +42,11 @@ export class WorkspacePersistence {
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
   constructor(readonly backend: PersistencePort, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
+  private attachmentLoader(id: string) {
+    return this.backend.readAttachment
+      ? (attachmentId: string) => this.backend.readAttachment!(id, attachmentId)
+      : undefined;
+  }
   private readProject(snapshot: StoredWorkspace, index = true): Project {
     if (!snapshot.files["purr.yaml"]) throw new Error("Workspace manifest is missing. Existing local data has not been changed.");
     const manifest = deserializeManifestFile(snapshot.files["purr.yaml"].content); const workspace = manifest.value;
@@ -124,7 +129,7 @@ export class WorkspacePersistence {
       if (!snapshot.files["purr.yaml"] && !Object.keys(snapshot.files).length && !snapshot.local.length) continue;
       const project = this.readProject(snapshot);
       const local = migrateWorkspaceAuthRuntime(snapshot.local, snapshot.id);
-      const workspace = await restoreWorkspace(project, local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])));
+      const workspace = await restoreWorkspace(project, local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id));
       this.snapshots.set(snapshot.id, snapshot); this.projects.set(snapshot.id, project); workspaces.push(workspace);
     }
     const legacy = stored.legacy as WorkspaceStore | undefined;
@@ -227,7 +232,9 @@ export class WorkspacePersistence {
     const localChanges: LocalChange[] = [];
     for (const id of new Set([...oldLocal.keys(), ...nextLocal.keys()])) {
       const next = nextLocal.get(id); const previous = oldLocal.get(id);
-      if (JSON.stringify(next) !== JSON.stringify(previous)) localChanges.push(next ?? { ...previous!, value: null });
+      if (next?.table === "attachments" || previous?.table === "attachments") {
+        if (!next || !previous) localChanges.push(next ?? { ...previous!, value: null });
+      } else if (JSON.stringify(next) !== JSON.stringify(previous)) localChanges.push(next ?? { ...previous!, value: null });
     }
     if (changes.length || localChanges.length) {
       const files = await this.backend.commit(workspace.id, changes, localChanges);
@@ -272,7 +279,7 @@ export class WorkspacePersistence {
       // Removing a saved definition must not discard an unsaved working copy.
       if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
     }
-    const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])));
+    const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project); return workspace;
   }
   reconcileExternalChanges(store: WorkspaceStore): Promise<WorkspaceStore> {
@@ -299,7 +306,7 @@ export class WorkspacePersistence {
   async saveProject(project: Project, initialize: (workspace: Workspace) => Workspace = (workspace) => workspace): Promise<Workspace> {
     validateProject(project);
     const snapshot = this.snapshots.get(project.workspace.id);
-    const restored = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])));
+    const restored = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])), this.attachmentLoader(project.workspace.id));
     const workspace = initialize(restored);
     await this.save({ activeWorkspaceId: workspace.id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }
@@ -317,7 +324,7 @@ export class WorkspacePersistence {
     this.deleted.delete(id);
     const snapshot = await this.backend.attachDirectory(id, directory);
     const project = this.readProject(snapshot, false);
-    const workspace = await restoreWorkspace(project, snapshot.local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])));
+    const workspace = await restoreWorkspace(project, snapshot.local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     await this.save({ activeWorkspaceId: id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }

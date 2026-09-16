@@ -4,6 +4,7 @@ import type {
 } from "../../importing/contracts";
 import type { SecureStore } from "./credentials";
 import type { HttpTransportPort } from "./http";
+import type { RequestFileRef } from "./http";
 import type { PersistencePort } from "./persistence";
 import type { ResponseContentPort } from "./response-content";
 
@@ -30,6 +31,11 @@ export interface DownloadPort {
     suggestedName: string,
     mediaType: string,
   ): Promise<string | null>;
+}
+
+export interface RequestBodyPort {
+  stage(file: File, signal?: AbortSignal): Promise<RequestFileRef>;
+  release(reference: RequestFileRef): Promise<void>;
 }
 
 export interface ImportDialogPort {
@@ -61,6 +67,7 @@ export type PlatformAdapters = Readonly<{
   oauthCallback: OAuthCallbackPort;
   imports: ImportPort;
   downloads: DownloadPort;
+  requestBodies: RequestBodyPort;
   importDialog: ImportDialogPort;
   workspaceShell: WorkspaceShellPort;
   lifecycle: ApplicationLifecyclePort;

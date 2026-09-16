@@ -1,6 +1,6 @@
 use crate::{
     persistence::{
-        local_records::{LocalRecord, LocalStateStore},
+        local_records::{LocalAttachment, LocalRecord, LocalStateStore},
         project_files::{FileChange, FilesystemWorkspaceStore, ProjectFile},
     },
     security::PlatformRootKeyStore,
@@ -290,6 +290,21 @@ pub fn load_project(
     id: String,
 ) -> Result<Value, String> {
     access(&app, &state, |storage| storage.workspace(&id))
+}
+
+pub fn read_attachment(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    workspace_id: String,
+    attachment_id: String,
+) -> Result<LocalAttachment, String> {
+    valid_id(&workspace_id)?;
+    if attachment_id.is_empty() || attachment_id.len() > 160 {
+        return Err("Invalid local attachment identifier".into());
+    }
+    access(&app, &state, |storage| {
+        storage.local.read_attachment(&workspace_id, &attachment_id)
+    })
 }
 
 pub fn list_request_history(

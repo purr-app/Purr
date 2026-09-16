@@ -28,7 +28,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 6 | Switch native HTTP to response handles and real cancellation | DONE | Phase 6 working tree based on `b9724b0` | PASS — 132 TypeScript tests, 51 UI tests, 51 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner accepted all desktop streaming/cancel, redirects/cookies/binary, GraphQL/OAuth, restart, and content-reference scenarios on 2026-09-15 |
 | 7 | Add bounded/virtualized response presentation | DONE | Phase 7 working tree based on `7e3492c` | PASS — 137 TypeScript tests, 54 UI tests, 54 Rust tests; typecheck, lint, build, repository policy, fmt, clippy, diff check | COMPLETE — product-owner accepted bounded navigation/search/restart and exact 1 MiB behavior on 2026-09-16; sub-threshold pathological lines explicitly deferred to Phase 8 |
 | 8 | Move large response inspect/search/format/query to Rust | DONE | Phase 8 working tree based on `f58cbad` | PASS — 138 TypeScript tests, 58 UI tests, 65 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product owner accepted the functional and UX-correction scenarios on 2026-09-16 |
-| 9 | Remove remaining body round trips | PARTIALLY DONE | Existing base64 download/media/binary request paths; no handle-based phase reference | Existing request/response tests only | Not recorded |
+| 9 | Remove remaining body round trips | DONE | Phase 9 working tree based on `cf80691` | PASS — 149 unit/integration, 60 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner accepted download/media, redirects, multipart, Request Code, autosave, and attachment restart/restore on 2026-09-16 |
 | 10 | Profile and isolate GraphQL analysis | PARTIALLY DONE | Existing GraphQL parse/schema/editor flow; no profiling or worker phase reference | Existing GraphQL tests only | Not recorded |
 | 11 | Migrate canonical integration envelope | PARTIALLY DONE | Existing `{provider, endpoint, credentials}` canonical shape; no envelope migration reference | Existing project validation only | Not recorded |
 | 12 | Implement extension API and immutable registries | PARTIALLY DONE | Existing native import-adapter registry is a precursor only; no extension API reference | Import tests only; extension conformance not run | Not recorded |
@@ -1493,33 +1493,50 @@ Known follow-ups:
 
 ### Phase 9 — remove remaining body round trips
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing `downloads.rs`, response media previews, and binary/multipart request support use base64/full-body paths; no handle-based phase commit/reference.
+Implemented in: Phase 9 working tree based on `cf80691`.
 
-Started: Pre-plan
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Add direct-save tests proving response content is written from a content ID without base64 returning to JavaScript.
-- [ ] Add byte-for-byte native request-body tests for large binary, multipart files, redirect replay, stale handle, and handle cleanup cases.
-- [ ] Run media/range protocol tests, request body/auth tests, UI tests, TypeScript checks, and Rust checks.
+- [x] Add direct-save tests proving response content is written from a content ID without base64 returning to JavaScript.
+- [x] Add byte-for-byte native request-body tests for large binary, multipart files, redirect replay, stale handle, and handle cleanup cases.
+- [x] Run media/range protocol tests, request body/auth tests, UI tests, TypeScript checks, and Rust checks.
 
 Manual verification:
-- [ ] Download a large binary response and verify the chosen file's hash matches the fixture while Purr remains responsive during save.
-- [ ] Preview a range-capable image, audio, and video fixture; seek audio/video and confirm media loads without a base64 data URL failure.
-- [ ] Upload a large binary file and a multipart form with a file to a local echo fixture; verify received bytes, filenames, and content types exactly match the source.
-- [ ] Send a 307/308 redirecting upload fixture and confirm the request body is replayed once with the expected headers and no stale-file error.
+- [x] Run `npm run fixture:responses`, send `/response/binary?size=104857600`, choose Download, and compare the saved file's SHA-256 with a direct fixture download; Purr must remain interactive while Rust writes the file.
+- [x] Send `/media/image.svg`, `/media/audio.wav`, and `/media/video.mp4`; confirm the image renders, both players load, and seeking audio/video works. Inspect the media element URL if needed: it must start with the native `purr-content` protocol rather than `data:`.
+- [x] Create a synthetic file, record its size and SHA-256, then POST it as Binary to `/upload/echo`; confirm the JSON `size` and `sha256` match.
+- [x] Send the same file as a multipart file with a text field to `/upload/echo`; confirm `multipart` reports the exact field name, filename, content type, size, and hash.
+- [x] POST the same Binary body separately to `/upload/redirect307` and `/upload/redirect308`; each final JSON must contain `redirectReplay.matches: true`, retain method `POST`, and complete without a stale-file error.
+- [x] In one saved request, select a 32 MiB Binary file, switch to Form-Data, type in a text field, add another row, and toggle its type/enabled state; every edit must appear immediately while autosave keeps the inactive Binary selection.
+- [x] Send that multipart request to `/upload/echo`; it must complete without a missing `media_type` error and report the expected text/file metadata, size, and SHA-256.
+- [x] With the 32 MiB Binary selection still present, open Request Code/cURL; the dialog must open immediately and show only the filename/type/size summary, without reading or rendering the file bytes.
+- [x] Quit and relaunch Purr with that 32 MiB inactive Binary selection. The workspace must open without a multi-second WebView stall; switching to the document and editing its active Form-Data fields must remain immediate.
 
 Implementation notes:
-- Existing user-facing paths work for ordinary payloads but still perform the memory-expensive body round trips targeted by this phase.
+- Native response references now save through `response_content_save`: the encrypted content worker decrypts bounded windows into a temporary destination file and atomically persists it without returning body bytes to JavaScript. Inline/browser compatibility downloads retain their existing path.
+- Referenced image/audio/video responses use an allowlisted `purr-content` protocol with opaque IDs, ready-handle/media-type validation, `GET`/`HEAD`, and closed/open/suffix byte ranges. UI media elements receive the protocol URL; generic referenced binary responses expose metadata and direct save.
+- Binary and file-bearing multipart bodies are staged from a Web `File` in 256 KiB raw IPC chunks, registered under random execution-scoped handles, and streamed/reopened by Reqwest. Transient files use owner-only Unix permissions. Rust rejects stale, incomplete, out-of-order, oversized, or metadata-mismatched handles; `executeRequest` releases handles after success, failure, or cancellation, TTL cleanup removes abandoned live-process entries, and startup removes crash leftovers.
+- Added synthetic local image/audio/video range fixtures plus binary/multipart echo and 307/308 replay fixtures. Fixture responses expose byte counts and SHA-256 values and never persist uploaded data.
+- Product-owner testing found two Phase 9 regressions: multipart text-part `mediaType` was not mapped to Rust `media_type`, and Request Code plus editor autosave could materialize/repeat a large inactive `File`. The Rust enum now accepts camel-case variant fields; Request Code selects a byte-free summary mode; working-copy files are stored once in encrypted immutable `attachments` rows and referenced from small draft/session records, with cooperative first encoding.
+- Product-owner retesting confirmed multipart submission, Form-Data editing, and Request Code behavior, then exposed a 3–4 second workspace-open regression. Native persistence now returns attachment metadata instead of base64 during workspace load. The restored lazy `File` keeps its opaque workspace/attachment identity; native send decrypts and stages it entirely in Rust, while only explicit canonical save requests raw bytes.
+- Product-owner verification on 2026-09-16 confirmed the metadata-only restart path: the workspace opens normally, the restored attachment remains usable, and the affected editor workflows remain responsive.
+- Product-owner verification on 2026-09-16 also confirmed direct 100 MiB download integrity/responsiveness, native image/audio/video playback and seeking, and repeatable Binary request bodies across 307/308 redirects. All Phase 9 manual acceptance criteria are complete.
+- Automated verification passed after the regression fixes: `npm test` (149), `npm run test:ui` (60), `npm run typecheck`, `npm run lint`, `npm run build`, `npm run check:repo`, `cargo fmt --all -- --check`, `cargo check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (76), and `git diff --check`. The earlier fixture range/upload smoke result remains valid; exact tests cover the corrected multipart DTO, metadata-only native attachment restore/autosave, direct Rust staging, and byte-exact explicit attachment reads.
 
 Deviations from plan:
-- None.
+- The response download/media and request-body changes are kept in one Phase 9 working-tree change set instead of two PRs because the shared port/composition contract must remain buildable throughout this branch. They remain separate adapters/modules and can be reviewed as two logical halves.
 
 Known follow-ups:
-- Keep small inline text bodies simple; only scoped large/file bodies require native handles.
+- Small inline/text-only bodies intentionally keep the existing serializer. Browser development and legacy inline response downloads remain full-body compatibility paths because native handles are a desktop capability.
+- Web file inputs do not expose a trusted native path, so selected request files cross into the native cache as bounded raw chunks. A future native file-picker/import handle can remove that staging time without changing `RequestBodyPort` or the Rust transport model.
+- The JSON-based local persistence port still reads and encodes a newly selected working-copy file once. Cooperative encoding and immutable attachment references prevent event-loop monopolization and repeated draft/session copies; restored attachments no longer cross WebView memory during open or native send. A future native file-selection/local-attachment port could also remove the initial WebView copy without changing canonical assets or request transport handles.
+- Full-body clipboard copy remains disabled for opaque large content; implementing it without reconstructing the body in JavaScript requires a separate bounded native clipboard capability and is not part of this phase's acceptance criteria.
+- The checked-in Tauri CSP remains `null` as it was before this phase. The pre-public CSP task must explicitly allow `purr-content:`/its platform-mapped origin for `img-src` and `media-src`, then rerun the Phase 9 media scenarios.
 
 - **Objective:** cover native download, media preview, and large request bodies with handles.
 - **Files/modules affected:** current `downloads.rs`, response preview/download components, request body/file UI, `prepareWireRequest`, Rust `http/request_body.rs`, platform file/body port.
@@ -1880,7 +1897,7 @@ Avoid mixing these high-conflict files in broad migrations:
 - `.DS_Store`, `dist/`, and `test-results/` exist locally but are ignored and were not shown as tracked. Verify this again from a clean clone.
 - `theme-ref.html` is a standalone generated/design reference using CDN assets and includes secret-looking mock text. Establish its provenance/license and either remove it, document it, or sanitize it before publication.
 - Bundled fonts, icons, `public/tauri.svg`, `public/vite.svg`, and other visual assets need an ownership/license inventory. Remove unused starter assets.
-- The Tauri app CSP is currently `null`. Define an explicit production CSP before public binaries are distributed, particularly before adding a handle-based media protocol.
+- The Tauri app CSP is currently `null`. Define an explicit production CSP before public binaries are distributed; it must allow the Phase 9 `purr-content` protocol only for the required image/media sources.
 - Native secure storage currently fails closed outside macOS. Document supported platforms accurately or add native root-key adapters before advertising those builds.
 - There is no visible `.github/` pipeline in the current checkout, so secret scanning, dependency review, and reproducible OSS builds still need CI setup.
 
@@ -1908,7 +1925,7 @@ The limited scan is evidence about this checkout, not a complete history/securit
 - [ ] Add `SECURITY.md` with a private reporting channel and supported-version policy.
 - [ ] Replace package/Cargo placeholder metadata; add repository, license, authorship/contact, description, and minimum supported Rust/Node versions.
 - [ ] Create separate public/official bundle identifiers and release channels. Do not make the OSS build depend on a private updater endpoint.
-- [ ] Set a restrictive production CSP and test dialogs, editors, OAuth opener, and future content/media protocol under it.
+- [ ] Set a restrictive production CSP, allow the `purr-content` protocol only in the required `img-src`/`media-src` directives, and test dialogs, editors, OAuth opener, image preview, and audio/video seeking under it.
 - [ ] Verify Keychain service/bundle identifier migration so changing public/official identifiers does not orphan or accidentally share credentials.
 - [ ] Test a fresh machine, upgrade from current local DB/YAML, missing Keychain root, corrupt local data, and uninstall/reinstall behavior.
 - [ ] Review the remote repository’s issues, PRs, wiki, releases, branch names, and collaborators for private information before visibility changes.

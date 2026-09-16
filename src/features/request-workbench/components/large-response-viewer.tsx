@@ -29,6 +29,7 @@ import {
   searchResponseContent,
   type ResponseContentMatch,
 } from "../services/response-content-reader";
+import { NativeResponseDownloadButton } from "./native-response-content";
 
 type LargeViewMode = "text" | "pretty" | "hex" | "base64";
 type QueryLanguage = "jq" | "jsonpath";
@@ -496,6 +497,7 @@ export function LargeResponseViewer({
             <Copy className="size-ui-3" aria-hidden="true" />
             Copy
           </Button>
+      <NativeResponseDownloadButton exchange={exchange} compact />
       <Button type="button" size="xs" variant="ghost" aria-label="Search response" onClick={onOpenFind}><Search className="size-ui-3" /></Button>
       </div>
       </div>

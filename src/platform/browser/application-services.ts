@@ -96,6 +96,7 @@ export function createBrowserPlatformAdapters(): PlatformAdapters {
       format: unavailableContent,
       query: unavailableContent,
       save: unavailableContent,
+      mediaUrl: () => { throw new Error("Native media handles are unavailable in the browser."); },
       release: async (_reference: ResponseContentRef) => unavailableContent(),
     },
     oauthCallback: {
@@ -108,6 +109,10 @@ export function createBrowserPlatformAdapters(): PlatformAdapters {
         unavailable("Workspace import requires the desktop application."),
     },
     downloads: { saveInlineResponse },
+    requestBodies: {
+      stage: () => unavailable("Native request body handles are unavailable in the browser."),
+      release: async () => {},
+    },
     importDialog: {
       choosePath: () =>
         unavailable(

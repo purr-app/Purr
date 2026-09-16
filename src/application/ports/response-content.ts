@@ -106,5 +106,6 @@ export interface ResponseContentPort {
     reference: ResponseContentRef,
     suggestion: SaveSuggestion,
   ): Promise<string | null>;
+  mediaUrl(reference: ResponseContentRef): string;
   release(reference: ResponseContentRef): Promise<void>;
 }

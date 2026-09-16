@@ -2,6 +2,23 @@ import { z } from "zod";
 
 export type HttpHeader = [string, string];
 
+export type HttpRequestBodySummary =
+  | {
+      kind: "file";
+      fileName: string;
+      byteLength: number;
+      mediaType: string;
+    }
+  | {
+      kind: "multipart";
+      partCount: number;
+      files: {
+        fileName: string;
+        byteLength: number;
+        mediaType: string;
+      }[];
+    };
+
 // This snapshot describes the logical request shown in response history. The
 // native transport DTO remains adapter-owned at the platform boundary.
 export type HttpRequestSnapshot = {
@@ -9,6 +26,7 @@ export type HttpRequestSnapshot = {
   method: string;
   headers: HttpHeader[];
   bodyBase64: string | null;
+  bodySummary?: HttpRequestBodySummary;
 };
 
 export type HttpResponseMetadata = {
@@ -94,11 +112,29 @@ export type InlineHttpResponse = {
 export type StoredHttpResponse = InlineHttpResponse | HttpExchange;
 
 const headerSchema = z.tuple([z.string(), z.string()]);
+const requestBodySummarySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("file"),
+    fileName: z.string(),
+    byteLength: z.number().finite().nonnegative(),
+    mediaType: z.string(),
+  }),
+  z.object({
+    kind: z.literal("multipart"),
+    partCount: z.number().int().nonnegative(),
+    files: z.array(z.object({
+      fileName: z.string(),
+      byteLength: z.number().finite().nonnegative(),
+      mediaType: z.string(),
+    })),
+  }),
+]);
 const requestSnapshotSchema = z.object({
   url: z.string(),
   method: z.string(),
   headers: z.array(headerSchema),
   bodyBase64: z.string().nullable(),
+  bodySummary: requestBodySummarySchema.optional(),
 }).passthrough();
 const timelineSchema = z.object({
   startedAtMs: z.number().finite(),

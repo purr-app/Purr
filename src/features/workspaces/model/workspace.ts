@@ -217,7 +217,18 @@ export function getDocumentDisplayName(document: WorkspaceDocument): string {
 }
 
 export function cloneRequestDraft(request: RequestDraft): RequestDraft {
-  return structuredClone(request);
+  const clone = (value: unknown): unknown => {
+    // File/Blob values are immutable. Keeping their identity also preserves the
+    // native lazy-attachment handle, which structuredClone cannot carry.
+    if (value instanceof File) return value;
+    if (Array.isArray(value)) return value.map(clone);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([key, child]) => [key, clone(child)]),
+      );
+    return value;
+  };
+  return clone(request) as RequestDraft;
 }
 
 export function duplicateDocument(workspace: Workspace, id: string): Workspace {

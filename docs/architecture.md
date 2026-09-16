@@ -47,7 +47,7 @@ canonical Project + local records + assets
 
 `src/application/workspace-persistence.ts` assigns canonical resources to files, calculates revisions/change sets, serializes writes, reconciles external changes, and calls the persistence adapter. `src/application/import-project.ts` validates and commits normalized imports.
 
-`src/application/ports/` owns the frontend contracts for HTTP transport, response content, persistence, credentials, OAuth callbacks, import normalization, downloads, file dialogs, workspace shell actions, and application lifecycle. These contracts contain no Tauri command names. `src/app/application-services-context.tsx` exposes one typed service object at the shell; feature hooks consume that context rather than constructing platform implementations or receiving a chain of service props.
+`src/application/ports/` owns the frontend contracts for HTTP transport, opaque request-file staging, response content, persistence, credentials, OAuth callbacks, import normalization, downloads, file dialogs, workspace shell actions, and application lifecycle. These contracts contain no Tauri command names or native paths. `src/app/application-services-context.tsx` exposes one typed service object at the shell; feature hooks consume that context rather than constructing platform implementations or receiving a chain of service props.
 
 `src/app/create-purr-app.tsx` is the OSS application factory. `src/app/composition/routes.tsx` validates and freezes the current route descriptors before rendering, so a later extension registry can contribute namespaced routes without replacing `AppRouter`. Phase 3 does not expose this internal route composition as the extension API.
 
@@ -59,8 +59,8 @@ canonical Project + local records + assets
 
 Rust modules provide narrow privileged boundaries:
 
-- `src-tauri/src/http/`: validated HTTP(S) transport without automatic redirects.
-- `src-tauri/src/content/`: response-content chunks, lifecycle, bounded reads/segmented lines, cancellable search/format/query adapters, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
+- `src-tauri/src/http/`: validated HTTP(S) transport without automatic redirects, plus opaque repeatable request-file handles for streamed binary and multipart bodies.
+- `src-tauri/src/content/`: response-content chunks, lifecycle, direct save, allowlisted range-capable media protocol, bounded reads/segmented lines, cancellable search/format/query adapters, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
 - `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
@@ -116,7 +116,8 @@ Request editor
   → workspace-effective RequestDraft
   → dynamic dependency requests and variables
   → static interpolation + GraphQL/auth/body preparation
-  → WireRequest + redacted display request
+  → PreparedHttpTransportRequest + redacted display request
+      ↳ binary/file multipart: bounded staging → opaque repeatable request handles
   → TypeScript cookie/redirect policy
   → ApplicationServices.httpTransport
   → Tauri adapter → Rust start_http / cancel_http
@@ -146,7 +147,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 
 ## Current architectural limitations
 
-- Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Full-body media preview, copy, and direct handle download remain Phase 9 work.
+- Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Direct handle download and range-capable image/audio/video preview avoid body IPC; full-body clipboard copy remains unavailable for opaque large content.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
