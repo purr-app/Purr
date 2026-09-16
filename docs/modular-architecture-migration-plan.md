@@ -32,7 +32,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 10 | Profile and isolate GraphQL analysis | DONE | Phase 10 working tree based on `175ab8b` | PASS — 151 unit/integration, 61 UI, typecheck, lint, build, repository policy, benchmark, Rust fmt/check/clippy and 76 tests | COMPLETE — large schema, active-schema isolation, pinned restart, cancellation, responsiveness, and desktop profiling accepted 2026-09-16 |
 | 11 | Migrate canonical integration envelope | DONE | Phase 11 working tree based on `e721a5d` | PASS — 153 unit/integration, 62 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy | COMPLETE — product-owner accepted legacy migration and unavailable-provider persistence scenarios on 2026-09-16 |
 | 12 | Implement extension API and immutable registries | DONE | Phase 12 working tree based on `2f5e3b4` | PASS — 156 unit/integration, 64 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check; Rust-only observability seam correction rechecked | COMPLETE — product-owner OSS/fake-module/unavailable-module/conflict scenarios accepted 2026-09-16 |
-| 13 | Add provider-neutral observability use case and UI | TODO | — | Not run | Not run |
+| 13 | Add provider-neutral observability use case and UI | DONE | Phase 13 working tree based on `44781e0` | PASS — 159 TypeScript, 66 UI, 88 Rust tests in both default/fixture builds; typecheck, lint, build, repository policy, fmt/check/clippy | COMPLETE — both providers, correlation, credentials/restart, empty/error, cancellation, paging/search and cache invalidation accepted 2026-09-16 |
 | 14 | Implement Jaeger public validation adapter | TODO | — | Not run | Not run |
 | 15 | Expose reusable frontend and Rust composition surfaces | PARTIALLY DONE | Existing `purr_lib` library target; no public builder/package export reference | Existing Rust build/tests only | Not recorded |
 | 16 | Create `purr-commercial` and official build composition | TODO | — | Not run | Not run |
@@ -711,17 +711,40 @@ Cross-cutting core behavior uses separate named contracts only when there is a c
 
 ### E.3 Observability domain and provider contracts
 
-The executable contract is Rust-owned. The exact Rust syntax can evolve during Phase 13, but the ownership and capability boundary may not move back into TypeScript:
+The executable contract is Rust-owned. Phase 14 freezes the capability shape against Jaeger before Phase 15 exports it, but the ownership boundary may not move back into TypeScript:
+
+Observability has five separate layers. Do not collapse them into a vendor-specific provider or a single UI workflow:
+
+1. **Workspace integration instance:** where data is read from, its enabled state, versioned opaque config and `SecretRef` credential slots. One instance may expose several capabilities, for example Datadog traces and logs.
+2. **Outbound trace propagation:** an optional native policy that generates or accepts trace context and prepares W3C Trace Context, B3 or provider-specific propagation fields immediately before transport. This is separate from fetching a stored trace and from choosing an observability backend. W3C is the default portable format; an integration may contribute additional formats without adding vendor branches to request UI. The effective propagation selection may be inherited at workspace/folder/document scope, but Rust validates it, generates IDs and injects the final headers. An explicit user header is preserved unless an explicit conflict policy says otherwise. Native request metadata records the effective injected context so Request/Timeline and later correlation use what was actually sent.
+3. **Correlation resolution:** native extractors examine the saved request/response metadata and bounded content to produce ordered trace-reference candidates with their source/provenance. Extraction does not assume that a request-side ID is the final backend trace ID.
+4. **Data capabilities:** capability-specific Rust contracts fetch and normalize traces, logs or later metrics. They share the integration instance and scoped credentials but remain separate traits/services rather than one growing provider interface.
+5. **Presentation:** React renders bounded provider-neutral projections and controls loading, cancellation, selection and navigation. It never propagates context, fetches vendor data, resolves credentials or interprets provider config.
+
+Use distinct identities throughout the native use case:
+
+- `injectedTraceId`: optional trace ID placed on the outbound request by Purr (or recorded from an explicit user header);
+- `lookupReference`: the ordered manual/request/response/body candidate used for a provider query, including its source and propagation format;
+- `resolvedTraceId`: the canonical trace ID returned by the provider after lookup.
+
+These values may match but are not required to. Provider normalization validates `resolvedTraceId`; core must not reject a result merely because it differs from the injected or lookup ID. The bounded IPC result may include the three provider-neutral values and provenance needed to explain correlation to the user, never raw provider fields.
+
+The native registry must support one stable integration provider ID with multiple capabilities. Model this as a shared provider descriptor plus capability-specific registrations (`TraceProvider`, later `LogProvider`, and propagation/extraction contributions), not a monolithic trait with optional methods. Composition rejects duplicate capability registrations and inconsistent descriptors. Capability availability is exposed as a provider-neutral set so the frontend can show Trace or Logs surfaces without knowing whether the implementation is Jaeger, Datadog, Loki, or another adapter. Do not add `LogProvider` executable code until the first log use case, but freeze this registration shape before exposing the Rust builder in Phase 15.
 
 ```rust
-pub trait TraceProvider: Send + Sync {
+pub trait IntegrationProviderDescriptor: Send + Sync {
     fn id(&self) -> ProviderId;
+    fn capabilities(&self) -> CapabilitySet;
     fn config_version(&self) -> u32;
     fn validate_and_migrate_config(
         &self,
         version: u32,
         config: JsonValue,
     ) -> Result<ValidatedProviderConfig, ProviderError>;
+}
+
+pub trait TraceProvider: Send + Sync {
+    fn provider_id(&self) -> ProviderId;
     async fn get_trace(
         &self,
         context: &ProviderContext,
@@ -734,6 +757,16 @@ pub trait TraceProvider: Send + Sync {
         query: TraceSearchQuery,
         cancellation: &CancellationToken,
     ) -> Result<Page<TraceSummary>, ProviderError>;
+}
+
+pub trait TracePropagator: Send + Sync {
+    fn id(&self) -> PropagatorId;
+    fn provider_id(&self) -> Option<ProviderId>; // None for shared W3C/B3 propagators
+    fn prepare(
+        &self,
+        policy: &PropagationPolicy,
+        existing_headers: &HeaderView,
+    ) -> Result<InjectedTraceContext, PropagationError>;
 }
 
 pub trait CorrelationExtractor: Send + Sync {
@@ -792,7 +825,9 @@ The public native composition registers execution:
 
 ```rust
 core_builder()
-    .register_observability_provider(JaegerProvider::new())
+    .register_integration_provider(JaegerDescriptor::new())
+    .register_trace_provider(JaegerTraceProvider::new())
+    .register_trace_propagator(W3cB3Propagator::new())
     .register_correlation_extractor(W3cB3CorrelationExtractor::new());
 ```
 
@@ -1694,36 +1729,43 @@ Known follow-ups:
 
 ### Phase 13 — add provider-neutral observability use case and UI
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: Phase 13 current working tree based on `44781e0`; implementation and product-owner verification complete.
 
-Started: —
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Add Rust domain tests proving trace/span/log models import no Tauri, persistence implementation, or vendor DTOs, plus registry tests for duplicate IDs and immutable post-build state.
-- [ ] Add Rust service tests using at least two fake native providers and fake correlation extractors without provider-ID branches in core code.
-- [ ] Add IPC contract/UI tests proving the React side receives only bounded normalized DTOs and can cancel a native operation without receiving credentials, raw integration config, or vendor payloads.
-- [ ] Run response, observability, type/lint/build, and Rust checks.
+- [x] Add Rust Trace/Span normalization and shared DTO fixture tests, a domain dependency guard, and duplicate-registry tests; the consuming builder exposes no post-build registration. Log models/API remain deferred to the first log use case, as specified below.
+- [x] Add Rust service tests using two fake native providers and fake correlation extractors without provider-ID branches in core code, including scoped credentials, cache invalidation/TTL, pagination, cancellation, and oversized-result rejection.
+- [x] Add IPC contract/UI tests proving the React side receives only bounded normalized DTOs and can cancel a native operation without receiving credentials, raw integration config, or vendor payloads.
+- [x] Run `npm test` (159), full Playwright suite (66), typecheck, lint, build, repository policy, Rust fmt/check/clippy and tests (88 in each default/`observability-fixtures` build); repeat the two observability UI tests after final DTO changes.
 
 Manual verification:
-- [ ] Configure two fake native provider integrations, send a request with a fixture `traceparent` or B3 header, and confirm the Trace tab shows the normalized trace from the selected integration.
-- [ ] Save a fake provider credential, restart Purr, and confirm trace lookup still succeeds while the integration YAML contains only its `SecretRef`, never the plaintext value.
-- [ ] Open a response with no correlation data and confirm the Trace tab explains that no trace was found rather than exposing a vendor-specific error.
-- [ ] Start a deliberately delayed fake trace lookup, cancel or navigate away, and confirm the response view remains usable with no stale trace result.
-- [ ] Use trace pagination/search fixtures and confirm service, operation, timestamps, status, and attributes render without provider field names leaking into the UI.
-- [ ] Change the selected integration config or credential after a successful lookup and confirm the next lookup does not reuse the stale cached result.
+- [x] Configure two fake native provider integrations, send a request with a fixture `traceparent` or B3 header, and confirm the Trace tab shows the normalized trace from the selected integration.
+- [x] Save a fake provider credential, restart Purr, and confirm trace lookup still succeeds while the integration YAML contains only its `SecretRef`, never the plaintext value.
+- [x] Open a response with no correlation data and confirm the Trace tab explains that no trace was found rather than exposing a vendor-specific error.
+- [x] Start a deliberately delayed fake trace lookup, cancel or navigate away, and confirm the response view remains usable with no stale trace result.
+- [x] Use trace pagination/search fixtures and confirm service, operation, timestamps, status, and attributes render without provider field names leaking into the UI.
+- [x] Change the selected integration config or credential after a successful lookup and confirm the next lookup does not reuse the stale cached result.
 
 Implementation notes:
-- None yet.
+- Rust owns canonical integration loading/defaults, authoritative provider availability/config validation, declared-key credential resolution, W3C/B3 correlation, provider calls, normalized typed attributes, cache policy, span filtering/pagination, cancellation, and safe errors. React receives only summaries and versioned display pages through `ObservabilityPort`.
+- Correlation reads the exact saved execution by workspace/document/start timestamp through a bounded, read-only encrypted metadata query. It never restores the response body or returns credentials to React. Native extractors may opt into a bounded 64 KiB content prefix; standard header extraction does not read content. Lookup tolerates the existing save debounce for up to one second and reports a retryable missing-save state. Ordinary request execution/display is unchanged.
+- Limits: four concurrent lookups, 15-second deadline, at most 1,000 spans/64 KiB per normalized trace, 25 spans per page; memory cache has 32 entries and 60-second TTL. Config/credential changes alter its key, credentials are re-resolved before hits, and cursors bind the response/query/cache generation.
+- `test.trace-alpha` and `test.trace-beta` are opt-in native fixtures behind `observability-fixtures`; the normal OSS build registers no concrete provider. No real Jaeger/network integration was started. Setup and owner scenarios: [Phase 13 verification](testing/phase-13-observability.md).
+- Validation on 2026-09-16: all checks above passed. The first full UI run with seven workers had one failure in the existing GraphQL autocomplete test (`Fill all fields`); it passed in isolation and the complete suite passed 66/66 with two workers, without GraphQL code changes. Existing Vite chunk-size/annotation warnings remain non-blocking.
 
 Deviations from plan:
-- None.
+- Search/pagination currently cover spans inside one response-linked trace, not provider-wide trace discovery. This follows the smallest usable Phase 13 slice; Phase 14 must validate any provider-side search contract against Jaeger. No speculative logs API was introduced.
+- Synthetic credentials are provisioned with generated DevTools statements and canonical fixture YAML rather than a provider settings editor. The real editor remains in Phase 14. The fixture generator refuses an existing output directory and contains only synthetic data.
 
 Known follow-ups:
 - Keep persisted cache optional and bounded until Jaeger demonstrates the required lifecycle; the cache abstraction and ownership still belong to Rust from this phase.
+- Phase 14 adds outbound propagation and separates injected/lookup/resolved trace identity before implementing native Jaeger HTTP/vendor parsing. It also validates the multi-capability provider descriptor while keeping logs unimplemented until a real log use case. Phase 15 exposes the resulting external Rust composition surface.
+- The Phase 13 table is a contract-validation UI. Phase 14 replaces it with a useful provider-neutral hierarchy/details view; a sophisticated waterfall, cross-trace navigation and logs UI remain separate product work unless the Jaeger validation demonstrates that they are required for a usable first release.
 
 - **Objective:** prove that Trace/Span/Log are vendor-independent while all observability execution and business policy stay in Rust.
 - **Files/modules affected:** new `src-tauri/src/observability/{domain,registry,service,correlation,cache,credentials}.rs`, `commands/observability.rs`, native composition, `src/domain/observability.ts` as bounded display DTOs, `src/application/ports/observability.ts`, Tauri adapter/contracts, new observability UI components, response-tab extraction, fake native-provider tests.
@@ -1743,13 +1785,17 @@ Started: —
 Completed: —
 
 Automated verification:
+- [ ] Add Rust contract tests for W3C/B3 outbound propagation, user-header conflict policy, and distinct injected/lookup/resolved trace IDs; prove a provider may return a valid resolved ID different from the lookup reference.
+- [ ] Add a shared provider descriptor and capability-specific native registration tests proving one integration ID can expose traces plus a fake second capability without creating a monolithic provider trait or frontend vendor branch.
 - [ ] Add Rust Jaeger adapter fixtures for configuration migration/validation, scoped credential resolution, correlation extraction, normalized trace/span mapping, bounded errors/results, cache behavior, pagination, and cancellation.
 - [ ] Run native registry and frontend presentation conformance tests with Jaeger plus a second fake provider, then remove both Jaeger halves from public composition in a build test.
 - [ ] Run OSS build, TypeScript tests/type/lint, and Rust checks.
 
 Manual verification:
 - [ ] Prepare a local Jaeger instance or documented fixture endpoint containing a known trace and configure it through the new integration settings.
-- [ ] Send a request carrying the trace ID through `traceparent`/B3 or a configured response header; open the Trace tab and verify spans, service names, duration, hierarchy, and error status against Jaeger.
+- [ ] Enable Purr trace propagation, send requests using W3C and B3, and confirm the effective injected headers are visible in Request/Timeline without silently replacing an explicit user header.
+- [ ] Open the Trace tab and confirm it explains the injected/lookup/resolved identity when they differ, then verify spans, service names, duration, hierarchy and error status against Jaeger.
+- [ ] Confirm the provider-neutral hierarchy/details UI remains usable when switching integration, searching, paging and cancelling; no Jaeger field or label appears in core rendering logic.
 - [ ] Disable the Jaeger integration, restart Purr, and confirm the saved configuration persists while trace lookup becomes unavailable without breaking ordinary requests.
 - [ ] Run the OSS build with Jaeger removed from the core module list and confirm Purr still launches and sends HTTP/GraphQL requests.
 
@@ -1764,7 +1810,7 @@ Known follow-ups:
 
 - **Objective:** validate contracts, registry, configuration, credentials, normalized mapping, and UI end to end with a real public provider.
 - **Files/modules affected:** `src-tauri/src/observability/providers/jaeger/*`, public Rust composition, `src/integrations/builtins/jaeger/*` for presentation/settings only, core frontend module composition, integration settings, observability IPC/tests/docs.
-- **Changes:** implement authoritative Jaeger configuration validation/migration, HTTP requests, scoped credential resolution, vendor parsing, trace mapping, correlation rules, bounded cache/results, errors/cancellation, and fixtures in Rust. The frontend half provides only label/icon/settings UI and submits config for native validation; it uses the public `ObservabilityPort` for execution.
+- **Changes:** first complete the native propagation/correlation identity split and capability descriptor required above. Then implement authoritative Jaeger configuration validation/migration, HTTP requests, scoped credential resolution, vendor parsing, trace mapping, correlation rules, bounded cache/results, errors/cancellation, and fixtures in Rust. Replace the validation table with a provider-neutral hierarchy/details view. The frontend half provides only label/icon/settings UI and submits config for native validation; it uses the public `ObservabilityPort` for execution.
 - **Risk:** leaking Jaeger fields into core domain or widening the API for convenience. Keep raw DTOs under the adapter and change public contracts only when the use case cannot be expressed generically.
 - **Verification:** Jaeger can be removed from both public frontend and Rust composition and the app still compiles; adding a second fake native provider changes no core UI/business files; no provider-specific IPC DTO exists; public standalone build works.
 - **Scope:** L, several provider-focused PRs.

@@ -20,6 +20,7 @@ import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
 import type { IntegrationDefinition } from "../../../domain/project";
+import { useApplicationServices } from "../../../app/application-services-context";
 
 type SettingsTab = "general" | "headers" | "auth" | "integrations";
 
@@ -31,6 +32,7 @@ function availableAuthScopes(_auth: WorkspaceSharedAuth[], _editingId?: string) 
 }
 
 export function WorkspaceSettings({
+  workspaceId,
   name,
   description,
   config,
@@ -44,6 +46,7 @@ export function WorkspaceSettings({
   onIntegrationDelete,
   onDelete,
 }: {
+  workspaceId: string;
   name: string;
   description: string;
   config: WorkspaceRequestConfig;
@@ -57,7 +60,17 @@ export function WorkspaceSettings({
   onIntegrationDelete: (id: string) => void;
   onDelete: () => Promise<void>;
 }) {
+  const { observability } = useApplicationServices();
+  const [availableIntegrations, setAvailableIntegrations] = useState<string[]>([]);
   const [tab, setTab] = useState<SettingsTab>("general");
+  useEffect(() => {
+    if (tab !== "integrations") return;
+    let live = true;
+    observability.integrations(workspaceId).then((items) => {
+      if (live) setAvailableIntegrations(items.filter((item) => item.available).map((item) => item.id));
+    }).catch(() => { if (live) setAvailableIntegrations([]); });
+    return () => { live = false; };
+  }, [observability, workspaceId, tab]);
   const [editingAuth, setEditingAuth] = useState<WorkspaceSharedAuth | null>(null);
   const [authContext, setAuthContext] = useState<AuthContext>({ variables });
   const [emptyHeaderId, setEmptyHeaderId] = useState(() => crypto.randomUUID());
@@ -217,7 +230,7 @@ export function WorkspaceSettings({
                         <p className="m-ui-0 truncate text-ui-sm font-medium text-content-primary">{integration.name}</p>
                         <p className="m-ui-0 truncate font-code text-ui-xs text-content-tertiary">{integration.provider} · config v{integration.configVersion} · {Object.keys(integration.credentials).length} credential slots</p>
                       </div>
-                      <span className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-elevated px-ui-2 py-ui-1 text-ui-xs text-content-tertiary"><Unplug className="size-ui-3" />Provider unavailable</span>
+                      <span className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-elevated px-ui-2 py-ui-1 text-ui-xs text-content-tertiary"><Unplug className="size-ui-3" />{availableIntegrations.includes(integration.id) ? "Provider available" : "Provider unavailable"}</span>
                       {confirmDeleteIntegration !== integration.id
                         ? <Button variant="ghost" size="icon" className="text-accent-red" aria-label={`Delete ${integration.name}`} onClick={() => setConfirmDeleteIntegration(integration.id)}><Trash2 className="size-ui-4" /></Button>
                         : null}

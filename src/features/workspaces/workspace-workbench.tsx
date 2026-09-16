@@ -608,7 +608,7 @@ export function WorkspaceWorkbench() {
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
-          {workspace.ui.settingsTabActive ? <WorkspaceSettings name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
             variables={variables}
             variableActions={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}
@@ -715,7 +715,7 @@ export function WorkspaceWorkbench() {
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${contextKey}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={workspace.requestConfig}
-            workspaceName={workspace.name} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
+            workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             onOpenVariable={openVariableDefinition}
             onCreateMissingVariable={createMissingVariableDefinition}
             onWorkspaceAuthChange={updateWorkspaceAuth}

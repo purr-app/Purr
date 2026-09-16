@@ -70,7 +70,7 @@ Rust modules provide narrow privileged boundaries:
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
 - `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
-- `src-tauri/src/observability/` (Phase 13+): provider-neutral trace/log domain, immutable provider and correlation registries, integration-scoped credential resolution, provider HTTP/parsing, bounded cache, cancellation, and normalization. React calls this service through typed bounded commands and owns presentation only.
+- `src-tauri/src/observability/`: provider-neutral trace/span models, immutable native provider/correlation registries, integration-scoped credential resolution, bounded memory cache, native span filtering/pagination, cancellation and response-linked lookup. Two synthetic providers are available only with `observability-fixtures`; real provider HTTP/parsing and Jaeger remain Phase 14. React calls this service through typed bounded commands and owns presentation only.
 - `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.
 - `src-tauri/src/composition.rs`: registered Tauri commands, plugins, and managed services.
@@ -150,9 +150,10 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 | Environment | `Environment` | `EnvironmentDefinition` | Working |
 | Variable | `Variable` | `VariableDefinition` | Static and dynamic-request working; external-secret reserved |
 | Cookie jar | `SessionCookieJar` | none | Working, workspace-local only |
-| Integration | `extraResources` | provider-neutral integration `ProjectResource` | Canonical envelope, unavailable-provider UI, and definition registry working; no provider execution/settings runtime |
+| Integration | `extraResources` | provider-neutral integration `ProjectResource` | Canonical envelope and native availability/lookup working; settings editors and real providers pending |
 | Extension document | `ExtensionDocument` | opaque versioned extension `ProjectResource` | Build-time type registration, unavailable host, and round-trip persistence working |
-| Trace / benchmark | discriminants only | none | Reserved, not working features |
+| Trace | Rust `ObservabilityService`; React presentation | none; configuration is an integration | Response Trace UI/native contracts working with opt-in synthetic providers; no real vendor adapter |
+| Benchmark | discriminant only | none | Reserved |
 
 ## Current architectural limitations
 
@@ -162,7 +163,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
 - Attached external project directories have application/native support but no current UI.
-- Registry schema sources, external secret providers, non-OpenAPI collection adapters, integration provider runtimes, tracing, benchmarks, and subscriptions are not implemented end-to-end.
+- Registry schema sources, external secret providers, non-OpenAPI collection adapters, real tracing adapters, benchmarks, and subscriptions are not implemented end-to-end. Trace lookup currently uses the exact persisted execution metadata, tolerates save debounce for one second, and reports a retryable missing-save state without delaying ordinary HTTP response display. Its cache is bounded and memory-only; no new persisted trace table or YAML format was added.
 
 ## Documentation ownership
 

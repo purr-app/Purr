@@ -82,6 +82,10 @@ const unavailableContent = () =>
 export function createBrowserPlatformAdapters(): PlatformAdapters {
   const secureStore = new BrowserSecureStore();
   return {
+    observability: {
+      integrations: async () => [],
+      trace: () => unavailable("unavailable"),
+    },
     persistenceBackend: new BrowserPersistenceBackend(),
     secureStore,
     httpTransport: () =>

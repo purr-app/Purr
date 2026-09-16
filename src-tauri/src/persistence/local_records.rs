@@ -692,6 +692,26 @@ impl LocalStateStore {
         let rows = stmt.query_map(params![workspace,document,before,limit.clamp(1,100)], |row| Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"startedAt":row.get::<_,i64>(1)?,"status":row.get::<_,i64>(2)?}))).map_err(db_error)?;
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
+
+    pub fn execution_metadata(
+        &self,
+        workspace: &str,
+        document: &str,
+        started_at: u64,
+    ) -> Result<Option<Value>, String> {
+        let row = self.db.query_row(
+            "SELECT id,CASE WHEN length(payload)<=1048576 THEN payload ELSE NULL END FROM request_executions WHERE workspace_id=?1 AND document_id=?2 AND started_at=?3 LIMIT 1",
+            params![workspace, document, started_at], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+        ).optional().map_err(db_error)?;
+        row.map(|(id, payload)| {
+            let payload = payload.ok_or("Execution metadata exceeds trace lookup limit")?;
+            let plain = self
+                .cipher
+                .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?;
+            serde_json::from_slice(&plain).map_err(|_| "Damaged execution metadata".into())
+        })
+        .transpose()
+    }
     pub fn journal(&self, workspace: &str, value: &Value) -> Result<(), String> {
         let payload = self.cipher.encrypt(
             &serde_json::to_vec(value).map_err(|_| "Invalid commit")?,
@@ -1014,6 +1034,59 @@ mod tests {
         drop(store);
         assert!(LocalStateStore::open(&directory.path().join("state.db"), &secure).is_err());
         assert!(!secure.has_key());
+    }
+
+    #[test]
+    fn observability_reads_exact_encrypted_execution_without_hydrating_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = MemoryRootKeyStore::default();
+        let path = directory.path().join("state.db");
+        let mut store = LocalStateStore::open(&path, &root).unwrap();
+        let record = |time| LocalRecord {
+            table: "request_executions".into(),
+            id: format!("document-{time}"),
+            value: serde_json::json!({
+                "documentId":"document", "response": {"status":200,"headers":[],"text":"synthetic-body","bodyBase64":"eA==",
+                "timeline":{"startedAtMs":time,"request":{"headers":[["x-b3-traceid","0123456789abcdef"]]}}}
+            }),
+        };
+        store.write("workspace", &[record(1), record(2)]).unwrap();
+        let first = store
+            .execution_metadata("workspace", "document", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first["response"]["timeline"]["startedAtMs"], 1);
+        assert!(first["response"]["text"].is_null());
+        assert!(store
+            .execution_metadata("other", "document", 1)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .execution_metadata("workspace", "other", 1)
+            .unwrap()
+            .is_none());
+        drop(store);
+        let reopened = LocalStateStore::open(&path, &root).unwrap();
+        assert!(super::super::observability::exchange(
+            reopened
+                .execution_metadata("workspace", "document", 2)
+                .unwrap()
+                .unwrap()
+        )
+        .is_ok());
+        reopened
+            .db
+            .execute(
+                "UPDATE request_executions SET payload=zeroblob(1048577) WHERE id='document-2'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .execution_metadata("workspace", "document", 2)
+                .unwrap_err(),
+            "Execution metadata exceeds trace lookup limit"
+        );
     }
 
     #[test]

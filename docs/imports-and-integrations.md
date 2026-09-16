@@ -19,7 +19,7 @@ This document distinguishes working import/export behavior from architectural ex
 | Canonical integration envelope and unavailable-provider management | Working |
 | Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
 | Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
-| Trace/observability providers | Frontend presentation registration only; Rust provider contracts/service, UI use case, and adapters remain Phase 13+ |
+| Trace/observability providers | Rust contracts/service and response Trace UI implemented; two opt-in synthetic providers; Jaeger remains Phase 14 |
 | Benchmark/history browser | Benchmark reserved; history storage API only |
 
 ## cURL paste/import
@@ -135,9 +135,9 @@ Do not advertise an adapter based only on its registration; it needs mapping, pe
 
 Legacy resources with a top-level `endpoint` migrate it to `config.endpoint` when loaded. Canonical saves omit the legacy field. The YAML codec preserves `config` recursively rather than applying core compaction rules inside provider-owned JSON, so unknown private fields, empty arrays, and provider values that resemble core defaults survive save/reload unchanged. Core validates `SecretRef` ownership only through the explicit credential map; JSON inside `config` is data and is never interpreted as a credential.
 
-Workspace settings list every configured integration. Today, an integration is available only when matching frontend presentation metadata is registered; Phase 13 makes the native provider registry authoritative for execution as well. Until the required contribution/provider is present, Purr labels the integration unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
+Workspace settings list every configured integration and obtain execution availability from the native provider registry through `ObservabilityPort`. Frontend presentation registration alone cannot make a provider executable. Until the native provider is present, Purr labels the integration unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
 
-The build-time frontend extension registry accepts integration presentation metadata through the public extension API and rejects duplicate presentation IDs before rendering. It does not accept executable trace/log providers, correlation extractors, credential resolvers, or provider caches. There is still no provider adapter implementation, settings editor, execution lifecycle, or credential acquisition flow. Phase 13 adds the Rust-owned provider-neutral use case. New providers use `Credential`/`SecretRef`, but plaintext resolution, provider HTTP, vendor parsing, correlation, normalization, caching, pagination, and cancellation remain inside Rust; feature components must not interpret arbitrary integration YAML or branch on provider IDs.
+The build-time frontend extension registry accepts integration presentation metadata through the public extension API and rejects duplicate presentation IDs before rendering. It does not accept executable trace/log providers, correlation extractors, credential resolvers, or provider caches. The Rust registry/service now supplies the provider-neutral trace lifecycle, with synthetic adapters for conformance. Real provider adapters and their settings/credential acquisition UI remain Phase 14+. Provider credentials use `SecretRef`; plaintext resolution, future provider HTTP/vendor parsing, correlation, normalization, caching, pagination, and cancellation belong to Rust. Feature components must not interpret arbitrary integration YAML or branch on provider IDs.
 
 ## Build-time extension modules
 
@@ -147,20 +147,27 @@ The curated entry points are `@purr/core/app`, `@purr/core/extension-api`, `@pur
 
 ## Tracing and observability
 
-Trace is currently a disabled response tab. There is frontend integration presentation metadata, but no executable trace provider/correlation contract, trace UI use case, native provider instance resolution, cache, persistence, or Jaeger/Datadog/CloudWatch/Grafana/Loki adapter yet.
+The response Trace tab renders bounded normalized native results through `ObservabilityPort`. The public normal build registers correlation extraction but no concrete trace provider yet. An explicit `observability-fixtures` Cargo feature registers `test.trace-alpha` and `test.trace-beta`; they return deterministic synthetic spans and require a synthetic scoped credential. They make no network calls and are not production integrations.
 
-When tracing becomes real, documentation must be expanded from actual code to cover:
+The current flow is:
 
 ```text
 request/response
-  → typed observability IPC using workspace/integration/exchange references
-  → Rust correlation extraction and provider lookup
-  → Rust scoped credential resolution, request, parsing, normalization and cache
+  → observability_trace IPC using workspace/integration/document/start timestamp
+  → Rust loads exact encrypted execution metadata and canonical integration
+  → Rust correlation extraction, scoped credential resolution and provider lookup
+  → Rust bounded cache, provider result validation, filtering and pagination
   → bounded normalized trace/log DTO
   → response Trace UI
 ```
 
 Provider-specific DTOs and plaintext credentials must never cross into React. Canonical integration YAML stores `SecretRef` values and opaque provider config; the Rust provider validates/migrates that config and resolves only its declared credential keys. The frontend renders normalized bounded results and UI state only.
+
+The core extractor supports W3C `traceparent`, B3 single/multi-header trace IDs and manual input. Response headers take precedence over request headers; only the first valid reference is used per lookup. Extractors can request a native body prefix of at most 64 KiB; standard header extraction does not read body bytes. The exact saved execution lookup is scoped by workspace/document/start timestamp and does not hydrate bodies. The native service retries the normal save debounce for up to one second, then reports a missing-save state.
+
+Limits: 1,000 spans / 64 KiB per normalized trace, 25 spans per IPC page, 32 memory-cache entries with a 60-second TTL, four concurrent operations, 15-second timeout. Cache keys bind workspace, integration, provider/config and current credential fingerprints; credentials are re-resolved before cache hits. Search filters span service/operation in Rust. Cursors are bound to the query and configuration/credential generation. There is no persisted trace cache, standalone provider trace search, log API or waterfall yet. Native requests, parsing and retry policy for a real adapter are Phase 14 work.
+
+See [Phase 13 manual verification](testing/phase-13-observability.md) for the opt-in build, synthetic fixture generator, secure-store provisioning, cancellation and restart scenarios.
 
 ## History and benchmark concepts
 
@@ -180,4 +187,6 @@ Execution history currently has encrypted native storage and metadata pagination
 - `src-tauri/src/importing.rs` — native loaders, OpenAPI adapter, `$ref` resolver, intermediate model, and canonical normalization.
 - `src/application/workspace-persistence.ts` — additive collision handling and normal persistence path.
 - `src/domain/project.ts` — canonical import targets and the provider-neutral integration envelope.
-- `src/features/request-workbench/components/response-viewer.tsx` — disabled Trace surface.
+- `src/features/observability/trace-panel.tsx` — bounded Trace UI through the observability port.
+- `src-tauri/src/observability/service.rs` — native provider selection, credentials, correlation, cache and pagination.
+- `src-tauri/src/persistence/observability.rs` — read-only canonical integration and saved execution projection.

@@ -231,6 +231,35 @@ pub fn secure_get(
     access(&app, &state, |storage| storage.local.get_secret(&reference))
 }
 
+pub fn observability_integrations(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    workspace: &str,
+) -> crate::observability::domain::Result<Vec<crate::observability::service::Integration>> {
+    access(app, state, |storage| {
+        super::observability::integrations(&storage.files(workspace)?)
+    })
+    .map_err(|_| crate::observability::domain::ObservabilityError::StorageUnavailable)
+}
+
+pub fn observability_exchange(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    query: &crate::observability::domain::TraceQuery,
+) -> crate::observability::domain::Result<crate::observability::correlation::ExchangeInput> {
+    use crate::observability::domain::ObservabilityError;
+    let value = access(app, state, |storage| {
+        storage.local.execution_metadata(
+            &query.workspace_id,
+            &query.document_id,
+            query.started_at_ms,
+        )
+    })
+    .map_err(|_| ObservabilityError::StorageUnavailable)?
+    .ok_or(ObservabilityError::ResponsePending)?;
+    super::observability::exchange(value)
+}
+
 pub fn secure_set(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,

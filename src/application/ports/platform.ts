@@ -7,6 +7,7 @@ import type { HttpTransportPort } from "./http";
 import type { RequestFileRef } from "./http";
 import type { PersistencePort } from "./persistence";
 import type { ResponseContentPort } from "./response-content";
+import type { ObservabilityPort } from "./observability";
 
 export interface OAuthCallbackPort {
   authorize(input: {
@@ -60,6 +61,7 @@ export type RuntimePlatform = Readonly<{
 }>;
 
 export type PlatformAdapters = Readonly<{
+  observability: ObservabilityPort;
   persistenceBackend: PersistencePort;
   secureStore: SecureStore;
   httpTransport: HttpTransportPort;

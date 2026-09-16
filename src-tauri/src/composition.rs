@@ -30,6 +30,7 @@ pub fn run() {
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default())
+        .manage(crate::observability::ObservabilityState::default())
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
@@ -37,6 +38,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::exit_app,
+            commands::observability::observability_integrations,
+            commands::observability::observability_trace,
+            commands::observability::cancel_observability,
             commands::response::save_response_body,
             commands::response::response_content_save,
             commands::response::response_content_inspect,

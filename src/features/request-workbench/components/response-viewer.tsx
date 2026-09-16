@@ -59,6 +59,7 @@ import {
 import { ResponseCodeViewer } from "./response-code-viewer";
 import { formatHttpRequest } from "../model/request-code";
 import { LargeResponseViewer } from "./large-response-viewer";
+import { TracePanel } from "../../observability/trace-panel";
 import { NativeBinaryResponse, NativeMediaResponse } from "./native-response-content";
 
 export type ResponseVariableCandidate = { name: string; value: string; jsonPath: string; jq: string; dynamic: boolean };
@@ -120,7 +121,7 @@ const responseTabs: readonly {
   { value: "headers", label: "Headers" },
   { value: "cookie", label: "Cookie", icon: CookieIcon },
   { value: "timeline", label: "Timeline", icon: Clock3 },
-  { value: "trace", label: "Trace", icon: GitBranch, disabled: true },
+  { value: "trace", label: "Trace", icon: GitBranch },
   { value: "request", label: "Request", icon: Code2 },
 ];
 
@@ -1197,7 +1198,7 @@ function ResponseFindBar({
   );
 }
 
-export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable }: { response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void }) {
+export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable, workspaceId, documentId }: { response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; workspaceId?: string; documentId?: string }) {
   const response = useMemo(() => responseDetails(storedResponse), [storedResponse]);
   const inlineResponse = isInlineHttpResponse(storedResponse) ? storedResponse : null;
   const referencedResponse = isInlineHttpResponse(storedResponse) ? null : storedResponse;
@@ -1369,6 +1370,9 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           : referencedResponse ? <ReferencedResponseBody regularExpression={regularExpression} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
           : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
+        {tab === "trace" ? workspaceId && documentId
+          ? <TracePanel key={`${workspaceId}:${documentId}:${storedResponse.timeline.startedAtMs}`} workspaceId={workspaceId} documentId={documentId} startedAtMs={storedResponse.timeline.startedAtMs} />
+          : <p className="p-ui-4 text-ui-sm text-content-tertiary">Open this response in a workspace to look up traces.</p> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}
         {tab === "headers" ? (

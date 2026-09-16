@@ -1,0 +1,1 @@
+{"protocolVersion":1,"traceId":"0123456789abcdef0123456789abcdef","spans":[{"id":"0123456789abcdef","parentSpanId":null,"service":"synthetic-api","operation":"GET /fixture","startedAtUs":1700000000000000,"durationUs":750,"status":"ok","attributes":{"fixture":"purr-synthetic","cached":false,"attempts":1.0,"tags":["synthetic",2.0,true]}}],"total":1,"nextCursor":null,"cached":false}

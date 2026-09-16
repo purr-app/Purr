@@ -24,6 +24,7 @@ import type {
 import type { ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 import { getLocalAttachmentReference } from "../../storage/file-codec";
+import { tauriObservability } from "./observability";
 
 class TauriSecureStore implements SecureStore {
   get(reference: SecretRef) {
@@ -442,6 +443,7 @@ class TauriResponseContent implements ResponseContentPort {
 export function createTauriPlatformAdapters(): PlatformAdapters {
   const secureStore = new TauriSecureStore();
   return {
+    observability: tauriObservability,
     persistenceBackend: new TauriPersistence(),
     secureStore,
     httpTransport: startHttp,

@@ -1,5 +1,7 @@
 # Response lifecycle
 
+The **Trace** tab now calls a Rust-owned observability service using only the workspace, document and exact execution timestamp. It reads encrypted saved metadata, extracts correlation in Rust, resolves scoped integration credentials, and returns bounded normalized span pages. This lookup starts only on an explicit Trace action and does not delay HTTP response rendering. Real vendor adapters are pending; see [tracing and observability](imports-and-integrations.md#tracing-and-observability).
+
 This document owns the path from native response bytes to frontend rendering, search, extraction, history, and error state.
 
 ## Pipeline
@@ -61,7 +63,7 @@ Content-Type is authoritative when present. Safe sniffing is intentionally narro
 - **Headers**: repeated response header rows.
 - **Cookie**: cookies parsed from response `Set-Cookie`; values are masked until reveal.
 - **Timeline**: preparation/connection-and-waiting/download segments, redirects, protocol, addresses, and safe request metadata.
-- **Trace**: visible but disabled; there is no trace model or provider lookup yet.
+- **Trace**: normalized span pages from a Rust-owned provider lookup, with integration selection, manual trace ID, search, pagination and cancellation. Real adapters remain Phase 14; Phase 13 has opt-in synthetic providers.
 - **Request**: the prepared display request by default, with explicit secret reveal.
 
 The parent response state also presents status, protocol, addresses, total duration, and byte size. HTTP errors still have a normal response viewer; transport/preparation errors use the Error state.

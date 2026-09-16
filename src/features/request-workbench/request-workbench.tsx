@@ -26,6 +26,8 @@ import type { DynamicVariableCacheEntry, Variable } from "../workspaces/model/wo
 import { useApplicationServices } from "../../app/application-services-context";
 
 function ResponseArea({
+  workspaceId,
+  documentId,
   response,
   error,
   sending,
@@ -34,6 +36,8 @@ function ResponseArea({
   onCancel,
   progress,
 }: {
+  workspaceId: string;
+  documentId: string;
   response: StoredHttpResponse | null;
   error: string;
   sending: boolean;
@@ -44,7 +48,7 @@ function ResponseArea({
 }) {
   if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} progress={progress} />;
   if (error) return <ErrorResponse message={error} />;
-  if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} />;
+  if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} workspaceId={workspaceId} documentId={documentId} />;
   return <EmptyResponse />;
 }
 
@@ -63,7 +67,8 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+  workspaceId: string;
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -281,7 +286,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     />
   );
   const responsePane = (
-    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} />
+    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} />
   );
 
   return (
