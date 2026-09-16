@@ -261,17 +261,18 @@ test("an exact one MiB native text response stays out of CodeMirror", async ({ p
             complete: true,
           },
         };
-        if (command === "response_content_read_range") {
-          const offset = args.range.offset as number;
-          const length = Math.min(args.range.length as number, size - offset);
-          const bytes = new Uint8Array(length).fill("x".charCodeAt(0));
-          const marker = new TextEncoder().encode("purr-synthetic-start");
-          if (offset < marker.length)
-            bytes.set(marker.slice(offset, Math.min(marker.length, offset + length)), 0);
+        if (command === "response_content_read_lines") {
+          const offset = Number(String(args.cursor ?? 0).replace("preview:", ""));
+          const length = Math.min(192 * 1024, size - offset);
+          const text = `${offset === 0 ? "purr-synthetic-start" : ""}${"x".repeat(Math.max(0, length - (offset === 0 ? 20 : 0)))}`;
+          const segments = Array.from({ length: Math.ceil(text.length / (16 * 1024)) }, (_, index) => {
+            const part = text.slice(index * 16 * 1024, (index + 1) * 16 * 1024);
+            return { byteOffset: offset + index * 16 * 1024, byteLength: part.length, text: part, continuesFromPrevious: offset > 0 || index > 0, continuesToNext: offset + (index + 1) * 16 * 1024 < size };
+          });
           return {
             offset,
             bytesRead: length,
-            content: new TextDecoder().decode(bytes),
+            segments,
             complete: offset + length >= size,
           };
         }
@@ -293,9 +294,105 @@ test("an exact one MiB native text response stays out of CodeMirror", async ({ p
   await expect(response.locator(".cm-editor")).toHaveCount(0);
 });
 
+test("a 999 KiB single line uses bounded native segments", async ({ page }) => {
+  await page.addInitScript(() => {
+    const size = 999 * 1024;
+    (window as any).isTauri = true;
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 4,
+          headers: [["content-type", "text/plain; charset=utf-8"]],
+          content: { id: "pathological-999-kib", byteLength: size, mediaType: "text/plain", charset: "utf-8", lineCount: 1, maxLineBytes: size, complete: true },
+        };
+        if (command === "response_content_read_lines") {
+          const offset = Number(String(args.cursor ?? 0).replace("preview:", ""));
+          const segments = [{ byteOffset: 0, byteLength: size, text: "x".repeat(96), hiddenBytes: size - 128, suffix: "x".repeat(32), continuesFromPrevious: false, continuesToNext: false }];
+          return { offset, bytesRead: size, segments, complete: true };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/pathological-999-kib.txt");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const response = page.getByRole("region", { name: "HTTP response" });
+  const viewer = response.getByLabel("Large response body viewer", { exact: true });
+  await expect(viewer.locator("[data-response-line-segment]").first()).toBeVisible();
+  await expect(response.locator(".cm-editor")).toHaveCount(0);
+  await expect(viewer.locator("[data-response-line-segment]")).toHaveCount(1);
+  await expect(response.getByRole("button", { name: /hidden/ })).toBeVisible();
+  await response.getByRole("button", { name: /hidden/ }).click();
+  await expect(page.getByRole("dialog", { name: "Long line preview" })).toContainText("original response is unchanged");
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  const typography = await viewer.evaluate((node) => {
+    const css = getComputedStyle(node);
+    return { size: css.fontSize, expectedSize: getComputedStyle(document.documentElement).fontSize, whitespace: getComputedStyle(node.querySelector("[data-response-line-segment]")!).whiteSpace };
+  });
+  expect(Number.parseFloat(typography.size)).toBe(Number.parseFloat(typography.expectedSize) * 0.875);
+  expect(typography.whitespace).toBe("pre");
+  const lengths = await viewer.locator("[data-response-line-segment]").allTextContents();
+  expect(Math.max(...lengths.map((value) => value.length))).toBeLessThanOrEqual(16 * 1024);
+});
+
+test("a two-million-line response keeps only virtual rows in the DOM", async ({ page }) => {
+  await page.addInitScript(() => {
+    const lines = 2_000_000;
+    const size = lines * 2;
+    (window as any).isTauri = true;
+    (window as any).__lineCursors = [];
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 4,
+          headers: [["content-type", "text/plain; charset=utf-8"]],
+          content: { id: "two-million-lines", byteLength: size, mediaType: "text/plain", charset: "utf-8", lineCount: lines + 1, maxLineBytes: 1, complete: true },
+        };
+        if (command === "response_content_read_lines") {
+          const offset = Number(String(args.cursor ?? 0).replace("preview:", ""));
+          (window as any).__lineCursors.push(offset);
+          const count = Math.min(1000, Math.floor((size - offset) / 2));
+          const nextOffset = offset + count * 2;
+          return {
+            offset,
+            bytesRead: count * 2,
+            segments: Array.from({ length: count }, (_, index) => ({ byteOffset: offset + index * 2, byteLength: 1, text: "x", continuesFromPrevious: false, continuesToNext: false })),
+            nextCursor: nextOffset < size ? String(nextOffset) : undefined,
+            complete: nextOffset >= size,
+          };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/two-million-lines.txt");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const response = page.getByRole("region", { name: "HTTP response" });
+  const viewer = response.getByLabel("Large response body viewer", { exact: true });
+  await expect(viewer.locator("[data-response-line-segment]").first()).toBeVisible();
+  expect(await viewer.locator("[data-response-line-segment]").count()).toBeLessThan(150);
+  for (const cursor of [2000, 4000, 6000, 8000]) {
+    await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await expect.poll(() => page.evaluate((expected) => (window as any).__lineCursors.includes(expected), cursor)).toBe(true);
+    await expect(viewer).toHaveAttribute("aria-busy", "false");
+    expect(await viewer.locator("[data-response-line-segment]").count()).toBeLessThan(150);
+  }
+  await expect(viewer.getByRole("button", { name: "Return to beginning", exact: true })).toHaveCount(1);
+  await viewer.getByRole("button", { name: "Return to beginning", exact: true }).click();
+  await expect(viewer).toHaveAttribute("aria-busy", "false");
+  await expect(response.getByLabel("Response position", { exact: true })).toHaveCount(0);
+});
+
 test("large native responses use bounded pages instead of a full CodeMirror document", async ({ page }) => {
   await page.addInitScript(() => {
     const size = 100 * 1024 * 1024;
+    let finishPendingSearch: ((value: unknown) => void) | undefined;
     const markers = [
       { offset: 64, value: "purr-first-marker" },
       { offset: Math.floor(size / 2), value: "purr-middle-marker" },
@@ -321,10 +418,10 @@ test("large native responses use bounded pages instead of a full CodeMirror docu
             complete: true,
           },
         };
-        if (command === "response_content_read_range") {
-          const offset = args.range.offset as number;
-          const length = Math.min(args.range.length as number, size - offset);
-          (window as any).__largeResponseReads.push({ offset, length, mode: args.mode });
+        if (command === "response_content_read_lines") {
+          const offset = Number(String(args.cursor ?? 0).replace("preview:", ""));
+          const length = Math.min(192 * 1024, size - offset);
+          (window as any).__largeResponseReads.push({ offset, length, mode: "text" });
           const characters = new Uint8Array(length).fill("x".charCodeAt(0));
           for (const marker of markers) {
             const from = Math.max(offset, marker.offset);
@@ -336,12 +433,28 @@ test("large native responses use bounded pages instead of a full CodeMirror docu
             );
           }
           const text = new TextDecoder().decode(characters);
+          const segments = Array.from({ length: Math.ceil(text.length / (16 * 1024)) }, (_, index) => {
+            const part = text.slice(index * 16 * 1024, (index + 1) * 16 * 1024);
+            return { byteOffset: offset + index * 16 * 1024, byteLength: part.length, text: part, continuesFromPrevious: offset > 0 || index > 0, continuesToNext: offset + (index + 1) * 16 * 1024 < size };
+          });
           return {
             offset,
             bytesRead: length,
-            content: args.mode === "base64" ? btoa(text) : text,
+            segments,
             complete: offset + length >= size,
           };
+        }
+        if (command === "response_content_search") {
+          if (args.query.text === "slow-search") return new Promise((resolve) => { finishPendingSearch = resolve; });
+          return {
+            matches: markers.filter((marker) => args.query.regularExpression ? new RegExp(args.query.text).test(marker.value) : marker.value.toLocaleLowerCase().includes(String(args.query.text).toLocaleLowerCase())).map((marker) => ({ byteOffset: marker.offset, byteLength: marker.value.length, snippet: marker.value })),
+            totalKnown: 1,
+          };
+        }
+        if (command === "cancel_response_content_operation") {
+          (window as any).__largeSearchCancelled = true;
+          finishPendingSearch?.({ matches: [], totalKnown: 0 });
+          return null;
         }
         throw new Error(`Unexpected command: ${command}`);
       },
@@ -355,15 +468,7 @@ test("large native responses use bounded pages instead of a full CodeMirror docu
   const viewer = response.getByLabel("Large response body viewer", { exact: true });
   await expect(viewer).toContainText("purr-first-marker");
   await expect(response.locator(".cm-editor")).toHaveCount(0);
-  await expect(response.getByRole("button", { name: "Copy unavailable", exact: true })).toBeDisabled();
-
-  const position = response.getByLabel("Response position", { exact: true });
-  await position.fill(String(266 * 192 * 1024));
-  await expect(viewer).toContainText("purr-middle-marker");
-  await response.getByRole("button", { name: "Last", exact: true }).click();
-  await expect(viewer).toContainText("purr-tail-marker");
-  await response.getByRole("button", { name: "First", exact: true }).click();
-  await expect(viewer).toContainText("purr-first-marker");
+  await expect(response.getByRole("button", { name: "Copy response body", exact: true })).toBeDisabled();
 
   await viewer.click();
   await page.keyboard.press("Control+f");
@@ -371,14 +476,32 @@ test("large native responses use bounded pages instead of a full CodeMirror docu
   await find.fill("purr-tail-marker");
   await expect(response.getByText("1/1", { exact: true })).toBeVisible({ timeout: 20_000 });
   await expect(viewer).toContainText("purr-tail-marker");
+  await response.getByRole("button", { name: "Use regular expression", exact: true }).click();
+  await expect(response.getByRole("button", { name: "Use regular expression", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await find.fill("purr-(middle|tail)-marker");
+  await expect(response.getByText("1/2", { exact: true })).toBeVisible();
+  await expect(viewer.locator("[data-large-response-match]")).toContainText("purr-middle-marker");
+  await response.getByRole("button", { name: "Next match", exact: true }).click();
+  await expect(viewer.locator("[data-large-response-match]")).toContainText("purr-tail-marker");
+  await response.getByRole("button", { name: "Use regular expression", exact: true }).click();
+  await find.fill("purr-tail-marker");
+  await expect(response.getByText("1/1", { exact: true })).toBeVisible();
   await response.getByRole("button", { name: "Previous match", exact: true }).click();
   await expect(viewer).toContainText("purr-tail-marker");
   await response.getByRole("button", { name: "Next match", exact: true }).click();
   await expect(viewer).toContainText("purr-tail-marker");
   await response.getByRole("button", { name: "Close find", exact: true }).click();
 
+  await viewer.click();
+  await page.keyboard.press("Control+f");
+  const slowFind = response.getByLabel("Find in response", { exact: true });
+  await slowFind.fill("slow-search");
+  await expect(response.getByRole("status").filter({ hasText: "Searching the response" })).toBeVisible();
+  await response.getByRole("button", { name: "Close find", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__largeSearchCancelled)).toBe(true);
+
   const reads = await page.evaluate(() => (window as any).__largeResponseReads);
-  expect(reads.length).toBeGreaterThanOrEqual(4);
+  expect(reads.length).toBeGreaterThanOrEqual(2);
   expect(reads.some((read: { length: number }) => read.length <= 192 * 1024)).toBe(true);
   expect(reads.every((read: { length: number }) => read.length <= 4 * 1024 * 1024)).toBe(true);
 
@@ -387,8 +510,69 @@ test("large native responses use bounded pages instead of a full CodeMirror docu
   const restored = page.getByRole("region", { name: "HTTP response" });
   const restoredViewer = restored.getByLabel("Large response body viewer", { exact: true });
   await expect(restoredViewer).toContainText("purr-first-marker");
-  await restored.getByRole("button", { name: "Last", exact: true }).click();
-  await expect(restoredViewer).toContainText("purr-tail-marker");
+  await expect(restored.getByRole("button", { name: "Last", exact: true })).toHaveCount(0);
+});
+
+test("large JSON Pretty and query use native content operations", async ({ page }) => {
+  await page.addInitScript(() => {
+    const size = 2 * 1024 * 1024;
+    (window as any).isTauri = true;
+    (window as any).__largeOperations = [];
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 4,
+          headers: [["content-type", "application/json"]],
+          content: { id: "large-json-operations", byteLength: size, mediaType: "application/json", charset: "utf-8", lineCount: 1, maxLineBytes: size, complete: true },
+        };
+        if (command === "response_content_read_lines") {
+          if (args.reference.id === "pretty-json") return {
+            offset: 0, bytesRead: size, complete: true,
+            segments: [
+              { byteOffset: 0, byteLength: 1, text: "{", continuesFromPrevious: false, continuesToNext: false },
+              { byteOffset: 2, byteLength: 38, text: '  "meta": { "fixture": "purr-synthetic" },', continuesFromPrevious: false, continuesToNext: false },
+              { byteOffset: 41, byteLength: size - 128, text: '  "payload": "' + "x".repeat(48), hiddenBytes: size - 256, suffix: '",', continuesFromPrevious: false, continuesToNext: false },
+              { byteOffset: size - 85, byteLength: 30, text: '  "tail": "purr-tail-marker"', continuesFromPrevious: false, continuesToNext: false },
+              { byteOffset: size - 1, byteLength: 1, text: "}", continuesFromPrevious: false, continuesToNext: false },
+            ],
+          };
+          const value = '{"meta":{"fixture":"purr-synthetic"},"payload":"raw"}';
+          return { offset: 0, bytesRead: value.length, segments: [{ byteOffset: 0, byteLength: value.length, text: value, continuesFromPrevious: false, continuesToNext: false }], complete: true };
+        }
+        if (command === "response_content_format") {
+          (window as any).__largeOperations.push({ command, request: args.request });
+          return { kind: "content", reference: { id: "pretty-json", byteLength: size, mediaType: "application/json", complete: true } };
+        }
+        if (command === "response_content_query") {
+          (window as any).__largeOperations.push({ command, request: args.request });
+          return { kind: "value", value: "purr-synthetic" };
+        }
+        if (command === "cancel_response_content_operation" || command === "response_content_release") return null;
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/large-operations.json");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const response = page.getByRole("region", { name: "HTTP response" });
+  const viewer = response.getByLabel("Large response body viewer", { exact: true });
+  await expect(response.getByRole("button", { name: "Pretty", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(viewer).toContainText("purr-synthetic");
+  await expect(viewer).toContainText("purr-tail-marker");
+  await expect(viewer.locator("[data-response-line-segment]")).toHaveCount(5);
+  await expect(viewer.locator(".text-syntax-property").first()).toBeVisible();
+  await page.getByRole("button", { name: "Vertical split view", exact: true }).click();
+  await page.screenshot({ path: "test-results/response-native-preview.png", fullPage: true });
+  await response.getByLabel("jq large response query", { exact: true }).fill(".meta.fixture");
+  await response.getByRole("button", { name: "Run query", exact: true }).click();
+  await expect(viewer).toContainText("purr-synthetic");
+  expect(await page.evaluate(() => (window as any).__largeOperations)).toEqual(expect.arrayContaining([
+    { command: "response_content_format", request: { syntax: "json", indent: 2 } },
+    { command: "response_content_query", request: { language: "jq", expression: ".meta.fixture" } },
+  ]));
 });
 
 test("HTML and simple media render safely while binary responses use the native save dialog", async ({ page }) => {

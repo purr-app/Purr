@@ -15,7 +15,12 @@ import type {
   StoredWorkspace,
 } from "../../application/ports/persistence";
 import type { SecureStore } from "../../application/ports/credentials";
-import type { ResponseContentPort } from "../../application/ports/response-content";
+import type {
+  FormatRequest,
+  JsonQueryRequest,
+  ResponseContentPort,
+  SearchQuery,
+} from "../../application/ports/response-content";
 import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 
@@ -167,6 +172,8 @@ const contentInfoSchema = z.object({
   size: z.number().int().nonnegative(),
   mediaType: z.string().optional(),
   textEncoding: z.string().optional(),
+  lineCount: z.number().int().nonnegative().optional(),
+  maxLineBytes: z.number().int().nonnegative().optional(),
 });
 const contentWindowSchema = z.object({
   offset: z.number().int().nonnegative(),
@@ -175,7 +182,19 @@ const contentWindowSchema = z.object({
   complete: z.boolean(),
 });
 const linePageSchema = z.object({
-  lines: z.array(z.string()),
+  offset: z.number().int().nonnegative(),
+  bytesRead: z.number().int().nonnegative(),
+  segments: z.array(z.object({
+    byteOffset: z.number().int().nonnegative(),
+    byteLength: z.number().int().nonnegative(),
+    lineStartOffset: z.number().int().nonnegative().optional(),
+    hiddenBytes: z.number().int().nonnegative().optional(),
+    suffix: z.string().optional(),
+    text: z.string(),
+    continuesFromPrevious: z.boolean(),
+    continuesToNext: z.boolean(),
+  })),
+  previousCursor: z.string().optional(),
   nextCursor: z.string().optional(),
   complete: z.boolean(),
 });
@@ -185,8 +204,25 @@ const contentReferenceSchema = z.object({
   byteLength: z.number().int().nonnegative(),
   mediaType: z.string().optional(),
   charset: z.string().optional(),
+  lineCount: z.number().int().nonnegative().optional(),
+  maxLineBytes: z.number().int().nonnegative().optional(),
   complete: z.boolean(),
 });
+const searchPageSchema = z.object({
+  matches: z.array(z.object({
+    byteOffset: z.number().int().nonnegative(),
+    byteLength: z.number().int().nonnegative().optional(),
+    line: z.number().int().nonnegative().optional(),
+    snippet: z.string(),
+  })),
+  nextCursor: z.string().optional(),
+  totalKnown: z.number().int().nonnegative().optional(),
+});
+const contentOperationResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("value"), value: z.unknown() }),
+  z.object({ kind: z.literal("window"), window: contentWindowSchema }),
+  z.object({ kind: z.literal("content"), reference: contentReferenceSchema }),
+]);
 const transportMetadataSchema = z.object({
   status: z.number().int(),
   statusText: z.string(),
@@ -279,6 +315,35 @@ function rejectAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
 }
 
+async function invokeContentOperation(
+  command: string,
+  arguments_: Record<string, unknown>,
+  signal?: AbortSignal,
+) {
+  rejectAborted(signal);
+  const operationId = crypto.randomUUID();
+  const cancel = () => {
+    void invoke("cancel_response_content_operation", { operationId }).catch(() => {});
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const result = await invoke<unknown>(command, { operationId, ...arguments_ });
+    if (signal?.aborted) {
+      const parsed = contentOperationResultSchema.safeParse(result);
+      if (parsed.success && parsed.data.kind === "content") {
+        void invoke("response_content_release", { reference: parsed.data.reference }).catch(() => {});
+      }
+    }
+    rejectAborted(signal);
+    return result;
+  } catch (cause) {
+    rejectAborted(signal);
+    throw cause;
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
 class TauriResponseContent implements ResponseContentPort {
   async inspect(reference: ResponseContentRef, signal?: AbortSignal) {
     rejectAborted(signal);
@@ -315,9 +380,48 @@ class TauriResponseContent implements ResponseContentPort {
     );
   }
 
-  search = unavailableContent;
-  format = unavailableContent;
-  query = unavailableContent;
+  async search(
+    reference: ResponseContentRef,
+    query: SearchQuery,
+    cursor?: string,
+    signal?: AbortSignal,
+  ) {
+    return searchPageSchema.parse(
+      await invokeContentOperation(
+        "response_content_search",
+        { reference, query, cursor },
+        signal,
+      ),
+    );
+  }
+
+  async format(
+    reference: ResponseContentRef,
+    request: FormatRequest,
+    signal?: AbortSignal,
+  ) {
+    return contentOperationResultSchema.parse(
+      await invokeContentOperation(
+        "response_content_format",
+        { reference, request },
+        signal,
+      ),
+    );
+  }
+
+  async query(
+    reference: ResponseContentRef,
+    request: JsonQueryRequest,
+    signal?: AbortSignal,
+  ) {
+    return contentOperationResultSchema.parse(
+      await invokeContentOperation(
+        "response_content_query",
+        { reference, request },
+        signal,
+      ),
+    );
+  }
   save = unavailableContent;
 
   async release(reference: ResponseContentRef) {

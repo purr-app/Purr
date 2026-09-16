@@ -1,5 +1,10 @@
-use super::contracts::{
-    ByteRange, ContentInfo, ContentMetadata, ContentWindow, LinePage, ResponseContentRef,
+use super::{
+    contracts::{
+        ByteRange, ContentInfo, ContentMetadata, ContentOperationResult, ContentWindow,
+        FormatRequest, JsonQueryRequest, LinePage, LineSegment, ResponseContentRef, SearchMatch,
+        SearchPage, SearchQuery,
+    },
+    operations::{format_document, query_document, query_large_document},
 };
 use crate::{
     persistence::local_records::LocalStateStore,
@@ -7,11 +12,23 @@ use crate::{
 };
 use aes_gcm::aead::rand_core::{OsRng, RngCore};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use regex::bytes::RegexBuilder;
+use regex_syntax::Parser as RegexParser;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+const LINE_PAGE_BYTES: usize = 192 * 1024;
+const LINE_SEGMENT_BYTES: usize = 16 * 1024;
+const SEARCH_WINDOW_BYTES: usize = 4 * 1024 * 1024;
+const SEARCH_MAX_PATTERN_BYTES: usize = 4 * 1024;
+const SEARCH_MAX_MATCH_BYTES: usize = 64 * 1024;
+const SEARCH_PAGE_MATCHES: usize = 1_000;
+const STRUCTURED_PARSE_BYTES: u64 = 32 * 1024 * 1024;
+const INLINE_OPERATION_RESULT_BYTES: usize = 256 * 1024;
 
 const ENCRYPTED_TABLES: [&str; 12] = [
     "workspace_local_state",
@@ -217,11 +234,45 @@ impl ResponseContentStore {
         if !reference.complete {
             return Err("Response content is incomplete".into());
         }
+        let (line_count, max_line_bytes) = self.line_statistics(id, reference.byte_length)?;
         Ok(ContentInfo {
             size: reference.byte_length,
             media_type: reference.media_type,
             text_encoding: reference.charset,
+            line_count: Some(line_count),
+            max_line_bytes: Some(max_line_bytes),
         })
+    }
+
+    fn line_statistics(&self, id: &str, size: u64) -> Result<(u64, u64), String> {
+        if size == 0 {
+            return Ok((0, 0));
+        }
+        let mut offset = 0_u64;
+        let mut line_count = 1_u64;
+        let mut current_line = 0_u64;
+        let mut maximum_line = 0_u64;
+        while offset < size {
+            let bytes = self.read_plain_range(
+                id,
+                offset,
+                (size - offset).min(self.limits.max_window_bytes as u64),
+            )?;
+            if bytes.is_empty() {
+                break;
+            }
+            for byte in &bytes {
+                if *byte == b'\n' {
+                    maximum_line = maximum_line.max(current_line);
+                    current_line = 0;
+                    line_count += 1;
+                } else {
+                    current_line += 1;
+                }
+            }
+            offset += bytes.len() as u64;
+        }
+        Ok((line_count, maximum_line.max(current_line)))
     }
 
     pub fn read_range(
@@ -240,17 +291,43 @@ impl ResponseContentStore {
         if requested > self.limits.max_window_bytes {
             return Err("Response window exceeds the configured limit".into());
         }
-        let end = range
-            .offset
-            .saturating_add(range.length)
-            .min(reference.byte_length);
-        let mut bytes = Vec::with_capacity((end.saturating_sub(range.offset)) as usize);
-        let mut expected_offset = range.offset;
+        let bytes = self.read_plain_range(id, range.offset, range.length)?;
+        let end = range.offset.saturating_add(bytes.len() as u64);
+        let content = match mode {
+            "text" => String::from_utf8_lossy(&bytes).into_owned(),
+            "hex" => bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+            "bytes" | "base64" => STANDARD.encode(&bytes),
+            _ => return Err("Unsupported response window mode".into()),
+        };
+        Ok(ContentWindow {
+            offset: range.offset,
+            bytes_read: bytes.len() as u64,
+            content,
+            complete: end >= reference.byte_length,
+        })
+    }
+
+    fn read_plain_range(&self, id: &str, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+        validate_id(id)?;
+        let reference = self.reference(id)?;
+        if !reference.complete {
+            return Err("Response content is incomplete".into());
+        }
+        let requested = usize::try_from(length).map_err(|_| "Response window is too large")?;
+        if requested > self.limits.max_window_bytes {
+            return Err("Response window exceeds the configured limit".into());
+        }
+        if offset > reference.byte_length {
+            return Err("Response window starts beyond the content".into());
+        }
+        let end = offset.saturating_add(length).min(reference.byte_length);
+        let mut bytes = Vec::with_capacity((end.saturating_sub(offset)) as usize);
+        let mut expected_offset = offset;
         let mut statement = self.db.prepare(
             "SELECT chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext FROM response_content_chunks WHERE content_id=?1 AND plain_offset < ?3 AND plain_offset + plain_length > ?2 ORDER BY chunk_index",
         ).map_err(|_| "Cannot read response content")?;
         let chunks = statement
-            .query_map(params![id, range.offset, end], |row| {
+            .query_map(params![id, offset, end], |row| {
                 Ok((
                     row.get::<_, u64>(0)?,
                     row.get::<_, u64>(1)?,
@@ -273,7 +350,7 @@ impl ResponseContentStore {
             if plain.len() as u64 != length {
                 return Err("Response content chunk is damaged".into());
             }
-            let from = range.offset.saturating_sub(offset) as usize;
+            let from = expected_offset.saturating_sub(offset) as usize;
             let to = (end - offset).min(length) as usize;
             if offset + from as u64 != expected_offset {
                 return Err("Response content has a missing or reordered chunk".into());
@@ -284,18 +361,7 @@ impl ResponseContentStore {
         if expected_offset != end {
             return Err("Response content has a missing or reordered chunk".into());
         }
-        let content = match mode {
-            "text" => String::from_utf8_lossy(&bytes).into_owned(),
-            "hex" => bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
-            "bytes" | "base64" => STANDARD.encode(&bytes),
-            _ => return Err("Unsupported response window mode".into()),
-        };
-        Ok(ContentWindow {
-            offset: range.offset,
-            bytes_read: bytes.len() as u64,
-            content,
-            complete: end >= reference.byte_length,
-        })
+        Ok(bytes)
     }
 
     pub fn read_lines(
@@ -304,55 +370,442 @@ impl ResponseContentStore {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<LinePage, String> {
+        if let Some(offset) = cursor.and_then(|cursor| cursor.strip_prefix("preview:")) {
+            return self.read_preview_lines(id, offset, limit);
+        }
         let offset = cursor
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|_| "Invalid line cursor")?;
-        let info = self.inspect(id)?;
-        if offset > info.size {
+        let reference = self.reference(id)?;
+        if !reference.complete {
+            return Err("Response content is incomplete".into());
+        }
+        if offset > reference.byte_length {
             return Err("Invalid line cursor".into());
         }
-        if offset == info.size {
+        if offset == reference.byte_length {
             return Ok(LinePage {
-                lines: Vec::new(),
+                offset,
+                bytes_read: 0,
+                segments: Vec::new(),
+                previous_cursor: (offset > 0)
+                    .then(|| offset.saturating_sub(LINE_PAGE_BYTES as u64).to_string()),
                 next_cursor: None,
                 complete: true,
             });
         }
-        let window = self.read_range(
-            id,
-            ByteRange {
-                offset,
-                length: self.limits.max_window_bytes as u64,
-            },
-            "base64",
-        )?;
-        let bytes = STANDARD
-            .decode(&window.content)
-            .map_err(|_| "Cannot decode response line window")?;
-        let text =
-            std::str::from_utf8(&bytes).map_err(|_| "Response content is not valid UTF-8")?;
-        let maximum_lines = limit.clamp(1, 1000);
-        let mut lines = Vec::new();
+        let maximum_segments = limit.clamp(1, 1000);
+        let requested = (reference.byte_length - offset)
+            .min((LINE_PAGE_BYTES + 4) as u64)
+            .min(self.limits.max_window_bytes as u64);
+        let bytes = self.read_plain_range(id, offset, requested)?;
+        let leading = bytes
+            .iter()
+            .take(3)
+            .take_while(|byte| (**byte & 0b1100_0000) == 0b1000_0000)
+            .count();
+        let page_offset = offset + leading as u64;
+        let bytes = &bytes[leading..];
+        let page_budget = bytes.len().min(LINE_PAGE_BYTES);
+        let previous_byte = if page_offset > 0 {
+            self.read_plain_range(id, page_offset - 1, 1)?
+                .first()
+                .copied()
+        } else {
+            None
+        };
+        let mut continuation = previous_byte.is_some_and(|byte| byte != b'\n');
+        let mut line_start_offset = (!continuation).then_some(page_offset);
+        let mut segments = Vec::new();
         let mut consumed = 0_usize;
-        for part in text.split_inclusive('\n').take(maximum_lines) {
-            if !part.ends_with('\n') && !window.complete {
-                break;
+        while consumed < page_budget && segments.len() < maximum_segments {
+            let remaining = &bytes[consumed..page_budget];
+            let newline = remaining.iter().position(|byte| *byte == b'\n');
+            let available = newline
+                .map(|position| position.min(LINE_SEGMENT_BYTES))
+                .unwrap_or_else(|| remaining.len().min(LINE_SEGMENT_BYTES));
+            let mut end = consumed + available;
+            while end > consumed && std::str::from_utf8(&bytes[consumed..end]).is_err() {
+                end -= 1;
             }
-            consumed += part.len();
-            let line = part.strip_suffix('\n').unwrap_or(part);
-            lines.push(line.strip_suffix('\r').unwrap_or(line).to_string());
+            if end == consumed && available > 0 {
+                return Err("Response content is not valid UTF-8".into());
+            }
+            let reaches_newline = newline.is_some_and(|position| position == end - consumed);
+            let text_end = if reaches_newline && end > consumed && bytes[end - 1] == b'\r' {
+                end - 1
+            } else {
+                end
+            };
+            let text = std::str::from_utf8(&bytes[consumed..text_end])
+                .map_err(|_| "Response content is not valid UTF-8")?
+                .to_string();
+            let continues_to_next =
+                !reaches_newline && page_offset + (end as u64) < reference.byte_length;
+            segments.push(LineSegment {
+                byte_offset: page_offset + consumed as u64,
+                byte_length: (end - consumed) as u64,
+                line_start_offset,
+                hidden_bytes: None,
+                suffix: None,
+                text,
+                continues_from_previous: continuation,
+                continues_to_next,
+            });
+            consumed = end;
+            if reaches_newline {
+                consumed += 1;
+                continuation = false;
+                line_start_offset = Some(page_offset + consumed as u64);
+            } else {
+                continuation = true;
+            }
+            if available == 0 && reaches_newline {
+                // Empty logical line: the newline itself advances the cursor.
+                continue;
+            }
         }
-        if consumed == 0 && !window.complete {
-            return Err("Response line exceeds the configured window limit".into());
-        }
-        let next = offset + consumed as u64;
-        let complete = next >= info.size;
+        let next = page_offset + consumed as u64;
+        let complete = next >= reference.byte_length;
         Ok(LinePage {
-            lines,
+            offset: page_offset,
+            bytes_read: consumed as u64,
+            segments,
+            previous_cursor: (page_offset > 0).then(|| {
+                page_offset
+                    .saturating_sub(LINE_PAGE_BYTES as u64)
+                    .to_string()
+            }),
             next_cursor: (!complete).then(|| next.to_string()),
             complete,
         })
+    }
+
+    // Presentation-only rows: retain a small prefix/suffix while scanning past a
+    // giant logical line. Original bytes remain available to search/query/export.
+    fn read_preview_lines(&self, id: &str, cursor: &str, limit: usize) -> Result<LinePage, String> {
+        const PREFIX: usize = 96;
+        const SUFFIX: usize = 32;
+        let offset = cursor.parse::<u64>().map_err(|_| "Invalid line cursor")?;
+        let reference = self.reference(id)?;
+        if offset > reference.byte_length || !reference.complete {
+            return Err("Invalid or incomplete response content".into());
+        }
+        let mut position = offset;
+        let mut segments = Vec::new();
+        let mut prefix = Vec::new();
+        let mut tail = Vec::new();
+        let mut line_start = offset;
+        let mut displayed_bytes = 0;
+        let mut continued =
+            offset > 0 && self.read_plain_range(id, offset - 1, 1)?.first() != Some(&b'\n');
+        while position < reference.byte_length
+            && segments.len() < limit.clamp(1, 1000)
+            && displayed_bytes < LINE_PAGE_BYTES - PREFIX - SUFFIX
+        {
+            let bytes = self.read_plain_range(
+                id,
+                position,
+                (reference.byte_length - position).min(LINE_PAGE_BYTES as u64),
+            )?;
+            let mut consumed = 0;
+            while consumed < bytes.len() {
+                let remainder = &bytes[consumed..];
+                let newline = remainder.iter().position(|byte| *byte == b'\n');
+                let length = newline.unwrap_or(remainder.len());
+                let part = &remainder[..length];
+                let prefix_length = (PREFIX - prefix.len()).min(part.len());
+                prefix.extend_from_slice(&part[..prefix_length]);
+                tail.extend_from_slice(&part[prefix_length..]);
+                if tail.len() > SUFFIX {
+                    tail.drain(..tail.len() - SUFFIX);
+                }
+                consumed += length;
+                position += length as u64;
+                if newline.is_none() && position < reference.byte_length {
+                    break;
+                }
+                let line_length = position - line_start;
+                // Keep UTF-8 characters intact at the two preview cuts.
+                let mut prefix_end = prefix.len();
+                while prefix_end > 0 && std::str::from_utf8(&prefix[..prefix_end]).is_err() {
+                    prefix_end -= 1;
+                }
+                if prefix_end == 0 && !prefix.is_empty() {
+                    return Err("Response content is not valid UTF-8".into());
+                }
+                let tail_start = tail
+                    .iter()
+                    .take(3)
+                    .take_while(|byte| (**byte & 0xc0) == 0x80)
+                    .count();
+                let suffix = std::str::from_utf8(&tail[tail_start..])
+                    .map_err(|_| "Response content is not valid UTF-8")?
+                    .to_string();
+                let text = std::str::from_utf8(&prefix[..prefix_end])
+                    .map_err(|_| "Response content is not valid UTF-8")?
+                    .to_string();
+                let hidden = line_length.saturating_sub((text.len() + suffix.len()) as u64);
+                displayed_bytes += text.len() + suffix.len();
+                segments.push(LineSegment {
+                    byte_offset: line_start,
+                    byte_length: line_length,
+                    line_start_offset: (!continued).then_some(line_start),
+                    hidden_bytes: (hidden > 0).then_some(hidden),
+                    suffix: (!suffix.is_empty()).then_some(suffix),
+                    text,
+                    continues_from_previous: continued,
+                    continues_to_next: false,
+                });
+                if newline.is_some() {
+                    position += 1;
+                    consumed += 1;
+                }
+                line_start = position;
+                continued = false;
+                prefix.clear();
+                tail.clear();
+                if segments.len() >= limit.clamp(1, 1000)
+                    || displayed_bytes >= LINE_PAGE_BYTES - PREFIX - SUFFIX
+                {
+                    break;
+                }
+            }
+        }
+        Ok(LinePage {
+            offset,
+            bytes_read: position - offset,
+            segments,
+            previous_cursor: None,
+            next_cursor: (position < reference.byte_length).then(|| format!("preview:{position}")),
+            complete: position >= reference.byte_length,
+        })
+    }
+
+    pub fn search(
+        &self,
+        id: &str,
+        query: &SearchQuery,
+        cursor: Option<&str>,
+        cancelled: &AtomicBool,
+    ) -> Result<SearchPage, String> {
+        if query.text.is_empty() {
+            return Ok(SearchPage {
+                matches: Vec::new(),
+                next_cursor: None,
+                total_known: Some(0),
+            });
+        }
+        if query.text.len() > SEARCH_MAX_PATTERN_BYTES {
+            return Err("Search expression exceeds the 4 KiB limit".into());
+        }
+        let start = cursor
+            .unwrap_or("0")
+            .parse::<u64>()
+            .map_err(|_| "Invalid search cursor")?;
+        let reference = self.reference(id)?;
+        if start > reference.byte_length {
+            return Err("Invalid search cursor".into());
+        }
+        let pattern = if query.regular_expression {
+            let hir = RegexParser::new()
+                .parse(&query.text)
+                .map_err(|error| format!("Invalid regular expression: {error}"))?;
+            let maximum = hir
+                .properties()
+                .maximum_len()
+                .ok_or("Unbounded regular expressions are unavailable for large responses")?;
+            if maximum > SEARCH_MAX_MATCH_BYTES {
+                return Err("Regular expression matches may not exceed 64 KiB".into());
+            }
+            query.text.clone()
+        } else {
+            regex::escape(&query.text)
+        };
+        let maximum_match = if query.regular_expression {
+            RegexParser::new()
+                .parse(&query.text)
+                .ok()
+                .and_then(|hir| hir.properties().maximum_len())
+                .unwrap_or(query.text.len())
+        } else {
+            query.text.len()
+        }
+        .max(1);
+        let expression = RegexBuilder::new(&pattern)
+            .case_insensitive(!query.case_sensitive)
+            .unicode(true)
+            .build()
+            .map_err(|error| format!("Invalid search expression: {error}"))?;
+        let overlap = maximum_match.saturating_sub(1).min(SEARCH_MAX_MATCH_BYTES);
+        let mut offset = start;
+        let mut carry = Vec::new();
+        let mut matches = Vec::new();
+        while offset < reference.byte_length {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err("Response content operation cancelled".into());
+            }
+            let bytes = self.read_plain_range(
+                id,
+                offset,
+                (reference.byte_length - offset).min(SEARCH_WINDOW_BYTES as u64),
+            )?;
+            if bytes.is_empty() {
+                break;
+            }
+            let carry_length = carry.len();
+            let combined_offset = offset.saturating_sub(carry_length as u64);
+            carry.extend_from_slice(&bytes);
+            for found in expression.find_iter(&carry) {
+                let global_start = combined_offset + found.start() as u64;
+                let global_end = combined_offset + found.end() as u64;
+                if global_end <= offset || global_start < start {
+                    continue;
+                }
+                let snippet_start = found.start().saturating_sub(48);
+                let snippet_end = (found.end() + 96).min(carry.len());
+                matches.push(SearchMatch {
+                    byte_offset: global_start,
+                    byte_length: global_end - global_start,
+                    line: None,
+                    snippet: String::from_utf8_lossy(&carry[snippet_start..snippet_end])
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                });
+                if matches.len() >= SEARCH_PAGE_MATCHES {
+                    return Ok(SearchPage {
+                        matches,
+                        next_cursor: Some(global_end.max(global_start + 1).to_string()),
+                        total_known: None,
+                    });
+                }
+            }
+            offset += bytes.len() as u64;
+            if overlap == 0 {
+                carry.clear();
+            } else if carry.len() > overlap {
+                carry.drain(..carry.len() - overlap);
+            }
+        }
+        Ok(SearchPage {
+            total_known: (start == 0).then_some(matches.len() as u64),
+            matches,
+            next_cursor: None,
+        })
+    }
+
+    pub fn format(
+        &mut self,
+        id: &str,
+        request: &FormatRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<ContentOperationResult, String> {
+        let bytes = self.read_operation_content(id)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Response content operation cancelled".into());
+        }
+        let output = format_document(&bytes, &request.syntax, request.indent)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Response content operation cancelled".into());
+        }
+        let media_type = match request.syntax.as_str() {
+            "json" => "application/json",
+            "ndjson" => "application/x-ndjson",
+            "xml" => "application/xml",
+            _ => "text/plain",
+        };
+        self.text_operation_result(output, media_type)
+    }
+
+    pub fn query(
+        &mut self,
+        id: &str,
+        request: &JsonQueryRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<ContentOperationResult, String> {
+        let reference = self.reference(id)?;
+        let bytes = self.read_operation_content(id)?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Response content operation cancelled".into());
+        }
+        let ndjson = reference.media_type.as_deref().is_some_and(|media_type| {
+            media_type.contains("ndjson")
+                || media_type.contains("jsonl")
+                || media_type.contains("json-lines")
+        });
+        let value = if reference.byte_length > STRUCTURED_PARSE_BYTES || ndjson {
+            query_large_document(&bytes, &request.language, &request.expression, ndjson)?
+        } else {
+            query_document(&bytes, &request.language, &request.expression)?
+        };
+        let encoded = serde_json::to_vec_pretty(&value)
+            .map_err(|error| format!("Cannot encode response query result: {error}"))?;
+        if encoded.len() <= INLINE_OPERATION_RESULT_BYTES {
+            return Ok(ContentOperationResult::Value { value });
+        }
+        self.derived_content_result(encoded, "application/json")
+    }
+
+    fn read_operation_content(&self, id: &str) -> Result<Vec<u8>, String> {
+        let reference = self.reference(id)?;
+        let mut output = Vec::with_capacity(reference.byte_length as usize);
+        let mut offset = 0_u64;
+        while offset < reference.byte_length {
+            let bytes = self.read_plain_range(
+                id,
+                offset,
+                (reference.byte_length - offset).min(self.limits.max_window_bytes as u64),
+            )?;
+            if bytes.is_empty() {
+                break;
+            }
+            offset += bytes.len() as u64;
+            output.extend_from_slice(&bytes);
+        }
+        Ok(output)
+    }
+
+    fn text_operation_result(
+        &mut self,
+        bytes: Vec<u8>,
+        media_type: &str,
+    ) -> Result<ContentOperationResult, String> {
+        if bytes.len() <= INLINE_OPERATION_RESULT_BYTES {
+            let content = String::from_utf8(bytes)
+                .map_err(|_| "Formatted response is not valid UTF-8".to_string())?;
+            return Ok(ContentOperationResult::Window {
+                window: ContentWindow {
+                    offset: 0,
+                    bytes_read: content.len() as u64,
+                    content,
+                    complete: true,
+                },
+            });
+        }
+        self.derived_content_result(bytes, media_type)
+    }
+
+    fn derived_content_result(
+        &mut self,
+        bytes: Vec<u8>,
+        media_type: &str,
+    ) -> Result<ContentOperationResult, String> {
+        let reference = self.create_staging(ContentMetadata {
+            media_type: Some(media_type.into()),
+            charset: Some("utf-8".into()),
+        })?;
+        let result = self
+            .append(&reference.id, &bytes)
+            .and_then(|_| self.finish(&reference.id));
+        match result {
+            Ok(reference) => Ok(ContentOperationResult::Content { reference }),
+            Err(error) => {
+                let _ = self.release(&reference.id);
+                Err(error)
+            }
+        }
     }
 
     pub fn release(&mut self, id: &str) -> Result<(), String> {
@@ -383,6 +836,8 @@ impl ResponseContentStore {
                         byte_length: row.get(0)?,
                         media_type: row.get(1)?,
                         charset: row.get(2)?,
+                        line_count: None,
+                        max_line_bytes: None,
                         complete: state != "staging",
                     })
                 },
@@ -467,12 +922,313 @@ mod tests {
             )
             .unwrap();
         assert_eq!(window.content, "3456789\n");
-        assert_eq!(
-            store.read_lines(&reference.id, None, 1).unwrap().lines,
-            ["0123456789"]
-        );
+        let lines = store.read_lines(&reference.id, None, 1).unwrap();
+        assert_eq!(lines.segments.len(), 1);
+        assert_eq!(lines.segments[0].text, "0123456789");
+        assert!(!lines.segments[0].continues_to_next);
         store.release(&reference.id).unwrap();
         assert!(store.inspect(&reference.id).is_err());
+    }
+
+    #[test]
+    fn giant_lines_and_millions_of_short_lines_remain_bounded() {
+        let limits = ResponseLimits {
+            max_content_bytes: 16 * 1024 * 1024,
+            ..ResponseLimits::default()
+        };
+        let (_directory, _root, mut store) = store(limits);
+        let giant = store
+            .create_staging(ContentMetadata {
+                media_type: Some("text/plain".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        store.append(&giant.id, &vec![b'x'; 999 * 1024]).unwrap();
+        store.finish(&giant.id).unwrap();
+        let info = store.inspect(&giant.id).unwrap();
+        assert_eq!(info.line_count, Some(1));
+        assert_eq!(info.max_line_bytes, Some((999 * 1024) as u64));
+        let page = store.read_lines(&giant.id, None, 1000).unwrap();
+        assert!(page.bytes_read <= LINE_PAGE_BYTES as u64);
+        assert!(page.segments.len() <= 1000);
+        assert!(page
+            .segments
+            .iter()
+            .all(|segment| segment.byte_length <= LINE_SEGMENT_BYTES as u64));
+        assert!(page
+            .segments
+            .iter()
+            .all(|segment| segment.line_start_offset == Some(0)));
+        assert!(page
+            .segments
+            .iter()
+            .all(|segment| segment.continues_to_next));
+
+        let many = store
+            .create_staging(ContentMetadata {
+                media_type: Some("text/plain".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        let payload = "x\n".repeat(2_000_000);
+        store.append(&many.id, payload.as_bytes()).unwrap();
+        store.finish(&many.id).unwrap();
+        let info = store.inspect(&many.id).unwrap();
+        assert_eq!(info.line_count, Some(2_000_001));
+        assert_eq!(info.max_line_bytes, Some(1));
+        let page = store.read_lines(&many.id, None, 1000).unwrap();
+        assert_eq!(page.segments.len(), 1000);
+        assert_eq!(page.bytes_read, 2000);
+        assert!(page.segments.iter().all(|segment| segment.text == "x"));
+        let preview = store.read_lines(&many.id, Some("preview:0"), 1000).unwrap();
+        let next = store
+            .read_lines(&many.id, preview.next_cursor.as_deref(), 1000)
+            .unwrap();
+        assert_eq!(preview.bytes_read, 2000);
+        assert_eq!(next.offset, 2000);
+        assert_eq!(next.segments.len(), 1000);
+        assert!(next
+            .segments
+            .iter()
+            .all(|segment| segment.hidden_bytes.is_none()));
+    }
+
+    #[test]
+    fn preview_collapses_giant_lines_and_preserves_following_rows() {
+        let (_directory, _root, mut store) = store(ResponseLimits::default());
+        let reference = store
+            .create_staging(ContentMetadata {
+                media_type: Some("text/plain".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        let body = format!("first\n{}\npurr-tail-marker\n", "x".repeat(2 * 1024 * 1024));
+        store.append(&reference.id, body.as_bytes()).unwrap();
+        store.finish(&reference.id).unwrap();
+        let page = store
+            .read_lines(&reference.id, Some("preview:0"), 1000)
+            .unwrap();
+        assert!(page.complete);
+        assert_eq!(page.bytes_read, body.len() as u64);
+        assert_eq!(page.segments.len(), 3);
+        assert_eq!(page.segments[1].hidden_bytes, Some(2 * 1024 * 1024 - 128));
+        assert_eq!(page.segments[1].text.len(), 96);
+        assert_eq!(page.segments[2].text, "purr-tail-marker");
+        let first = store
+            .read_lines(&reference.id, Some("preview:0"), 1)
+            .unwrap();
+        let second = store
+            .read_lines(&reference.id, first.next_cursor.as_deref(), 1)
+            .unwrap();
+        assert_eq!(second.offset, 6);
+        assert_eq!(second.segments.len(), 1);
+        assert!(second.next_cursor.is_some());
+        let search = store
+            .search(
+                &reference.id,
+                &SearchQuery {
+                    text: "purr-(tail|first)-marker".into(),
+                    regular_expression: true,
+                    case_sensitive: false,
+                },
+                None,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(search.matches[0].byte_length, 16);
+    }
+
+    #[test]
+    fn invalid_utf8_and_cancelled_or_unbounded_search_fail_cleanly() {
+        let limits = ResponseLimits {
+            max_content_bytes: 1024 * 1024,
+            ..ResponseLimits::default()
+        };
+        let (_directory, _root, mut store) = store(limits);
+        let reference = store
+            .create_staging(ContentMetadata {
+                media_type: Some("text/plain".into()),
+                charset: None,
+            })
+            .unwrap();
+        store.append(&reference.id, &[0xff, b'a', b'\n']).unwrap();
+        store.finish(&reference.id).unwrap();
+        assert!(store.read_lines(&reference.id, None, 10).is_err());
+
+        let cancelled = AtomicBool::new(true);
+        assert!(store
+            .search(
+                &reference.id,
+                &SearchQuery {
+                    text: "a".into(),
+                    case_sensitive: false,
+                    regular_expression: false,
+                },
+                None,
+                &cancelled,
+            )
+            .unwrap_err()
+            .contains("cancelled"));
+        assert!(store
+            .search(
+                &reference.id,
+                &SearchQuery {
+                    text: "a+".into(),
+                    case_sensitive: false,
+                    regular_expression: true,
+                },
+                None,
+                &AtomicBool::new(false),
+            )
+            .unwrap_err()
+            .contains("Unbounded"));
+    }
+
+    #[test]
+    fn large_format_and_query_results_use_releasable_derived_content() {
+        let limits = ResponseLimits {
+            max_content_bytes: 4 * 1024 * 1024,
+            ..ResponseLimits::default()
+        };
+        let (_directory, _root, mut store) = store(limits);
+        let reference = store
+            .create_staging(ContentMetadata {
+                media_type: Some("application/json".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        let json = serde_json::to_vec(&serde_json::json!({
+            "payload": "x".repeat(INLINE_OPERATION_RESULT_BYTES + 32)
+        }))
+        .unwrap();
+        store.append(&reference.id, &json).unwrap();
+        store.finish(&reference.id).unwrap();
+
+        for result in [
+            store
+                .format(
+                    &reference.id,
+                    &FormatRequest {
+                        syntax: "json".into(),
+                        indent: 2,
+                    },
+                    &AtomicBool::new(false),
+                )
+                .unwrap(),
+            store
+                .query(
+                    &reference.id,
+                    &JsonQueryRequest {
+                        language: "jq".into(),
+                        expression: ".payload".into(),
+                    },
+                    &AtomicBool::new(false),
+                )
+                .unwrap(),
+        ] {
+            let ContentOperationResult::Content { reference } = result else {
+                panic!("large operation result must use a content reference");
+            };
+            assert!(store.inspect(&reference.id).is_ok());
+            store.release(&reference.id).unwrap();
+            assert!(store.inspect(&reference.id).is_err());
+        }
+    }
+
+    #[test]
+    fn json_and_ndjson_above_the_full_tree_tier_use_streaming_adapters() {
+        let limits = ResponseLimits {
+            max_content_bytes: 64 * 1024 * 1024,
+            ..ResponseLimits::default()
+        };
+        let (_directory, _root, mut store) = store(limits);
+        let json_reference = store
+            .create_staging(ContentMetadata {
+                media_type: Some("application/json".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        let json = format!(
+            "{{\"meta\":{{\"fixture\":\"purr-synthetic\"}},\"payload\":\"{}\"}}",
+            "x".repeat(STRUCTURED_PARSE_BYTES as usize + 1024)
+        );
+        store.append(&json_reference.id, json.as_bytes()).unwrap();
+        store.finish(&json_reference.id).unwrap();
+        drop(json);
+        for (language, expression) in [("jq", ".meta.fixture"), ("jsonpath", "$.meta.fixture")] {
+            assert_eq!(
+                store
+                    .query(
+                        &json_reference.id,
+                        &JsonQueryRequest {
+                            language: language.into(),
+                            expression: expression.into(),
+                        },
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap(),
+                ContentOperationResult::Value {
+                    value: serde_json::json!("purr-synthetic")
+                }
+            );
+        }
+        assert!(store
+            .query(
+                &json_reference.id,
+                &JsonQueryRequest {
+                    language: "jsonpath".into(),
+                    expression: "$..fixture".into(),
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap_err()
+            .contains("full response tree"));
+        let formatted = store
+            .format(
+                &json_reference.id,
+                &FormatRequest {
+                    syntax: "json".into(),
+                    indent: 2,
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let ContentOperationResult::Content { reference } = formatted else {
+            panic!("large formatted JSON must stay native");
+        };
+        store.release(&reference.id).unwrap();
+
+        let ndjson_reference = store
+            .create_staging(ContentMetadata {
+                media_type: Some("application/x-ndjson".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        let line = format!(
+            "{{\"meta\":{{\"fixture\":\"purr-synthetic\"}},\"payload\":\"{}\"}}\n",
+            "x".repeat(1024 * 1024)
+        );
+        let ndjson = line.repeat(33);
+        assert!(ndjson.len() as u64 > STRUCTURED_PARSE_BYTES);
+        store
+            .append(&ndjson_reference.id, ndjson.as_bytes())
+            .unwrap();
+        store.finish(&ndjson_reference.id).unwrap();
+        drop(ndjson);
+        let queried = store
+            .query(
+                &ndjson_reference.id,
+                &JsonQueryRequest {
+                    language: "jsonpath".into(),
+                    expression: "$.meta.fixture".into(),
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let ContentOperationResult::Value { value } = queried else {
+            panic!("small NDJSON query output should cross IPC as a value");
+        };
+        assert_eq!(value.as_array().map(Vec::len), Some(33));
     }
 
     #[test]

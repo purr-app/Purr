@@ -153,6 +153,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     variablesForEnvironment,
     persistentCache: dynamicVariableCache,
     sessionCache: dynamicVariableSessionCache,
+    responseContent,
     execute: async (document, resolvedVariables, sourceEnvironmentId) => {
       const scoped = await variablesForEnvironment(sourceEnvironmentId);
       const sensitive = scoped.filter((variable) => variable.sensitive).map((variable) => variable.name);

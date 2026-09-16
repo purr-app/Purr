@@ -1,4 +1,8 @@
-use crate::{commands, content::actor::ResponseContentState, http, oauth, persistence};
+use crate::{
+    commands,
+    content::{actor::ResponseContentState, operations_state::ContentOperationState},
+    http, oauth, persistence,
+};
 
 #[cfg(target_os = "macos")]
 fn set_macos_app_icon() {
@@ -25,6 +29,7 @@ pub fn run() {
         .manage(oauth::OAuthCallbacks::default())
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
+        .manage(ContentOperationState::default())
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             set_macos_app_icon();
@@ -36,6 +41,10 @@ pub fn run() {
             commands::response::response_content_inspect,
             commands::response::response_content_read_range,
             commands::response::response_content_read_lines,
+            commands::response::response_content_search,
+            commands::response::response_content_format,
+            commands::response::response_content_query,
+            commands::response::cancel_response_content_operation,
             commands::response::response_content_release,
             commands::http::start_http,
             commands::http::cancel_http,

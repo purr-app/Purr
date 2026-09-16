@@ -1,11 +1,15 @@
 use super::{
     contracts::{
-        ByteRange, ContentInfo, ContentMetadata, ContentWindow, LinePage, ResponseContentRef,
+        ByteRange, ContentInfo, ContentMetadata, ContentOperationResult, ContentWindow,
+        FormatRequest, JsonQueryRequest, LinePage, ResponseContentRef, SearchPage, SearchQuery,
     },
     store::{ContentWriteTiming, ResponseContentStore},
 };
 use crate::security::PlatformRootKeyStore;
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{atomic::AtomicBool, Arc, Mutex},
+};
 use tauri::Manager;
 use tokio::sync::{mpsc, oneshot};
 
@@ -109,6 +113,37 @@ impl ResponseContentHandle {
         limit: usize,
     ) -> Result<LinePage, String> {
         self.call(move |store| store.read_lines(&id, cursor.as_deref(), limit))
+            .await
+    }
+
+    pub async fn search(
+        &self,
+        id: String,
+        query: SearchQuery,
+        cursor: Option<String>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<SearchPage, String> {
+        self.call(move |store| store.search(&id, &query, cursor.as_deref(), &cancelled))
+            .await
+    }
+
+    pub async fn format(
+        &self,
+        id: String,
+        request: FormatRequest,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<ContentOperationResult, String> {
+        self.call(move |store| store.format(&id, &request, &cancelled))
+            .await
+    }
+
+    pub async fn query(
+        &self,
+        id: String,
+        request: JsonQueryRequest,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<ContentOperationResult, String> {
+        self.call(move |store| store.query(&id, &request, &cancelled))
             .await
     }
 

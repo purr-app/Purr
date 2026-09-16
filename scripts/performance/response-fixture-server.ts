@@ -12,8 +12,11 @@ const port = Number.parseInt(process.env.PURR_FIXTURE_PORT ?? "43119", 10);
 const maximumBodyBytes = 128 * 1024 * 1024;
 const contentTypes: Record<SyntheticResponseKind, string> = {
   text: "text/plain; charset=utf-8",
+  lines: "text/plain; charset=utf-8",
   json: "application/json; charset=utf-8",
+  graphql: "application/json; charset=utf-8",
   ndjson: "application/x-ndjson; charset=utf-8",
+  xml: "application/xml; charset=utf-8",
   binary: "application/octet-stream",
 };
 
@@ -129,14 +132,17 @@ const server = createServer(async (request, response) => {
     });
     return;
   }
-  const match = /^\/response\/(text|json|ndjson|binary)$/.exec(url.pathname);
+  const match = /^\/response\/(text|lines|json|graphql|ndjson|xml|binary)$/.exec(url.pathname);
   if (!match) {
     respondJson(response, 404, {
       fixture: "purr-synthetic",
       endpoints: [
         "/response/text?size=102400",
+        "/response/lines?size=4000000",
         "/response/json?size=1048576",
+        "/response/graphql?size=2097152",
         "/response/ndjson?size=20971520",
+        "/response/xml?size=20971520",
         "/response/binary?size=104857600",
         "/graphql/introspection?types=1200",
         "/graphql/result",

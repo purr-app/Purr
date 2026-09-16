@@ -24,7 +24,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
 hyper-util = { version = "0.1", features = ["client-legacy"] }
@@ -38,6 +38,15 @@ sha2 = "0.10"
 notify = "8"
 tempfile = "3"
 zeroize = "1"
+jaq-core = "3.1.1"
+jaq-std = "3.0.3"
+regex = "1.13.1"
+regex-syntax = "0.8.11"
+serde_json_path = "0.7.2"
+quick-xml = "0.42.0"
+jaq-json = { version = "2.0.3", features = ["serde", "sync"] }
+serde-transcode = "1.1.1"
+jsonpath-rfc9535 = { version = "0.1.1", features = ["scan"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

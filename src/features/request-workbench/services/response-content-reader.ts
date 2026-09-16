@@ -8,12 +8,15 @@ import type { ResponseContentRef } from "../../../domain/http";
 // viewer. The boundary itself stays on the bounded path because a 1 MiB body
 // can consist of one pathological line that blocks WebView layout.
 export const inlineResponseLimitBytes = 1024 * 1024;
+// A single source line above this threshold can synchronously stall CodeMirror
+// even when the complete response is below the total-size boundary.
+export const inlineResponseMaximumLineBytes = 64 * 1024;
 export const responsePageBytes = 192 * 1024;
-export const responseSearchWindowBytes = 4 * 1024 * 1024;
 const maximumSearchMatches = 10_000;
 
 export type ResponseContentMatch = {
   byteOffset: number;
+  byteLength?: number;
   snippet: string;
 };
 
@@ -48,63 +51,32 @@ export async function readResponseContentPage(
   );
 }
 
-function byteLength(value: string) {
-  return new TextEncoder().encode(value).length;
-}
-
-function snippetAround(value: string, index: number, length: number) {
-  const start = Math.max(0, index - 48);
-  const end = Math.min(value.length, index + length + 96);
-  return value.slice(start, end).replace(/\s+/g, " ");
-}
-
-// Phase 8 replaces this bounded TypeScript scanner with the native search
-// operation. It deliberately retains only a small overlap and match metadata.
 export async function searchResponseContent(
   content: ResponseContentPort,
   reference: ResponseContentRef,
   query: string,
   signal?: AbortSignal,
+  options: { regularExpression?: boolean; caseSensitive?: boolean } = {},
 ): Promise<readonly ResponseContentMatch[]> {
-  const needle = query.toLocaleLowerCase();
-  if (!needle) return [];
+  if (!query) return [];
   const matches: ResponseContentMatch[] = [];
-  const overlapCharacters = Math.min(Math.max(needle.length - 1, 0), 4096);
-  let carry = "";
-  let offset = 0;
+  let cursor: string | undefined;
 
-  while (offset < reference.byteLength && matches.length < maximumSearchMatches) {
+  do {
     throwIfAborted(signal);
-    const window = await content.readRange(
+    const page = await content.search(
       reference,
       {
-        offset,
-        length: Math.min(responseSearchWindowBytes, reference.byteLength - offset),
+        text: query,
+        caseSensitive: options.caseSensitive ?? false,
+        regularExpression: options.regularExpression ?? false,
       },
-      "text",
+      cursor,
       signal,
     );
-    const decoded = window.content;
-    const combined = carry + decoded;
-    const searchable = combined.toLocaleLowerCase();
-    const combinedOffset = Math.max(0, offset - byteLength(carry));
-    let index = 0;
-    while (matches.length < maximumSearchMatches) {
-      index = searchable.indexOf(needle, index);
-      if (index < 0) break;
-      const matchOffset = combinedOffset + byteLength(combined.slice(0, index));
-      const matchEnd = matchOffset + byteLength(combined.slice(index, index + query.length));
-      if (matchEnd > offset) {
-        matches.push({
-          byteOffset: matchOffset,
-          snippet: snippetAround(combined, index, query.length),
-        });
-      }
-      index += Math.max(needle.length, 1);
-    }
-    if (!window.bytesRead) break;
-    offset += window.bytesRead;
-    carry = overlapCharacters ? combined.slice(-overlapCharacters) : "";
-  }
+    matches.push(...page.matches.slice(0, maximumSearchMatches - matches.length));
+    if (!page.nextCursor || page.nextCursor === cursor) break;
+    cursor = page.nextCursor;
+  } while (matches.length < maximumSearchMatches);
   return matches;
 }

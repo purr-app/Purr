@@ -653,6 +653,7 @@ export function WorkspaceWorkbench() {
               try {
                 const resolution = await resolveDynamicVariables({ root, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
                   variablesForEnvironment, persistentCache: workspace.dynamicVariableCache, sessionCache: dynamicVariableSessionCache,
+                  responseContent: services.responseContent,
                   forceVariableIds: new Set([variable.id]),
                   execute: async (document, resolvedVariables, environmentId) => {
                     const scoped = await variablesForEnvironment(environmentId);

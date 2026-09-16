@@ -15,7 +15,7 @@ This plan is based on the current TypeScript and Rust code, tests, persistence f
 
 ## Migration progress
 
-This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DONE` identifies an existing precursor only; it does not mean the phase acceptance criteria or its verification checklist are complete. No phase is `DONE` until its scope, automated checks, manual checks, and completion protocol are all recorded.
+This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DONE` identifies an existing precursor only; it does not mean the phase acceptance criteria or its verification checklist are complete. No phase is `DONE` until its scope, automated checks, manual checks, and completion protocol are all recorded.
 
 | Phase | Name | Status | Implemented in | Automated verification | Manual verification |
 | --- | --- | --- | --- | --- | --- |
@@ -27,7 +27,7 @@ This tracker reflects the repository state reviewed on 2026-09-15. `PARTIALLY DO
 | 5 | Implement encrypted native response content storage | DONE | Phase 5 working tree based on `c430458` | PASS — 129 TypeScript tests, 51 UI tests, 46 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner compatibility and persistence verification on 2026-09-15 |
 | 6 | Switch native HTTP to response handles and real cancellation | DONE | Phase 6 working tree based on `b9724b0` | PASS — 132 TypeScript tests, 51 UI tests, 51 Rust tests; typecheck, lint, build, repository policy, fmt, clippy | COMPLETE — product-owner accepted all desktop streaming/cancel, redirects/cookies/binary, GraphQL/OAuth, restart, and content-reference scenarios on 2026-09-15 |
 | 7 | Add bounded/virtualized response presentation | DONE | Phase 7 working tree based on `7e3492c` | PASS — 137 TypeScript tests, 54 UI tests, 54 Rust tests; typecheck, lint, build, repository policy, fmt, clippy, diff check | COMPLETE — product-owner accepted bounded navigation/search/restart and exact 1 MiB behavior on 2026-09-16; sub-threshold pathological lines explicitly deferred to Phase 8 |
-| 8 | Move large response inspect/search/format/query to Rust | PARTIALLY DONE | Existing TypeScript response helpers and jq/JSONPath subset; no native phase reference | Existing response tests only; native conformance not run | Not recorded |
+| 8 | Move large response inspect/search/format/query to Rust | DONE | Phase 8 working tree based on `f58cbad` | PASS — 138 TypeScript tests, 58 UI tests, 65 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product owner accepted the functional and UX-correction scenarios on 2026-09-16 |
 | 9 | Remove remaining body round trips | PARTIALLY DONE | Existing base64 download/media/binary request paths; no handle-based phase reference | Existing request/response tests only | Not recorded |
 | 10 | Profile and isolate GraphQL analysis | PARTIALLY DONE | Existing GraphQL parse/schema/editor flow; no profiling or worker phase reference | Existing GraphQL tests only | Not recorded |
 | 11 | Migrate canonical integration envelope | PARTIALLY DONE | Existing `{provider, endpoint, credentials}` canonical shape; no envelope migration reference | Existing project validation only | Not recorded |
@@ -1338,32 +1338,52 @@ Known follow-ups:
 
 ### Phase 8 — move large response inspect/search/format/query to Rust
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing TypeScript `model/response.ts` implements response inspection, formatting, and the documented jq/JSONPath subset; no native phase commit/reference.
+Implemented in: Phase 8 working tree based on `f58cbad`.
 
-Started: Pre-plan
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Run the shared jq/JSONPath conformance fixtures against both TypeScript and Rust implementations.
-- [ ] Add bounded-operation tests for search cancellation, invalid encoding, oversized query results, recursive selectors, JSON/XML/NDJSON formatting, and derived-content lifecycle.
-- [ ] Add native tests for a sub-threshold response containing one line larger than the line window and for a multi-million-line response; every returned row/segment and IPC page must remain within configured byte/count limits.
-- [ ] Add UI coverage proving content-aware routing keeps a 999 KiB pathological line out of CodeMirror, a virtualized multi-million-line response retains only visible rows plus bounded overscan in the DOM, and a segmented giant line never becomes one DOM text node.
-- [ ] Run response/UI/persistence tests plus `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy`, and `cargo test`.
+- [x] Run the shared jq/JSONPath conformance fixtures against both TypeScript and Rust implementations.
+- [x] Add bounded-operation tests for search cancellation, invalid encoding, oversized query results, recursive selectors, JSON/XML/NDJSON formatting, and derived-content lifecycle.
+- [x] Add native tests for a sub-threshold response containing one line larger than the line window and for a multi-million-line response; every returned row/segment and IPC page must remain within configured byte/count limits.
+- [x] Add UI coverage proving content-aware routing keeps a 999 KiB pathological line out of CodeMirror, a virtualized multi-million-line response retains only visible rows plus bounded overscan in the DOM, and a segmented giant line never becomes one DOM text node.
+- [x] Run response/UI/persistence tests plus `npm run typecheck`, `npm run lint`, `npm run build`, `cargo fmt --check`, `cargo clippy`, and `cargo test`.
 
 Manual verification:
-- [ ] Prepare JSON and NDJSON fixtures larger than the full-tree parse tier; run supported jq and JSONPath expressions and confirm results/pages are correct without an app freeze.
-- [ ] Use text and regex search on a large response, cancel a long-running search, and confirm the previous response view stays usable.
-- [ ] Format a large JSON and XML response, switch between Pretty/Raw/Hex/Base64 windows, and confirm only the requested portion is shown.
-- [ ] Trigger an unsupported large recursive expression and confirm Purr shows a clear bounded-operation error rather than hanging or exhausting memory.
-- [ ] Open a 999 KiB response containing one giant line and confirm it selects the bounded viewer from native content hints, remains responsive, shows the line in bounded segments, and clearly states that wrapping and syntax highlighting are disabled.
-- [ ] Open a response with at least two million short lines, scroll near the beginning/middle/end, and confirm the UI remains responsive while browser inspection shows only visible rows plus bounded overscan rather than millions of DOM nodes.
+- [x] Start `npm run fixture:responses` and a freshly rebuilt `npm run tauri dev`; use the origin printed by the fixture server for every scenario below.
+- [x] Request `/response/json?size=35651584`; run jq `.meta.fixture` and JSONPath `$.meta.fixture`, verify both return `purr-synthetic`, then switch Pretty/Raw/Hex/Base64 without an app freeze.
+- [x] Request `/response/ndjson?size=35651584`; run JSONPath `$.fixture`, verify it returns `purr-synthetic`, then run Pretty and confirm the response remains pageable and responsive.
+- [x] Request `/response/xml?size=20971520`; run Pretty, switch back to Raw and search for `purr-tail-marker`, confirming only bounded windows are rendered and the UI remains responsive.
+- [x] On the 35,651,584-byte JSON response, run JSONPath `$..fixture` and confirm Purr shows the explicit full-tree-tier error rather than hanging or exhausting memory.
+- [x] Create a GraphQL request to `/response/graphql?size=2097152`, send any valid query, and use Data, Errors, and Extensions. Confirm each native extraction shows respectively `purr-v1`, `Synthetic partial result`, and `purr-extension` without materializing the full envelope in CodeMirror.
+- [x] Save an HTTP source request to `/response/json?size=2097152`; configure a Dynamic environment variable named `largeFixture` that uses this request with JSONPath `$.meta.fixture`, then use it in `/health?fixture={{largeFixture}}`. Confirm the dependent request resolves to `purr-synthetic` and the final health request succeeds.
+- [x] Request `/response/text?size=104857600`; search for `purr-tail-marker`, enable Regex search and search for `purr-(middle|tail)-marker`, then begin another search and immediately close Find. Confirm cancellation leaves the existing response view usable.
+- [x] Request `/response/text?size=1022976`; confirm the 999 KiB giant-line fixture selects the bounded viewer, remains responsive, renders bounded segments, and states that wrapping and full-document syntax highlighting are disabled.
+- [x] Request `/response/lines?size=4000000`; use Next/Previous, move the position slider to the middle, and use Last. Confirm the two-million-line response remains responsive and the rendered DOM contains only visible rows plus bounded overscan rather than millions of elements.
+
+The product owner confirmed all preceding functional scenarios passed, then reported UX issues (small typography, segment rows looking like wrapping, page controls, and an ineffective Regex control). The checkmarks above record that functional round; the previous navigation wording describes the accepted initial implementation. The product owner accepted the following UX correction round on 2026-09-16, with further visual polish explicitly deferred:
+
+- [x] Request `/response/json?size=2097152` and `/response/json?size=10485760`: Pretty opens automatically, normal code font/syntax colors are used, `payload` occupies one shortened logical row, and `tail` remains visible. Click the hidden-byte action and confirm it explains the beta limitation; Raw/Pretty switching must remain responsive.
+- [x] Request `/response/text?size=1022976`: the giant line occupies one shortened row with a visible hidden-byte button, without apparent wrapping. Verify the button remains reachable in a narrow split pane.
+- [x] Request `/response/lines?size=4000000`: scroll down through successive windows; rows load automatically, DOM and retained row data stay bounded. After the buffer advances, Return to beginning restores the start.
+- [x] On `/response/text?size=104857600`, open Find via the search icon, enable `.*`, enter `purr-(middle|tail)-marker`, and navigate both highlighted matches. Disable `.*` to confirm the same pattern is treated literally, then close Find during a new search.
+
 
 Implementation notes:
-- Existing TypeScript behavior is a semantic reference only; it does not satisfy native bounded processing or cross-runtime conformance.
-- Phase 7 deliberately deferred the remaining 999 KiB one-line CodeMirror stall. Total byte size is insufficient as a presentation heuristic. Phase 8 owns the durable fix because it already introduces native inspection, line indexing, and bounded read contracts.
+- Native capture now records `lineCount` and `maxLineBytes`; a line at or above 64 KiB selects the bounded viewer even when total content is below 1 MiB. Old persisted handles need no schema migration because native `inspect` can derive missing hints through bounded reads.
+- Initial `readLines` supplies bounded 16 KiB segments. The owner-requested UX correction adds `preview:` cursors returning logical rows with at most 96 prefix/32 suffix bytes and explicit `hiddenBytes`, scanning past long middles to preserve later fields. The viewer uses bounded lazy scrolling (3,000 retained rows), regular code typography, native default Pretty for JSON up to 10 MiB, and bounded visible-row syntax colors. Regex now lives in Find with native match byte lengths for highlights.
+- Literal/regex search moved to Rust with 4 MiB windows, bounded matches, opaque cancellation IDs, and rejection of unbounded regexes. Closing response find cancels the active operation.
+- JSON/XML/NDJSON Pretty and jq/JSONPath query operations run behind `ResponseContentPort`. Results above 256 KiB become temporary encrypted content references; UI cleanup releases derived handles.
+- `jaq-core`/`jaq-std`/`jaq-json` implement the existing jq subset; `serde_json_path` implements the existing small-tree JSONPath subset; `serde_json`, `serde-transcode`, and `quick-xml` handle formatting; Rust `regex` handles bounded search. These MIT/Apache-compatible engines remain behind Purr contracts and their broader grammars are restricted by Purr's allow-list.
+- Above the 32 MiB full-tree tier, validated JSON/NDJSON structural paths use `jsonpath-rfc9535`'s `rsonpath` scan mode. jq paths are adapted to the same scanner; recursive selectors, root selection, and jq pipes that require a complete tree fail explicitly. A streaming `IgnoredAny` validation pass precedes the scan because the scanner alone is not a safe malformed-input validator.
+- Native structured input and formatted output are capped by the existing 128 MiB content boundary. The WebView receives only bounded pages/results; Rust may retain one decrypted source byte buffer while a large operation runs, but does not construct a full JSON tree above 32 MiB.
+- Referenced dynamic-variable responses now query natively and release their source handle. Large GraphQL responses expose native Data/Errors/Extensions extraction controls; large introspection schema construction stays assigned to Phase 10.
+- The synthetic fixture server now exposes deterministic XML, large GraphQL-envelope, and two-million-short-line response shapes so product verification does not depend on private or external data.
+- Automated verification passed on 2026-09-16: 138 TypeScript tests, 58 Playwright tests, and 65 Rust tests plus typecheck, lint, production build, repository policy, `cargo fmt --check`, `cargo check`, clippy with warnings denied, full `cargo test`, synthetic fixture smoke checks, and `git diff --check`.
 
 ### Library reuse policy
 
@@ -1410,11 +1430,15 @@ Before choosing a crate, evaluate:
 Record the selected crate and rationale in Implementation notes.
 
 Deviations from plan:
-- None.
+- Following product-owner UX feedback, transport segments are no longer presented as separate visual lines; collapsed logical-line previews and lazy scrolling replace the page toolbar. The hidden-byte action explains the beta restriction without expanding the full source. The underlying native storage, query contracts, encryption, and dependency direction are unchanged.
+- The scan engine requires a contiguous validated JSON text buffer. Large query/format work stays fully in Rust and avoids a full DOM/IPC copy, but it does not yet stream decrypt directly from SQLite into the parser or stream formatted bytes directly back into encrypted chunks. Add that extra store-reader/store-writer complexity only if Phase 0 RSS measurements show the bounded 128 MiB Rust buffer is still a practical problem.
+- A line page exposes `lineStartOffset` only when the logical line start is known inside the bounded scan. A page opened in the middle of a giant line uses continuation flags until the next newline rather than scanning unbounded data backwards solely to manufacture a line number.
 
 Known follow-ups:
 - Do not advertise full jq/JSONPath compatibility while only the existing subset is implemented.
-- Complete the line-segmentation and virtual-row work before Phase 12 freezes public extension exports. The current `readLines` implementation rejects a logical line longer than its configured window and its `string[]` result cannot represent a bounded continuation safely.
+- Further large-response visual polish and hidden-line expansion UX are deferred after product-owner acceptance; they do not block the Phase 8 architecture or bounded-response behavior.
+- Phase 9 still owns direct native-handle download/copy and binary/media paths; Phase 10 owns large GraphQL introspection/schema construction and analysis.
+- Profile the Rust source buffer and derived-output buffer with the Phase 0 100 MiB fixtures. Introduce a decrypting `Read`/encrypted `Write` pipeline only if those measurements justify the additional storage complexity.
 
 - **Objective:** provide useful large-response tools without reconstructing full content in JS.
 - **Files/modules affected:** Rust `response/*`; TypeScript `model/response.ts` becomes small-value helpers plus port calls; search/query UI.

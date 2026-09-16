@@ -60,7 +60,7 @@ canonical Project + local records + assets
 Rust modules provide narrow privileged boundaries:
 
 - `src-tauri/src/http/`: validated HTTP(S) transport without automatic redirects.
-- `src-tauri/src/content/`: response-content chunks, lifecycle, bounded reads, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
+- `src-tauri/src/content/`: response-content chunks, lifecycle, bounded reads/segmented lines, cancellable search/format/query adapters, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
 - `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
@@ -122,7 +122,7 @@ Request editor
   → Tauri adapter → Rust start_http / cancel_http
   → bounded background encryption/SQLite pipeline
   → ready encrypted content reference + request-stage diagnostics
-  → <1 MiB compatibility materialization or ≥1 MiB bounded content pages
+  → compatibility materialization or size/line-aware bounded content pages
   → response viewer + v2 exchange persistence/content adoption
 ```
 
@@ -146,7 +146,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 
 ## Current architectural limitations
 
-- Responses at or above 1 MiB use a bounded page viewer without full-body Pretty, jq/JSONPath, structured GraphQL tabs, preview, copy, or direct handle download. Phases 8–9 add those operations without restoring full-body WebView copies.
+- Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Full-body media preview, copy, and direct handle download remain Phase 9 work.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.

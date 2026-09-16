@@ -4,7 +4,11 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::content::{
     actor::ResponseContentState,
-    contracts::{ByteRange, ContentInfo, ContentWindow, LinePage, ResponseContentRef},
+    contracts::{
+        ByteRange, ContentInfo, ContentOperationResult, ContentWindow, FormatRequest,
+        JsonQueryRequest, LinePage, ResponseContentRef, SearchPage, SearchQuery,
+    },
+    operations_state::ContentOperationState,
 };
 
 fn safe_file_name(value: &str) -> String {
@@ -92,6 +96,63 @@ pub async fn response_content_read_lines(
         .handle(&app)?
         .read_lines(reference.id, cursor, limit)
         .await
+}
+
+#[tauri::command]
+pub async fn response_content_search(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    operations: tauri::State<'_, ContentOperationState>,
+    operation_id: String,
+    reference: ResponseContentRef,
+    query: SearchQuery,
+    cursor: Option<String>,
+) -> Result<SearchPage, String> {
+    let handle = state.handle(&app)?;
+    let cancelled = operations.register(&operation_id)?;
+    let result = handle.search(reference.id, query, cursor, cancelled).await;
+    operations.finish(&operation_id);
+    result
+}
+
+#[tauri::command]
+pub async fn response_content_format(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    operations: tauri::State<'_, ContentOperationState>,
+    operation_id: String,
+    reference: ResponseContentRef,
+    request: FormatRequest,
+) -> Result<ContentOperationResult, String> {
+    let handle = state.handle(&app)?;
+    let cancelled = operations.register(&operation_id)?;
+    let result = handle.format(reference.id, request, cancelled).await;
+    operations.finish(&operation_id);
+    result
+}
+
+#[tauri::command]
+pub async fn response_content_query(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ResponseContentState>,
+    operations: tauri::State<'_, ContentOperationState>,
+    operation_id: String,
+    reference: ResponseContentRef,
+    request: JsonQueryRequest,
+) -> Result<ContentOperationResult, String> {
+    let handle = state.handle(&app)?;
+    let cancelled = operations.register(&operation_id)?;
+    let result = handle.query(reference.id, request, cancelled).await;
+    operations.finish(&operation_id);
+    result
+}
+
+#[tauri::command]
+pub fn cancel_response_content_operation(
+    operation_id: String,
+    operations: tauri::State<'_, ContentOperationState>,
+) -> Result<(), String> {
+    operations.cancel(&operation_id)
 }
 
 #[tauri::command]

@@ -16,7 +16,10 @@ import type {
 import type { ResponseContentPort } from "../../../application/ports/response-content";
 import { base64Bytes } from "../model/request-auth";
 import type { SessionCookieJar } from "../model/cookie-jar";
-import { inlineResponseLimitBytes } from "./response-content-reader";
+import {
+  inlineResponseLimitBytes,
+  inlineResponseMaximumLineBytes,
+} from "./response-content-reader";
 
 export type WireRequest = HttpRequestSnapshot;
 export type WireResponse = HttpTransportResponse;
@@ -308,7 +311,10 @@ export async function executeHttp(
       // Keep the exact boundary on the bounded path as well. A 1 MiB body can
       // be a single line, and mounting that line in CodeMirror synchronously
       // blocks the WebView even though native capture has already completed.
-      if (exchange.content.byteLength >= inlineResponseLimitBytes) return exchange;
+      if (
+        exchange.content.byteLength >= inlineResponseLimitBytes
+        || (exchange.content.maxLineBytes ?? 0) >= inlineResponseMaximumLineBytes
+      ) return exchange;
       try {
         const readStarted = performance.now();
         const materialized = await materializeHttpExchange(exchange, options.content, options.signal);

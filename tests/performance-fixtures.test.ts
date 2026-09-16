@@ -22,7 +22,7 @@ test("performance fixture sizes are declared without allocating heavyweight CI b
 
 test("synthetic response fixtures are exact, deterministic, and structurally valid", () => {
   const bytes = 4096;
-  for (const kind of ["text", "json", "ndjson", "binary"] as const) {
+  for (const kind of ["text", "lines", "json", "graphql", "ndjson", "xml", "binary"] as const) {
     const first = syntheticFixtureBytes(kind, bytes);
     const second = Buffer.concat([
       syntheticFixtureChunk(kind, bytes, 0, 997),
@@ -33,10 +33,19 @@ test("synthetic response fixtures are exact, deterministic, and structurally val
   }
   assert.equal(JSON.parse(syntheticFixtureText("json", bytes)).tail, "purr-tail-marker");
   assert.match(JSON.parse(syntheticFixtureText("json", bytes)).payload, /purr-middle-marker/);
+  const graphql = JSON.parse(syntheticFixtureText("graphql", bytes));
+  assert.equal(graphql.data.fixture, "purr-v1");
+  assert.equal(graphql.errors[0].extensions.code, "SYNTHETIC");
+  assert.equal(graphql.extensions.fixture, "purr-extension");
   const ndjson = syntheticFixtureText("ndjson", bytes).trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(ndjson.at(-1).tail, "purr-tail-marker");
   assert.match(syntheticFixtureText("text", bytes), /purr-tail-marker/);
   assert.match(syntheticFixtureText("text", bytes), /purr-middle-marker/);
+  assert.equal(syntheticFixtureText("lines", 20), "x\n".repeat(10));
+  const xml = syntheticFixtureText("xml", bytes);
+  assert.match(xml, /^<fixture>/);
+  assert.match(xml, /purr-middle-marker/);
+  assert.match(xml, /<tail>purr-tail-marker<\/tail><\/fixture>$/);
 });
 
 test("synthetic GraphQL fixtures contain no external data and scale deterministically", () => {

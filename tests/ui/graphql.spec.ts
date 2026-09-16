@@ -110,6 +110,57 @@ test("GraphQL creation menus, last-used request type, and saved query snapshots"
   await expect(page.getByRole("tab", { name: "Query", exact: true })).toHaveAttribute("aria-selected", "true");
 });
 
+test("large GraphQL envelopes extract data, errors and extensions through native queries", async ({ page }) => {
+  await page.addInitScript(() => {
+    const size = 2 * 1024 * 1024;
+    (window as any).isTauri = true;
+    (window as any).__largeGraphqlQueries = [];
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 8,
+          headers: [["content-type", "application/json"]],
+          content: { id: "large-graphql-envelope", byteLength: size, mediaType: "application/json", charset: "utf-8", lineCount: 1, maxLineBytes: size, complete: true },
+        };
+        if (command === "response_content_read_lines") {
+          const value = '{"data":{"fixture":"purr-v1"},"errors":[{"message":"Synthetic partial result"}],"extensions":{"fixture":"purr-extension"}}';
+          return { offset: 0, bytesRead: value.length, segments: [{ byteOffset: 0, byteLength: value.length, text: value, continuesFromPrevious: false, continuesToNext: false }], complete: true };
+        }
+        if (command === "response_content_format") return { kind: "value", value: { data: { fixture: "purr-v1" } } };
+        if (command === "response_content_query") {
+          (window as any).__largeGraphqlQueries.push(args.request.expression);
+          if (args.request.expression === ".data") return { kind: "value", value: { fixture: "purr-v1" } };
+          if (args.request.expression === ".errors") return { kind: "value", value: [{ message: "Synthetic partial result" }] };
+          if (args.request.expression === ".extensions") return { kind: "value", value: { fixture: "purr-extension" } };
+        }
+        if (command === "cancel_response_content_operation") return null;
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  });
+  await page.goto("/");
+  await createGraphql(page);
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/large-graphql");
+  await page.getByLabel("GraphQL query", { exact: true }).fill("{ fixture }");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const response = page.getByRole("region", { name: "HTTP response" });
+  const viewer = response.getByLabel("Large response body viewer", { exact: true });
+  await response.getByRole("button", { name: "Data", exact: true }).click();
+  await expect(viewer).toContainText("purr-v1");
+  await response.getByRole("button", { name: "Errors", exact: true }).click();
+  await expect(viewer).toContainText("Synthetic partial result");
+  await response.getByRole("button", { name: "Extensions", exact: true }).click();
+  await expect(viewer).toContainText("purr-extension");
+  expect(await page.evaluate(() => (window as any).__largeGraphqlQueries)).toEqual([
+    ".data",
+    ".errors",
+    ".extensions",
+  ]);
+});
+
 test("GraphQL shares HTTP auth/cookies, validates variables, introspects and persists the schema tab", async ({ page }) => {
   await mockDesktop(page);
   await page.goto("/");

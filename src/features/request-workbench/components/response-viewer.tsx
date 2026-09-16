@@ -1108,6 +1108,8 @@ function selectResponseTextMatch(root: HTMLElement, query: string, requestedInde
 }
 
 function ResponseFindBar({
+  regularExpression,
+  onToggleRegex,
   value,
   count,
   index,
@@ -1117,6 +1119,8 @@ function ResponseFindBar({
   onNext,
   onClose,
 }: {
+  regularExpression?: boolean;
+  onToggleRegex?: () => void;
   value: string;
   count: number;
   index: number;
@@ -1150,6 +1154,7 @@ function ResponseFindBar({
         spellCheck="false"
         className="h-control-xs w-method-popover rounded-ui-sm border-transparent bg-transparent px-ui-1 font-code text-ui-xs"
       />
+      {onToggleRegex ? <Button type="button" size="xs" variant="ghost" aria-label="Use regular expression" aria-pressed={regularExpression} className={cn(regularExpression && "bg-action-brand-surface text-action-brand")} onClick={onToggleRegex}>.*</Button> : null}
       <span className="min-w-ui-7 text-right font-code text-ui-2xs text-content-tertiary" aria-live="polite">
         {value ? `${count ? index + 1 : 0}/${count}` : "0/0"}
       </span>
@@ -1172,6 +1177,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
   const referencedResponse = isInlineHttpResponse(storedResponse) ? null : storedResponse;
   const [tab, setTab] = useState<ResponseTab>("response");
   const [findOpen, setFindOpen] = useState(false);
+  const [regularExpression, setRegularExpression] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findMatchIndex, setFindMatchIndex] = useState(0);
   const [findMatchCount, setFindMatchCount] = useState(0);
@@ -1314,6 +1320,8 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
         </div>
       </div>
       {findOpen && searchable ? <ResponseFindBar
+        regularExpression={regularExpression}
+        onToggleRegex={referencedResponse && tab === "response" ? () => { setRegularExpression((value) => !value); setFindMatchIndex(0); } : undefined}
         value={findQuery}
         count={findMatchCount}
         index={findMatchIndex}
@@ -1332,7 +1340,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
       >
         {tab === "response" ? inlineResponse
           ? <ResponseBodyPanel response={inlineResponse} prettyResponse={graphqlDataResponse} prettyLabel={graphql ? "Data" : "Pretty"} onCreateVariable={onCreateVariable} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} />
-          : referencedResponse ? <LargeResponseViewer exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
+          : referencedResponse ? <LargeResponseViewer regularExpression={regularExpression} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
           : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}

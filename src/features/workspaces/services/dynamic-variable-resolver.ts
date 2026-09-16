@@ -1,4 +1,5 @@
 import type { RequestDraft } from "../../request-workbench/model/request";
+import type { ResponseContentPort } from "../../../application/ports/response-content";
 import {
   isInlineHttpResponse,
   type StoredHttpResponse,
@@ -34,6 +35,7 @@ type ResolveOptions = {
   execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null) => Promise<StoredHttpResponse>;
   persistentCache: Record<string, DynamicVariableCacheEntry>;
   sessionCache: Map<string, DynamicVariableCacheEntry>;
+  responseContent?: ResponseContentPort;
   forceVariableIds?: ReadonlySet<string>;
 };
 
@@ -129,12 +131,31 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
         try {
           const dependency = await resolveDocument(sourceDocument, sourceEnvironmentId, [...path, { document, variable }]);
           const response = await options.execute(sourceDocument, dependency.values, sourceEnvironmentId);
-          if (!isInlineHttpResponse(response))
-            throw new Error(`Dynamic variable “${variable.name}” cannot query a response at or above 1 MiB yet.`);
-          let parsed: unknown;
-          try { parsed = JSON.parse(response.text); }
-          catch { throw new Error(`Dynamic variable “${variable.name}” expected a JSON response from ${sourceDocument.name}.`); }
-          const extracted = queryResponseJson(parsed, variable.expression || (variable.language === "jq" ? "." : "$"), variable.language);
+          const expression = variable.expression || (variable.language === "jq" ? "." : "$");
+          let extracted: unknown;
+          if (isInlineHttpResponse(response)) {
+            let parsed: unknown;
+            try { parsed = JSON.parse(response.text); }
+            catch { throw new Error(`Dynamic variable “${variable.name}” expected a JSON response from ${sourceDocument.name}.`); }
+            extracted = queryResponseJson(parsed, expression, variable.language);
+          } else {
+            if (!options.responseContent)
+              throw new Error(`Dynamic variable “${variable.name}” cannot access native response content.`);
+            try {
+              const result = await options.responseContent.query(response.content, {
+                language: variable.language,
+                expression,
+              });
+              if (result.kind === "value") extracted = result.value;
+              else if (result.kind === "window") extracted = JSON.parse(result.window.content);
+              else {
+                await options.responseContent.release(result.reference).catch(() => {});
+                throw new Error(`Dynamic variable “${variable.name}” produced a value too large to use in a request.`);
+              }
+            } finally {
+              await options.responseContent.release(response.content).catch(() => {});
+            }
+          }
           entry = { status: "success", value: valueText(extracted), resolvedAt: new Date().toISOString(), durationMs: performance.now() - startedAt,
             environmentId: sourceEnvironmentId, fingerprint: hash };
           nextPersistent[key] = entry;

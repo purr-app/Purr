@@ -7,9 +7,9 @@ export const responseBaselineSizes = [
   { name: "100 MiB", bytes: 100 * 1024 * 1024 },
 ] as const;
 
-export type SyntheticResponseKind = "text" | "json" | "ndjson" | "binary";
+export type SyntheticResponseKind = "text" | "lines" | "json" | "graphql" | "ndjson" | "xml" | "binary";
 
-const fixtures: Record<Exclude<SyntheticResponseKind, "binary">, { prefix: string; suffix: string }> = {
+const fixtures: Record<Exclude<SyntheticResponseKind, "binary" | "lines">, { prefix: string; suffix: string }> = {
   text: {
     prefix: "purr-synthetic-start\n",
     suffix: "\npurr-tail-marker\n",
@@ -18,15 +18,23 @@ const fixtures: Record<Exclude<SyntheticResponseKind, "binary">, { prefix: strin
     prefix: '{"meta":{"fixture":"purr-synthetic"},"payload":"',
     suffix: '","tail":"purr-tail-marker"}',
   },
+  graphql: {
+    prefix: '{"data":{"fixture":"purr-v1","payload":"',
+    suffix: '"},"errors":[{"message":"Synthetic partial result","extensions":{"code":"SYNTHETIC"}}],"extensions":{"fixture":"purr-extension"}}',
+  },
   ndjson: {
     prefix: '{"fixture":"purr-synthetic","index":0}\n{"payload":"',
     suffix: '","tail":"purr-tail-marker"}\n',
+  },
+  xml: {
+    prefix: "<fixture><meta>purr-synthetic</meta><payload>",
+    suffix: "</payload><tail>purr-tail-marker</tail></fixture>",
   },
 };
 const middleMarker = Buffer.from("purr-middle-marker");
 
 function fixtureParts(kind: SyntheticResponseKind) {
-  return kind === "binary" ? { prefix: "", suffix: "" } : fixtures[kind];
+  return kind === "binary" || kind === "lines" ? { prefix: "", suffix: "" } : fixtures[kind];
 }
 
 export function assertFixtureSize(kind: SyntheticResponseKind, bytes: number) {
@@ -49,6 +57,12 @@ export function syntheticFixtureChunk(
   const chunk = Buffer.alloc(length, kind === "binary" ? 0 : "x".charCodeAt(0));
   if (kind === "binary") {
     for (let index = 0; index < length; index++) chunk[index] = ((offset + index) * 31 + 17) % 256;
+    return chunk;
+  }
+  if (kind === "lines") {
+    for (let index = 0; index < length; index++) {
+      chunk[index] = (offset + index) % 2 === 0 ? "x".charCodeAt(0) : "\n".charCodeAt(0);
+    }
     return chunk;
   }
   const { prefix, suffix } = fixtureParts(kind);

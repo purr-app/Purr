@@ -6,7 +6,6 @@ import type { ResponseContentRef } from "../src/domain/http";
 import {
   readResponseContentPage,
   responsePageBytes,
-  responseSearchWindowBytes,
   searchResponseContent,
 } from "../src/features/request-workbench/services/response-content-reader";
 
@@ -14,7 +13,7 @@ const fixtureSize = 100 * 1024 * 1024;
 const marker = new TextEncoder().encode("purr-large-marker");
 const markerOffsets = [64, fixtureSize - 128];
 
-function syntheticLargeContent(requestLengths: number[]): ResponseContentPort {
+function syntheticLargeContent(requestLengths: number[], searchRequests: string[]): ResponseContentPort {
   const unavailable = () => Promise.reject(new Error("unused operation"));
   return {
     inspect: unavailable,
@@ -42,7 +41,16 @@ function syntheticLargeContent(requestLengths: number[]): ResponseContentPort {
       };
     },
     readLines: unavailable,
-    search: unavailable,
+    search: async (_reference, query, cursor) => {
+      searchRequests.push(`${query.text}:${cursor ?? "first"}`);
+      return {
+        matches: markerOffsets.map((byteOffset) => ({
+          byteOffset,
+          snippet: `x ${query.text} x`,
+        })),
+        totalKnown: markerOffsets.length,
+      };
+    },
     format: unavailable,
     query: unavailable,
     save: unavailable,
@@ -52,7 +60,8 @@ function syntheticLargeContent(requestLengths: number[]): ResponseContentPort {
 
 test("100 MiB response paging and search retain only bounded content windows", async () => {
   const requests: number[] = [];
-  const content = syntheticLargeContent(requests);
+  const searchRequests: string[] = [];
+  const content = syntheticLargeContent(requests, searchRequests);
   const reference: ResponseContentRef = {
     id: "synthetic-100-mib",
     byteLength: fixtureSize,
@@ -73,8 +82,7 @@ test("100 MiB response paging and search retain only bounded content windows", a
 
   const matches = await searchResponseContent(content, reference, "purr-large-marker");
   assert.deepEqual(matches.map((match) => match.byteOffset), markerOffsets);
-  assert.ok(requests.length > 20);
-  assert.ok(requests.slice(0, 2).every((length) => length <= responsePageBytes));
-  assert.ok(requests.slice(2).every((length) => length <= responseSearchWindowBytes));
+  assert.equal(searchRequests.length, 1);
+  assert.ok(requests.every((length) => length <= responsePageBytes));
   assert.ok(requests.every((length) => length < fixtureSize));
 });

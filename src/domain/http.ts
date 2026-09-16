@@ -56,6 +56,8 @@ export type ResponseContentRef = {
   byteLength: number;
   mediaType?: string;
   charset?: string;
+  lineCount?: number;
+  maxLineBytes?: number;
   complete: boolean;
 };
 
@@ -139,6 +141,8 @@ const responseContentRefSchema = z.object({
   byteLength: z.number().finite().nonnegative(),
   mediaType: z.string().optional(),
   charset: z.string().optional(),
+  lineCount: z.number().int().nonnegative().optional(),
+  maxLineBytes: z.number().int().nonnegative().optional(),
   complete: z.boolean(),
 }).passthrough();
 const httpExchangeSchema = z.object({

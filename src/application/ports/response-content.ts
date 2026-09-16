@@ -11,10 +11,25 @@ export type ContentInfo = {
   size: number;
   mediaType?: string;
   textEncoding?: string;
+  lineCount?: number;
+  maxLineBytes?: number;
 };
 export type LineCursor = string;
+export type LineSegment = {
+  byteOffset: number;
+  byteLength: number;
+  lineStartOffset?: number;
+  hiddenBytes?: number;
+  suffix?: string;
+  text: string;
+  continuesFromPrevious: boolean;
+  continuesToNext: boolean;
+};
 export type LinePage = {
-  lines: readonly string[];
+  offset: number;
+  bytesRead: number;
+  segments: readonly LineSegment[];
+  previousCursor?: LineCursor;
   nextCursor?: LineCursor;
   complete: boolean;
 };
@@ -26,6 +41,7 @@ export type SearchQuery = {
 export type SearchCursor = string;
 export type SearchMatch = {
   byteOffset: number;
+  byteLength?: number;
   line?: number;
   snippet: string;
 };
@@ -35,7 +51,7 @@ export type SearchPage = {
   totalKnown?: number;
 };
 export type FormatRequest = {
-  syntax: "json" | "xml";
+  syntax: "json" | "xml" | "ndjson";
   indent: number;
 };
 export type JsonQueryRequest = {

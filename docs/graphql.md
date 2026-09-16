@@ -59,6 +59,8 @@ Current working sources are introspection and user-selected SDL/introspection JS
 
 `SchemaExplorer` creates an introspection `RequestDraft`, usually from the linked request. It applies workspace GraphQL shared configuration, variables, auth/OAuth runtime, and cookie jar through the normal request execution services, then requires a 2xx response and installs normalized SDL.
 
+Schema installation currently requires the inline compatibility response. A larger introspection result stays native and fails with an explicit size message; Phase 10 owns moving schema construction/analysis off the WebView rather than reintroducing a full IPC body copy.
+
 ```text
 linked GraphQL request / schema endpoint
   → getIntrospectionQuery()
@@ -101,6 +103,8 @@ The transport returns a normal `HttpResult`. For JSON object responses, `Respons
 - Extensions for top-level `extensions`.
 
 Top-level `data` remains part of the Response body. A GraphQL `errors` array does not turn a 2xx response into a native error. Non-JSON or invalid GraphQL responses fall back to ordinary content detection/display.
+
+For referenced large responses, the bounded viewer offers Data, Errors, and Extensions extraction controls backed by native jq path queries. Results remain bounded values or temporary encrypted content references; the full GraphQL response is not reconstructed in JavaScript.
 
 ## Inheritance
 

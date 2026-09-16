@@ -22,6 +22,38 @@ const WRITE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const PROGRESS_BYTES: u64 = 1024 * 1024;
 
+#[derive(Default)]
+struct LineStatistics {
+    bytes: u64,
+    newline_count: u64,
+    current_line_bytes: u64,
+    max_line_bytes: u64,
+}
+
+impl LineStatistics {
+    fn observe(&mut self, bytes: &[u8]) {
+        self.bytes += bytes.len() as u64;
+        for byte in bytes {
+            if *byte == b'\n' {
+                self.max_line_bytes = self.max_line_bytes.max(self.current_line_bytes);
+                self.current_line_bytes = 0;
+                self.newline_count += 1;
+            } else {
+                self.current_line_bytes += 1;
+            }
+        }
+    }
+
+    fn apply(self, reference: &mut ResponseContentRef) {
+        reference.line_count = Some(if self.bytes == 0 {
+            0
+        } else {
+            self.newline_count + 1
+        });
+        reference.max_line_bytes = Some(self.max_line_bytes.max(self.current_line_bytes));
+    }
+}
+
 pub struct HttpClient(pub Client);
 
 impl Default for HttpClient {
@@ -297,6 +329,7 @@ pub async fn perform_http(
         let mut storage_backpressure = Duration::ZERO;
         let mut encryption = Duration::ZERO;
         let mut sqlite_write = Duration::ZERO;
+        let mut line_statistics = LineStatistics::default();
         loop {
             let next = tokio::select! {
                 _ = cancelled(&mut cancellation) => return Err("Request cancelled.".into()),
@@ -309,6 +342,7 @@ pub async fn perform_http(
             if received_bytes > MAX_RESPONSE_BYTES {
                 return Err("Response exceeds the 128 MiB capture limit.".into());
             }
+            line_statistics.observe(&chunk);
             pending_bytes.extend_from_slice(&chunk);
             while pending_bytes.len() >= WRITE_BATCH_BYTES {
                 let remainder = pending_bytes.split_off(WRITE_BATCH_BYTES);
@@ -365,7 +399,10 @@ pub async fn perform_http(
         tokio::select! {
             _ = cancelled(&mut cancellation) => Err("Request cancelled.".into()),
             result = &mut finish => result,
-        }.map(|reference| (reference, network_completed, encryption, sqlite_write, storage_backpressure))
+        }.map(|mut reference| {
+            line_statistics.apply(&mut reference);
+            (reference, network_completed, encryption, sqlite_write, storage_backpressure)
+        })
     }
     .await;
 
@@ -554,6 +591,8 @@ mod tests {
         .unwrap();
         assert_eq!(result.status, 200);
         assert_eq!(result.content.byte_length, 4);
+        assert_eq!(result.content.line_count, Some(1));
+        assert_eq!(result.content.max_line_bytes, Some(4));
         assert!(result.pipeline_timings.native_total_ms >= result.pipeline_timings.network_ms);
         assert!(result.content.complete);
         assert_eq!(

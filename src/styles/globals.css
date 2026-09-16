@@ -467,3 +467,11 @@
     outline-offset: calc(var(--focus-ring-width) * -1);
   }
 }
+
+@layer components {
+  .ui-native-response { font-size: var(--font-size-code); line-height: var(--line-height-code); }
+  .ui-native-response-line { height: var(--line-height-code); }
+  .ui-native-response-collapsed { width: 100%; }
+  .ui-native-response-collapsed .ui-native-response-prefix { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ui-native-response-gutter { width: calc(var(--code-line-number-width) + var(--control-height-xs)); padding-right: var(--space-2); }
+}
