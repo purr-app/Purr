@@ -1,10 +1,8 @@
 import type { HttpTransportPort } from "../application/ports/http";
 import type { ResponseContentPort } from "../application/ports/response-content";
 import type {
-  CorrelationExtractorContribution,
   ExtensionLogger,
-  IntegrationProviderContribution,
-  TraceProviderContribution,
+  IntegrationPresentationContribution,
 } from "../integrations/contracts";
 import {
   extensionApiVersion,
@@ -33,12 +31,10 @@ export type OwnedContribution<T> = Readonly<T & { moduleId: string }>;
 
 export type ExtensionRegistry = Readonly<{
   modules: readonly PurrExtensionModule["manifest"][];
-  integrations: readonly OwnedContribution<IntegrationProviderContribution>[];
-  traceProviders: readonly OwnedContribution<TraceProviderContribution>[];
-  correlationExtractors: readonly OwnedContribution<CorrelationExtractorContribution>[];
+  integrations: readonly OwnedContribution<IntegrationPresentationContribution>[];
   pages: readonly RegisteredExtensionPage[];
   documentTypes: readonly RegisteredDocumentType[];
-  integration(id: string): OwnedContribution<IntegrationProviderContribution> | undefined;
+  integration(id: string): OwnedContribution<IntegrationPresentationContribution> | undefined;
   documentType(extensionType: string): RegisteredDocumentType | undefined;
 }>;
 
@@ -76,14 +72,10 @@ export function createExtensionRegistry(
     moduleIds.add(manifest.id);
   }
 
-  const integrations: OwnedContribution<IntegrationProviderContribution>[] = [];
-  const traceProviders: OwnedContribution<TraceProviderContribution>[] = [];
-  const correlationExtractors: OwnedContribution<CorrelationExtractorContribution>[] = [];
+  const integrations: OwnedContribution<IntegrationPresentationContribution>[] = [];
   const pages: RegisteredExtensionPage[] = [];
   const documentTypes: RegisteredDocumentType[] = [];
-  const providerIds = new Set<string>();
-  const traceProviderIds = new Set<string>();
-  const correlationIds = new Set<string>();
+  const integrationIds = new Set<string>();
   const pageIds = new Set<string>();
   const paths = new Set(["/", "/workbench"]);
   const documentTypeIds = new Set<string>();
@@ -107,25 +99,16 @@ export function createExtensionRegistry(
         logger: logger(moduleId),
       });
       const registrar: ExtensionRegistrar = Object.freeze({
-        integrations: Object.freeze({ register: (value: IntegrationProviderContribution) => {
-          assertOpen();
-          assertStableId(value.id, "Integration provider ID");
-          if (providerIds.has(value.id)) throw new Error(`Duplicate integration provider ID: ${value.id}`);
-          if (!value.label.trim() || !Number.isInteger(value.configVersion) || value.configVersion < 1) throw new Error(`Invalid integration provider contribution: ${value.id}`);
-          providerIds.add(value.id); register(integrations, { ...value, moduleId });
-        } }),
-        traceProviders: Object.freeze({ register: (value: TraceProviderContribution) => {
-          assertOpen();
-          assertStableId(value.id, "Trace provider ID"); assertStableId(value.integrationProviderId, "Trace integration provider ID");
-          if (traceProviderIds.has(value.id)) throw new Error(`Duplicate trace provider ID: ${value.id}`);
-          traceProviderIds.add(value.id); register(traceProviders, { ...value, moduleId });
-        } }),
-        correlationExtractors: Object.freeze({ register: (value: CorrelationExtractorContribution) => {
-          assertOpen();
-          assertStableId(value.id, "Correlation extractor ID");
-          if (correlationIds.has(value.id)) throw new Error(`Duplicate correlation extractor ID: ${value.id}`);
-          correlationIds.add(value.id); register(correlationExtractors, { ...value, moduleId });
-        } }),
+        integrations: Object.freeze({
+          register: (value: IntegrationPresentationContribution) => {
+            assertOpen();
+            assertStableId(value.id, "Integration presentation ID");
+            if (integrationIds.has(value.id)) throw new Error(`Duplicate integration presentation ID: ${value.id}`);
+            if (!value.label.trim()) throw new Error(`Invalid integration presentation contribution: ${value.id}`);
+            integrationIds.add(value.id);
+            register(integrations, { ...value, moduleId });
+          },
+        }),
         pages: Object.freeze({ register: (value: ExtensionPageContribution) => {
           assertOpen();
           if (!localId.test(value.id)) throw new Error(`Extension page ID must be local and stable: ${value.id || "<empty>"}`);
@@ -152,19 +135,14 @@ export function createExtensionRegistry(
   } finally {
     frozen = true;
   }
-  for (const provider of traceProviders)
-    if (!providerIds.has(provider.integrationProviderId)) throw new Error(`Trace provider ${provider.id} refers to missing integration provider ${provider.integrationProviderId}.`);
-
   const frozenIntegrations = freezeList(integrations);
   const frozenDocumentTypes = freezeList(documentTypes);
   return Object.freeze({
     modules: Object.freeze(manifests),
     integrations: frozenIntegrations,
-    traceProviders: freezeList(traceProviders),
-    correlationExtractors: freezeList(correlationExtractors),
     pages: freezeList([...pages].sort((left, right) => (left.navigation?.order ?? 0) - (right.navigation?.order ?? 0))),
     documentTypes: frozenDocumentTypes,
-    integration: (id: string) => frozenIntegrations.find((provider) => provider.id === id),
+    integration: (id: string) => frozenIntegrations.find((integration) => integration.id === id),
     documentType: (extensionType: string) => frozenDocumentTypes.find((type) => type.extensionType === extensionType),
   });
 }

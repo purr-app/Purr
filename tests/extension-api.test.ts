@@ -38,8 +38,12 @@ test("extension composition is atomic, validates collisions, and freezes capture
   assert.deepEqual(createExtensionRegistry([], capabilities).modules, []);
   assert.throws(() => createExtensionRegistry([module("test.same"), module("test.same")], capabilities), /Duplicate extension module ID/);
   assert.throws(() => createExtensionRegistry([{ ...module("test.future"), manifest: { id: "test.future", extensionApi: 2, version: "1" } } as unknown as PurrExtensionModule], capabilities), /unsupported extension API/);
-  const provider = (id: string) => module(id, (registrar) => registrar.integrations.register({ id: "shared.provider", label: id, configVersion: 1, validateAndMigrate: (configVersion, config) => ({ configVersion, config }) }));
-  assert.throws(() => createExtensionRegistry([provider("test.one"), provider("test.two")], capabilities), /Duplicate integration provider ID/);
+  const integrationPresentation = (id: string) =>
+    module(id, (registrar) => registrar.integrations.register({ id: "shared.provider", label: id }));
+  assert.throws(
+    () => createExtensionRegistry([integrationPresentation("test.one"), integrationPresentation("test.two")], capabilities),
+    /Duplicate integration presentation ID/,
+  );
   const duplicatePage = module("test.pages", (registrar) => {
     const page = { id: "home", routeSegment: "home", title: "Home", create: () => ({ component: () => null }) };
     registrar.pages.register(page); registrar.pages.register({ ...page, id: "other" });
@@ -54,7 +58,11 @@ test("extension composition is atomic, validates collisions, and freezes capture
     validateAndMigrate: (configVersion, config) => ({ configVersion, config }), create: () => ({ editor: () => null, createNew: () => ({ name: id, configVersion: 1, config: {} }) }) }));
   assert.throws(() => createExtensionRegistry([duplicateDocument("test.doc-one"), duplicateDocument("test.doc-two")], capabilities), /Duplicate extension document type/);
   let lateRegister: (() => void) | undefined;
-  createExtensionRegistry([module("test.freeze", (registrar) => { lateRegister = () => registrar.correlationExtractors.register({ id: "test.late", extract: () => [] }); })], capabilities);
+  createExtensionRegistry([
+    module("test.freeze", (registrar) => {
+      lateRegister = () => registrar.integrations.register({ id: "test.late", label: "Late" });
+    }),
+  ], capabilities);
   assert.throws(() => lateRegister?.(), /registries are frozen/);
   assert.equal(createExtensionRegistry([module("test.clean")], capabilities).modules.length, 1);
 });

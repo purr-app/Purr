@@ -3,8 +3,7 @@ import { createContext, useContext, type PropsWithChildren } from "react";
 import type { ExtensionRegistry } from "./registry";
 
 const emptyRegistry: ExtensionRegistry = Object.freeze({
-  modules: Object.freeze([]), integrations: Object.freeze([]), traceProviders: Object.freeze([]),
-  correlationExtractors: Object.freeze([]), pages: Object.freeze([]), documentTypes: Object.freeze([]),
+  modules: Object.freeze([]), integrations: Object.freeze([]), pages: Object.freeze([]), documentTypes: Object.freeze([]),
   integration: () => undefined, documentType: () => undefined,
 });
 const ExtensionContext = createContext<ExtensionRegistry>(emptyRegistry);

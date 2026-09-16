@@ -13,11 +13,5 @@ export type {
 } from "./contracts";
 export type { ExtensionDocumentDefinition, IntegrationDefinition, JsonObject } from "../domain/project";
 export type {
-  CorrelationExtractorContribution,
-  CorrelationInput,
-  IntegrationProviderContribution,
-  Trace,
-  TraceProvider,
-  TraceProviderContribution,
-  TraceReference,
+  IntegrationPresentationContribution,
 } from "../integrations/contracts";

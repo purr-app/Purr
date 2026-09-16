@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { defineExtensionModule, type ExtensionDocumentEditorProps, type TraceProvider } from "@purr/core/extension-api";
+import { defineExtensionModule, type ExtensionDocumentEditorProps } from "@purr/core/extension-api";
 import { Button, FormField } from "@purr/core/ui";
 
 const service = { count: 0, increment() { this.count += 1; return this.count; } };
@@ -23,18 +23,10 @@ function FakeDocumentEditor({ document, onChange }: ExtensionDocumentEditorProps
   </main>;
 }
 
-const emptyTraceProvider: TraceProvider = {
-  getTrace: async () => null,
-  searchTraces: async () => ({ items: [] }),
-};
-
 export const fakeExtensionModule = defineExtensionModule({
   manifest: { id: "test.fake", extensionApi: 1, version: "1.0.0" },
   register(registrar) {
-    registrar.integrations.register({ id: "test.fake", label: "Synthetic provider", configVersion: 1,
-      validateAndMigrate: (configVersion, config) => ({ configVersion, config }) });
-    registrar.traceProviders.register({ id: "test.fake.trace", integrationProviderId: "test.fake", create: () => emptyTraceProvider });
-    registrar.correlationExtractors.register({ id: "test.fake.w3c", extract: () => [] });
+    registrar.integrations.register({ id: "test.fake", label: "Synthetic provider" });
     registrar.pages.register({ id: "dashboard", routeSegment: "dashboard", title: "Synthetic dashboard",
       navigation: { area: "primary", label: "Synthetic extension", order: 10 }, create: () => ({ component: FakePage }) });
     registrar.documentTypes.register({ extensionType: "test.fake.protocol", label: "Synthetic protocol",

@@ -17,9 +17,9 @@ This document distinguishes working import/export behavior from architectural ex
 | Postman/Insomnia/Bruno/Yaak adapters | Not implemented |
 | Generic project export package | Not implemented; canonical directory is the portable artifact |
 | Canonical integration envelope and unavailable-provider management | Working |
-| Build-time extension/provider registries | Implemented immutable composition boundary; no concrete provider runtime yet |
+| Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
 | Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
-| Trace/observability providers | Provider-neutral contracts/registration implemented; UI/use case and adapters remain Phase 13+ |
+| Trace/observability providers | Frontend presentation registration only; Rust provider contracts/service, UI use case, and adapters remain Phase 13+ |
 | Benchmark/history browser | Benchmark reserved; history storage API only |
 
 ## cURL paste/import
@@ -135,9 +135,9 @@ Do not advertise an adapter based only on its registration; it needs mapping, pe
 
 Legacy resources with a top-level `endpoint` migrate it to `config.endpoint` when loaded. Canonical saves omit the legacy field. The YAML codec preserves `config` recursively rather than applying core compaction rules inside provider-owned JSON, so unknown private fields, empty arrays, and provider values that resemble core defaults survive save/reload unchanged. Core validates `SecretRef` ownership only through the explicit credential map; JSON inside `config` is data and is never interpreted as a credential.
 
-Workspace settings list every configured integration. Until a matching provider is registered, Purr labels it unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
+Workspace settings list every configured integration. Today, an integration is available only when matching frontend presentation metadata is registered; Phase 13 makes the native provider registry authoritative for execution as well. Until the required contribution/provider is present, Purr labels the integration unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
 
-The build-time extension registry now accepts provider definitions through the public extension API and rejects duplicate provider IDs before rendering. There is still no provider adapter implementation, settings editor, execution lifecycle, or credential acquisition flow. Phase 13 adds the first provider-neutral use case. New providers must define typed runtime ownership and use `Credential`/`SecretRef`; feature components must not interpret arbitrary integration YAML or branch on provider IDs.
+The build-time frontend extension registry accepts integration presentation metadata through the public extension API and rejects duplicate presentation IDs before rendering. It does not accept executable trace/log providers, correlation extractors, credential resolvers, or provider caches. There is still no provider adapter implementation, settings editor, execution lifecycle, or credential acquisition flow. Phase 13 adds the Rust-owned provider-neutral use case. New providers use `Credential`/`SecretRef`, but plaintext resolution, provider HTTP, vendor parsing, correlation, normalization, caching, pagination, and cancellation remain inside Rust; feature components must not interpret arbitrary integration YAML or branch on provider IDs.
 
 ## Build-time extension modules
 
@@ -147,19 +147,20 @@ The curated entry points are `@purr/core/app`, `@purr/core/extension-api`, `@pur
 
 ## Tracing and observability
 
-Trace is currently a disabled response tab plus provider-neutral `Trace`/`Span` contracts and immutable trace-provider/correlation registrations. There is no trace UI use case, provider instance resolution, cache, persistence, or Jaeger/Datadog/CloudWatch/Grafana/Loki adapter yet.
+Trace is currently a disabled response tab. There is frontend integration presentation metadata, but no executable trace provider/correlation contract, trace UI use case, native provider instance resolution, cache, persistence, or Jaeger/Datadog/CloudWatch/Grafana/Loki adapter yet.
 
 When tracing becomes real, documentation must be expanded from actual code to cover:
 
 ```text
 request/response
-  → correlation identifier source
-  → provider lookup boundary
-  → normalized trace/log model
+  → typed observability IPC using workspace/integration/exchange references
+  → Rust correlation extraction and provider lookup
+  → Rust scoped credential resolution, request, parsing, normalization and cache
+  → bounded normalized trace/log DTO
   → response Trace UI
 ```
 
-Do not hardcode that future design in canonical schemas until implementation confirms ownership, credential, local-cache, and IPC boundaries.
+Provider-specific DTOs and plaintext credentials must never cross into React. Canonical integration YAML stores `SecretRef` values and opaque provider config; the Rust provider validates/migrates that config and resolves only its declared credential keys. The frontend renders normalized bounded results and UI state only.
 
 ## History and benchmark concepts
 

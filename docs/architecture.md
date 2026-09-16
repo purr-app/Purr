@@ -14,6 +14,10 @@ runtime Workspace / RequestDraft / StoredHttpResponse
 TypeScript domain and application services → application ports
   ↓ platform/browser or platform/tauri adapters
 Rust HTTP · OAuth callback · project files · encrypted SQLite · Keychain
+
+React observability UI
+  ↓ bounded ObservabilityPort DTOs
+Rust observability service · provider/correlation registries · scoped credentials · cache
 ```
 
 The browser adapter exists for development and tests. It is not a transparent replacement for the desktop backend: browser mode has IndexedDB/WebCrypto persistence but intentionally has no native HTTP transport, filesystem watcher, Keychain, or desktop save dialog.
@@ -51,7 +55,7 @@ canonical Project + local records + assets
 
 `src/app/create-purr-app.tsx` is the OSS application factory and the build-time composition root. It accepts zero or more `PurrExtensionModule`s, builds the extension registry once, freezes it, and adds validated namespaced page routes before React renders. The OSS entry passes no optional modules. `src/app/composition/routes.tsx` remains internal; modules contribute pages through `@purr/core/extension-api` rather than importing the router.
 
-`src/extension-api/` is the narrow public frontend boundary. A module can register an integration provider definition, trace provider factory, correlation extractor, namespaced page/navigation entry, or opaque workspace document type. Factories receive only named capabilities (`http`, bounded response content, and a module logger); they do not receive the runtime `Workspace`, persistence backend, secret store, router, or core feature components. The registry rejects incompatible API versions and duplicate IDs/routes during composition, then exposes frozen read-only views. Optional settings/response/workspace hooks are intentionally absent until a concrete integration needs a typed surface.
+`src/extension-api/` is the narrow public frontend boundary. A module can register integration presentation metadata, a namespaced page/navigation entry, or an opaque workspace document type. Page/document factories receive only named capabilities (`http`, bounded response content, and a module logger); they do not receive the runtime `Workspace`, persistence backend, secret store, router, or core feature components. The registry rejects incompatible API versions and duplicate IDs/routes during composition, then exposes frozen read-only views. It deliberately exposes no executable trace/log provider, correlation extractor, credential resolver, or provider cache. Optional settings/response/workspace hooks are absent until a concrete integration needs a typed surface.
 
 ### Storage and native layers
 
@@ -66,6 +70,7 @@ Rust modules provide narrow privileged boundaries:
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
 - `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
+- `src-tauri/src/observability/` (Phase 13+): provider-neutral trace/log domain, immutable provider and correlation registries, integration-scoped credential resolution, provider HTTP/parsing, bounded cache, cancellation, and normalization. React calls this service through typed bounded commands and owns presentation only.
 - `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.
 - `src-tauri/src/composition.rs`: registered Tauri commands, plugins, and managed services.
@@ -81,6 +86,7 @@ Rust modules provide narrow privileged boundaries:
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
 8. Response protection is resolved by the TypeScript application layer before transport. Future workspace/folder/document preferences are local-only and default to encrypted; shared project files cannot disable encryption, and response policy never applies to credentials or secrets.
+9. Observability execution is Rust-owned. React may render normalized bounded trace/log DTOs and issue typed lookup/search/cancel commands; it must not perform provider HTTP, parse vendor DTOs, resolve provider credentials, extract correlation, or own the authoritative provider cache.
 
 ESLint and architecture tests enforce the current boundaries: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application and feature modules cannot import Tauri packages; platform adapters cannot reach feature UI or the application composition root. A source scan also fails when an `invoke()` call appears outside `src/platform/tauri`. Extension conformance tests import only the reviewed package entry points and exercise composition without internal paths.
 

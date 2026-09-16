@@ -4,10 +4,8 @@ import type { HttpTransportPort } from "../application/ports/http";
 import type { ResponseContentPort } from "../application/ports/response-content";
 import type { ExtensionDocumentDefinition, JsonObject } from "../domain/project";
 import type {
-  CorrelationExtractorContribution,
   ExtensionLogger,
-  IntegrationProviderContribution,
-  TraceProviderContribution,
+  IntegrationPresentationContribution,
 } from "../integrations/contracts";
 
 export const extensionApiVersion = 1 as const;
@@ -53,9 +51,7 @@ export interface ExtensionContributionRegistrar<T> {
   register(contribution: T): void;
 }
 export type ExtensionRegistrar = Readonly<{
-  integrations: ExtensionContributionRegistrar<IntegrationProviderContribution>;
-  traceProviders: ExtensionContributionRegistrar<TraceProviderContribution>;
-  correlationExtractors: ExtensionContributionRegistrar<CorrelationExtractorContribution>;
+  integrations: ExtensionContributionRegistrar<IntegrationPresentationContribution>;
   pages: ExtensionContributionRegistrar<ExtensionPageContribution>;
   documentTypes: ExtensionContributionRegistrar<WorkspaceDocumentTypeContribution>;
 }>;

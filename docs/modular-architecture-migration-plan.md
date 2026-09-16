@@ -7,9 +7,9 @@ This plan is based on the current TypeScript and Rust code, tests, persistence f
 
 1. `purr` remains a complete public application and also exposes a narrow build-time extension API.
 2. `purr-commercial` contains only commercial modules and the official composition shell. It never copies the application source.
-3. Frontend composition uses explicit contracts, registries, and an application composition root. Build-time modules may contribute providers, namespaced pages/navigation, module-owned application logic, and extension document/protocol types through named contracts. It does not use a DI framework, arbitrary UI injection, or a runtime plugin marketplace.
-4. Rust becomes the bounded engine for native transport, encrypted content storage, large response decoding/search/format/query, large request-body streaming, imports, filesystem work, OAuth callbacks, and secure storage.
-5. TypeScript keeps interactive request composition, canonical project schemas, UI state, GraphQL editor intelligence, and application policy. Moving those wholesale to Rust would create a second application model and a second request-building path.
+3. Frontend composition uses explicit contracts, registries, and an application composition root. Build-time modules may contribute integration presentation metadata, namespaced pages/navigation, module-owned UI logic, and extension document/protocol types through named contracts. It does not use a DI framework, arbitrary UI injection, or a runtime plugin marketplace.
+4. Rust becomes the bounded engine for native transport, encrypted content storage, large response decoding/search/format/query, large request-body streaming, imports, filesystem work, OAuth callbacks, secure storage, and the complete observability execution pipeline. React never executes a trace/log provider: provider selection, configuration validation/migration, credential resolution, network calls, vendor parsing, correlation extraction, normalization, caching, pagination, and cancellation are native responsibilities.
+5. TypeScript keeps interactive HTTP/GraphQL request composition, canonical project schemas, UI state, GraphQL editor intelligence, and ordinary workspace/application policy. This does not include observability provider business logic, which follows the Rust boundary above. Moving the existing editor/workspace responsibilities wholesale to Rust would create a second application model and a second request-building path.
 6. Large response support is built around an opaque native content reference. Merely moving `JSON.parse` to Rust while still returning the complete formatted result to React would not solve the memory problem.
 7. A second repository is the intended result, but creating it before the extension contract and one public vertical slice are proven would be premature. The split happens near the end of the migration, after Jaeger validates the boundary.
 
@@ -31,7 +31,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 9 | Remove remaining body round trips | DONE | Phase 9 working tree based on `cf80691` | PASS — 149 unit/integration, 60 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner accepted download/media, redirects, multipart, Request Code, autosave, and attachment restart/restore on 2026-09-16 |
 | 10 | Profile and isolate GraphQL analysis | DONE | Phase 10 working tree based on `175ab8b` | PASS — 151 unit/integration, 61 UI, typecheck, lint, build, repository policy, benchmark, Rust fmt/check/clippy and 76 tests | COMPLETE — large schema, active-schema isolation, pinned restart, cancellation, responsiveness, and desktop profiling accepted 2026-09-16 |
 | 11 | Migrate canonical integration envelope | DONE | Phase 11 working tree based on `e721a5d` | PASS — 153 unit/integration, 62 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy | COMPLETE — product-owner accepted legacy migration and unavailable-provider persistence scenarios on 2026-09-16 |
-| 12 | Implement extension API and immutable registries | DONE | Phase 12 working tree based on `2f5e3b4` | PASS — 156 unit/integration, 64 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner OSS/fake-module/unavailable-module/conflict scenarios accepted 2026-09-16 |
+| 12 | Implement extension API and immutable registries | DONE | Phase 12 working tree based on `2f5e3b4` | PASS — 156 unit/integration, 64 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check; Rust-only observability seam correction rechecked | COMPLETE — product-owner OSS/fake-module/unavailable-module/conflict scenarios accepted 2026-09-16 |
 | 13 | Add provider-neutral observability use case and UI | TODO | — | Not run | Not run |
 | 14 | Implement Jaeger public validation adapter | TODO | — | Not run | Not run |
 | 15 | Expose reusable frontend and Rust composition surfaces | PARTIALLY DONE | Existing `purr_lib` library target; no public builder/package export reference | Existing Rust build/tests only | Not recorded |
@@ -188,7 +188,7 @@ src/
   domain/
     project.ts                    # existing canonical project model
     http.ts                       # HttpExchange metadata + ResponseContentRef
-    observability.ts              # Trace, Span, LogRecord, correlation refs
+    observability.ts              # bounded display/IPC models; no provider execution
     integration.ts                # provider-neutral IDs/config envelope
     extension-document.ts         # opaque, versioned config for contributed document types
 
@@ -206,17 +206,16 @@ src/
     responses/
       inspect-response.ts         # chooses small/native presentation path
     observability/
-      find-related-traces.ts
-      query-logs.ts
+      observability-port.ts       # UI-facing typed port to the native service
     project-projection.ts         # existing boundary
     workspace-persistence.ts
     importing/
 
   integrations/
-    contracts.ts                  # provider and build-time contribution contracts
-    registry.ts                   # duplicate-safe immutable capability registries
+    contracts.ts                  # frontend presentation contribution contracts only
+    registry.ts                   # duplicate-safe immutable presentation registries
     builtins/
-      jaeger/                     # first public validation adapter
+      jaeger/                     # label/settings UI only; executable adapter is Rust
       # tempo/, loki/ only when implemented
 
   extension-api/
@@ -287,6 +286,7 @@ src-tauri/src/
     app.rs                        # exit only; remove template greet
     http.rs                       # start/cancel HTTP hop DTO mapping
     response.rs                   # read/search/format/query/save/release commands
+    observability.rs              # lookup/search/cancel DTO mapping only
     persistence.rs
     importing.rs
     oauth.rs
@@ -340,6 +340,17 @@ src-tauri/src/
     root_key.rs
     cipher.rs
     credential_vault.rs
+
+  observability/
+    mod.rs
+    domain.rs                     # Trace/Span/Log DTOs and provider-neutral errors
+    registry.rs                   # immutable native provider/extractor registry
+    service.rs                    # provider selection and response-linked use cases
+    correlation.rs                # W3C/B3/vendor-neutral correlation extraction
+    cache.rs                      # bounded encrypted/local cache policy
+    credentials.rs                # integration-scoped credential resolution
+    providers/
+      jaeger.rs                   # public validation adapter; raw DTOs stay here
 
   oauth.rs                        # keep one file until more flows exist
 ```
@@ -475,7 +486,7 @@ Keep Keychain access, HKDF, encryption/decryption, vault records, reference vali
 
 Keep `SecretRef` ownership, canonical projection, form/reveal state, auth selection, and template expansion in TypeScript. The current UI must sometimes display or edit a secret, so moving one parser does not automatically keep plaintext out of WebView. A future high-security mode may send credential slots/refs in the prepared request and let Rust inject values immediately before transport, but that requires a complete threat model for redirects, request previews, OAuth tokens, provider access, and secret-bearing templates. It is not justified as a performance migration.
 
-Extensions receive a scoped `CredentialResolver` bound to their integration instance and declared credential keys. They do not receive the raw `SecureStore` or arbitrary ref lookup. Public application code resolves `external-secret` variables through a registered credential-provider contract with explicit cache, redaction, and error policy; project YAML still contains only provider/key metadata or `SecretRef` values.
+Native observability providers receive a Rust `ScopedCredentialResolver` bound to one workspace, integration instance, and the credential keys declared by that provider. Plaintext credentials never cross observability IPC and providers never receive the raw vault or arbitrary reference lookup. Public application code may later resolve `external-secret` variables through a separate credential-provider contract with explicit cache, redaction, and error policy; that future feature must not weaken the observability boundary. Project YAML still contains only provider/key metadata or `SecretRef` values.
 
 ## C. Dependency rules
 
@@ -486,12 +497,13 @@ feature UI -> application use cases -> domain
 feature UI -> shared UI
 application -> application ports + domain
 platform adapters -> application ports + IPC contracts
-integrations -> integration contracts + public domain/application ports
+frontend integrations -> presentation contracts + public UI/application ports; no observability execution
 extension-api -> selected domain/contracts/testing exports
 app composition -> core features + adapters + integrations
 private modules -> public extension-api
 private module UI -> public extension-api/UI primitives + that module's private services
 extension hosts -> frozen page/document contribution descriptors, never module internals
+observability UI -> ObservabilityPort -> typed Tauri adapter
 ```
 
 Allowed native directions:
@@ -503,7 +515,10 @@ response -> content store
 persistence -> content store + security + project files
 content -> security cipher abstraction + storage infrastructure
 composition -> commands and managed implementations
-private native plugin -> public builder/plugin API
+commands/observability -> observability service
+observability service -> native provider/correlation registries + scoped credentials + cache/content/http capabilities
+native observability providers -> provider-neutral observability domain + constrained native capabilities
+private native provider -> public Rust observability API + builder registration surface
 ```
 
 Forbidden dependencies:
@@ -511,6 +526,8 @@ Forbidden dependencies:
 - public source importing `purr-commercial`, Datadog, CloudWatch, New Relic, Splunk, licensing, or enterprise policy modules;
 - domain importing React, Tauri, SQLite, YAML, filesystem paths, CodeMirror, reqwest, or vendor DTOs;
 - core UI switching on provider IDs such as `if (provider === "datadog")`;
+- React/TypeScript implementing observability provider requests, parsing vendor payloads, resolving provider credentials, extracting correlation IDs, or owning provider caches;
+- observability commands accepting plaintext credentials or returning raw Jaeger/Datadog/CloudWatch payloads;
 - core router, sidebar, or workbench importing a private page/editor component directly;
 - providers mutating global registries after app startup;
 - provider adapters reading `Workspace`, `RequestDraft`, or `LocalRecord.value` directly;
@@ -551,7 +568,7 @@ Private code may contain:
 - licensing, entitlement, organization/team policy, enterprise auth, and credential-provider modules;
 - private UI components attached through named page, document, settings, or provider contributions;
 - private pages, navigation entries, settings surfaces, workspace document editors, and protocol-specific presentation registered through named contributions;
-- module-owned application services and protocol clients built only from constrained public ports or their own private native plugin;
+- module-owned non-observability application services and protocol clients built only from constrained public ports or their own private native plugin;
 - optional Tauri plugins/commands needed by private providers;
 - the official composition entry, official branding/config, signing/notarization workflow, and release publication configuration;
 - compatibility manifest and tests against a pinned public core revision.
@@ -565,7 +582,7 @@ It must not contain copied core components, workspace/request models, storage im
 - `SecretRef`, `Credential`, and a scoped credential resolver are public contracts. Credential values are never extension configuration.
 - Licensing and entitlement concepts stay private unless the OSS product later needs a generic capability policy. Core must not contain dormant commercial checks.
 - Official branding/build metadata can be private, but the public build must have valid independent identity and config.
-- A provider that only calls an HTTP API should normally be TypeScript and use the public transport/credential ports. Add a private native plugin only for privileged native APIs, native SDKs, or a measured memory/security need.
+- Every observability provider is native Rust, including providers that only call an HTTP API. This keeps plaintext credentials, vendor payloads, correlation and cache policy outside the WebView and gives public and commercial providers one execution model. A matching frontend contribution may provide label/icon/settings UI, but cannot execute or wrap the provider.
 - Private feature logic may remain entirely module-owned. It becomes a core dependency only when it implements a narrow public capability contract; merely showing a private page does not require exporting its service through core.
 - A new request protocol is a contributed document type with an opaque canonical envelope and its own editor/controller. It does not expand the core `RequestDraft` or `HttpExchange` with vendor/protocol fields. If it reuses HTTP, it calls the public HTTP execution ports; if it needs sockets, streaming, or an SDK, its module owns a namespaced Tauri plugin.
 
@@ -606,22 +623,17 @@ interface PurrExtensionModule {
 }
 
 interface ExtensionRegistrar {
-  integrations: IntegrationProviderRegistrar;
-  traceProviders: TraceProviderRegistrar;
-  logProviders: LogProviderRegistrar;
-  correlationExtractors: CorrelationExtractorRegistrar;
-  schemaRegistries: SchemaRegistryRegistrar;
-  credentialProviders: CredentialProviderRegistrar;
+  integrations: IntegrationPresentationRegistrar;
   pages: ExtensionPageRegistrar;
   documentTypes: WorkspaceDocumentTypeRegistrar;
 }
 ```
 
-The baseline external-module proof needs integration, trace, correlation, page/navigation, and document-type registration. Log, schema-registry, credential-provider, response-panel, or policy registries are added only with their first real use case; do not create empty registries for every possible product idea.
+The frontend registry deliberately has no executable trace-provider, log-provider, correlation-extractor, credential-resolver, or provider-cache contract. Its integration contribution is presentation metadata and, when Phase 14 needs it, a typed settings editor. Executable observability registration belongs to the Rust builder and native registry described in E.3. Log, schema-registry, external-credential-provider, response-panel, or policy registries are added only with their first real use case; do not create empty registries for every possible product idea.
 
 Registration occurs once in `createPurrApp()`. The builder rejects duplicate module/provider IDs, validates API versions, and freezes registries before rendering. No module discovery, dynamic loading, service locator, or global singleton is needed.
 
-Separate non-React provider contracts from optional React UI contributions. A provider manifest supplies label/icon/capabilities and a config validator. An optional settings editor receives typed form state and public UI primitives through documented imports; domain and application services never import that component.
+Separate the Rust provider contract from optional React UI contributions. The native provider supplies its stable ID, capabilities, config version/validation/migration, and executable behavior. A frontend contribution with the same stable ID supplies label/icon and an optional settings editor. The native registry is authoritative: if the presentation exists without a matching native provider, the integration remains unavailable, and official-build CI must reject mismatched frontend/native manifests. The settings editor receives typed form state and public UI primitives through documented imports; domain/application code never imports it, and authoritative config validation remains native.
 
 #### E.2.1 Named UI pages and module-owned logic
 
@@ -652,7 +664,7 @@ type ExtensionModuleContext = {
 
 `ExtensionPage` owns its React component and module-private hooks/services. It imports React, documented Purr UI primitives/tokens, and public extension contracts; core domain/application code never imports it. The router derives and validates the full path, the navigation host renders its descriptor, and unloading the module removes both atomically. Contributions cannot shadow `/workbench`, `/`, or another module's route.
 
-The context is capability-limited. It has no mutable `Workspace`, raw persistence backend, arbitrary secret lookup, registry mutation, router replacement, or unrestricted service locator. Integration/provider factories receive a credential resolver scoped to their integration and declared keys. A private page can call its own private service directly; it registers that service with core only if a core workflow needs a stable, provider-neutral capability.
+The context is capability-limited. It has no mutable `Workspace`, raw persistence backend, arbitrary secret lookup, registry mutation, router replacement, or unrestricted service locator. Frontend integration contributions do not receive credentials or provider factories. A private page can call its own private service directly; it registers that service with core only if a core workflow needs a stable, provider-neutral capability. A private page must use the public observability port when it needs traces/logs rather than bypassing the native provider service.
 
 When a private feature needs native code, the private composition root constructs its typed TypeScript adapter for that module's namespaced Tauri plugin and captures the adapter in the page/controller factory. The public registrar does not expose a generic `invoke(command, payload)` capability, and neither the plugin command DTOs nor the private service interface enter the core API unless a provider-neutral core workflow actually needs them.
 
@@ -699,103 +711,103 @@ Cross-cutting core behavior uses separate named contracts only when there is a c
 
 ### E.3 Observability domain and provider contracts
 
-The first useful contract needs more than `fetchTrace()`:
+The executable contract is Rust-owned. The exact Rust syntax can evolve during Phase 13, but the ownership and capability boundary may not move back into TypeScript:
 
-```ts
-type TraceReference = {
-  traceId: string;
-  spanId?: string;
-  integrationId?: string;
-  source: "response-header" | "request-header" | "response-body" | "manual";
-};
-
-type Trace = {
-  id: string;
-  startedAt: string;
-  durationUs: number;
-  rootService?: string;
-  rootOperation?: string;
-  status: "unset" | "ok" | "error";
-  spans: Span[];
-  attributes: Record<string, AttributeValue>;
-};
-
-type Span = {
-  id: string;
-  traceId: string;
-  parentSpanId?: string;
-  service: string;
-  operation: string;
-  startedAt: string;
-  durationUs: number;
-  status: "unset" | "ok" | "error";
-  attributes: Record<string, AttributeValue>;
-  events: SpanEvent[];
-};
-
-type LogRecord = {
-  id: string;
-  timestamp: string;
-  severity?: string;
-  message: string;
-  traceId?: string;
-  spanId?: string;
-  attributes: Record<string, AttributeValue>;
-};
-
-interface TraceProvider {
-  getTrace(ref: TraceReference, signal: AbortSignal): Promise<Trace | null>;
-  searchTraces(query: TraceSearchQuery, signal: AbortSignal): Promise<Page<TraceSummary>>;
+```rust
+pub trait TraceProvider: Send + Sync {
+    fn id(&self) -> ProviderId;
+    fn config_version(&self) -> u32;
+    fn validate_and_migrate_config(
+        &self,
+        version: u32,
+        config: JsonValue,
+    ) -> Result<ValidatedProviderConfig, ProviderError>;
+    async fn get_trace(
+        &self,
+        context: &ProviderContext,
+        reference: &TraceReference,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Trace>, ProviderError>;
+    async fn search_traces(
+        &self,
+        context: &ProviderContext,
+        query: TraceSearchQuery,
+        cancellation: &CancellationToken,
+    ) -> Result<Page<TraceSummary>, ProviderError>;
 }
 
-interface LogProvider {
-  queryLogs(query: LogQuery, signal: AbortSignal): Promise<Page<LogRecord>>;
+pub trait CorrelationExtractor: Send + Sync {
+    fn id(&self) -> CorrelationExtractorId;
+    async fn extract(
+        &self,
+        exchange: &BoundedExchangeInput,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<TraceReference>, CorrelationError>;
+}
+
+pub struct ProviderContext<'a> {
+    pub integration: &'a ValidatedIntegrationInstance,
+    pub credentials: &'a ScopedCredentialResolver,
+    pub http: &'a ProviderHttpClient,
+    pub cache: &'a ObservabilityCache,
+    pub content: &'a ResponseContentReader,
+    pub logger: &'a ObservabilityLogger,
 }
 ```
 
-`AttributeValue`, `Page`, time ranges, normalized provider errors, and cancellation are public. Raw Jaeger/Datadog/CloudWatch responses are private to adapters. Provider factories receive a constrained context such as `HttpTransportPort`, scoped `CredentialResolver`, cache, and logger. They do not receive all application services.
+`Trace`, `Span`, `LogRecord`, `AttributeValue`, page/time-range types, correlation references, and normalized errors are public Rust domain concepts. They contain no Tauri, React, storage, or vendor types. Raw Jaeger/Datadog/CloudWatch requests and responses stay inside their Rust adapters. The TypeScript side has matching bounded display DTOs at the typed Tauri boundary; those DTOs are views of the native domain, not a second provider/domain implementation.
 
-Correlation is its own contract because trace IDs can come from W3C `traceparent`, B3, vendor headers, response JSON, or a manual value. Extractors return `TraceReference[]`; the application service chooses enabled integration instances and queries registered providers. The response tab consumes normalized traces and never checks a vendor string.
+The native `ObservabilityService` owns the complete use case: load the integration definition, resolve the provider by stable ID, validate/migrate its config, create a workspace/integration/key-scoped credential resolver, extract correlation from request/response metadata or bounded content reads, apply cache and cancellation policy, execute provider HTTP, map the vendor payload, and return only normalized bounded results. Rust cache keys include workspace, integration, provider/config version, query/reference and relevant credential generation without storing plaintext. Cache entries have explicit size/TTL/invalidation limits and live in encrypted local storage when persisted.
+
+The frontend `ObservabilityPort` accepts stable IDs, response/content references, bounded queries, cursors, and operation IDs. It never accepts plaintext credentials or raw provider config for execution and never returns vendor DTOs. React owns loading/error/empty states, selection, navigation, and rendering. It may request another bounded page or cancel an operation; it does not parse trace payloads, extract correlation, retry providers, or maintain the authoritative cache.
 
 ### E.4 Representative Jaeger vertical slice
 
 ```text
-HttpExchange metadata/headers
-  -> public correlation extractors
-  -> TraceReference
-  -> FindRelatedTraces application use case
-  -> TraceProviderRegistry resolves integration.provider
-  -> JaegerTraceProvider maps Jaeger HTTP DTO -> Trace/Span
-  -> provider-neutral Trace panel renders Trace
+React Trace panel
+  -> ObservabilityPort.findRelatedTraces(exchangeId, integrationId, operationId)
+  -> typed Tauri command
+  -> Rust ObservabilityService
+      -> Rust CorrelationExtractorRegistry reads bounded exchange metadata/content
+      -> Rust TraceProviderRegistry resolves integration.provider
+      -> ScopedCredentialResolver resolves declared SecretRefs inside Rust
+      -> JaegerProvider performs HTTP, parses/maps Jaeger DTO -> Trace/Span
+      -> ObservabilityCache stores bounded normalized results
+  -> bounded provider-neutral DTO
+  -> React Trace panel renders it
 ```
 
-The public built-in module is conceptually:
+The public built-in has two build-time halves with the same stable provider ID. The frontend half is presentation only:
 
 ```ts
 export const jaegerModule: PurrExtensionModule = {
   manifest: { id: "purr.jaeger", extensionApi: 1, version: "..." },
   register(registrar) {
-    registrar.integrations.register(jaegerDefinition);
-    registrar.traceProviders.register(jaegerTraceProviderFactory);
-    registrar.correlationExtractors.register(w3cAndB3Extractor);
+    registrar.integrations.register(jaegerPresentation);
   },
 };
 ```
 
-A private Datadog module implements the same contracts:
+The public native composition registers execution:
+
+```rust
+core_builder()
+    .register_observability_provider(JaegerProvider::new())
+    .register_correlation_extractor(W3cB3CorrelationExtractor::new());
+```
+
+A private Datadog module follows the same split. Its React half contains settings/presentation only:
 
 ```ts
 export const datadogModule: PurrExtensionModule = {
   manifest: { id: "commercial.datadog", extensionApi: 1, version: "..." },
   register(registrar) {
-    registrar.integrations.register(datadogDefinition);
-    registrar.traceProviders.register(datadogTraceProviderFactory);
-    registrar.logProviders.register(datadogLogProviderFactory);
+    registrar.integrations.register(datadogPresentation);
   },
 };
 ```
 
-The official entry passes `datadogModule` to `createPurrApp`. No public file changes. If Datadog needs a native API, its TS adapter invokes a namespaced command exposed by a private Tauri plugin registered by the private binary.
+Its private Rust crate depends on the public Rust observability API and registers `DatadogProvider` with the official builder. The official entry passes `datadogModule` to `createPurrApp` and adds `DatadogProvider` to `core_builder()`; no public file changes. Datadog credentials, HTTP, raw DTOs, correlation rules, cache and normalization remain in the private Rust crate. The frontend cannot invoke a provider-specific command; it uses the same public `ObservabilityPort` as Jaeger.
 
 ### E.5 TypeScript/Rust shared contracts
 
@@ -805,7 +817,9 @@ Do not create a common npm package for IPC. Keep one checked-in TypeScript bound
 - Zod decoding for untrusted/complex command results rather than relying on `invoke<T>` casts;
 - fixture-based contract tests serialized by Rust and parsed by TypeScript for HTTP, content operations, imports, and persistence descriptors;
 - stable command names collected in the Tauri adapter, not scattered string literals;
-- provider-specific IPC DTOs inside provider adapters/plugins, never in core HTTP/observability domain.
+- provider-neutral, bounded observability commands/results with protocol versions and runtime validation;
+- `workspaceId`/`integrationId`/exchange or content references across observability IPC, never plaintext credentials or an arbitrary provider execution payload;
+- provider-specific DTOs kept wholly inside their Rust adapter crate/module and never exposed through IPC or the core observability domain.
 
 Do not generate code in the first migration PR. `ts-rs`, Specta, or JSON Schema generation can be adopted later if DTO drift remains costly after centralization. A code-generation framework is not needed to establish the boundary.
 
@@ -824,8 +838,9 @@ purr/                     PUBLIC
 
 purr-commercial/          PRIVATE
   thin official React entry/composition
-  commercial extension modules
-  optional private Tauri plugins
+  commercial frontend presentation/settings modules
+  commercial Rust observability providers
+  optional private protocol Tauri plugins
   thin official Rust binary/config
   compatibility manifest
   private integration/e2e/release/signing workflows
@@ -848,7 +863,7 @@ purr
   -> no private dependency
 ```
 
-The private repo owns composition scaffolding plus commercial modules: its own `index.html`, Vite entry, package/Cargo manifests, `tauri.conf.json`, official branding, `main.rs`, private provider/protocol adapters, module-owned services, and contributed UI. That shell and the commercial features are expected private source; no public feature, domain, persistence, shell, router, or workbench source is duplicated.
+The private repo owns composition scaffolding plus commercial modules: its own `index.html`, Vite entry, package/Cargo manifests, `tauri.conf.json`, official branding, `main.rs`, private Rust observability providers or protocol adapters, frontend presentation/settings modules, module-owned services, and contributed UI. That shell and the commercial features are expected private source; no public feature, domain, persistence, shell, router, or workbench source is duplicated.
 
 Initially the public root package can expose `./app`, `./extension-api`, and `./styles` through `package.json`. Do not extract `packages/integration-api`. Add a public `build:core` library build that emits JavaScript, type declarations, one compiled/tokenized CSS entry, and its font/assets into a deterministic ignored output directory. The private Vite build consumes those exports, so its Tailwind scan does not need to know public source paths. Keep React/React DOM as peer/singleton dependencies for the consumed build (and normal development dependencies for the OSS app) to prevent a second React instance. The normal public app build remains a separate first-class build target.
 
@@ -887,7 +902,7 @@ Official development runs from the private shell. Its frontend dependency resolv
 purr_lib = { path = "../../purr/src-tauri" }
 ```
 
-The precise Cargo relative path depends on whether the private manifest is at the root or under `src-tauri`; CI must use the same sibling checkout layout. The private app imports `createPurrApp`, compiled public styles, and `extension-api`, then supplies `commercialModules`. Those modules may register providers, pages/navigation, private services, and extension document/protocol types through the same build-time call. Its `main.rs` augments `purr_lib::core_builder()` with private Tauri plugins and calls the public run helper with the private crate's `tauri::generate_context!()` result.
+The precise Cargo relative path depends on whether the private manifest is at the root or under `src-tauri`; CI must use the same sibling checkout layout. The private app imports `createPurrApp`, compiled public styles, and `extension-api`, then supplies `commercialModules`. Those frontend modules may register integration presentation/settings, pages/navigation, private UI services, and extension document/protocol types through the same build-time call. Its `main.rs` augments `purr_lib::core_builder()` with private Rust observability providers and any private protocol plugins, then calls the public run helper with the private crate's `tauri::generate_context!()` result. Stable provider IDs link frontend presentation to native execution; they do not create a frontend provider dispatcher.
 
 For local hot reload, a private `dev` script starts the public `build:core --watch` task and the private Vite/Tauri task together. This is build orchestration, not source copying. The public package output is the same artifact shape that CI consumes.
 
@@ -1641,8 +1656,8 @@ Started: 2026-09-16
 Completed: 2026-09-16
 
 Automated verification:
-- [x] Add conformance tests for a fake external module importing only documented public exports and contributing a provider, namespaced page/navigation entry, module-owned service, and extension document type.
-- [x] Add boot tests for duplicate module/provider/page/document-type IDs, route collisions, incompatible API versions, registry freeze, and zero optional modules.
+- [x] Add conformance tests for a fake external module importing only documented public exports and contributing integration presentation metadata, a namespaced page/navigation entry, module-owned service, and extension document type.
+- [x] Add boot tests for duplicate module/integration-presentation/page/document-type IDs, route collisions, incompatible API versions, registry freeze, and zero optional modules.
 - [x] Add canonical/local-state tests proving an unknown extension document round-trips unchanged in OSS, shows an unavailable state, and becomes editable again when its module is restored.
 - [x] Run package export/build tests plus TypeScript unit/UI/type/lint/build and Rust checks.
 
@@ -1654,27 +1669,28 @@ Manual verification:
 
 Implementation notes:
 - `createPurrApp({ modules })` is the build-time frontend composition root. The OSS entry supplies zero optional modules and remains fully functional.
-- `@purr/core/extension-api` exposes versioned module, integration-provider, trace-provider, correlation, namespaced page/navigation, and opaque workspace-document contracts. Factories receive constrained HTTP/response-content/logger capabilities rather than the runtime workspace, storage, router, or feature internals.
-- Composition snapshots module manifests, validates API versions and stable IDs, rejects duplicate providers/pages/routes/document types atomically, and freezes registry views before React renders. Captured registrars reject late writes.
+- `@purr/core/extension-api` exposes versioned module, integration-presentation, namespaced page/navigation, and opaque workspace-document contracts. Page/document factories receive constrained HTTP/response-content/logger capabilities rather than the runtime workspace, storage, router, or feature internals. Executable observability contracts are intentionally absent from the frontend API.
+- Composition snapshots module manifests, validates API versions and stable IDs, rejects duplicate integration presentations/pages/routes/document types atomically, and freezes registry views before React renders. Captured registrars reject late writes.
 - Extension documents use a strict core envelope (`extensionType`, `configVersion`, opaque JSON `config`) under `documents/`. Saved baselines remain canonical; dirty working copies remain encrypted local records. Unknown documents render an unavailable host while core rename/move/duplicate/delete behavior stays available.
 - The external conformance fixture imports only `@purr/core/extension-api` and `@purr/core/ui`; its shell composes through `@purr/core/app` and exercises module-owned navigation, page logic, a document editor, module removal/restoration, and boot conflicts.
 - Automated verification completed on 2026-09-16: 156 TypeScript unit/integration tests, 64 Playwright tests, typecheck, lint, production build, repository policy, Rust fmt/check/clippy, 76 Rust tests, and `git diff --check` passed.
+- The Rust-only observability boundary correction was re-verified on 2026-09-16 with all 156 TypeScript unit/integration tests, the two extension Playwright tests, typecheck, lint, production build, repository policy, and `git diff --check`. Rust sources did not change; the phase's prior Rust fmt/check/clippy and 76-test result remains applicable.
 - Product-owner manual verification accepted the zero-module OSS build, contributed page/action, extension-document removal/restoration lifecycle, and duplicate-module startup failure on 2026-09-16.
 
 Deviations from plan:
-- None.
+- After product-owner verification, the executable frontend trace-provider and correlation-extractor seams were removed before Phase 13. They conflicted with the required Rust-only observability boundary. The integration registry now holds presentation metadata only; native provider/correlation registration is reserved for Phases 13–15. This narrows the API without changing the verified page/document/persistence behavior.
 
 Known follow-ups:
 - Keep settings embedded inside existing screens, response panels, workspace actions, and request-policy hooks out of the API until a concrete module needs each named surface.
-- Phases 13–14 still validate the provider/observability half of the same module API with Jaeger.
+- Phases 13–14 validate the Rust provider/observability API and connect it to the frontend presentation half with Jaeger.
 - Package exports currently target reviewed source entry points inside this private migration package; Phase 15 still owns compiled distributable artifacts, Rust builder surfaces, and cross-repository consumption/versioning.
 
-- **Objective:** provide the single supported build-time registration seam for provider modules and independently owned feature modules.
+- **Objective:** provide the supported frontend build-time registration seam for integration presentation and independently owned feature modules; executable observability composition is native.
 - **Files/modules affected:** `src/integrations/{contracts,registry}.ts`, `src/extension-api/*`, `src/app/composition/*`, `src/app/app-router.tsx`, generic extension document domain/host files, package exports, conformance tests.
-- **Changes:** implement module, integration-provider, trace-provider, correlation, page/navigation, and workspace-document-type registries; add the opaque extension-document envelope and unavailable host; validate IDs/API versions/routes/duplicates; freeze at startup; expose a curated barrel, public UI primitives, and test kit. Provider/page/document factories receive constrained contexts. Do not export runtime `Workspace`, raw storage/secrets, the router, or core feature components.
-- **Risk:** the API becomes a dump of internals or a universal plugin framework. Keep page routes namespaced, document persistence opaque, services module-owned, and every cross-core hook named. Split provider registries and page/document composition into two sequential PRs if review size grows.
-- **Verification:** a fake external module registers a provider, page, private service action, and document type without internal imports; an unknown document survives without the module; duplicates and incompatible API versions fail atomically; the app with zero optional modules is fully functional.
-- **Scope:** L, preferably two sequential PRs: base/provider registries, then page/document composition.
+- **Changes:** implement module, integration-presentation, page/navigation, and workspace-document-type registries; add the opaque extension-document envelope and unavailable host; validate IDs/API versions/routes/duplicates; freeze at startup; expose a curated barrel, public UI primitives, and test kit. Page/document factories receive constrained contexts. Do not export executable observability providers, runtime `Workspace`, raw storage/secrets, the router, or core feature components.
+- **Risk:** the API becomes a dump of internals or a universal plugin framework. Keep page routes namespaced, document persistence opaque, services module-owned, and every cross-core hook named. Split presentation registries and page/document composition into two sequential PRs if review size grows.
+- **Verification:** a fake external module registers integration presentation, a page, private service action, and document type without internal imports; an unknown document survives without the module; duplicates and incompatible API versions fail atomically; the app with zero optional modules is fully functional.
+- **Scope:** L, preferably two sequential PRs: base/presentation registries, then page/document composition.
 
 ### Phase 13 — add provider-neutral observability use case and UI
 
@@ -1687,15 +1703,18 @@ Started: —
 Completed: —
 
 Automated verification:
-- [ ] Add domain tests proving trace/span/log models import no React, Tauri, storage, or vendor DTOs.
-- [ ] Add UI/application tests using at least two fake providers without provider-ID branches in core code.
+- [ ] Add Rust domain tests proving trace/span/log models import no Tauri, persistence implementation, or vendor DTOs, plus registry tests for duplicate IDs and immutable post-build state.
+- [ ] Add Rust service tests using at least two fake native providers and fake correlation extractors without provider-ID branches in core code.
+- [ ] Add IPC contract/UI tests proving the React side receives only bounded normalized DTOs and can cancel a native operation without receiving credentials, raw integration config, or vendor payloads.
 - [ ] Run response, observability, type/lint/build, and Rust checks.
 
 Manual verification:
-- [ ] Configure two fake provider integrations, send a request with a fixture `traceparent` or B3 header, and confirm the Trace tab shows the normalized trace from the selected integration.
+- [ ] Configure two fake native provider integrations, send a request with a fixture `traceparent` or B3 header, and confirm the Trace tab shows the normalized trace from the selected integration.
+- [ ] Save a fake provider credential, restart Purr, and confirm trace lookup still succeeds while the integration YAML contains only its `SecretRef`, never the plaintext value.
 - [ ] Open a response with no correlation data and confirm the Trace tab explains that no trace was found rather than exposing a vendor-specific error.
 - [ ] Start a deliberately delayed fake trace lookup, cancel or navigate away, and confirm the response view remains usable with no stale trace result.
-- [ ] Use trace/log pagination/search fixtures and confirm service, operation, timestamps, status, and attributes render without provider field names leaking into the UI.
+- [ ] Use trace pagination/search fixtures and confirm service, operation, timestamps, status, and attributes render without provider field names leaking into the UI.
+- [ ] Change the selected integration config or credential after a successful lookup and confirm the next lookup does not reuse the stale cached result.
 
 Implementation notes:
 - None yet.
@@ -1704,13 +1723,13 @@ Deviations from plan:
 - None.
 
 Known follow-ups:
-- Keep persistence/cache minimal until a real provider demonstrates the required lifecycle.
+- Keep persisted cache optional and bounded until Jaeger demonstrates the required lifecycle; the cache abstraction and ownership still belong to Rust from this phase.
 
-- **Objective:** prove that Trace/Span/Log are independent of any vendor.
-- **Files/modules affected:** `domain/observability.ts`, application use cases, new observability feature components, response-tab extraction, fake provider tests.
-- **Changes:** define normalized models, trace/log search pages, correlation extraction, errors, cancellation; replace disabled Trace placeholder with a provider-neutral state driven by a fake provider. Keep persistence/cache minimal and local.
-- **Risk:** designing contracts from hypothetical providers. Limit the first surface to response-linked trace lookup plus the search/pagination required by Jaeger; add logs as a contract only when a real log UI/provider is being built.
-- **Verification:** UI tests use two fake providers and contain no provider ID branches; domain imports no React/Tauri/vendor code.
+- **Objective:** prove that Trace/Span/Log are vendor-independent while all observability execution and business policy stay in Rust.
+- **Files/modules affected:** new `src-tauri/src/observability/{domain,registry,service,correlation,cache,credentials}.rs`, `commands/observability.rs`, native composition, `src/domain/observability.ts` as bounded display DTOs, `src/application/ports/observability.ts`, Tauri adapter/contracts, new observability UI components, response-tab extraction, fake native-provider tests.
+- **Changes:** define the public Rust normalized models, provider/extractor traits, immutable registries, scoped credential capability, bounded cache contract, operation IDs/cancellation and provider-neutral errors. Add one `ObservabilityService` that owns integration loading, config validation/migration, credential resolution, correlation extraction, cache policy and provider calls. Expose bounded typed commands through a thin TS `ObservabilityPort`; replace the disabled Trace placeholder with provider-neutral UI driven by two fake Rust providers. Add logs only when the first real log use case requires them.
+- **Risk:** duplicating the use case in TypeScript or designing broad contracts from hypothetical providers. TypeScript may coordinate UI state only. Start with response-linked trace lookup and the search/pagination needed by Jaeger; keep provider capabilities explicit and return handles/pages for potentially large data.
+- **Verification:** Rust service tests use two fake providers with no provider-ID branches; IPC/UI tests prove only normalized bounded DTOs cross into React; credentials/config/raw vendor DTOs never cross IPC; cancellation and cache invalidation are native; the Rust domain imports no Tauri or vendor code.
 - **Scope:** M–L, one or two PRs.
 
 ### Phase 14 — implement Jaeger as the public validation adapter
@@ -1724,8 +1743,8 @@ Started: —
 Completed: —
 
 Automated verification:
-- [ ] Add Jaeger adapter fixtures for configuration validation, correlation extraction, normalized trace/span mapping, errors, pagination, and cancellation.
-- [ ] Run extension conformance tests with Jaeger plus a second fake provider, then remove Jaeger from core-module composition in a build test.
+- [ ] Add Rust Jaeger adapter fixtures for configuration migration/validation, scoped credential resolution, correlation extraction, normalized trace/span mapping, bounded errors/results, cache behavior, pagination, and cancellation.
+- [ ] Run native registry and frontend presentation conformance tests with Jaeger plus a second fake provider, then remove both Jaeger halves from public composition in a build test.
 - [ ] Run OSS build, TypeScript tests/type/lint, and Rust checks.
 
 Manual verification:
@@ -1744,10 +1763,10 @@ Known follow-ups:
 - Other public providers must use the same contracts; do not add Jaeger branches to core UI/application logic.
 
 - **Objective:** validate contracts, registry, configuration, credentials, normalized mapping, and UI end to end with a real public provider.
-- **Files/modules affected:** `src/integrations/builtins/jaeger/*`, core module composition, integration settings, observability tests/docs.
-- **Changes:** implement Jaeger configuration schema/editor, HTTP adapter, trace mapping, correlation integration, errors/cancellation, and fixtures. Use the public HTTP and credential ports only.
+- **Files/modules affected:** `src-tauri/src/observability/providers/jaeger/*`, public Rust composition, `src/integrations/builtins/jaeger/*` for presentation/settings only, core frontend module composition, integration settings, observability IPC/tests/docs.
+- **Changes:** implement authoritative Jaeger configuration validation/migration, HTTP requests, scoped credential resolution, vendor parsing, trace mapping, correlation rules, bounded cache/results, errors/cancellation, and fixtures in Rust. The frontend half provides only label/icon/settings UI and submits config for native validation; it uses the public `ObservabilityPort` for execution.
 - **Risk:** leaking Jaeger fields into core domain or widening the API for convenience. Keep raw DTOs under the adapter and change public contracts only when the use case cannot be expressed generically.
-- **Verification:** Jaeger can be removed from `core-modules.ts` and the app still compiles; adding a second fake provider changes no core UI/business files; public standalone build works.
+- **Verification:** Jaeger can be removed from both public frontend and Rust composition and the app still compiles; adding a second fake native provider changes no core UI/business files; no provider-specific IPC DTO exists; public standalone build works.
 - **Scope:** L, several provider-focused PRs.
 
 ### Phase 15 — expose reusable frontend and Rust composition surfaces
@@ -1762,7 +1781,7 @@ Completed: —
 
 Automated verification:
 - [ ] Build the OSS app and the deterministic core JavaScript/type/CSS artifact from a clean checkout.
-- [ ] Run an example external shell that imports only `./app`, `./extension-api`, and `./styles`, with one fake module contributing a page/navigation entry, module-owned service, extension document type, and one test native plugin.
+- [ ] Run an example external shell that imports only `./app`, `./extension-api`, and `./styles`, with one fake module contributing a page/navigation entry, module-owned service and extension document type, plus one fake native observability provider registered through the public Rust builder.
 - [ ] Run package export checks, React-singleton check, TypeScript tests/type/lint/build, and Rust fmt/clippy/test.
 
 Manual verification:
@@ -1782,9 +1801,9 @@ Known follow-ups:
 
 - **Objective:** make the exact public source consumable by the official shell.
 - **Files/modules affected:** root package exports/build, `src/app/create-purr-app.tsx`, Rust `lib.rs`, `composition.rs`, `main.rs`, OSS Tauri config.
-- **Changes:** expose `./app`, `./extension-api`, `./styles`; add the deterministic core library/CSS/type build; keep React a single peer instance; document supported imports; export `core_builder()` and a run helper that accepts the caller's Tauri context; make the OSS `main.rs` a thin caller; support adding Tauri plugins before run. Keep public app build as the contract test.
+- **Changes:** expose `./app`, `./extension-api`, `./styles`; add the deterministic core library/CSS/type build; keep React a single peer instance; document supported imports; export `core_builder()`, native observability provider/extractor traits and a constrained registration method, plus a run helper that accepts the caller's Tauri context; make the OSS `main.rs` a thin caller; support adding Tauri plugins/providers before run. Keep public app build as the contract test. Do not expose raw secure storage, SQLite, or a generic command dispatcher to private providers.
 - **Risk:** Vite/Tailwind asset resolution and Tauri context assumptions from a sibling dependency. Add an example consumer fixture inside public CI before creating the private repo.
-- **Verification:** example shell composes one external fake provider/page/document module and a test native plugin without copying source; the extension imports only public exports and the OSS build remains identical in behavior.
+- **Verification:** example shell composes one external presentation/page/document module and matching fake native provider without copying source; the frontend extension imports only public exports, the Rust provider uses only the public builder/provider API, and the OSS build remains identical in behavior.
 - **Scope:** M, one PR.
 
 ### Phase 16 — create `purr-commercial` and official build composition
@@ -1799,7 +1818,7 @@ Completed: —
 
 Automated verification:
 - [ ] Run the private compatibility script against the exact public SHA/API versions in `core-version.json`.
-- [ ] Build/test the official shell with a commercial provider plus a private page/module-owned use case, and verify imports are limited to documented public exports/APIs.
+- [ ] Build/test the official shell with a commercial Rust provider plus its private presentation/settings module and a private page/module-owned use case; verify imports are limited to documented public frontend exports and Rust APIs.
 - [ ] Run the public OSS build in a checkout with no private sibling, then run official build/signing smoke checks with credentials injected only by CI/local secure configuration.
 
 Manual verification:
@@ -1820,7 +1839,7 @@ Known follow-ups:
 
 - **Objective:** establish the real repository boundary after the public API is proven.
 - **Files/modules affected:** new private repo only, except public compatibility notes if defects are found.
-- **Changes:** create thin frontend/Rust entries, sibling dependencies, `core-version.json`, compatibility validation, one private fake or real commercial provider, private tests, and release-build skeleton without signing credentials committed.
+- **Changes:** create thin frontend/Rust entries, sibling dependencies, `core-version.json`, compatibility validation, one private fake or real commercial Rust provider plus its frontend presentation module, private tests, and release-build skeleton without signing credentials committed. The provider registers through `core_builder()` and is invoked only through the public provider-neutral observability commands.
 - **Risk:** private code reaches internal public paths or begins copying source. CI rejects imports outside package exports and verifies the public checkout is clean after the private build.
 - **Verification:** delete/rename the private sibling and OSS Purr still builds; official build contains private module; `git diff` in public is empty after composition; changing private module requires no public source edit.
 - **Scope:** M for shell/scaffold; provider work separate.
@@ -1901,7 +1920,8 @@ Avoid mixing these high-conflict files in broad migrations:
 | `LocalTable` string union ↔ Rust `TABLES` | Manual duplicate and generic `Value` | Central IPC constants/fixtures; typed commands for rows Rust must index |
 | TS import DTOs ↔ Rust import structs/`Value` | Native output is trusted by a TypeScript cast | `protocolVersion` + Zod parse + serialized fixture tests |
 | GraphQL introspection JSON | Full text parsed into JS schema | Keep current for normal sizes; future schema-service DTO is compact/paged and separate from HTTP domain |
-| Provider DTOs | Risk of leaking into core commands | Adapter/private-plugin-owned namespaced DTOs mapped to public domain at the adapter edge |
+| Observability command DTOs | Risk of passing config/credentials or unbounded vendor payloads into React | Provider-neutral commands accept stable workspace/integration/exchange references and return bounded normalized pages; runtime-validated in TypeScript |
+| Provider DTOs | Risk of leaking into core commands | Rust-adapter-owned DTOs mapped to the public native observability domain before IPC; never serialized to React |
 | Extension protocol/native DTOs | Risk of adding private unions/commands to core | Module-owned DTOs and namespaced Tauri plugin commands; core sees only opaque document config and public execution/content summaries |
 
 ## K. Open-source readiness checklist
@@ -1957,7 +1977,7 @@ The limited scan is evidence about this checkout, not a complete history/securit
 - **A general-purpose DI framework/service locator:** unnecessary. One typed services object, explicit constructors, and immutable registries are easier to understand.
 - **A universal event bus:** unnecessary. Use direct use-case calls and a Tauri channel only for the concrete HTTP progress lifecycle.
 - **A full Rust rewrite of request composition:** rejected unless the product model changes. It would duplicate inheritance, variable, auth, body-mode, cookie, and redirect semantics.
-- **Moving all secret handling to Rust:** rejected as a blanket goal. Cryptography and storage are already native; UI editing/projection/template policy remains application logic. A future threat model may justify native final credential injection for selected providers, behind scoped handles.
+- **Moving all secret handling to Rust:** rejected as a blanket goal. Cryptography and storage are already native; ordinary request UI editing/projection/template policy remains application logic. Observability is the explicit exception: its scoped credential resolution and final provider request injection are Rust-owned because providers execute natively and plaintext must not cross their IPC boundary.
 - **Full jq/JSONPath compatibility:** postpone until explicitly selected as a product feature. First preserve the documented subset and its fixtures.
 - **Rust GraphQL language server:** conditional on profiling after a Web Worker. It is a separate product-sized effort because current editor behavior relies on the JS GraphQL ecosystem.
 - **Persistent content-addressed files/deduplication/compression:** postpone until chunked encrypted SQLite is measured with real history workloads. Correct bounded ownership matters before storage optimization.
@@ -1976,11 +1996,13 @@ The migration is complete only when all of these are mechanically verifiable:
 - the official build checks out public and private repositories side-by-side and performs no source copy/overlay;
 - public imports and Cargo dependencies contain no private module/provider/licensing reference;
 - private modules import only declared public package exports and public Rust builder/plugin APIs;
-- adding a trace provider requires an adapter, registration, configuration contribution, and tests, but no vendor branches in core UI/application code;
+- adding a trace provider requires a Rust adapter/registration, optional frontend presentation/settings contribution, and tests, but no vendor branches or provider execution in core React/TypeScript code;
 - an external build-time module can add a namespaced navigation page, run module-owned application logic, and contribute a persisted workspace document/protocol type using only public exports and without replacing the router/workbench;
 - removing that module leaves the OSS app runnable and preserves its opaque document/integration configuration in an explicit unavailable state; restoring the module restores the feature;
 - protocol-specific UI, runtime types, native DTOs, and commands remain module-owned and do not expand core `RequestDraft`, `HttpExchange`, or Tauri command unions with vendor branches;
-- Trace/Span/Log domain files import no React, Tauri, reqwest, storage, or vendor DTOs;
+- Rust Trace/Span/Log domain files import no Tauri, reqwest, storage implementation, or vendor DTOs; TypeScript display DTOs import no React, Tauri API, storage, or vendor DTOs;
+- provider HTTP, credential resolution, configuration validation/migration, correlation extraction, vendor parsing, normalization, caching, pagination, retry/error mapping, and cancellation are implemented in Rust and covered by native tests;
+- observability IPC carries only stable IDs/references and bounded normalized results, never plaintext credentials, raw provider configuration for execution, or vendor response DTOs;
 - Tauri commands are thin adapters and do not reconstruct `RequestDraft` or own workspace/auth policy;
 - desktop response bodies no longer cross IPC as complete base64/text values;
 - a 100 MiB response can reach first visible content, search, save, cancel, and persist/restore while WebView memory remains bounded by configured windows rather than body size;
