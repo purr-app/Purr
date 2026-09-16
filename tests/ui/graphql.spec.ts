@@ -360,6 +360,63 @@ test("standalone GraphQL schemas accept an endpoint and introspect without a req
   await expect(endpoint).toHaveValue("https://example.com/graphql");
 });
 
+test("referenced introspection responses above 1 MiB install through bounded reads", async ({ page }) => {
+  const introspection = introspectionFromSchema(buildSchema(sdl));
+  await page.addInitScript(({ introspection }) => {
+    const base = JSON.stringify({ data: introspection });
+    const source = base + " ".repeat(1024 * 1024 + 1 - base.length);
+    (window as any).isTauri = true;
+    (window as any).__releasedSchemaContent = 0;
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 8,
+          httpVersion: "HTTP/2",
+          headers: [["content-type", "application/json"]],
+          content: {
+            id: "large-introspection",
+            byteLength: source.length,
+            mediaType: "application/json",
+            charset: "utf-8",
+            complete: true,
+          },
+        };
+        if (command === "response_content_read_range") {
+          const offset = args.range.offset;
+          const end = Math.min(source.length, offset + args.range.length);
+          return {
+            offset,
+            bytesRead: end - offset,
+            content: btoa(source.slice(offset, end)),
+            complete: end === source.length,
+          };
+        }
+        if (command === "response_content_release") {
+          (window as any).__releasedSchemaContent += 1;
+          return null;
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  }, { introspection });
+
+  await page.goto("/");
+  await createSchema(page);
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://example.com/graphql");
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  const registry = page.getByRole("complementary", { name: "Schema type registry", exact: true });
+  await expect(registry).toContainText("Customer");
+  await expect.poll(() => page.evaluate(() => (window as any).__releasedSchemaContent)).toBe(1);
+  const measures = await page.evaluate(() => ({
+    worker: performance.getEntriesByName("purr.graphql.schema.worker-round-trip").length,
+    parse: performance.getEntriesByName("purr.graphql.schema.parse").length,
+  }));
+  expect(measures.worker).toBe(1);
+  expect(measures.parse).toBeGreaterThanOrEqual(1);
+});
+
 test("schema file import supports SDL and introspection JSON and keeps the previous schema on invalid input", async ({ page }) => {
   await page.goto("/");
   await createGraphql(page);
@@ -427,6 +484,7 @@ test("multiple operations expose inline run actions and variables navigate to th
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/graphql");
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
   await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "Schema type registry", exact: true })).toContainText("Customer");
   await tabs(page).filter({ hasText: "GQL" }).click();
   const operations = 'query Read { customer(id: "42") { id } }\nmutation Update($input: CustomerInput!) { update(input: $input) { id } }';
   await page.getByLabel("GraphQL query", { exact: true }).fill(operations);

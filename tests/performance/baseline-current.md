@@ -42,6 +42,27 @@ The peak includes the deliberately retained source, base64, decoded bytes/text, 
 | 40 | 0.1 MiB | less than 0.1 MiB | 1.6 ms | 80.2 MiB |
 | 1,200 | 1 MiB | 0.1 MiB | 17.6 ms | 125.1 MiB |
 
+## Phase 10 GraphQL analysis measurement
+
+Command: `npm run benchmark:responses -- --json`
+
+Generated: 2026-09-16T15:21:30.492Z
+
+Runtime: Node v24.18.0 on macOS/arm64
+
+These observations include the newly separated normalized-SDL parse used by the UI. They are not CI thresholds.
+
+| Synthetic types | Introspection JSON | Normalized SDL | Normalize/validate | Parse normalized SDL | Peak RSS after both representations |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 40 | 55,610 B | 3,718 B | 1.9 ms | 1.5 ms | 81.6 MiB |
+| 1,200 | 1,096,410 B | 114,198 B | 15.6 ms | 18.0 ms | 138.8 MiB |
+
+The 1,200-type fixture crosses the native inline-response boundary. Phase 10 now reads that source in bounded windows and performs source normalization in a dedicated worker. The desktop acceptance result is recorded below.
+
+### Phase 10 desktop acceptance
+
+The product owner completed the large introspection/SDL, editor intelligence, active-schema isolation, offline pinned-schema, and cancellation scenarios on 2026-09-16. All remained responsive and worked as expected. Web Inspector reported an approximately 10 ms `purr.graphql.schema.parse` entry. The worker round-trip entry and process memory were inspected during acceptance, but their exact values were not separately captured in the report; no abnormal memory or long-task behavior was reported.
+
 ## Desktop/native baseline
 
 The product owner ran these scenarios against the current pre-optimization desktop behavior using the local fixture server. Native and WebView RSS were recorded for the safe clean-state scenarios; earlier unsafe/hanging scenarios have no reliable RSS sample. “Crashed” below records the observed outcome; it does not yet distinguish a terminated process from an indefinitely unresponsive WebView/process.

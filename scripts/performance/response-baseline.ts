@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { normalizeSchema } from "../../src/features/graphql/model/graphql";
+import { normalizeSchema, parseGraphqlSchema } from "../../src/features/graphql/model/graphql";
 import {
   formatResponseBody,
   inspectResponseBody,
@@ -78,13 +78,19 @@ function graphqlWorker(typeCount: number) {
   memory.push(collectMemory("fixture generated"));
   const started = performance.now();
   const normalized = normalizeSchema(source);
-  const durationMs = milliseconds(performance.now() - started);
+  const normalizeDurationMs = milliseconds(performance.now() - started);
   memory.push(collectMemory("normalize schema"));
+  const parseStarted = performance.now();
+  const parsed = parseGraphqlSchema(normalized);
+  const parseNormalizedSdlMs = milliseconds(performance.now() - parseStarted);
+  memory.push(collectMemory("parse normalized SDL"));
   return {
     typeCount,
     sourceBytes: Buffer.byteLength(source),
     normalizedSdlBytes: Buffer.byteLength(normalized),
-    durationMs,
+    normalizeDurationMs,
+    parseNormalizedSdlMs,
+    parsedTypeCount: Object.keys(parsed.getTypeMap()).length,
     memory,
     peakRssMiB: Math.max(...memory.map((sample) => sample.rssMiB)),
   };
@@ -130,11 +136,11 @@ function markdownReport(report: {
     "",
     "## GraphQL schema normalization",
     "",
-    "| Synthetic types | Introspection JSON | Normalized SDL | Duration | Peak RSS |",
-    "| ---: | ---: | ---: | ---: | ---: |",
+    "| Synthetic types | Introspection JSON | Normalized SDL | Normalize | Parse normalized SDL | Peak RSS |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const graphql of report.graphql) {
-    lines.push(`| ${graphql.typeCount} | ${mebibytes(graphql.sourceBytes as number)} MiB | ${mebibytes(graphql.normalizedSdlBytes as number)} MiB | ${graphql.durationMs} ms | ${graphql.peakRssMiB} MiB |`);
+    lines.push(`| ${graphql.typeCount} | ${mebibytes(graphql.sourceBytes as number)} MiB | ${mebibytes(graphql.normalizedSdlBytes as number)} MiB | ${graphql.normalizeDurationMs} ms | ${graphql.parseNormalizedSdlMs} ms | ${graphql.peakRssMiB} MiB |`);
   }
   lines.push(
     "",

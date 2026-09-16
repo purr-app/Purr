@@ -29,7 +29,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 7 | Add bounded/virtualized response presentation | DONE | Phase 7 working tree based on `7e3492c` | PASS — 137 TypeScript tests, 54 UI tests, 54 Rust tests; typecheck, lint, build, repository policy, fmt, clippy, diff check | COMPLETE — product-owner accepted bounded navigation/search/restart and exact 1 MiB behavior on 2026-09-16; sub-threshold pathological lines explicitly deferred to Phase 8 |
 | 8 | Move large response inspect/search/format/query to Rust | DONE | Phase 8 working tree based on `f58cbad` | PASS — 138 TypeScript tests, 58 UI tests, 65 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product owner accepted the functional and UX-correction scenarios on 2026-09-16 |
 | 9 | Remove remaining body round trips | DONE | Phase 9 working tree based on `cf80691` | PASS — 149 unit/integration, 60 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner accepted download/media, redirects, multipart, Request Code, autosave, and attachment restart/restore on 2026-09-16 |
-| 10 | Profile and isolate GraphQL analysis | PARTIALLY DONE | Existing GraphQL parse/schema/editor flow; no profiling or worker phase reference | Existing GraphQL tests only | Not recorded |
+| 10 | Profile and isolate GraphQL analysis | DONE | Phase 10 working tree based on `175ab8b` | PASS — 151 unit/integration, 61 UI, typecheck, lint, build, repository policy, benchmark, Rust fmt/check/clippy and 76 tests | COMPLETE — large schema, active-schema isolation, pinned restart, cancellation, responsiveness, and desktop profiling accepted 2026-09-16 |
 | 11 | Migrate canonical integration envelope | PARTIALLY DONE | Existing `{provider, endpoint, credentials}` canonical shape; no envelope migration reference | Existing project validation only | Not recorded |
 | 12 | Implement extension API and immutable registries | PARTIALLY DONE | Existing native import-adapter registry is a precursor only; no extension API reference | Import tests only; extension conformance not run | Not recorded |
 | 13 | Add provider-neutral observability use case and UI | TODO | — | Not run | Not run |
@@ -1547,33 +1547,39 @@ Known follow-ups:
 
 ### Phase 10 — profile and isolate GraphQL analysis
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing TypeScript GraphQL request/schema/editor flow; no profiling, worker, or native-schema-service phase commit/reference.
+Implemented in: Phase 10 working tree based on `175ab8b`.
 
-Started: Pre-plan
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Record schema parse duration, UI long tasks, and memory for the Phase 0 small/large schema fixtures.
-- [ ] Add worker request-ID/cancellation tests and regression tests for completion, hover, diagnostics, operation generation, and schema navigation.
-- [ ] Run GraphQL unit/UI tests, `npm run typecheck`, `npm run lint`, `npm run build`, and Rust checks if a native service is introduced.
+- [x] Record schema parse duration, UI long tasks, and memory for the Phase 0 small/large schema fixtures. The non-CI Node run records 40/1,200-type normalization at 1.9/15.6 ms, normalized-SDL parse at 1.5/18.0 ms, and process peak RSS at 81.6/138.8 MiB. Product-owner desktop profiling reported responsive/acceptable behavior and an approximately 10 ms UI-side schema parse; exact native/WebView RSS values were observed during acceptance but were not transcribed into the report.
+- [x] Add worker request-ID/cancellation tests and regression tests for completion, hover, diagnostics, operation generation, and schema navigation. The worker client has deterministic stale-ID/abort coverage; the complete GraphQL UI suite covers existing editor and explorer semantics plus referenced introspection above 1 MiB.
+- [x] Run GraphQL unit/UI tests, `npm run typecheck`, `npm run lint`, `npm run build`, and Rust checks if a native service is introduced. `npm test` passed 151 tests, `npm run test:ui` passed 61 tests, and typecheck/lint/build/repository policy passed. Although no native service was introduced, Rust fmt/check/clippy and all 76 Rust tests also passed.
 
 Manual verification:
-- [ ] Open a large synthetic SDL and introspection schema, type a query, and verify completion, hover, diagnostics, and field filling remain responsive.
-- [ ] Switch between two linked schemas while a query editor is open and confirm suggestions/navigation are from the active schema only.
-- [ ] Run an introspection request, pin its SDL, restart Purr, and confirm the schema explorer and offline pinned source still open correctly.
-- [ ] If a worker is added, rapidly edit a query and confirm stale diagnostics/completions do not appear after the latest edit.
+- [x] Start `npm run fixture:responses`, load `http://127.0.0.1:43119/graphql/introspection?types=1200` into a schema, and confirm the explorer becomes usable without freezing. Download that schema as SDL, import the downloaded synthetic file into another schema, and confirm both sources work.
+- [x] With the 1,200-type schema linked, type a query, and verify completion, hover, diagnostics, operation generation, “Fill all fields,” and schema type/field search remain responsive. Web Inspector reported an approximately 10 ms UI-side schema parse and no product-visible responsiveness problem.
+- [x] Link two requests to schemas with distinct root fields, switch between their tabs, and confirm completion, hover navigation, diagnostics, and schema navigation use only the active request's schema.
+- [x] Introspect the 1,200-type fixture, pin the schema SDL, quit Purr and stop the fixture server, then restart Purr. Confirm the pinned explorer, search, completion, and hover work offline.
+- [x] Start a schema reload and immediately close or switch away from the schema tab; confirm Purr remains responsive, no cancelled/stale schema replaces the previously installed schema, and returning to the tab allows Reload to succeed.
 
 Implementation notes:
-- Existing GraphQL functionality is the behavioral baseline; it has not been profiled or moved off the UI thread.
+- Introspection/file source normalization now runs in a dedicated Web Worker. Each analysis receives a monotonically increasing request ID; replacement, abort, or component disposal terminates the active worker and stale responses cannot install a schema.
+- Native introspection responses above the 1 MiB inline boundary are materialized through bounded `ResponseContentPort` reads, released immediately, and then sent to the worker. This removes the previous explicit large-introspection failure without adding a GraphQL-specific transport path.
+- The main window records `purr.graphql.schema.worker-round-trip` and `purr.graphql.schema.parse` performance entries for desktop profiling. The benchmark separately records normalization and normalized-SDL parse, with no pass/fail timing threshold.
+- The existing `GraphQLSchema` remains the one editor/explorer model. Completion, hover, diagnostics, operation generation, variable hints, and navigation retain their tested synchronous semantics.
+- Automated verification completed on 2026-09-16: 151 TypeScript unit/integration tests, 61 Playwright tests, typecheck, lint, production build, repository policy, non-CI benchmark, Rust fmt/check/clippy, 76 Rust tests, and `git diff --check` passed.
+- Product-owner verification on 2026-09-16 accepted every Phase 10 scenario. Large introspection/SDL loading, editor intelligence, active-schema isolation, offline pinned restoration, and cancellation all worked as expected; the captured UI-side parse measurement was approximately 10 ms.
 
 Deviations from plan:
-- None.
+- The worker boundary is deliberately narrower than moving all language-service calls. Measurements show the 1,200-type normalized SDL parses in about 18 ms and the Phase 0 desktop baseline reported no editor responsiveness failure. Moving completion/hover/diagnostics would add replicated schema state and async editor races without evidence that it solves a current problem. Source JSON parse, schema construction/validation, and normalization—the large installation work—are isolated first as the plan's evidence-based rollout requires.
 
 Known follow-ups:
-- Add Rust `graphql/*` only if the measured worker path cannot meet responsiveness/memory requirements.
+- The worker still receives the complete introspection source and returns complete normalized SDL. Add Rust `graphql/*` with compact/paged explorer DTOs only if a future larger real-world schema demonstrates a responsiveness or memory failure; merely parsing in Rust and reconstructing the same full `GraphQLSchema` would not help.
 
 - **Objective:** improve large-schema responsiveness based on evidence without duplicating GraphQL semantics.
 - **Files/modules affected:** GraphQL model/editor/explorer and optional worker; Rust only if the second tier is justified.

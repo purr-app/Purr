@@ -53,21 +53,22 @@ Canonical `SchemaDefinition.source` supports:
 
 Current working sources are introspection and user-selected SDL/introspection JSON files. Registry is a canonical extension point only; no provider implementation or UI resolves it.
 
-`parseGraphqlSchema` accepts SDL or introspection JSON, builds a schema, and runs `validateSchema`. `normalizeSchema` prints introspection JSON as normalized SDL; for SDL it prints the imported AST to preserve applied custom directives and extensions that an introspection representation may lose.
+`parseGraphqlSchema` accepts SDL or introspection JSON, builds a schema, and runs `validateSchema`. `normalizeSchema` prints introspection JSON as normalized SDL; for SDL it prints the imported AST to preserve applied custom directives and extensions that an introspection representation may lose. Schema-source normalization and validation run in a dedicated Web Worker. The worker uses monotonically increasing request IDs; replacing or aborting an analysis terminates its worker, and a stale result cannot install an older schema.
 
 ## Introspection flow
 
 `SchemaExplorer` creates an introspection `RequestDraft`, usually from the linked request. It applies workspace GraphQL shared configuration, variables, auth/OAuth runtime, and cookie jar through the normal request execution services, then requires a 2xx response and installs normalized SDL.
 
-Schema installation currently requires the inline compatibility response. A larger introspection result stays native and fails with an explicit size message; Phase 10 owns moving schema construction/analysis off the WebView rather than reintroducing a full IPC body copy.
+Inline introspection installs directly. A referenced introspection response is read through bounded `ResponseContentPort` windows, released immediately after materialization, and sent to the schema-analysis worker. This removes the old 1 MiB installation failure and keeps JSON parsing, schema construction, validation, and SDL normalization off the UI thread. It does not claim constant memory: the worker still receives the complete introspection source and returns the normalized SDL.
 
 ```text
 linked GraphQL request / schema endpoint
   → getIntrospectionQuery()
   → workspace-effective GraphQL request
   → executeRequest() + cookie jar
-  → parse/validate introspection JSON
-  → normalize to SDL
+  → inline text or bounded ResponseContentPort reads
+  → worker parse/validate introspection JSON
+  → worker normalize to SDL
   → SchemaDocument cache/snapshot
 ```
 
@@ -91,7 +92,9 @@ Pinning is about portability, not whether the schema document itself is saved.
 - SDL/introspection JSON source view and download;
 - request generation for query/mutation root fields.
 
-`GraphqlCodeEditor` uses CodeMirror, GraphQL language support, and `graphql-language-service` for completion and hover. It adds schema type navigation, operation run widgets, “fill fields” completion behavior, variable JSON completion, validation, and the shared Purr code theme. This is local client-side language intelligence; there is no language server process.
+`GraphqlCodeEditor` uses CodeMirror, GraphQL language support, and `graphql-language-service` for completion and hover. It adds schema type navigation, operation run widgets, “fill fields” completion behavior, variable JSON completion, validation, and the shared Purr code theme. This is local client-side language intelligence; there is no language server process. The normalized SDL is still parsed once on the UI side into the `GraphQLSchema` object required by these libraries. Phase 10 measurements put the 1,200-type normalized-SDL parse at about 18 ms in the non-CI Node baseline, and desktop baseline testing found no editor responsiveness failure, so moving completion/hover/diagnostics across worker messages or adding a Rust schema service is not currently justified.
+
+Successful analysis records `purr.graphql.schema.worker-round-trip` in the window Performance Timeline. UI-side schema construction records `purr.graphql.schema.parse`. These entries support local profiling and have no absolute CI timing assertion.
 
 Federation-specific composition, subgraph navigation, or registry features are not implemented.
 
@@ -130,6 +133,8 @@ There is no separate GraphQL credential, cookie, or transport subsystem.
 ## Key files
 
 - `src/features/graphql/model/graphql.ts` — GraphQL HTTP preparation and schema parse/normalize.
+- `src/features/graphql/services/schema-analysis.ts` — cancellable worker client and analysis timings.
+- `src/features/graphql/workers/graphql-schema.worker.ts` — schema-source parse/validate/normalization worker.
 - `src/features/graphql/components/graphql-query-editor.tsx` — query, variables dock, operation selection, formatting, and diagnostics.
 - `src/features/graphql/components/graphql-code-editor.tsx` — CodeMirror GraphQL/JSON language intelligence, hover, completion, navigation, and run widgets.
 - `src/features/graphql/components/graphql-variables-dock.tsx` — variables JSON editor and schema-derived hints.

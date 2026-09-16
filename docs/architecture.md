@@ -148,6 +148,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 ## Current architectural limitations
 
 - Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Direct handle download and range-capable image/audio/video preview avoid body IPC; full-body clipboard copy remains unavailable for opaque large content.
+- GraphQL introspection responses may cross the inline boundary: schema installation reads a native content reference in bounded windows, releases it, and normalizes the complete source in a cancellable Web Worker. The UI still builds one `GraphQLSchema` from normalized SDL for CodeMirror and `graphql-language-service`; current measurements do not justify a second Rust schema model.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
