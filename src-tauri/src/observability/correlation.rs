@@ -1,4 +1,4 @@
-use super::domain::{valid_trace_id, Result};
+use super::domain::{valid_trace_id, Result, TraceReference};
 
 #[derive(Default)]
 pub struct ExchangeInput {
@@ -14,10 +14,46 @@ pub trait CorrelationExtractor: Send + Sync {
         false
     }
     fn extract(&self, input: &ExchangeInput) -> Result<Vec<String>>;
+    fn references(&self, input: &ExchangeInput) -> Result<Vec<TraceReference>> {
+        Ok(self
+            .extract(input)?
+            .into_iter()
+            .map(|id| TraceReference {
+                id,
+                source: "extractor".into(),
+                format: self.id().into(),
+            })
+            .collect())
+    }
 }
 
 pub struct StandardCorrelation;
 impl CorrelationExtractor for StandardCorrelation {
+    fn references(&self, input: &ExchangeInput) -> Result<Vec<TraceReference>> {
+        let mut refs = vec![];
+        for (source, headers) in [
+            ("response", &input.response_headers),
+            ("request", &input.request_headers),
+        ] {
+            for header in headers {
+                let one = ExchangeInput {
+                    request_headers: vec![header.clone()],
+                    ..Default::default()
+                };
+                for id in self.extract(&one)? {
+                    refs.push(TraceReference {
+                        id,
+                        source: source.into(),
+                        format: header.0.to_lowercase(),
+                    });
+                    if refs.len() == 8 {
+                        return Ok(refs);
+                    }
+                }
+            }
+        }
+        Ok(refs)
+    }
     fn id(&self) -> &'static str {
         "purr.w3c-b3"
     }
@@ -30,6 +66,7 @@ impl CorrelationExtractor for StandardCorrelation {
                     let parts: Vec<_> = value.split('-').collect();
                     if parts.len() != 4
                         || parts[0] != "00"
+                        || parts[1].len() != 32
                         || parts[2].len() != 16
                         || !parts[2].bytes().all(|b| b.is_ascii_hexdigit())
                         || !parts[2].bytes().any(|b| b != b'0')

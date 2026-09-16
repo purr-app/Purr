@@ -180,6 +180,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
       .filter((field) => field.key || field.value || field.attachment).map(async (field) => ({ name: field.key, value: field.value, enabled: field.enabled,
         ...(field.attachment ? { file: await fileRef(field.attachment) } : {}), ...(field.contentType ? { contentType: field.contentType } : {}) }))) };
   const common = { id: document.id, name: document.name, ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), ...(document.origin ? { origin: document.origin } : {}),
+    ...(draft.tracePropagation ? { tracePropagation: draft.tracePropagation } : {}),
     method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []), headers: pairs(draft.headers), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
     ...(!draft.workspace.headersEnabled || !draft.workspace.authEnabled || !draft.useCookieJar || Object.values(draft.workspace.headerOverrides).some((value) => !value)
@@ -238,6 +239,7 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
   for (const [id, value] of attachments) local.push({ table: "attachments", id, value });
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
   return { project: { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
+    ...(workspace.requestConfig.tracePropagation ? { tracePropagation: workspace.requestConfig.tracePropagation } : {}),
     variables: await Promise.all(workspace.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, "variables"))),
     headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets };
 }
@@ -261,6 +263,7 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
     if (resource.body.type === "form-data") body.formData = rows; else body.urlEncoded = rows;
   }
   const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure),
+    tracePropagation: resource.tracePropagation,
     params: [...resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })), { id: "param-empty", key: "", value: "", enabled: false }],
     pathParams: resource.pathParams.map((row, index) => ({ id: `path-param-${index}`, key: row.name, value: row.value, enabled: row.enabled })),
     headers: [...resource.headers.map((row, index) => ({ id: `header-${index}`, ...row })), { id: "header-empty", name: "", value: "", enabled: false }],
@@ -283,6 +286,7 @@ export async function restoreWorkspace(
   workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration" || item.kind === "api-schema");
   workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, true)));
   workspace.requestConfig = { headers: project.workspace.headers, auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure) }))) };
+  workspace.requestConfig.tracePropagation = project.workspace.tracePropagation;
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
   const attachments = new Map(records.filter((item) => item.table === "attachments").map((item) => [item.id, item.value]));
   const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null } | undefined;

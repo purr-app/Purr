@@ -21,6 +21,7 @@
     "build": "tsc && vite build",
     "benchmark:responses": "tsx scripts/performance/response-baseline.ts",
     "fixture:responses": "tsx scripts/performance/response-fixture-server.ts",
+    "fixture:traces": "tsx scripts/performance/trace-fixture-server.ts",
     "preview": "vite preview",
     "tauri": "node scripts/tauri.mjs"
   },

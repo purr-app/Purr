@@ -21,6 +21,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
+default = ["jaeger"]
+jaeger = []
 observability-fixtures = []
 
 [dependencies]

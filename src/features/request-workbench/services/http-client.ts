@@ -138,6 +138,7 @@ export async function executeHttp(
   let waitingMs = 0;
   let downloadMs = 0;
   let processing: HttpPipelineTimings | undefined;
+  const generatedHeaders: [string, string][] = [];
   for (let hop = 0; hop <= 10; hop++) {
     throwIfAborted(options.signal);
     const url = requireHttpUrl(current.url);
@@ -169,6 +170,11 @@ export async function executeHttp(
         responseStorage: options.responseStorage,
       },
     );
+    if (response.injectedTraceHeaders?.length) {
+      generatedHeaders.push(...response.injectedTraceHeaders);
+      headers = [...headers, ...response.injectedTraceHeaders];
+      current.headers = [...current.headers, ...response.injectedTraceHeaders];
+    }
     if (options.signal?.aborted) {
       if (isReferencedResponse(response) && options.content)
         await options.content.release(response.content);
@@ -225,6 +231,11 @@ export async function executeHttp(
         throw new Error("Blocked redirect from HTTPS to HTTP.");
       if (next.origin !== url.origin) {
         crossedOrigin = true;
+        // Automatically generated context is scoped to the initial origin.
+        const generatedNames = new Set(generatedHeaders.map(([name]) => name.toLowerCase()));
+        current.headers = current.headers.filter(([name]) => !generatedNames.has(name.toLowerCase()));
+        generatedHeaders.length = 0;
+        current.tracePropagation = "off";
         const sensitive = new Set([
           "authorization",
           "proxy-authorization",
@@ -274,6 +285,7 @@ export async function executeHttp(
         : undefined,
       headers: [
         ...options.displayRequest.headers.filter(([name]) => name.toLowerCase() !== "cookie"),
+        ...generatedHeaders,
         ...headers.filter(([name]) => name.toLowerCase() === "cookie").map(([name, value]): [string, string] => [name, maskCookieHeader(value)]),
       ],
     } : undefined;

@@ -89,12 +89,14 @@ pub fn request_file_from_attachment(
 pub async fn start_http(
     app: tauri::AppHandle,
     operation_id: String,
-    request: HttpRequest,
+    mut request: HttpRequest,
     on_event: Channel<HttpEvent>,
     http: tauri::State<'_, HttpRuntimeState>,
     content: tauri::State<'_, ResponseContentState>,
+    observability: tauri::State<'_, crate::observability::ObservabilityState>,
 ) -> Result<HttpResponse, String> {
     let command_started = Instant::now();
+    request.prepare_trace(observability.service.propagators())?;
     let cancellation = http.operations.register(&operation_id)?;
     let content = match content.handle(&app) {
         Ok(content) => content,

@@ -54,9 +54,19 @@ executeRequest()
 executeHttp() → cookie merge + redirect policy
   ↓
 ApplicationServices.httpTransport → Tauri start_http / cancel_http
+  ↓
+Rust propagation registry → final context headers → native HTTP transport
 ```
 
 `RequestWorkbench` creates `effectiveDraft` with `applyWorkspaceRequestConfig` before resolving dynamic variables. Dependency requests are executed through the same `executeRequest` path. `prepareWireRequest` performs static interpolation for the final request and separately with masked variable values for the display request.
+
+### Trace propagation
+
+Trace propagation is independent of workspace integration/backend selection. Workspace Settings → Integrations selects a default; request Settings can inherit it or choose Off, W3C Trace Context, or B3. Existing projects default to Off, so installing this phase does not inject new headers into old requests. The optional stable `tracePropagation` format ID lives in workspace/request YAML; an unknown extension format is preserved but fails explicitly if its native propagator is unavailable. Folder-level propagation overrides are not implemented in this slice.
+
+Rust's propagation registry validates the effective format and prepares fresh context immediately before transport. W3C emits version-00 `traceparent`; B3 emits the single `b3` header. Explicit context headers (including invalid user values or another registered format) are preserved without adding conflicting context. Generation uses native random non-zero trace/span IDs; TypeScript neither generates nor parses them. A service must still record/export the trace—propagation alone cannot create a backend trace. See [W3C Trace Context](https://www.w3.org/TR/trace-context/) for the wire format.
+
+Native transport returns only the automatically added header pairs as bounded metadata. `executeHttp` includes these in the effective Request/Timeline snapshots, so later native correlation reads what was sent. Same-origin redirects retain that context. Cross-origin redirects drop automatically generated context and disable regeneration for the remaining chain; explicitly supplied headers retain the existing redirect policy. Opening the request-code dialog does not mint a trace ID. Generated IDs are execution-local encrypted metadata, never added to a saved request definition. This does not change the response display/storage priority.
 
 ## URL and method
 

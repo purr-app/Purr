@@ -83,6 +83,7 @@ export function createBrowserPlatformAdapters(): PlatformAdapters {
   const secureStore = new BrowserSecureStore();
   return {
     observability: {
+      validateConfig: () => unavailable("Integration settings require the desktop app."),
       integrations: async () => [],
       trace: () => unavailable("unavailable"),
     },

@@ -17,6 +17,7 @@ export type WorkspaceSharedAuth = {
   value: RequestAuth;
 };
 export type WorkspaceRequestConfig = {
+  tracePropagation?: string;
   headers: WorkspaceSharedHeader[];
   auth: WorkspaceSharedAuth[];
 };
@@ -97,6 +98,7 @@ export function applyWorkspaceRequestConfig(
   return {
     ...request,
     headers: [...sharedHeaders, ...request.headers],
+    tracePropagation: request.tracePropagation ?? config.tracePropagation,
     auth,
   };
 }

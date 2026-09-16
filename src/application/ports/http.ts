@@ -23,6 +23,7 @@ export type PreparedHttpTransportRequest = Omit<
 > & {
   bodyBase64: string | null;
   bodySource?: PreparedRequestBody;
+  tracePropagation?: string;
 };
 
 export type ResponseContentProtection = "encrypted" | "plaintext";
@@ -48,6 +49,7 @@ export type HttpPipelineTimings = {
 };
 
 type HttpTransportMetadata = {
+  injectedTraceHeaders?: [string, string][];
   status: number;
   statusText: string;
   headers: [string, string][];

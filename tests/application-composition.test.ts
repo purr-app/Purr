@@ -27,7 +27,7 @@ function memoryServices(): ApplicationServices {
     secureStore,
   );
   return Object.freeze({
-    observability: { integrations: async () => [], trace: unavailable },
+    observability: { validateConfig: unavailable, integrations: async () => [], trace: unavailable },
     persistence,
     secureStore,
     credentialResolver: {

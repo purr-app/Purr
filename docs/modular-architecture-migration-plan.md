@@ -15,7 +15,7 @@ This plan is based on the current TypeScript and Rust code, tests, persistence f
 
 ## Migration progress
 
-This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DONE` identifies an existing precursor only; it does not mean the phase acceptance criteria or its verification checklist are complete. No phase is `DONE` until its scope, automated checks, manual checks, and completion protocol are all recorded.
+This tracker reflects the repository state reviewed on 2026-09-17. `PARTIALLY DONE` identifies an existing precursor only; it does not mean the phase acceptance criteria or its verification checklist are complete. No phase is `DONE` until its scope, automated checks, manual checks, and completion protocol are all recorded.
 
 | Phase | Name | Status | Implemented in | Automated verification | Manual verification |
 | --- | --- | --- | --- | --- | --- |
@@ -33,7 +33,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 11 | Migrate canonical integration envelope | DONE | Phase 11 working tree based on `e721a5d` | PASS — 153 unit/integration, 62 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy | COMPLETE — product-owner accepted legacy migration and unavailable-provider persistence scenarios on 2026-09-16 |
 | 12 | Implement extension API and immutable registries | DONE | Phase 12 working tree based on `2f5e3b4` | PASS — 156 unit/integration, 64 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check; Rust-only observability seam correction rechecked | COMPLETE — product-owner OSS/fake-module/unavailable-module/conflict scenarios accepted 2026-09-16 |
 | 13 | Add provider-neutral observability use case and UI | DONE | Phase 13 working tree based on `44781e0` | PASS — 159 TypeScript, 66 UI, 88 Rust tests in both default/fixture builds; typecheck, lint, build, repository policy, fmt/check/clippy | COMPLETE — both providers, correlation, credentials/restart, empty/error, cancellation, paging/search and cache invalidation accepted 2026-09-16 |
-| 14 | Implement Jaeger public validation adapter | TODO | — | Not run | Not run |
+| 14 | Implement Jaeger public validation adapter | DONE | `architecture-migration` working tree based on `0bf5295` | PASS — 162 TS, 68 UI, 98 Rust default/fixture and 92 Rust provider-free tests; type/lint/build/policy, fmt/clippy, provider removal builds | COMPLETE — synthetic fixture and a real business-service/Jaeger deployment accepted by product owner on 2026-09-17; secrets remained confined to secure storage |
 | 15 | Expose reusable frontend and Rust composition surfaces | PARTIALLY DONE | Existing `purr_lib` library target; no public builder/package export reference | Existing Rust build/tests only | Not recorded |
 | 16 | Create `purr-commercial` and official build composition | TODO | — | Not run | Not run |
 
@@ -1776,37 +1776,49 @@ Known follow-ups:
 
 ### Phase 14 — implement Jaeger as the public validation adapter
 
-Status: TODO
+Status: DONE
 
-Implemented in: —
+Implemented in: `architecture-migration` uncommitted working tree based on `0bf5295`, reviewed 2026-09-17.
 
-Started: —
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-17
 
 Automated verification:
-- [ ] Add Rust contract tests for W3C/B3 outbound propagation, user-header conflict policy, and distinct injected/lookup/resolved trace IDs; prove a provider may return a valid resolved ID different from the lookup reference.
-- [ ] Add a shared provider descriptor and capability-specific native registration tests proving one integration ID can expose traces plus a fake second capability without creating a monolithic provider trait or frontend vendor branch.
-- [ ] Add Rust Jaeger adapter fixtures for configuration migration/validation, scoped credential resolution, correlation extraction, normalized trace/span mapping, bounded errors/results, cache behavior, pagination, and cancellation.
-- [ ] Run native registry and frontend presentation conformance tests with Jaeger plus a second fake provider, then remove both Jaeger halves from public composition in a build test.
-- [ ] Run OSS build, TypeScript tests/type/lint, and Rust checks.
+- [x] Add Rust contract tests for W3C/B3 outbound propagation, user-header conflict policy, and distinct injected/lookup/resolved trace IDs; prove a provider may return a valid resolved ID different from the lookup reference.
+- [x] Add a shared provider descriptor and capability-specific native registration tests proving one integration ID can expose traces plus a fake second capability without creating a monolithic provider trait or frontend vendor branch.
+- [x] Add Rust Jaeger adapter fixtures for configuration migration/validation, scoped credential resolution, correlation extraction, normalized trace/span mapping, bounded errors/results, cache behavior, pagination, and cancellation.
+- [x] Run native registry and frontend presentation conformance tests with Jaeger plus a second fake provider, then remove both Jaeger halves from public composition in a build test.
+- [x] Run OSS build, TypeScript tests/type/lint, and Rust checks.
 
 Manual verification:
-- [ ] Prepare a local Jaeger instance or documented fixture endpoint containing a known trace and configure it through the new integration settings.
-- [ ] Enable Purr trace propagation, send requests using W3C and B3, and confirm the effective injected headers are visible in Request/Timeline without silently replacing an explicit user header.
-- [ ] Open the Trace tab and confirm it explains the injected/lookup/resolved identity when they differ, then verify spans, service names, duration, hierarchy and error status against Jaeger.
-- [ ] Confirm the provider-neutral hierarchy/details UI remains usable when switching integration, searching, paging and cancelling; no Jaeger field or label appears in core rendering logic.
-- [ ] Disable the Jaeger integration, restart Purr, and confirm the saved configuration persists while trace lookup becomes unavailable without breaking ordinary requests.
-- [ ] Run the OSS build with Jaeger removed from the core module list and confirm Purr still launches and sends HTTP/GraphQL requests.
+- [x] Prepare a local Jaeger instance or documented fixture endpoint containing a known trace and configure it through the new integration settings.
+- [x] Enable Purr trace propagation, send requests using W3C and B3, and confirm the effective injected headers are visible in Request/Timeline without silently replacing an explicit user header.
+- [x] Open the Trace tab and confirm it explains the injected/lookup/resolved identity when they differ, then verify spans, service names, duration, hierarchy and error status against Jaeger.
+- [x] Confirm the provider-neutral hierarchy/details UI remains usable when switching integration, searching, paging and cancelling; no Jaeger field or label appears in core rendering logic.
+- [x] Disable the Jaeger integration, restart Purr, and confirm the saved configuration persists while trace lookup becomes unavailable without breaking ordinary requests.
+- [x] Run the OSS build with Jaeger removed from the core module list and confirm Purr still launches and sends HTTP/GraphQL requests.
 
 Implementation notes:
-- None yet.
+- Native Jaeger Query API v3 adapter: bounded HTTP/OTLP JSON parsing, base-path support, none/bearer auth, scoped credential resolution, safe errors, no credential-bearing redirects. Standard W3C/B3 correlation remains provider-independent. Adapter config v1 supplies the backward-compatible auth default; unsupported versions fail explicitly.
+- Split native `IntegrationDescriptor` from capability registration. One instance advertises capability labels; a fake second capability verifies composition without inventing a logs API. Propagators register independently from trace providers; missing custom formats fail explicitly.
+- Added optional workspace/request `tracePropagation` preferences with saved-versus-working-copy round-trip coverage. Rust generates context immediately before transport, preserves explicit headers and returns injected header metadata. The existing redirect coordinator preserves generated context on same-origin hops and drops it on cross-origin hops. Generated IDs stay in encrypted execution metadata, not YAML.
+- `TracePage` IPC v2 contains normalized correlation provenance and native ordered hierarchical rows. The viewer groups equal identity roles, separates row selection from details, retains ancestors during attribute search, and incrementally enriches one hierarchy. Query/provider/document changes cancel silently; explicit cancellation has a separate state. A future timeline column uses the same row/selection interface.
+- The public frontend Jaeger module supplies presentation/settings only. Generic settings host calls native config validation and exposes a scoped write-only credential setter; no stored token is read back into React. Execution/config/cache policy remains native.
+- Validation on 2026-09-17: `npm test` (162), full `npx playwright test --workers=2` (68), then the four observability UI tests after final presentation adjustments; `npm run typecheck`, `npm run lint`, `npm run check:repo`, `npm run build`; `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --lib --quiet` in default, `--features observability-fixtures`, and `--no-default-features` variants (98/98/92 tests). Default/provider-free native builds and `VITE_PURR_JAEGER=disabled npm run build` verify adapter removal. Checked the synthetic `/echo` → Query v3 fixture and replacement-ID behavior directly; visually inspected the hierarchy/inspector screenshot from Playwright.
+- During verification, corrected a URL-less TS test setup, ambiguous UI status selector, a synthetic TCP server that closed with unread request headers, and provider-free dead-code annotations. Required automated checks now pass; no unresolved automated failure is being hidden.
+- Manual setup and expected results: [Phase 14 Jaeger verification](testing/phase-14-jaeger.md). The product owner completed the checklist on 2026-09-17 and additionally verified the adapter against a real test service with database/cache business spans. Trace hierarchy/details rendered the resulting trace, ordinary requests continued to work, and no secret value appeared outside secure storage.
 
 Deviations from plan:
-- None.
+- Chose the documented stable Jaeger Query HTTP API v3 instead of its internal UI API; compatibility requires a query server exposing v3. One cohesive `providers/jaeger.rs` is sufficient, so no folder/crate split was introduced just for the adapter.
+- Kept provider-wide trace discovery deferred: the validated use case is an execution-linked trace, with normalized span search. A standalone discovery endpoint/UI is not needed to satisfy this phase and must not be designed from hypothetical requirements.
+- Propagation is opt-in (Off for existing projects) to preserve request behavior. This slice exposes workspace default + document override; the possible future folder override is not implemented. Stable format IDs and native registration preserve that extension path without moving generation or correlation into React.
 
 Known follow-ups:
-- Other public providers must use the same contracts; do not add Jaeger branches to core UI/application logic.
+- Phase 15 exports the proven descriptor/capability/propagator/extractor composition surfaces. Other public/private providers must use them; no vendor branch belongs in the viewer. Custom propagation formats are registerable/preservable now; provider-contributed format choices can be exposed through bounded native metadata when an additional real format needs settings UI.
+- Trace UX polish, a waterfall, events/links inspector, provider-wide discovery, logs, folder propagation UI and persisted trace cache remain product follow-ups. The current `not found` state has only user-triggered retry after the native one-second saved-execution wait; a future eventually-consistent-backend UX should use bounded cancellable polling and then expose an explicit Retry action.
+- Integration authentication must remain provider-owned and Rust-executed. The current Jaeger editor validates the first concrete `none`/Bearer case; it must not freeze Bearer as a universal integration contract. Future providers may contribute provider-specific auth forms or reference a generic shared credential/auth profile, while reusing public auth UI primitives and `SecretRef`/scoped resolver contracts. OAuth/SSO token acquisition, refresh and enterprise credential providers remain native; stored secrets are never populated back into React fields. Phase 15 must preserve this extension path without exposing secure storage itself.
+- The 4 MiB vendor payload and inherited 1,000-span/64 KiB normalized-trace budgets are explicit limits; do not silently truncate traces. No next migration phase was started.
 
 - **Objective:** validate contracts, registry, configuration, credentials, normalized mapping, and UI end to end with a real public provider.
 - **Files/modules affected:** `src-tauri/src/observability/providers/jaeger/*`, public Rust composition, `src/integrations/builtins/jaeger/*` for presentation/settings only, core frontend module composition, integration settings, observability IPC/tests/docs.
@@ -1814,6 +1826,8 @@ Known follow-ups:
 - **Risk:** leaking Jaeger fields into core domain or widening the API for convenience. Keep raw DTOs under the adapter and change public contracts only when the use case cannot be expressed generically.
 - **Verification:** Jaeger can be removed from both public frontend and Rust composition and the app still compiles; adding a second fake native provider changes no core UI/business files; no provider-specific IPC DTO exists; public standalone build works.
 - **Scope:** L, several provider-focused PRs.
+
+Phase 14 UX acceptance (owner clarification): the viewer is execution-centric, with provider selection as secondary context. Rust supplies reusable hierarchical rows, normalized correlation provenance, and search matches plus their ancestors. React owns row selection/collapse and a separate inspector; the row interface permits a future timeline column. Equal injected/lookup/resolved IDs collapse to one presentation; differences remain explicit. Changing document/provider/query silently cancels stale work; explicit cancellation has its own state. Incremental pages enrich the same trace hierarchy. Multi-capability integrations appear once with capability labels. Provider configuration/branding stays outside the normalized viewer.
 
 ### Phase 15 — expose reusable frontend and Rust composition surfaces
 

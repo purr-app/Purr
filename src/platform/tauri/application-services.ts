@@ -229,6 +229,7 @@ const contentOperationResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("content"), reference: contentReferenceSchema }),
 ]);
 const transportMetadataSchema = z.object({
+  injectedTraceHeaders: z.array(z.tuple([z.string().max(64), z.string().max(128)])).max(4).optional(),
   status: z.number().int(),
   statusText: z.string(),
   headers: z.array(z.tuple([z.string(), z.string()])),

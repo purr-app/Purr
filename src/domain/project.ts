@@ -55,6 +55,7 @@ const body = z.discriminatedUnion("type", [
 ]);
 const base = { id: entityId, name: z.string(), description: z.string().optional(), folderId: entityId.optional() };
 const request = {
+  tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
   ...base, url: z.string(), method: z.string().regex(/^[A-Z][A-Z0-9_-]*$/), documentation: z.string().optional(),
   params: z.array(pair).default([]), pathParams: z.array(pair).default([]), headers: z.array(pair).default([]), body: body.default({ type: "none" }),
   auth: authDefinitionSchema.default({ type: "none" }), environmentId: entityId.optional(),
@@ -113,6 +114,7 @@ export type ExtensionDocumentDefinition = z.infer<typeof extensionDocumentDefini
 export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, apiSchemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema, extensionDocumentDefinitionSchema]);
 export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
+  tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
   id: entityId, name: z.string(), description: z.string().optional(),
   variables: z.array(variableDefinitionSchema).default([]),
   headers: z.array(pair.extend({ id: entityId, scope })).default([]),

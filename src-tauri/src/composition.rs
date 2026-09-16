@@ -39,6 +39,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::exit_app,
             commands::observability::observability_integrations,
+            commands::observability::observability_validate_config,
             commands::observability::observability_trace,
             commands::observability::cancel_observability,
             commands::response::save_response_body,

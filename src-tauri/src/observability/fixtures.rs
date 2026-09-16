@@ -1,7 +1,7 @@
 // Explicit opt-in test providers. Never registered in a normal OSS/release build.
 use super::{
     domain::*,
-    registry::{ProviderContext, ProviderFuture, TraceProvider},
+    registry::{IntegrationDescriptor, ProviderContext, ProviderFuture, TraceProvider},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,12 +10,12 @@ pub struct SyntheticProvider {
     pub id: &'static str,
     pub service: &'static str,
 }
-impl TraceProvider for SyntheticProvider {
+impl IntegrationDescriptor for SyntheticProvider {
     fn id(&self) -> &'static str {
         self.id
     }
-    fn credential_keys(&self) -> &'static [&'static str] {
-        &["apiToken"]
+    fn credential_keys(&self, _: &Value) -> Vec<&'static str> {
+        vec!["apiToken"]
     }
     fn validate_and_migrate(&self, version: u32, config: &Value) -> Result<Value> {
         #[derive(Deserialize)]
@@ -33,6 +33,11 @@ impl TraceProvider for SyntheticProvider {
             return Err(ObservabilityError::InvalidConfig);
         }
         Ok(json!({ "delayMs": parsed.delay_ms }))
+    }
+}
+impl TraceProvider for SyntheticProvider {
+    fn provider_id(&self) -> &'static str {
+        self.id
     }
     fn get_trace<'a>(
         &'a self,

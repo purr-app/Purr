@@ -70,6 +70,31 @@ pub struct TracePage {
     pub total: usize,
     pub next_cursor: Option<String>,
     pub cached: bool,
+    pub correlation: CorrelationProvenance,
+    pub rows: Vec<SpanRow>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorrelationProvenance {
+    pub injected_trace_id: Option<String>,
+    pub lookup_reference: Option<TraceReference>,
+    pub resolved_trace_id: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TraceReference {
+    pub id: String,
+    pub source: String,
+    pub format: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpanRow {
+    pub span_id: String,
+    pub depth: usize,
+    pub has_children: bool,
+    pub matches_search: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +104,7 @@ pub struct IntegrationSummary {
     pub name: String,
     pub available: bool,
     pub enabled: bool,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

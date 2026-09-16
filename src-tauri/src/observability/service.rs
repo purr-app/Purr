@@ -68,6 +68,9 @@ pub struct ObservabilityService {
     slots: tokio::sync::Semaphore,
 }
 impl ObservabilityService {
+    pub fn propagators(&self) -> &super::propagation::PropagationRegistry {
+        &self.registry.propagators
+    }
     pub fn new(registry: Registry) -> Self {
         Self {
             registry,
@@ -85,12 +88,16 @@ impl ObservabilityService {
             .await?
             .into_iter()
             .map(|item| IntegrationSummary {
-                available: self.registry.provider(&item.provider).is_ok(),
+                available: !self.registry.capabilities(&item.provider).is_empty(),
+                capabilities: self.registry.capabilities(&item.provider),
                 id: item.id,
                 name: item.name,
                 enabled: item.enabled,
             })
             .collect())
+    }
+    pub fn validate_config(&self, provider: &str, version: u32, config: &Value) -> Result<Value> {
+        self.registry.validate_config(provider, version, config)
     }
     pub async fn lookup(
         &self,
@@ -148,7 +155,11 @@ impl ObservabilityService {
             return Err(ObservabilityError::Disabled);
         }
         let provider = self.registry.provider(&instance.provider)?;
-        let config = provider.validate_and_migrate(instance.config_version, &instance.config)?;
+        let config = self.registry.validate_config(
+            &instance.provider,
+            instance.config_version,
+            &instance.config,
+        )?;
         let mut digest = Sha256::new();
         digest.update(
             serde_json::to_vec(&(
@@ -161,10 +172,10 @@ impl ObservabilityService {
             .map_err(|_| ObservabilityError::InvalidConfig)?,
         );
         let mut values = BTreeMap::new();
-        for key in provider.credential_keys() {
+        for key in self.registry.credential_keys(&instance.provider, &config)? {
             let credential = instance
                 .credentials
-                .get(*key)
+                .get(key)
                 .ok_or(ObservabilityError::CredentialUnavailable)?;
             if credential.kind != "secret" {
                 return Err(ObservabilityError::CredentialUnavailable);
@@ -183,11 +194,28 @@ impl ObservabilityService {
             values.insert(key.to_string(), value);
         }
         let credentials = ScopedCredentials::new(values);
+        let mut correlation = CorrelationProvenance::default();
         let trace_id = if let Some(manual) = &query.manual_trace_id {
             if !valid_trace_id(manual) {
                 return Err(ObservabilityError::InvalidQuery);
             }
-            Some(manual.to_ascii_lowercase())
+            if let Ok(exchange) = repository.exchange(&query, false).await {
+                correlation.injected_trace_id = self
+                    .registry
+                    .references(&ExchangeInput {
+                        request_headers: exchange.request_headers,
+                        ..Default::default()
+                    })?
+                    .first()
+                    .map(|r| r.id.clone());
+            }
+            let id = manual.to_ascii_lowercase();
+            correlation.lookup_reference = Some(TraceReference {
+                id: id.clone(),
+                source: "manual".into(),
+                format: "trace-id".into(),
+            });
+            Some(id)
         } else {
             // Saving is asynchronous; native lookup tolerates the normal debounce.
             let mut exchange = Err(ObservabilityError::ResponsePending);
@@ -200,7 +228,17 @@ impl ObservabilityService {
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            self.registry.extract(&exchange?)?.into_iter().next()
+            let exchange = exchange?;
+            correlation.injected_trace_id = self
+                .registry
+                .references(&ExchangeInput {
+                    request_headers: exchange.request_headers.clone(),
+                    ..Default::default()
+                })?
+                .first()
+                .map(|r| r.id.clone());
+            correlation.lookup_reference = self.registry.references(&exchange)?.into_iter().next();
+            correlation.lookup_reference.as_ref().map(|r| r.id.clone())
         };
         let Some(trace_id) = trace_id else {
             return Ok(empty_page());
@@ -226,17 +264,23 @@ impl ObservabilityService {
                     )
                     .await?
                 else {
-                    return Ok(empty_page());
+                    let mut page = empty_page();
+                    page.correlation = correlation;
+                    return Ok(page);
                 };
-                if trace.id != trace_id
+                if !valid_trace_id(&trace.id)
                     || trace.spans.len() > 1000
                     || serde_json::to_vec(&trace)
                         .map_err(|_| ObservabilityError::ProviderFailed)?
                         .len()
                         > 64 * 1024
                     || trace.spans.iter().any(|span| {
-                        span.id.len() > 64
-                            || span.parent_span_id.as_ref().is_some_and(|id| id.len() > 64)
+                        span.id.is_empty()
+                            || span.id.len() > 64
+                            || span
+                                .parent_span_id
+                                .as_ref()
+                                .is_some_and(|id| id.is_empty() || id.len() > 64)
                             || span.started_at_us > 9_007_199_254_740_991
                             || span.duration_us > 9_007_199_254_740_991
                             || span.service.len() > 256
@@ -250,6 +294,8 @@ impl ObservabilityService {
                 {
                     return Err(ObservabilityError::LimitExceeded);
                 }
+                // Reject malformed parent graphs before admitting a provider result to cache.
+                super::hierarchy::rows(&trace.spans, "")?;
                 self.cache
                     .lock()
                     .map_err(|_| ObservabilityError::Busy)?
@@ -258,11 +304,17 @@ impl ObservabilityService {
             }
         };
         // Cursor belongs to this exact workspace/provider/config/credential/query.
+        let snapshot = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&trace).map_err(|_| ObservabilityError::ProviderFailed)?
+            )
+        );
         let cursor_key = format!(
             "{:x}",
             Sha256::digest(
                 format!(
-                    "{key}:{}:{}:{}",
+                    "{key}:{snapshot}:{}:{}:{}",
                     query.document_id, query.started_at_ms, query.search
                 )
                 .as_bytes()
@@ -282,25 +334,30 @@ impl ObservabilityService {
                     .map_err(|_| ObservabilityError::InvalidCursor)?
             }
         };
-        let search = query.search.to_lowercase();
-        let spans: Vec<_> = trace
-            .spans
-            .into_iter()
-            .filter(|span| {
-                search.is_empty()
-                    || span.service.to_lowercase().contains(&search)
-                    || span.operation.to_lowercase().contains(&search)
-            })
-            .collect();
-        if offset > spans.len() {
+        let rows = super::hierarchy::rows(&trace.spans, &query.search)?;
+        if offset > rows.len() {
             return Err(ObservabilityError::InvalidCursor);
         }
-        let total = spans.len();
+        let total = rows.len();
         let end = offset.saturating_add(25).min(total);
+        let rows = rows[offset..end].to_vec();
+        let spans = rows
+            .iter()
+            .filter_map(|row| {
+                trace
+                    .spans
+                    .iter()
+                    .find(|span| span.id == row.span_id)
+                    .cloned()
+            })
+            .collect();
+        correlation.resolved_trace_id = Some(trace.id.clone());
         Ok(TracePage {
-            protocol_version: 1,
+            protocol_version: 2,
             trace_id: Some(trace.id),
-            spans: spans[offset..end].to_vec(),
+            spans,
+            rows,
+            correlation,
             total,
             next_cursor: (end < total).then(|| format!("{cursor_key}:{end}")),
             cached,
@@ -309,11 +366,13 @@ impl ObservabilityService {
 }
 fn empty_page() -> TracePage {
     TracePage {
-        protocol_version: 1,
+        protocol_version: 2,
         trace_id: None,
         spans: vec![],
         total: 0,
         next_cursor: None,
         cached: false,
+        correlation: CorrelationProvenance::default(),
+        rows: vec![],
     }
 }

@@ -14,4 +14,5 @@ export type {
 export type { ExtensionDocumentDefinition, IntegrationDefinition, JsonObject } from "../domain/project";
 export type {
   IntegrationPresentationContribution,
+  IntegrationSettingsProps,
 } from "../integrations/contracts";

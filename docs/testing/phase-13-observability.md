@@ -1,5 +1,7 @@
 # Phase 13: native observability verification
 
+Historical Phase 13 checklist. Phase 14 now includes Jaeger by default and replaces the flat pages below with an incremental hierarchy; attribute search retains ancestors. Use the [Phase 14 checklist](phase-14-jaeger.md) for the current UI. The opt-in synthetic providers remain available for conformance.
+
 These are synthetic providers, not Jaeger or commercial integrations. Use a disposable workspace. The normal build has no concrete trace provider; the fixture feature is explicit:
 
 ```sh

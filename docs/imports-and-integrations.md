@@ -1,6 +1,6 @@
 # Imports, exports, and integrations
 
-This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow and a native OpenAPI 3.x workspace importer. Postman, Insomnia, Bruno, Yaak, and integration providers remain extension points.
+This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow, a native OpenAPI 3.x workspace importer, and a native Jaeger trace lookup adapter. Postman, Insomnia, Bruno, Yaak, and other integration providers remain extension points.
 
 ## Current feature status
 
@@ -19,7 +19,7 @@ This document distinguishes working import/export behavior from architectural ex
 | Canonical integration envelope and unavailable-provider management | Working |
 | Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
 | Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
-| Trace/observability providers | Rust contracts/service and response Trace UI implemented; two opt-in synthetic providers; Jaeger remains Phase 14 |
+| Trace/observability providers | Native Jaeger Query API v3 adapter, propagation, response-linked hierarchy/details UI; two opt-in synthetic providers for conformance |
 | Benchmark/history browser | Benchmark reserved; history storage API only |
 
 ## cURL paste/import
@@ -135,9 +135,9 @@ Do not advertise an adapter based only on its registration; it needs mapping, pe
 
 Legacy resources with a top-level `endpoint` migrate it to `config.endpoint` when loaded. Canonical saves omit the legacy field. The YAML codec preserves `config` recursively rather than applying core compaction rules inside provider-owned JSON, so unknown private fields, empty arrays, and provider values that resemble core defaults survive save/reload unchanged. Core validates `SecretRef` ownership only through the explicit credential map; JSON inside `config` is data and is never interpreted as a credential.
 
-Workspace settings list every configured integration and obtain execution availability from the native provider registry through `ObservabilityPort`. Frontend presentation registration alone cannot make a provider executable. Until the native provider is present, Purr labels the integration unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
+Workspace settings list every configured integration once, with its native capability labels, and obtain execution availability through `ObservabilityPort`. Frontend presentation registration alone cannot make a provider executable. Unavailable definitions remain enableable/deletable and survive canonical round trips. Registered settings components can edit their own config; the host submits it to native `observability_validate_config` before the normal project save. Integration identity cannot change through the editor. The host supplies a write-only credential setter limited to the instance's declared slots. Token entry is transient UI state; existing tokens are never read into the editor.
 
-The build-time frontend extension registry accepts integration presentation metadata through the public extension API and rejects duplicate presentation IDs before rendering. It does not accept executable trace/log providers, correlation extractors, credential resolvers, or provider caches. The Rust registry/service now supplies the provider-neutral trace lifecycle, with synthetic adapters for conformance. Real provider adapters and their settings/credential acquisition UI remain Phase 14+. Provider credentials use `SecretRef`; plaintext resolution, future provider HTTP/vendor parsing, correlation, normalization, caching, pagination, and cancellation belong to Rust. Feature components must not interpret arbitrary integration YAML or branch on provider IDs.
+The build-time frontend extension registry accepts integration presentation metadata/settings through the public extension API and rejects duplicate presentation IDs before rendering. It does not accept executable trace/log providers, correlation extractors, credential resolvers, or provider caches. The Rust registry separates one `IntegrationDescriptor` (versioned config and credential slots) from capability-specific provider registrations. A provider can gain a second capability without creating another integration instance or adding optional methods to a monolithic provider trait. Logs execution is not implemented yet. Provider credentials use `SecretRef`; plaintext resolution, HTTP/vendor parsing, correlation, normalization, caching, pagination, and cancellation belong to Rust. Core viewer components must not interpret arbitrary integration YAML or branch on provider IDs.
 
 ## Build-time extension modules
 
@@ -147,7 +147,7 @@ The curated entry points are `@purr/core/app`, `@purr/core/extension-api`, `@pur
 
 ## Tracing and observability
 
-The response Trace tab renders bounded normalized native results through `ObservabilityPort`. The public normal build registers correlation extraction but no concrete trace provider yet. An explicit `observability-fixtures` Cargo feature registers `test.trace-alpha` and `test.trace-beta`; they return deterministic synthetic spans and require a synthetic scoped credential. They make no network calls and are not production integrations.
+The response Trace tab renders bounded normalized native results through `ObservabilityPort`. The public build registers Jaeger by default in both Rust and frontend composition. `VITE_PURR_JAEGER=disabled` removes its frontend module; Cargo `--no-default-features` removes its native adapter independently. These flags do not remove propagation or the generic viewer. An explicit `observability-fixtures` Cargo feature additionally registers `test.trace-alpha` and `test.trace-beta`; they return deterministic synthetic spans and require a synthetic scoped credential. They make no network calls and are not production integrations.
 
 The current flow is:
 
@@ -156,16 +156,26 @@ request/response
   → observability_trace IPC using workspace/integration/document/start timestamp
   → Rust loads exact encrypted execution metadata and canonical integration
   → Rust correlation extraction, scoped credential resolution and provider lookup
-  → Rust bounded cache, provider result validation, filtering and pagination
-  → bounded normalized trace/log DTO
-  → response Trace UI
+  → Rust bounded cache, provider result validation, ancestor-preserving search and pagination
+  → bounded normalized TracePage v2 (spans, hierarchical rows, correlation provenance)
+  → one incremental hierarchy, selection and separate span inspector
 ```
 
 Provider-specific DTOs and plaintext credentials must never cross into React. Canonical integration YAML stores `SecretRef` values and opaque provider config; the Rust provider validates/migrates that config and resolves only its declared credential keys. The frontend renders normalized bounded results and UI state only.
 
-The core extractor supports W3C `traceparent`, B3 single/multi-header trace IDs and manual input. Response headers take precedence over request headers; only the first valid reference is used per lookup. Extractors can request a native body prefix of at most 64 KiB; standard header extraction does not read body bytes. The exact saved execution lookup is scoped by workspace/document/start timestamp and does not hydrate bodies. The native service retries the normal save debounce for up to one second, then reports a missing-save state.
+The core extractor supports W3C version-00 `traceparent`, B3 single/multi-header trace IDs and manual input. Response headers take precedence over request headers; only the first valid reference is used per lookup. Extractors can request a native body prefix of at most 64 KiB; standard header extraction does not read body bytes. The exact saved execution lookup is scoped by workspace/document/start timestamp and does not hydrate bodies. The native service retries the normal save debounce for up to one second, then reports a missing-save state. It independently records `injectedTraceId` (context actually sent, including an explicit user header), `lookupReference` (ID/source/format), and `resolvedTraceId` (provider result). A valid resolved ID may differ from the lookup ID. UI groups equal IDs and labels differing roles explicitly.
 
-Limits: 1,000 spans / 64 KiB per normalized trace, 25 spans per IPC page, 32 memory-cache entries with a 60-second TTL, four concurrent operations, 15-second timeout. Cache keys bind workspace, integration, provider/config and current credential fingerprints; credentials are re-resolved before cache hits. Search filters span service/operation in Rust. Cursors are bound to the query and configuration/credential generation. There is no persisted trace cache, standalone provider trace search, log API or waterfall yet. Native requests, parsing and retry policy for a real adapter are Phase 14 work.
+Limits: 1,000 spans / 64 KiB per normalized trace, 25 spans per IPC page, 32 memory-cache entries with a 60-second TTL, four concurrent operations, 15-second timeout. Cache keys bind workspace, integration, provider/config and current credential fingerprints; credentials are re-resolved before cache hits. Search checks normalized span ID, service, operation, status, attribute keys and scalar/array values in Rust, retaining each match's ancestors. Missing parents become roots; duplicate IDs and cycles are rejected before caching. Cursors bind the exact normalized trace snapshot as well as query/config/credentials, so a changed trace cannot silently corrupt incremental loading.
+
+The viewer is execution-centric. Integration selection and manual override are secondary source context, not the primary navigation. Loading more spans enriches the same hierarchy and preserves selection/folding. The reusable row model already permits an optional timeline column; a waterfall is not implemented. Changing the document, execution, integration or query silently cancels stale work. Explicit Cancel has its own UI state. Opening Trace starts a debounced lookup; normal response display never waits for it. There is no persisted trace cache, provider-wide trace discovery, log API, event/link inspector or background auto-refresh yet.
+
+### Jaeger adapter
+
+The native adapter uses the documented [Jaeger Query HTTP API v3](https://www.jaegertracing.io/docs/2.20/architecture/apis/) at `/api/v3/traces/{traceId}`, matching its [official streaming response schema](https://github.com/jaegertracing/jaeger-idl/blob/main/swagger/api_v3/query_service.openapi.yaml). It does not depend on the internal Jaeger UI `/api/traces` endpoint. Use a query server that exposes v3. Config v1 contains an HTTP(S) `endpoint` (optional base path) and `auth: none | bearer`; missing auth migrates to `none`. Embedded URL credentials, query/fragment secrets and unknown config fields are rejected. Bearer tokens resolve natively from the instance's `apiToken` SecretRef only when bearer auth is selected. Redirects are refused to prevent credential forwarding.
+
+The reusable HTTP client has a 12-second request timeout and a 4 MiB wire-body cap even without Content-Length. Bounded OTLP JSON/NDJSON parsing runs on a blocking worker. Resource `service.name`, parent IDs, operation, microsecond timings, status and bounded primitive/array attributes map to the normalized domain; complex attributes, span events and links are not displayed in this slice. Hex/base64 ID encodings are accepted. HTTP 404/empty traces produce a not-found state; auth/transport/parse errors produce safe provider-neutral codes, never raw vendor error bodies. No automatic retries are made; Load trace retries the lookup (successful traces remain cached for up to 60 seconds).
+
+See [Phase 14 verification](testing/phase-14-jaeger.md) for the loopback synthetic service/query server, settings, propagation, provenance, hierarchy, cancellation and provider-free build checks.
 
 See [Phase 13 manual verification](testing/phase-13-observability.md) for the opt-in build, synthetic fixture generator, secure-store provisioning, cancellation and restart scenarios.
 

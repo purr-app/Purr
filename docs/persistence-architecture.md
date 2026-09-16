@@ -41,6 +41,9 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Dynamic variable definition | workspace `Variable` | `purr.yaml` | Yes | Definition only | Shareable dependency/extraction contract |
 | Dynamic variable cache | `Workspace.dynamicVariableCache` | encrypted `workspace_local_state/dynamic-variable-cache`; sensitive values use vault refs | No | Maybe | Environment/session/TTL-specific runtime result |
 | Shared headers | `Workspace.requestConfig.headers` | `purr.yaml` | Yes | Should use variables for secrets | Project-wide request definition |
+| Trace propagation preference | Workspace request config / saved request | Optional `tracePropagation` format ID in workspace/request YAML | Yes | No | Definition only; absent means off/inherit, generated IDs never enter canonical definitions |
+| Observability integration | `Workspace.extraResources` | `integrations/*.yaml`, opaque versioned config + scoped SecretRefs | Yes | Reference only | Native descriptor validates config; credential values stay in the vault |
+| Trace lookup result/cache | Rust observability service / React bounded presentation | Bounded memory cache only | No | Potentially | No new persisted trace table; correlation reads the exact encrypted execution metadata |
 | Shared auth definition | `Workspace.requestConfig.auth` | `purr.yaml` with credential refs | Yes | Reference only | Share scheme/scope without credentials |
 | Request auth credentials | active `RequestAuth` | `secret_values`, referenced by request YAML | No | Yes | Credential-bearing |
 | OAuth access/refresh tokens | runtime auth token | versioned encrypted `workspace_local_state/auth-runtime` with vault refs | No | Yes | Acquired, machine/session-bound |

@@ -5,6 +5,23 @@ use crate::observability::{
 };
 
 #[tauri::command]
+pub fn observability_validate_config(
+    state: tauri::State<'_, ObservabilityState>,
+    provider: String,
+    version: u32,
+    config: serde_json::Value,
+) -> Result<serde_json::Value, ObservabilityError> {
+    if serde_json::to_vec(&config)
+        .map_err(|_| ObservabilityError::InvalidConfig)?
+        .len()
+        > 65536
+    {
+        return Err(ObservabilityError::LimitExceeded);
+    }
+    state.service.validate_config(&provider, version, &config)
+}
+
+#[tauri::command]
 pub async fn observability_integrations(
     app: tauri::AppHandle,
     state: tauri::State<'_, ObservabilityState>,

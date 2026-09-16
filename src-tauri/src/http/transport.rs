@@ -72,6 +72,10 @@ impl Default for HttpClient {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpRequest {
+    #[serde(skip)]
+    injected_trace_headers: Vec<(String, String)>,
+    #[serde(default)]
+    trace_propagation: crate::observability::propagation::PropagationPolicy,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
@@ -80,6 +84,18 @@ pub struct HttpRequest {
     body_source: Option<RequestBodySource>,
     #[serde(default)]
     response_storage: ResponseStoragePolicy,
+}
+
+impl HttpRequest {
+    pub fn prepare_trace(
+        &mut self,
+        propagators: &crate::observability::propagation::PropagationRegistry,
+    ) -> Result<(), String> {
+        self.injected_trace_headers =
+            propagators.prepare(&self.trace_propagation, &self.headers)?;
+        self.headers.extend(self.injected_trace_headers.clone());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -118,6 +134,7 @@ impl HttpResponse {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpResponse {
+    injected_trace_headers: Vec<(String, String)>,
     status: u16,
     status_text: String,
     headers: Vec<(String, String)>,
@@ -281,6 +298,7 @@ pub async fn perform_http_with_files(
         return Err("Request cancelled.".into());
     }
     let url = http_url(&request.url)?;
+    let injected_trace_headers = request.injected_trace_headers;
     if request.response_storage.protection != ResponseContentProtection::Encrypted {
         return Err("Plaintext response storage is not enabled in this build.".into());
     }
@@ -491,6 +509,7 @@ pub async fn perform_http_with_files(
         };
     let native_total = started.elapsed();
     let result = HttpResponse {
+        injected_trace_headers,
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").into(),
         headers,
@@ -585,6 +604,8 @@ mod tests {
 
     fn request(url: String) -> HttpRequest {
         HttpRequest {
+            trace_propagation: Default::default(),
+            injected_trace_headers: vec![],
             url,
             method: "GET".into(),
             headers: Vec::new(),
@@ -592,6 +613,44 @@ mod tests {
             body_source: None,
             response_storage: ResponseStoragePolicy::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn propagated_headers_are_sent_and_returned_as_execution_metadata() {
+        use crate::observability::propagation::{
+            PropagationPolicy, PropagationRegistry, StandardPropagator,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut outgoing = request(format!("http://{address}/propagate"));
+        outgoing.trace_propagation = PropagationPolicy::W3c;
+        let mut registry = PropagationRegistry::default();
+        registry.register(StandardPropagator(true)).unwrap();
+        outgoing.prepare_trace(&registry).unwrap();
+        let expected = outgoing.injected_trace_headers.clone();
+        let sent = expected[0].1.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 8192];
+            let count = tokio::io::AsyncReadExt::read(&mut socket, &mut bytes)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&bytes[..count]).contains(&sent));
+            tokio::io::AsyncWriteExt::write_all(
+                &mut socket,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let content = content_handle(&directory);
+        let (_, cancel) = watch::channel(false);
+        let response = perform_http(outgoing, &HttpClient::default().0, &content, cancel, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(response.injected_trace_headers, expected);
+        server.await.unwrap();
     }
 
     #[test]
@@ -679,6 +738,8 @@ mod tests {
             let result = perform_http_with_files(
                 HttpRequest {
                     url: format!("http://{address}/upload"),
+                    trace_propagation: Default::default(),
+                    injected_trace_headers: vec![],
                     method: "POST".into(),
                     headers: vec![
                         ("Content-Type".into(), "application/octet-stream".into()),
@@ -740,6 +801,8 @@ mod tests {
         let result = perform_http_with_files(
             HttpRequest {
                 url: format!("http://{address}/multipart"),
+                trace_propagation: Default::default(),
+                injected_trace_headers: vec![],
                 method: "POST".into(),
                 headers: vec![(
                     "Content-Type".into(),
@@ -823,6 +886,8 @@ mod tests {
         let result = perform_http(
             HttpRequest {
                 url: format!("http://{address}/echo"),
+                trace_propagation: Default::default(),
+                injected_trace_headers: vec![],
                 method: "POST".into(),
                 headers: vec![
                     ("Authorization".into(), "Bearer test-token".into()),

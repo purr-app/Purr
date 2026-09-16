@@ -12,7 +12,9 @@ test("native trace fixture decodes through the bounded provider-neutral IPC sche
   assert.deepEqual(tracePageSchema.parse(fixture), fixture);
   assert.equal(tracePageSchema.safeParse({ ...fixture, apiKey: "synthetic-forbidden" }).success, false);
   assert.equal(tracePageSchema.safeParse({ ...fixture, spans: Array(26).fill(fixture.spans[0]) }).success, false);
-  assert.equal(tracePageSchema.safeParse({ ...fixture, protocolVersion: 2 }).success, false);
+  assert.equal(tracePageSchema.safeParse({ ...fixture, protocolVersion: 3 }).success, false);
+  assert.equal(tracePageSchema.safeParse({ ...fixture, rows: [] }).success, false);
+  assert.equal(tracePageSchema.safeParse({ ...fixture, rows: [{ ...fixture.rows[0], spanId: "wrong" }] }).success, false);
   assert.equal(tracePageSchema.safeParse({ ...fixture, spans: [{ ...fixture.spans[0], vendorPayload: {} }] }).success, false);
 });
 

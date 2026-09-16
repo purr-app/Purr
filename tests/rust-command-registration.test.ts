@@ -9,6 +9,7 @@ const nativeRoot = join(root, "src-tauri", "src");
 const registeredCommands = [
   "exit_app",
   "observability_integrations",
+  "observability_validate_config",
   "observability_trace",
   "cancel_observability",
   "save_response_body",

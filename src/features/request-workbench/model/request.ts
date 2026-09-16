@@ -55,6 +55,7 @@ export type RequestPathParam = {
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export type RequestDraft = {
+  tracePropagation?: string;
   environmentId?: string;
   graphql?: { query: string; variables: string; operationName: string; schemaId?: string };
   documentation: string;

@@ -187,7 +187,7 @@ export async function prepareWireRequest(
     };
     const request = await makeRequest(outgoing, context, false);
     return {
-      request: { ...request, ...(preparedBody.bodySource ? { bodySource: preparedBody.bodySource } : {}) },
+      request: { ...request, ...(outgoing.tracePropagation ? { tracePropagation: outgoing.tracePropagation } : {}), ...(preparedBody.bodySource ? { bodySource: preparedBody.bodySource } : {}) },
       displayRequest: await makeRequest(maskedOutgoing, maskedContext, true),
       sensitiveHeaders: authResult.binding?.target === "header" ? [authResult.binding.name] : [],
       sensitiveQueryParams: authResult.binding?.target === "query" ? [authResult.binding.name] : [],

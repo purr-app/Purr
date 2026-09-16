@@ -4,7 +4,11 @@ pub mod credentials;
 pub mod domain;
 #[cfg(any(test, feature = "observability-fixtures"))]
 mod fixtures;
+pub mod hierarchy;
 pub mod native;
+pub mod propagation;
+#[cfg(feature = "jaeger")]
+pub mod providers;
 pub mod registry;
 pub mod service;
 #[cfg(test)]
@@ -17,8 +21,18 @@ pub struct ObservabilityState {
 impl Default for ObservabilityState {
     fn default() -> Self {
         let builder = registry::RegistryBuilder::default()
+            .propagator(propagation::StandardPropagator(true))
+            .expect("unique W3C propagator")
+            .propagator(propagation::StandardPropagator(false))
+            .expect("unique B3 propagator")
             .extractor(correlation::StandardCorrelation)
             .expect("unique core extractor");
+        #[cfg(feature = "jaeger")]
+        let builder = builder
+            .descriptor(providers::jaeger::JaegerDescriptor)
+            .expect("unique Jaeger descriptor")
+            .trace_provider(providers::jaeger::JaegerProvider::default())
+            .expect("unique Jaeger trace capability");
         #[cfg(feature = "observability-fixtures")]
         let builder = builder
             .provider(fixtures::SyntheticProvider {

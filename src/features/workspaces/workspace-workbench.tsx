@@ -615,6 +615,7 @@ export function WorkspaceWorkbench() {
             onNameChange={(name) => update((current) => ({ ...current, name }))}
             onDescriptionChange={(description) => update((current) => ({ ...current, description }))}
             onIntegrationChange={(id, change) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.kind === "integration" && resource.id === id ? { ...resource, ...change } : resource) }))}
+            onIntegrationSave={(value) => update((current) => ({ ...current, extraResources: [...(current.extraResources ?? []).filter((resource) => resource.id !== value.id), value] }))}
             onIntegrationDelete={(id) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).filter((resource) => resource.kind !== "integration" || resource.id !== id) }))}
             onConfigChange={(requestConfig) => update((current) => {
               const reconcile = (request: RequestDraft, kind: "http" | "graphql") => {

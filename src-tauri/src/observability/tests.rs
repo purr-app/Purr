@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 
 const TRACE: &str = "0123456789abcdef0123456789abcdef";
 struct MemoryRepository {
+    request_headers: Vec<(String, String)>,
     config: Mutex<Vec<Integration>>,
     token: Mutex<String>,
     headers: Vec<(String, String)>,
@@ -32,6 +33,7 @@ impl Repository for MemoryRepository {
     fn exchange(&self, _: &TraceQuery, _: bool) -> NativeFuture<'_, ExchangeInput> {
         Box::pin(async {
             Ok(ExchangeInput {
+                request_headers: self.request_headers.clone(),
                 response_headers: self.headers.clone(),
                 ..Default::default()
             })
@@ -71,6 +73,7 @@ fn setup() -> (ObservabilityService, MemoryRepository, TraceQuery) {
     (
         ObservabilityService::new(registry),
         MemoryRepository {
+            request_headers: vec![],
             config: Mutex::new(items.to_vec()),
             token: Mutex::new("synthetic-only".into()),
             headers: vec![(
@@ -91,6 +94,116 @@ fn setup() -> (ObservabilityService, MemoryRepository, TraceQuery) {
 }
 fn cancel() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
+}
+
+#[cfg(feature = "jaeger")]
+#[tokio::test]
+async fn jaeger_http_is_cancellable_through_the_shared_service() {
+    use super::providers::jaeger::{JaegerDescriptor, JaegerProvider};
+    use tokio::{io::AsyncReadExt, net::TcpListener, sync::oneshot};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sent, received) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 1];
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut request).await.unwrap();
+            headers.push(request[0]);
+            assert!(headers.len() <= 8192);
+        }
+        sent.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    let (_, repository, query) = setup();
+    {
+        let mut config = repository.config.lock().unwrap();
+        config[0].provider = "jaeger".into();
+        config[0].config = json!({"endpoint": format!("http://{address}"), "auth":"bearer"});
+    }
+    let service = ObservabilityService::new(
+        RegistryBuilder::default()
+            .descriptor(JaegerDescriptor)
+            .unwrap()
+            .trace_provider(JaegerProvider::default())
+            .unwrap()
+            .extractor(StandardCorrelation)
+            .unwrap()
+            .build(),
+    );
+    let cancelled = cancel();
+    let trigger = cancelled.clone();
+    let (result, _) = tokio::join!(service.lookup(&repository, query, cancelled), async move {
+        received.await.unwrap();
+        trigger.store(true, Ordering::Relaxed);
+    });
+    assert_eq!(result, Err(ObservabilityError::Cancelled));
+    server.abort();
+}
+
+#[tokio::test]
+async fn injected_lookup_and_resolved_ids_are_distinct_and_provider_neutral() {
+    use super::registry::{IntegrationDescriptor, ProviderContext, ProviderFuture, TraceProvider};
+    struct Alias;
+    impl IntegrationDescriptor for Alias {
+        fn id(&self) -> &'static str {
+            "test.alpha"
+        }
+        fn credential_keys(&self, _: &serde_json::Value) -> Vec<&'static str> {
+            vec![]
+        }
+        fn validate_and_migrate(
+            &self,
+            _: u32,
+            config: &serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            Ok(config.clone())
+        }
+    }
+    impl TraceProvider for Alias {
+        fn provider_id(&self) -> &'static str {
+            "test.alpha"
+        }
+        fn get_trace<'a>(&'a self, _: ProviderContext<'a>, _: &'a str) -> ProviderFuture<'a> {
+            Box::pin(async {
+                Ok(Some(Trace {
+                    id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                    spans: vec![],
+                }))
+            })
+        }
+    }
+    let (_, mut repository, query) = setup();
+    repository.request_headers = vec![(
+        "traceparent".into(),
+        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0123456789abcdef-01".into(),
+    )];
+    let service = ObservabilityService::new(
+        RegistryBuilder::default()
+            .provider(Alias)
+            .unwrap()
+            .extractor(StandardCorrelation)
+            .unwrap()
+            .build(),
+    );
+    let result = service.lookup(&repository, query, cancel()).await.unwrap();
+    assert_eq!(
+        result.correlation.injected_trace_id.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        result.correlation.lookup_reference.as_ref().unwrap().id,
+        TRACE
+    );
+    assert_eq!(
+        result.correlation.lookup_reference.as_ref().unwrap().source,
+        "response"
+    );
+    assert_eq!(
+        result.correlation.resolved_trace_id.as_deref(),
+        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
 }
 
 #[tokio::test]
@@ -140,7 +253,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
             .await
             .unwrap()
             .total,
-        1
+        2 // matched child plus its ancestor
     );
     *repository.token.lock().unwrap() = "rotated-synthetic".into();
     assert!(
@@ -282,7 +395,7 @@ fn native_dto_matches_shared_fixture_and_never_serializes_provider_fields() {
         serde_json::to_value(&page).unwrap(),
         serde_json::from_str::<serde_json::Value>(fixture).unwrap()
     );
-    assert_eq!(page.protocol_version, 1);
+    assert_eq!(page.protocol_version, 2);
 }
 
 #[test]
@@ -329,15 +442,20 @@ fn fake_body_extractor_composes_without_provider_branches_and_execution_rejects_
 async fn normalized_provider_results_are_bounded_before_caching_or_ipc() {
     use super::registry::{ProviderContext, ProviderFuture, TraceProvider};
     struct Oversized;
-    impl TraceProvider for Oversized {
+    impl super::registry::IntegrationDescriptor for Oversized {
         fn id(&self) -> &'static str {
             "test.alpha"
         }
-        fn credential_keys(&self) -> &'static [&'static str] {
-            &[]
+        fn credential_keys(&self, _: &serde_json::Value) -> Vec<&'static str> {
+            vec![]
         }
         fn validate_and_migrate(&self, _: u32, _: &serde_json::Value) -> Result<serde_json::Value> {
             Ok(json!({}))
+        }
+    }
+    impl TraceProvider for Oversized {
+        fn provider_id(&self) -> &'static str {
+            "test.alpha"
         }
         fn get_trace<'a>(
             &'a self,
