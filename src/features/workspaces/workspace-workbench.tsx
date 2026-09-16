@@ -585,10 +585,13 @@ export function WorkspaceWorkbench() {
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
           {workspace.ui.settingsTabActive ? <WorkspaceSettings name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+            integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
             variables={variables}
             variableActions={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}
             onNameChange={(name) => update((current) => ({ ...current, name }))}
             onDescriptionChange={(description) => update((current) => ({ ...current, description }))}
+            onIntegrationChange={(id, change) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.kind === "integration" && resource.id === id ? { ...resource, ...change } : resource) }))}
+            onIntegrationDelete={(id) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).filter((resource) => resource.kind !== "integration" || resource.id !== id) }))}
             onConfigChange={(requestConfig) => update((current) => {
               const reconcile = (request: RequestDraft, kind: "http" | "graphql") => {
                 const selected = request.auth.type === "inherit" ? request.auth.inherit.profileId : undefined;

@@ -16,7 +16,8 @@ This document distinguishes working import/export behavior from architectural ex
 | OpenAPI 3.0/3.1 adapter | Working first version |
 | Postman/Insomnia/Bruno/Yaak adapters | Not implemented |
 | Generic project export package | Not implemented; canonical directory is the portable artifact |
-| Integration provider runtime/UI | Not implemented |
+| Canonical integration envelope and unavailable-provider management | Working |
+| Integration provider registry/runtime and provider settings editor | Not implemented |
 | Trace/observability providers | Reserved only |
 | Benchmark/history browser | Benchmark reserved; history storage API only |
 
@@ -129,9 +130,13 @@ Do not advertise an adapter based only on its registration; it needs mapping, pe
 
 ## Integration resources
 
-`integrationDefinitionSchema` reserves a canonical resource with provider, endpoint, and credential map. `projectWorkspace` preserves these resources in `extraResources`, and `WorkspacePersistence` writes them under `integrations/`.
+`integrationDefinitionSchema` defines a provider-neutral canonical envelope with a stable provider ID, enable state, positive config version, opaque JSON config, and an explicit credential map. `projectWorkspace` preserves these resources in `extraResources`, and `WorkspacePersistence` writes them under `integrations/`.
 
-There is currently no integration registry, provider adapter, settings/editor UI, execution lifecycle, or credential acquisition flow. The schema is a persistence extension point only. New providers must define typed runtime ownership and use `Credential`/`SecretRef`; they must not interpret arbitrary integration YAML directly in feature components.
+Legacy resources with a top-level `endpoint` migrate it to `config.endpoint` when loaded. Canonical saves omit the legacy field. The YAML codec preserves `config` recursively rather than applying core compaction rules inside provider-owned JSON, so unknown private fields, empty arrays, and provider values that resemble core defaults survive save/reload unchanged. Core validates `SecretRef` ownership only through the explicit credential map; JSON inside `config` is data and is never interpreted as a credential.
+
+Workspace settings list every configured integration. Until a matching provider is registered, Purr labels it unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
+
+There is currently no integration registry, provider adapter, provider settings editor, execution lifecycle, or credential acquisition flow. New providers must define typed runtime ownership and use `Credential`/`SecretRef`; feature components must not interpret arbitrary integration YAML or branch on provider IDs.
 
 ## Tracing and observability
 
@@ -166,5 +171,5 @@ Execution history currently has encrypted native storage and metadata pagination
 - `src/features/workspaces/components/import-workspace-dialog.tsx` — source selection, progress, and modal error state.
 - `src-tauri/src/importing.rs` — native loaders, OpenAPI adapter, `$ref` resolver, intermediate model, and canonical normalization.
 - `src/application/workspace-persistence.ts` — additive collision handling and normal persistence path.
-- `src/domain/project.ts` — canonical import targets and reserved integration shape.
+- `src/domain/project.ts` — canonical import targets and the provider-neutral integration envelope.
 - `src/features/request-workbench/components/response-viewer.tsx` — disabled Trace surface.

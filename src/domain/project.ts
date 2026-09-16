@@ -86,8 +86,21 @@ export const environmentDefinitionSchema = z.strictObject({ ...base, kind: z.lit
 });
 export type EnvironmentDefinition = z.infer<typeof environmentDefinitionSchema>;
 export const folderDefinitionSchema = z.strictObject({ ...base, kind: z.literal("folder") });
-export const integrationDefinitionSchema = z.strictObject({ ...base, kind: z.literal("integration"), provider: z.string(),
-  endpoint: z.string().optional(), credentials: z.record(z.string(), credentialSchema).default({}) });
+export const integrationProviderIdSchema = z.string().min(1).max(128)
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/, "Integration provider IDs must be stable lowercase identifiers.");
+export const integrationCredentialKeySchema = z.string().min(1).max(64)
+  .regex(/^[a-z][a-zA-Z0-9_-]*$/, "Integration credential keys must be stable identifiers.");
+export const integrationConfigSchema = z.record(z.string(), z.json());
+export const integrationDefinitionSchema = z.strictObject({
+  ...base,
+  kind: z.literal("integration"),
+  provider: integrationProviderIdSchema,
+  enabled: z.boolean().default(true),
+  configVersion: z.number().int().positive().default(1),
+  config: integrationConfigSchema.default({}),
+  credentials: z.record(integrationCredentialKeySchema, credentialSchema).default({}),
+});
+export type IntegrationDefinition = z.infer<typeof integrationDefinitionSchema>;
 export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, apiSchemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema]);
 export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
@@ -113,7 +126,13 @@ export function validateProject(project: Project): Project {
       throw new Error("Sensitive variable references must belong to this workspace.");
     for (const child of Object.values(object)) checkRefs(child);
   };
-  checkRefs(workspace); checkRefs(resources);
+  checkRefs(workspace);
+  for (const resource of resources) {
+    // Provider-owned config is opaque JSON. Core validates only the explicit
+    // credential map and must not infer SecretRef semantics from vendor keys.
+    if (resource.kind === "integration") checkRefs(resource.credentials);
+    else checkRefs(resource);
+  }
   if (ids.size !== resources.length) throw new Error("Duplicate project resource identifiers.");
   if (new Set(workspace.auth.map((item) => item.id)).size !== workspace.auth.length || new Set(workspace.headers.map((item) => item.id)).size !== workspace.headers.length)
     throw new Error("Duplicate workspace configuration identifiers.");

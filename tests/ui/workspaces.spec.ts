@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { installPersistenceMock } from "./persistence-mock";
 test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
@@ -513,6 +514,74 @@ test("workspace settings tab manages identity, shared headers and scoped auth", 
   await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer ********");
   await response.getByRole("button", { name: "Reveal request secrets", exact: true }).click();
   await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer partner-token");
+});
+
+test("unavailable integrations preserve opaque config and support enable, disable, and safe delete", async ({ page }) => {
+  const integration = await readFile(new URL("../fixtures/projects/integration-private.yaml", import.meta.url), "utf8");
+  await page.addInitScript(({ integration }) => {
+    if (!location.protocol.startsWith("http")) return;
+    (window as any).isTauri = true;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async () => undefined };
+    if (sessionStorage.getItem("purr-phase-11-fixture-seeded")) return;
+    localStorage.setItem("purr-native-persistence-test", JSON.stringify({
+      activeWorkspaceId: "integration-fixture",
+      workspaces: [{
+        id: "integration-fixture",
+        files: {
+          "purr.yaml": { content: "purr: 1\nworkspace:\n  id: integration-fixture\n  name: Integration fixture\n", revision: "manifest" },
+          "integrations/private-observability.yaml": { content: integration, revision: "integration" },
+        },
+        local: [],
+      }],
+    }));
+    localStorage.setItem("purr-native-secure-test", JSON.stringify({
+      "purr/integration-fixture/integrations/private-observability/apiKey": "synthetic-private-token",
+    }));
+    sessionStorage.setItem("purr-phase-11-fixture-seeded", "true");
+  }, { integration });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const settings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await settings.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await expect(settings.getByText("Private observability", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Provider unavailable", { exact: true })).toBeVisible();
+  await expect(settings).toContainText("commercial.datadog · config v3 · 1 credential slots");
+  await expect(settings).not.toContainText("synthetic-private-token");
+
+  const enabled = settings.getByRole("checkbox", { name: "Enable Private observability", exact: true });
+  await expect(enabled).toHaveAttribute("aria-checked", "false");
+  await enabled.click();
+  await saved(page);
+  const canonical = await page.evaluate(() => {
+    const snapshot = JSON.parse(localStorage.getItem("purr-native-persistence-test")!);
+    return snapshot.workspaces[0].files["integrations/private-observability.yaml"].content as string;
+  });
+  expect(canonical).toContain("enabled: true");
+  expect(canonical).toContain("emptyList: []");
+  expect(canonical).toContain("type: none");
+  expect(canonical).not.toContain("synthetic-private-token");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const restoredSettings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await restoredSettings.getByRole("tab", { name: "Integrations", exact: true }).click();
+  const restoredToggle = restoredSettings.getByRole("checkbox", { name: "Enable Private observability", exact: true });
+  await expect(restoredToggle).toHaveAttribute("aria-checked", "true");
+  await restoredToggle.click();
+  await saved(page);
+  await page.reload();
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const finalSettings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await finalSettings.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await expect(finalSettings.getByRole("checkbox", { name: "Enable Private observability", exact: true })).toHaveAttribute("aria-checked", "false");
+  await finalSettings.getByRole("button", { name: "Delete Private observability", exact: true }).click();
+  await expect(finalSettings.getByText("Delete this integration configuration?", { exact: true })).toBeVisible();
+  await finalSettings.getByRole("button", { name: "Delete permanently", exact: true }).click();
+  await expect(finalSettings.getByText("No integrations are configured for this workspace.", { exact: true })).toBeVisible();
+  await saved(page);
 });
 
 test("sidebar context menu renames saved documents", async ({ page }) => {

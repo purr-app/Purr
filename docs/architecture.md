@@ -142,7 +142,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 | Environment | `Environment` | `EnvironmentDefinition` | Working |
 | Variable | `Variable` | `VariableDefinition` | Static and dynamic-request working; external-secret reserved |
 | Cookie jar | `SessionCookieJar` | none | Working, workspace-local only |
-| Integration | `extraResources` | integration `ProjectResource` | Storage shape only; no provider runtime/UI |
+| Integration | `extraResources` | provider-neutral integration `ProjectResource` | Canonical envelope and unavailable-provider settings UI working; no provider registry/runtime |
 | Trace / benchmark | discriminants only | none | Reserved, not working features |
 
 ## Current architectural limitations
@@ -153,7 +153,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
 - Attached external project directories have application/native support but no current UI.
-- Registry schema sources, external secret providers, non-OpenAPI collection adapters, integrations, tracing, benchmarks, and subscriptions are not implemented end-to-end.
+- Registry schema sources, external secret providers, non-OpenAPI collection adapters, integration provider runtimes, tracing, benchmarks, and subscriptions are not implemented end-to-end.
 
 ## Documentation ownership
 

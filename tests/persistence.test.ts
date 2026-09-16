@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
 import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { validateProject } from "../src/domain/project";
 import { createWorkspace, createGraphqlDocument, createSchemaDocument, cloneRequestDraft, isRequestDocument } from "../src/features/workspaces/model/workspace";
-import { deserializeManifest, deserializeResource, serializeManifest, serializeResource } from "../src/storage/yaml";
+import { deserializeManifest, deserializeResource, deserializeResourceFile, serializeManifest, serializeResource } from "../src/storage/yaml";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { persistImport } from "../src/application/import-project";
@@ -18,6 +19,81 @@ test("versioned YAML fixtures round-trip with disabled params and stable referen
   assert.throws(() => deserializeManifest("purr: 99\nworkspace: {}"), /unsupported/);
   assert.throws(() => deserializeManifest("purr: 1\npurr: 1\nworkspace: {}"), /Invalid/);
   assert.throws(() => deserializeManifest("purr: 1\nworkspace: &a [*a]"), /Invalid/);
+});
+
+test("integration envelopes migrate legacy endpoints and preserve unavailable provider config", async () => {
+  const legacyText = await readFile(new URL("./fixtures/projects/integration-legacy.yaml", import.meta.url), "utf8");
+  const privateText = await readFile(new URL("./fixtures/projects/integration-private.yaml", import.meta.url), "utf8");
+  const legacy = deserializeResourceFile(legacyText);
+  assert.equal(legacy.developmentRewrite, true);
+  assert.equal(legacy.value.kind, "integration");
+  if (legacy.value.kind !== "integration") return;
+  assert.equal(legacy.value.enabled, true);
+  assert.equal(legacy.value.configVersion, 1);
+  assert.deepEqual(legacy.value.config, { endpoint: "http://127.0.0.1:16686" });
+  const legacyYaml = serializeResource(legacy.value);
+  assert.doesNotMatch(legacyYaml, /^endpoint:/m);
+  assert.match(legacyYaml, /configVersion: 1/);
+  assert.match(legacyYaml, /config:\n  endpoint: http:\/\/127\.0\.0\.1:16686/);
+
+  const unavailable = deserializeResource(privateText);
+  assert.equal(unavailable.kind, "integration");
+  if (unavailable.kind !== "integration") return;
+  const config = structuredClone(unavailable.config);
+  const canonical = serializeResource(unavailable);
+  const roundTrip = deserializeResource(canonical);
+  assert.deepEqual(roundTrip, unavailable);
+  assert.deepEqual(roundTrip.kind === "integration" ? roundTrip.config : undefined, config);
+  assert.match(canonical, /enabled: true/);
+  assert.match(canonical, /emptyList: \[\]/);
+  assert.match(canonical, /body:\n      type: none/);
+
+  const workspace = createWorkspace("Integration fixture", "integration-fixture");
+  workspace.extraResources = [unavailable];
+  const secure = new MemorySecureStore();
+  await secure.set("purr/integration-fixture/integrations/private-observability/apiKey", "synthetic-private-token");
+  const first = await projectWorkspace(workspace, secure);
+  const yaml = first.project.resources.map((resource) => serializeResource(resource)).join("\n");
+  assert.doesNotMatch(yaml, /synthetic-private-token/);
+  const restored = await restoreWorkspace(first.project, first.local, secure, {});
+  const restoredIntegration = restored.extraResources?.find((resource) => resource.id === unavailable.id);
+  assert.deepEqual(restoredIntegration, unavailable);
+  if (!restoredIntegration || restoredIntegration.kind !== "integration") return;
+  restoredIntegration.enabled = true;
+  const reprojected = await projectWorkspace(restored, secure);
+  const enabled = reprojected.project.resources.find((resource) => resource.id === unavailable.id);
+  assert.equal(enabled?.kind === "integration" ? enabled.enabled : false, true);
+  assert.deepEqual(enabled?.kind === "integration" ? enabled.config : undefined, config);
+
+  const wrongWorkspace = structuredClone(unavailable);
+  wrongWorkspace.credentials.apiKey = { kind: "secret", ref: "purr/another-workspace/integrations/private-observability/apiKey" };
+  assert.throws(() => validateProject({ workspace: first.project.workspace, resources: [wrongWorkspace] }), /belong to this workspace/);
+  assert.throws(() => deserializeResource(privateText.replace("commercial.datadog", "Commercial/Datadog")), /Invalid Purr resource/);
+  assert.throws(() => deserializeResource(privateText.replace("apiKey:", "api.key:")), /Invalid Purr resource/);
+});
+
+test("workspace load rewrites legacy integration YAML to the canonical envelope", async () => {
+  const backend = new MemoryPersistenceBackend();
+  const legacy = await readFile(new URL("./fixtures/projects/integration-legacy.yaml", import.meta.url), "utf8");
+  backend.snapshot = {
+    activeWorkspaceId: "integration-fixture",
+    workspaces: [{
+      id: "integration-fixture",
+      files: {
+        "purr.yaml": { content: "purr: 1\nworkspace:\n  id: integration-fixture\n  name: Integration fixture\n", revision: "manifest" },
+        "integrations/legacy-jaeger.yaml": { content: legacy, revision: "legacy" },
+      },
+      local: [],
+    }],
+  };
+  const persistence = new WorkspacePersistence(backend, new MemorySecureStore());
+  const store = await persistence.load();
+  const integration = store.workspaces[0].extraResources?.find((resource) => resource.id === "legacy-jaeger");
+  assert.equal(integration?.kind === "integration" ? integration.config.endpoint : undefined, "http://127.0.0.1:16686");
+  const rewritten = backend.snapshot.workspaces[0].files["integrations/legacy-jaeger.yaml"].content;
+  assert.doesNotMatch(rewritten, /^endpoint:/m);
+  assert.match(rewritten, /configVersion: 1/);
+  assert.equal(deserializeResourceFile(rewritten).developmentRewrite, false);
 });
 
 test("project projection excludes drafts, execution data, cookies and all credential values", async () => {

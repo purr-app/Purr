@@ -30,7 +30,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 8 | Move large response inspect/search/format/query to Rust | DONE | Phase 8 working tree based on `f58cbad` | PASS — 138 TypeScript tests, 58 UI tests, 65 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product owner accepted the functional and UX-correction scenarios on 2026-09-16 |
 | 9 | Remove remaining body round trips | DONE | Phase 9 working tree based on `cf80691` | PASS — 149 unit/integration, 60 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner accepted download/media, redirects, multipart, Request Code, autosave, and attachment restart/restore on 2026-09-16 |
 | 10 | Profile and isolate GraphQL analysis | DONE | Phase 10 working tree based on `175ab8b` | PASS — 151 unit/integration, 61 UI, typecheck, lint, build, repository policy, benchmark, Rust fmt/check/clippy and 76 tests | COMPLETE — large schema, active-schema isolation, pinned restart, cancellation, responsiveness, and desktop profiling accepted 2026-09-16 |
-| 11 | Migrate canonical integration envelope | PARTIALLY DONE | Existing `{provider, endpoint, credentials}` canonical shape; no envelope migration reference | Existing project validation only | Not recorded |
+| 11 | Migrate canonical integration envelope | DONE | Phase 11 working tree based on `e721a5d` | PASS — 153 unit/integration, 62 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy | COMPLETE — product-owner accepted legacy migration and unavailable-provider persistence scenarios on 2026-09-16 |
 | 12 | Implement extension API and immutable registries | PARTIALLY DONE | Existing native import-adapter registry is a precursor only; no extension API reference | Import tests only; extension conformance not run | Not recorded |
 | 13 | Add provider-neutral observability use case and UI | TODO | — | Not run | Not run |
 | 14 | Implement Jaeger public validation adapter | TODO | — | Not run | Not run |
@@ -1590,26 +1590,31 @@ Known follow-ups:
 
 ### Phase 11 — migrate the canonical integration envelope
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing `integrationDefinitionSchema` stores `{provider, endpoint, credentials}`; no `enabled`, `configVersion`, generic `config`, or unknown-provider round-trip migration reference.
+Implemented in: Phase 11 working tree based on `e721a5d`
 
-Started: Pre-plan
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Add canonical/YAML fixtures for legacy endpoint integrations, unknown provider config, disabled integrations, and secret refs.
-- [ ] Run projection/restore validation proving unknown config round-trips without mutation and cross-workspace secret refs fail.
-- [ ] Run persistence, import, TypeScript type/lint/build, and Rust checks.
+- [x] Add canonical/YAML fixtures for legacy endpoint integrations, unknown provider config, disabled integrations, and secret refs.
+- [x] Run projection/restore validation proving unknown config round-trips without mutation and cross-workspace secret refs fail.
+- [x] Run persistence, import, TypeScript type/lint/build, and Rust checks.
 
 Manual verification:
-- [ ] Open a workspace with a legacy integration YAML fixture, save it, and inspect the resulting YAML to confirm it migrates without losing credentials or unrelated fields.
-- [ ] Open and save a fixture for an unavailable/private provider with nested config; confirm Purr preserves it, shows it as unavailable, and does not expose credential values.
-- [ ] Disable and re-enable the unavailable provider, restart Purr, and confirm its configuration remains intact.
+- [x] In a disposable workspace, load `tests/fixtures/projects/integration-legacy.yaml` after replacing its synthetic workspace ID; restart Purr and inspect the YAML to confirm `endpoint` migrated under `config` without losing credentials or unrelated fields.
+- [x] Load `tests/fixtures/projects/integration-private.yaml` the same way; confirm Purr preserves its nested config, shows it as unavailable, and does not expose credential values.
+- [x] Disable and re-enable the unavailable provider, restart Purr, and confirm its configuration remains intact.
+- [x] Start deletion of the disposable unavailable integration, cancel once and confirm it remains; confirm deletion on the second attempt and verify only that integration YAML is removed.
 
 Implementation notes:
-- The existing shape reserves provider data but cannot safely preserve arbitrary future private configuration.
+- `integrationDefinitionSchema` now owns only the generic envelope: stable provider ID, enable state, positive config version, opaque JSON config, and explicit credential slots.
+- Loading a legacy top-level `endpoint` schedules a canonical rewrite to `config.endpoint`; provider-owned config bypasses recursive core YAML compaction so unknown fields and values round-trip unchanged.
+- Core checks workspace ownership only for credentials declared in the envelope. It does not interpret secret-shaped objects inside opaque provider config.
+- Workspace settings expose unavailable integrations for enable/disable and confirmed deletion without rendering config or resolving credential values.
+- Automated verification completed on 2026-09-16: 153 TypeScript unit/integration tests, 62 Playwright tests, typecheck, lint, production build, repository policy, Rust fmt/check/clippy, 76 Rust tests, and `git diff --check` passed.
 
 Deviations from plan:
 - None.

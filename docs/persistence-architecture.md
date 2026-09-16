@@ -57,11 +57,11 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Cookie values/full record | `SessionCookieJar` | encrypted `cookie_jar` payload | No | Yes | Session credential material |
 | Canonical attachment | live `File` in `RequestBody` | content-addressed `assets/<sha256>.bin` | Yes | Not assumed; user-controlled | Required to reproduce saved request |
 | Attachment runtime/editor state | inactive/live body modes | encrypted `attachments` row referenced by draft/session records | No | Potentially | Preserve local editor state without repeating file bytes in every editor snapshot |
-| Integration definition | `extraResources` | `integrations/*.yaml` with credential refs | Yes | References only | Canonical extension-point shape; no runtime provider yet |
-| Integration credentials | no working provider runtime | intended `SecretRef`/vault | No | Yes | Must never be embedded when implemented |
+| Integration definition | `extraResources` | `integrations/*.yaml` with opaque JSON config and credential refs | Yes | References only | Canonical envelope and unavailable-provider management; no runtime provider yet |
+| Integration credentials | explicit `credentials` map | `SecretRef` in YAML, value in vault | No | Yes | Provider-owned config is not scanned or treated as credential storage |
 | Recent items | no current first-class UI projection | reserved encrypted `recent_items` table | No | No | Local navigation extension point |
 
-Do not infer that a declared local table or canonical schema means the product feature is complete. `recent_items` is available storage but is not a current first-class projection flow; integrations have a canonical shape but no provider runtime/UI.
+Do not infer that a declared local table or canonical schema means the product feature is complete. `recent_items` is available storage but is not a current first-class projection flow; integrations have a canonical envelope and unavailable-provider management UI but no provider runtime or provider settings editor.
 
 ## Canonical project layout
 

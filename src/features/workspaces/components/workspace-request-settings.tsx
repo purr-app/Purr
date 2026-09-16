@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
 import { AuthEditor } from "../../request-workbench/components/auth-editor";
@@ -19,8 +19,9 @@ import { FormField } from "../../../shared/components/ui/form-field";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
+import type { IntegrationDefinition } from "../../../domain/project";
 
-type SettingsTab = "general" | "headers" | "auth";
+type SettingsTab = "general" | "headers" | "auth" | "integrations";
 
 const scopeLabel = (scope: RequestScope) => scope === "all" ? "All requests" : `${scope === "graphql" ? "GraphQL" : "HTTP"} requests`;
 const authLabel = (auth: WorkspaceSharedAuth) => authTypeOptions.find((option) => option.value === auth.value.type)?.label ?? auth.value.type;
@@ -33,21 +34,27 @@ export function WorkspaceSettings({
   name,
   description,
   config,
+  integrations,
   variables,
   variableActions,
   onNameChange,
   onDescriptionChange,
   onConfigChange,
+  onIntegrationChange,
+  onIntegrationDelete,
   onDelete,
 }: {
   name: string;
   description: string;
   config: WorkspaceRequestConfig;
+  integrations: readonly IntegrationDefinition[];
   variables: Record<string, string>;
   variableActions?: TemplateVariableActions;
   onNameChange: (name: string) => void;
   onDescriptionChange: (description: string) => void;
   onConfigChange: (config: WorkspaceRequestConfig) => void;
+  onIntegrationChange: (id: string, change: Partial<Pick<IntegrationDefinition, "enabled">>) => void;
+  onIntegrationDelete: (id: string) => void;
   onDelete: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<SettingsTab>("general");
@@ -55,6 +62,7 @@ export function WorkspaceSettings({
   const [authContext, setAuthContext] = useState<AuthContext>({ variables });
   const [emptyHeaderId, setEmptyHeaderId] = useState(() => crypto.randomUUID());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteIntegration, setConfirmDeleteIntegration] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   useEffect(() => setAuthContext((current) => ({ ...current, variables })), [variables]);
   const authDraft: RequestDraft = {
@@ -99,7 +107,7 @@ export function WorkspaceSettings({
         </header>
         <div className="shrink-0 border-b border-border-subtle px-ui-4 py-ui-2">
           <SegmentedTabs id="workspace-settings" panelId="workspace-settings-panel" label="Workspace settings"
-            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }]} onValueChange={setTab} />
+            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "integrations", label: "Integrations" }]} onValueChange={setTab} />
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-5">
           {tab === "general" ? (
@@ -141,7 +149,7 @@ export function WorkspaceSettings({
                   scopeOptions={requestScopeOptions} scopeLabel={(entry) => `Requests for ${entry.key || "shared header"}`} />
               </div>
             </div>
-          ) : (
+          ) : tab === "auth" ? (
             <div className="space-y-ui-4">
               <div className="flex items-start justify-between gap-ui-4">
                 <div>
@@ -192,6 +200,36 @@ export function WorkspaceSettings({
                   </div>
                 ))}
                 {!config.auth.length && !editingAuth ? <p className="rounded-ui-lg border border-dashed border-border-subtle p-ui-5 text-center text-ui-sm text-content-tertiary">No shared authentication profiles.</p> : null}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-ui-4">
+              <div>
+                <h2 className="m-ui-0 text-ui-md font-medium text-content-primary">Integrations</h2>
+                <p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">Integration settings are preserved even when their provider is unavailable in this build. Credential values remain in secure storage.</p>
+              </div>
+              <div className="space-y-ui-2">
+                {integrations.map((integration) => (
+                  <div key={integration.id} className="rounded-ui-lg border border-border-subtle bg-purr-codefield px-ui-3 py-ui-3">
+                    <div className="flex items-center gap-ui-3">
+                      <Checkbox checked={integration.enabled} hideLabel label={`Enable ${integration.name}`} onCheckedChange={(enabled) => onIntegrationChange(integration.id, { enabled })} />
+                      <div className="min-w-0 flex-1">
+                        <p className="m-ui-0 truncate text-ui-sm font-medium text-content-primary">{integration.name}</p>
+                        <p className="m-ui-0 truncate font-code text-ui-xs text-content-tertiary">{integration.provider} · config v{integration.configVersion} · {Object.keys(integration.credentials).length} credential slots</p>
+                      </div>
+                      <span className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-elevated px-ui-2 py-ui-1 text-ui-xs text-content-tertiary"><Unplug className="size-ui-3" />Provider unavailable</span>
+                      {confirmDeleteIntegration !== integration.id
+                        ? <Button variant="ghost" size="icon" className="text-accent-red" aria-label={`Delete ${integration.name}`} onClick={() => setConfirmDeleteIntegration(integration.id)}><Trash2 className="size-ui-4" /></Button>
+                        : null}
+                    </div>
+                    {confirmDeleteIntegration === integration.id ? <div className="mt-ui-3 flex items-center justify-end gap-ui-2 border-t border-border-subtle pt-ui-3">
+                      <span className="mr-auto text-ui-xs text-accent-red">Delete this integration configuration?</span>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteIntegration(null)}>Cancel</Button>
+                      <Button variant="secondary" size="sm" className="text-accent-red" onClick={() => { onIntegrationDelete(integration.id); setConfirmDeleteIntegration(null); }}>Delete permanently</Button>
+                    </div> : null}
+                  </div>
+                ))}
+                {!integrations.length ? <p className="rounded-ui-lg border border-dashed border-border-subtle p-ui-5 text-center text-ui-sm text-content-tertiary">No integrations are configured for this workspace.</p> : null}
               </div>
             </div>
           )}
