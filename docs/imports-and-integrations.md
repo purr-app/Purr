@@ -17,8 +17,9 @@ This document distinguishes working import/export behavior from architectural ex
 | Postman/Insomnia/Bruno/Yaak adapters | Not implemented |
 | Generic project export package | Not implemented; canonical directory is the portable artifact |
 | Canonical integration envelope and unavailable-provider management | Working |
-| Integration provider registry/runtime and provider settings editor | Not implemented |
-| Trace/observability providers | Reserved only |
+| Build-time extension/provider registries | Implemented immutable composition boundary; no concrete provider runtime yet |
+| Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
+| Trace/observability providers | Provider-neutral contracts/registration implemented; UI/use case and adapters remain Phase 13+ |
 | Benchmark/history browser | Benchmark reserved; history storage API only |
 
 ## cURL paste/import
@@ -136,11 +137,17 @@ Legacy resources with a top-level `endpoint` migrate it to `config.endpoint` whe
 
 Workspace settings list every configured integration. Until a matching provider is registered, Purr labels it unavailable and permits enable/disable or confirmed deletion without displaying its config or credential values. This is recovery and compatibility UI, not a provider settings editor.
 
-There is currently no integration registry, provider adapter, provider settings editor, execution lifecycle, or credential acquisition flow. New providers must define typed runtime ownership and use `Credential`/`SecretRef`; feature components must not interpret arbitrary integration YAML or branch on provider IDs.
+The build-time extension registry now accepts provider definitions through the public extension API and rejects duplicate provider IDs before rendering. There is still no provider adapter implementation, settings editor, execution lifecycle, or credential acquisition flow. Phase 13 adds the first provider-neutral use case. New providers must define typed runtime ownership and use `Credential`/`SecretRef`; feature components must not interpret arbitrary integration YAML or branch on provider IDs.
+
+## Build-time extension modules
+
+`createPurrApp({ modules })` is the only supported frontend composition seam. Each module declares an extension API version and stable module ID, then registers named contributions. Page routes are always `/extensions/<module-id>/<route-segment>`. Registry arrays and lookup views freeze after composition; duplicate module/provider/page/document IDs, route collisions, late registration, and unsupported API versions fail startup before a partial application renders.
+
+The curated entry points are `@purr/core/app`, `@purr/core/extension-api`, `@purr/core/ui`, `@purr/core/test-kit`, and `@purr/core/styles`. A module may own its React page, editor, services, and adapters, but it cannot import core workspaces, storage implementations, router internals, or feature components. The conformance fixture under `tests/fixtures/extensions/` demonstrates the allowed imports and zero-module, unavailable-module, restore, and conflict behavior.
 
 ## Tracing and observability
 
-Trace is currently a disabled response tab plus a reserved document discriminant. There is no trace ID extraction, trace context propagation, provider lookup, normalized trace/log model, cache, persistence, or Jaeger/Datadog/CloudWatch/Grafana/Loki integration.
+Trace is currently a disabled response tab plus provider-neutral `Trace`/`Span` contracts and immutable trace-provider/correlation registrations. There is no trace UI use case, provider instance resolution, cache, persistence, or Jaeger/Datadog/CloudWatch/Grafana/Loki adapter yet.
 
 When tracing becomes real, documentation must be expanded from actual code to cover:
 

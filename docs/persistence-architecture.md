@@ -28,6 +28,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | User folders | `Workspace.extraResources` | `documents/**/.purr-folder.yaml`; physical path is hierarchy | Yes | No | Stable identity plus human-readable tree |
 | Saved HTTP request | `RequestDocument.savedRequest` | `documents/**/*.yaml` | Yes | Definitions may contain refs | Shareable API definition |
 | Saved GraphQL request | `GraphqlDocument.savedRequest` | `documents/**/*.yaml` | Yes | Definitions may contain refs | Same tree and transport model as HTTP |
+| Saved extension document | `ExtensionDocument.savedConfig` | `documents/**/*.yaml` with opaque versioned JSON config | Yes | No | Module-owned portable definition; credentials and local paths are forbidden in opaque config |
 | Schema source definition | `SchemaDocument.schemaSource` | `schemas/*.yaml` | Yes | Registry credential may be a ref | Reproducible source metadata |
 | Pinned SDL | `SchemaDocument.sdl` | `schemas/*.graphql`, referenced from schema YAML | Yes | No by design | Offline/shareable schema snapshot |
 | Imported OpenAPI schema | `Workspace.extraResources` | `schemas/*.yaml` metadata + referenced `schemas/*.openapi` source | Yes | No by design | Preserves the imported source and request-origin links without treating it as GraphQL SDL |
@@ -44,6 +45,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Request auth credentials | active `RequestAuth` | `secret_values`, referenced by request YAML | No | Yes | Credential-bearing |
 | OAuth access/refresh tokens | runtime auth token | versioned encrypted `workspace_local_state/auth-runtime` with vault refs | No | Yes | Acquired, machine/session-bound |
 | Request draft / dirty working copy | `RequestDocument.request` | encrypted `drafts` | No | Maybe | Unsaved local editing state |
+| Extension-document draft / dirty working copy | `ExtensionDocument.config` | encrypted `drafts` | No | No by contract | Preserves edits and saved baseline even when the owning module is unavailable |
 | Inactive body/auth editor modes | `RequestDraft` | encrypted `document_session_state.editor` with secret envelopes | No | Maybe | UX state, not active definition |
 | Open/preview/active tabs | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Machine/session navigation |
 | Sidebar width/order/open state | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Local layout preference |

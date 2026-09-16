@@ -31,7 +31,7 @@ This tracker reflects the repository state reviewed on 2026-09-16. `PARTIALLY DO
 | 9 | Remove remaining body round trips | DONE | Phase 9 working tree based on `cf80691` | PASS — 149 unit/integration, 60 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner accepted download/media, redirects, multipart, Request Code, autosave, and attachment restart/restore on 2026-09-16 |
 | 10 | Profile and isolate GraphQL analysis | DONE | Phase 10 working tree based on `175ab8b` | PASS — 151 unit/integration, 61 UI, typecheck, lint, build, repository policy, benchmark, Rust fmt/check/clippy and 76 tests | COMPLETE — large schema, active-schema isolation, pinned restart, cancellation, responsiveness, and desktop profiling accepted 2026-09-16 |
 | 11 | Migrate canonical integration envelope | DONE | Phase 11 working tree based on `e721a5d` | PASS — 153 unit/integration, 62 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy | COMPLETE — product-owner accepted legacy migration and unavailable-provider persistence scenarios on 2026-09-16 |
-| 12 | Implement extension API and immutable registries | PARTIALLY DONE | Existing native import-adapter registry is a precursor only; no extension API reference | Import tests only; extension conformance not run | Not recorded |
+| 12 | Implement extension API and immutable registries | DONE | Phase 12 working tree based on `2f5e3b4` | PASS — 156 unit/integration, 64 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check | COMPLETE — product-owner OSS/fake-module/unavailable-module/conflict scenarios accepted 2026-09-16 |
 | 13 | Add provider-neutral observability use case and UI | TODO | — | Not run | Not run |
 | 14 | Implement Jaeger public validation adapter | TODO | — | Not run | Not run |
 | 15 | Expose reusable frontend and Rust composition surfaces | PARTIALLY DONE | Existing `purr_lib` library target; no public builder/package export reference | Existing Rust build/tests only | Not recorded |
@@ -1632,28 +1632,34 @@ Known follow-ups:
 
 ### Phase 12 — implement extension API and immutable registries
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing native import-adapter registry is a related precursor; no public extension API, immutable provider registry, or external conformance harness reference.
+Implemented in: Phase 12 working tree based on `2f5e3b4`
 
-Started: Pre-plan
+Started: 2026-09-16
 
-Completed: —
+Completed: 2026-09-16
 
 Automated verification:
-- [ ] Add conformance tests for a fake external module importing only documented public exports and contributing a provider, namespaced page/navigation entry, module-owned service, and extension document type.
-- [ ] Add boot tests for duplicate module/provider/page/document-type IDs, route collisions, incompatible API versions, registry freeze, and zero optional modules.
-- [ ] Add canonical/local-state tests proving an unknown extension document round-trips unchanged in OSS, shows an unavailable state, and becomes editable again when its module is restored.
-- [ ] Run package export/build tests plus TypeScript unit/UI/type/lint/build and Rust checks.
+- [x] Add conformance tests for a fake external module importing only documented public exports and contributing a provider, namespaced page/navigation entry, module-owned service, and extension document type.
+- [x] Add boot tests for duplicate module/provider/page/document-type IDs, route collisions, incompatible API versions, registry freeze, and zero optional modules.
+- [x] Add canonical/local-state tests proving an unknown extension document round-trips unchanged in OSS, shows an unavailable state, and becomes editable again when its module is restored.
+- [x] Run package export/build tests plus TypeScript unit/UI/type/lint/build and Rust checks.
 
 Manual verification:
-- [ ] Launch the OSS app with no optional module configured and confirm all existing workspace/request/GraphQL workflows still start normally.
-- [ ] Run the example external fake-module shell, open its contributed navigation entry/page, execute its module-owned sample action, and confirm no public source file imports that module.
-- [ ] Create and save its fake protocol/document, restart, remove the fake module and confirm the unavailable document remains renameable/moveable/deletable with config intact; restore the module and confirm the editor/config returns.
-- [ ] Attempt to load an intentionally incompatible/duplicate fake module and confirm startup reports the precise module conflict without partially registering it.
+- [x] Launch the OSS app with no optional module configured and confirm all existing workspace/request/GraphQL workflows still start normally.
+- [x] Run the example external fake-module shell, open its contributed navigation entry/page, execute its module-owned sample action, and confirm no public source file imports that module.
+- [x] Create and save its fake protocol/document, restart, remove the fake module and confirm the unavailable document remains renameable/moveable/deletable with config intact; restore the module and confirm the editor/config returns.
+- [x] Attempt to load an intentionally incompatible/duplicate fake module and confirm startup reports the precise module conflict without partially registering it.
 
 Implementation notes:
-- The import registry demonstrates a registry pattern but is not an extension boundary and must not be treated as completion of this phase.
+- `createPurrApp({ modules })` is the build-time frontend composition root. The OSS entry supplies zero optional modules and remains fully functional.
+- `@purr/core/extension-api` exposes versioned module, integration-provider, trace-provider, correlation, namespaced page/navigation, and opaque workspace-document contracts. Factories receive constrained HTTP/response-content/logger capabilities rather than the runtime workspace, storage, router, or feature internals.
+- Composition snapshots module manifests, validates API versions and stable IDs, rejects duplicate providers/pages/routes/document types atomically, and freezes registry views before React renders. Captured registrars reject late writes.
+- Extension documents use a strict core envelope (`extensionType`, `configVersion`, opaque JSON `config`) under `documents/`. Saved baselines remain canonical; dirty working copies remain encrypted local records. Unknown documents render an unavailable host while core rename/move/duplicate/delete behavior stays available.
+- The external conformance fixture imports only `@purr/core/extension-api` and `@purr/core/ui`; its shell composes through `@purr/core/app` and exercises module-owned navigation, page logic, a document editor, module removal/restoration, and boot conflicts.
+- Automated verification completed on 2026-09-16: 156 TypeScript unit/integration tests, 64 Playwright tests, typecheck, lint, production build, repository policy, Rust fmt/check/clippy, 76 Rust tests, and `git diff --check` passed.
+- Product-owner manual verification accepted the zero-module OSS build, contributed page/action, extension-document removal/restoration lifecycle, and duplicate-module startup failure on 2026-09-16.
 
 Deviations from plan:
 - None.
@@ -1661,6 +1667,7 @@ Deviations from plan:
 Known follow-ups:
 - Keep settings embedded inside existing screens, response panels, workspace actions, and request-policy hooks out of the API until a concrete module needs each named surface.
 - Phases 13–14 still validate the provider/observability half of the same module API with Jaeger.
+- Package exports currently target reviewed source entry points inside this private migration package; Phase 15 still owns compiled distributable artifacts, Rust builder surfaces, and cross-repository consumption/versioning.
 
 - **Objective:** provide the single supported build-time registration seam for provider modules and independently owned feature modules.
 - **Files/modules affected:** `src/integrations/{contracts,registry}.ts`, `src/extension-api/*`, `src/app/composition/*`, `src/app/app-router.tsx`, generic extension document domain/host files, package exports, conformance tests.

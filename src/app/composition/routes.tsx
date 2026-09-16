@@ -24,7 +24,17 @@ const coreRoutes: readonly AppRouteDefinition[] = [
 export function createAppComposition(
   additionalRoutes: readonly AppRouteDefinition[] = [],
 ): AppComposition {
-  const routes = [...coreRoutes, ...additionalRoutes];
+  return freezeAppComposition([...coreRoutes, ...additionalRoutes], "/workbench");
+}
+
+export function extendAppComposition(
+  composition: AppComposition,
+  additionalRoutes: readonly AppRouteDefinition[],
+): AppComposition {
+  return freezeAppComposition([...composition.routes, ...additionalRoutes], composition.defaultPath);
+}
+
+function freezeAppComposition(routes: readonly AppRouteDefinition[], defaultPath: string): AppComposition {
   const ids = new Set<string>();
   const paths = new Set<string>();
   for (const route of routes) {
@@ -39,7 +49,7 @@ export function createAppComposition(
   }
   return Object.freeze({
     routes: Object.freeze(routes.map((route) => Object.freeze({ ...route }))),
-    defaultPath: "/workbench",
+    defaultPath,
   });
 }
 

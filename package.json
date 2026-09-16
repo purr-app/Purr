@@ -4,6 +4,13 @@
   "version": "0.1.0",
   "packageManager": "npm@11.16.0",
   "type": "module",
+  "exports": {
+    "./app": "./src/app/public.ts",
+    "./extension-api": "./src/extension-api/index.ts",
+    "./ui": "./src/extension-api/ui.ts",
+    "./test-kit": "./src/extension-api/test-kit.ts",
+    "./styles": "./src/styles/globals.css"
+  },
   "scripts": {
     "dev": "vite",
     "test": "tsx --test tests/*.test.ts",

@@ -5,7 +5,7 @@ import { KbdGroup } from "../../../shared/components/ui/kbd";
 import { Popover, PopoverAnchor, PopoverContent } from "../../../shared/components/ui/popover";
 import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
 import { cn } from "../../../shared/lib/cn";
-import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, isRequestDocument, type CreatableDocumentKind, type Workspace } from "../model/workspace";
+import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, type CreatableDocumentKind, type Workspace } from "../model/workspace";
 import { NewDocumentButton } from "./new-document-button";
 
 const cookiesTabId = "workspace-cookies-tab";
@@ -26,9 +26,10 @@ type TabDrag = {
   moved: boolean;
 };
 
-export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onSave }: {
+export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onNewExtension, onSave }: {
   workspace: Workspace;
   cookieCount: number;
+  extensionTypes?: readonly { extensionType: string; label: string }[];
   onOpen: (id: string) => void;
   onClose: (id: string) => void;
   onPin: (id: string) => void;
@@ -43,6 +44,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   onOpenVariables: () => void;
   onCloseVariables: () => void;
   onNew: (kind: CreatableDocumentKind) => void;
+  onNewExtension?: (extensionType: string) => void;
   onSave: () => void;
 }) {
   const list = useRef<HTMLDivElement>(null);
@@ -53,7 +55,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
   const [settling, setSettling] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && isRequestDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)));
+  const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && activeDocument.kind !== "schema" && (!activeDocument.saved || isDocumentDirty(activeDocument)));
   const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : [])];
   const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : id === settingsTabId ? onOpenSettings() : id === variablesTabId ? onOpenVariables() : onOpen(id);
   const onTabKeyDown = (event: KeyboardEvent, id: string) => {
@@ -250,7 +252,7 @@ export function DocumentTabs({ workspace, cookieCount, onOpen, onClose, onPin, o
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close workspace settings" onClick={onCloseSettings}><X className="size-ui-3" /></Button>
       </div> : null}
     </div>
-    <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} />
+    <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} />
     <div className="flex-1" />
     {showSave ? <Button variant="ghost" size="icon" aria-label="Save document" title={`${activeDocument?.saved ? "Save changes" : "Save document"} · Mod+S`} onClick={onSave}><Save className="size-ui-4 text-action-brand" /></Button> : null}
   </div>;

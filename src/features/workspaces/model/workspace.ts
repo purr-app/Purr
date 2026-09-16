@@ -11,10 +11,10 @@ import { getHttpMethodStyle } from "../../../shared/model/http-method";
 import type { WorkbenchView } from "../../request-workbench/components/request-tab-bar";
 import type { StoredHttpResponse } from "../../../domain/http";
 import type { SessionCookie } from "../../request-workbench/model/cookie-jar";
-import type { ProjectResource, RequestDefinition, SchemaDefinition, SecretRef } from "../../../domain/project";
+import { integrationConfigSchema, type JsonObject, type ProjectResource, type RequestDefinition, type SchemaDefinition, type SecretRef } from "../../../domain/project";
 
 // Stable discriminants allow importers and future document editors to coexist.
-export type DocumentKind = "http" | "graphql" | "schema" | "trace" | "benchmark" | "integration";
+export type DocumentKind = "http" | "graphql" | "schema" | "extension" | "trace" | "benchmark" | "integration";
 export type DynamicVariableRefresh = "every-time" | "session" | "cache";
 type VariableBase = { id: string; name: string; enabled: boolean; sensitive: boolean };
 export type Variable = VariableBase & (
@@ -68,10 +68,21 @@ export type SchemaDocument = DocumentBase & {
   pinned?: boolean;
   ui: { selectedType: string | null; selectedField: string | null; sourcePaneOpen: boolean };
 };
-export type WorkspaceDocument = RequestDocument | SchemaDocument;
-export function isRequestDocument(document: WorkspaceDocument): document is RequestDocument { return document.kind !== "schema"; }
+export type ExtensionDocument = DocumentBase & {
+  kind: "extension";
+  extensionType: string;
+  configVersion: number;
+  config: JsonObject;
+  savedConfigVersion: number | null;
+  savedConfig: JsonObject | null;
+  ui: Record<string, never>;
+};
+export type WorkspaceDocument = RequestDocument | SchemaDocument | ExtensionDocument;
+export function isRequestDocument(document: WorkspaceDocument): document is RequestDocument { return document.kind === "http" || document.kind === "graphql"; }
+export function isExtensionDocument(document: WorkspaceDocument): document is ExtensionDocument { return document.kind === "extension"; }
 export function getDocumentBadge(document: WorkspaceDocument) {
   return document.kind === "schema" ? { label: "SDL", color: "text-action-graphql" }
+    : document.kind === "extension" ? { label: "EXT", color: "text-action-brand" }
     : document.kind === "graphql" ? { label: "GQL", color: "text-action-graphql" }
       : { label: document.request.method, color: getHttpMethodStyle(document.request.method).text };
 }
@@ -143,6 +154,12 @@ export function createSchemaDocument(request?: RequestDocument): SchemaDocument 
   return { id: crypto.randomUUID(), kind: "schema", name: request ? `${getDocumentDisplayName(request)} schema` : "Untitled GraphQL schema", saved: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), sourceRequestId: request?.id ?? "", endpoint: request?.request.url ?? "",
     sdl: "", source: null, sourceLabel: "", loadedAt: null, pinned: true, ui: { selectedType: null, selectedField: null, sourcePaneOpen: true } };
+}
+
+export function createExtensionDocument(extensionType: string, name: string, configVersion: number, config: JsonObject, folderId?: string): ExtensionDocument {
+  return { id: crypto.randomUUID(), kind: "extension", extensionType, name, saved: false,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...(folderId ? { folderId } : {}),
+    configVersion, config: structuredClone(config), savedConfigVersion: null, savedConfig: null, ui: {} };
 }
 
 export function createWorkspace(name = "Personal", id: string = crypto.randomUUID()): Workspace {
@@ -234,7 +251,11 @@ export function cloneRequestDraft(request: RequestDraft): RequestDraft {
 export function duplicateDocument(workspace: Workspace, id: string): Workspace {
   const source = workspace.documents.find((document) => document.id === id);
   if (!source) return workspace;
-  if (!isRequestDocument(source)) {
+  if (isExtensionDocument(source)) {
+    const duplicate = createExtensionDocument(source.extensionType, `${getDocumentDisplayName(source)} copy`, source.configVersion, source.config, source.folderId);
+    return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
+  }
+  if (source.kind === "schema") {
     const created = createSchemaDocument();
     const duplicate: SchemaDocument = { ...created, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
       folderId: source.folderId, sourceRequestId: source.sourceRequestId, endpoint: source.endpoint, sdl: source.sdl, source: source.source,
@@ -260,6 +281,8 @@ function comparableRequest(value: unknown): unknown {
 }
 
 export function isDocumentDirty(document: WorkspaceDocument): boolean {
+  if (isExtensionDocument(document)) return !document.saved || document.configVersion !== document.savedConfigVersion
+    || JSON.stringify(document.config) !== JSON.stringify(document.savedConfig);
   if (!isRequestDocument(document)) return false;
   if (!document.saved) return isMeaningfulDraft(document);
   return JSON.stringify(comparableRequest(document.request)) !==
@@ -267,6 +290,7 @@ export function isDocumentDirty(document: WorkspaceDocument): boolean {
 }
 
 export function isMeaningfulDraft(document: WorkspaceDocument): boolean {
+  if (isExtensionDocument(document)) return true;
   if (!isRequestDocument(document)) return Boolean(document.sdl || (!document.sourceRequestId && document.endpoint.trim()));
   const { request } = document;
   return Boolean(
@@ -291,6 +315,11 @@ export function discardDocument(workspace: Workspace, id: string): Workspace {
         : item),
     };
   }
+  if (isExtensionDocument(document) && document.saved && document.savedConfig && document.savedConfigVersion) {
+    return { ...workspace, documents: workspace.documents.map((item) => item.id === id && isExtensionDocument(item)
+      ? { ...item, config: structuredClone(item.savedConfig!), configVersion: item.savedConfigVersion! }
+      : item) };
+  }
   return deleteDocument(workspace, id);
 }
 
@@ -307,7 +336,7 @@ export function deleteDocument(workspace: Workspace, id: string): Workspace {
   const documents = withoutDocument.documents.filter((item) => item.id !== id).map((item) => {
     if (document.kind === "schema" && isRequestDocument(item) && item.request.graphql?.schemaId === id)
       return { ...item, request: { ...item.request, graphql: { ...item.request.graphql, schemaId: undefined } } };
-    if (document.kind !== "schema" && item.kind === "schema" && item.sourceRequestId === id) {
+    if (isRequestDocument(document) && item.kind === "schema" && item.sourceRequestId === id) {
       const replacement = withoutDocument.documents.find((candidate): candidate is GraphqlDocument => candidate.id !== id && candidate.kind === "graphql" && candidate.request.graphql?.schemaId === item.id);
       return { ...item, sourceRequestId: replacement?.id ?? "", endpoint: replacement?.request.url || (isRequestDocument(document) ? document.request.url : item.endpoint) || item.endpoint };
     }
@@ -325,9 +354,13 @@ export function closeDocument(workspace: Workspace, id: string, keepDocument = f
   const remove = !keepDocument && document && !document.saved && !isMeaningfulDraft(document);
   let documents = remove
     ? workspace.documents.filter((item) => item.id !== id)
-    : workspace.documents.map((item) => item.id === id && isRequestDocument(item) && item.saved && item.savedRequest
-      ? { ...item, request: cloneRequestDraft(item.savedRequest) }
-      : item);
+    : workspace.documents.map((item) => {
+      if (item.id !== id || !item.saved) return item;
+      if (isRequestDocument(item) && item.savedRequest) return { ...item, request: cloneRequestDraft(item.savedRequest) };
+      if (isExtensionDocument(item) && item.savedConfig && item.savedConfigVersion)
+        return { ...item, config: structuredClone(item.savedConfig), configVersion: item.savedConfigVersion };
+      return item;
+    });
   if (remove) documents = documents.map((item) => {
     if (item.kind !== "schema" || item.sourceRequestId !== id) return item;
     const replacement = documents.find((candidate): candidate is GraphqlDocument => candidate.kind === "graphql" && candidate.request.graphql?.schemaId === item.id);
@@ -385,7 +418,7 @@ export function validateWorkspace(value: unknown): Workspace {
     || typeof workspace.name !== "string" || !Array.isArray(workspace.documents)
     || !Array.isArray(workspace.environments) || !workspace.ui || !Array.isArray(workspace.ui.openDocumentIds))
     throw new Error("Unsupported or damaged workspace file. The original file has not been changed.");
-  if (workspace.documents.some((document) => !document || !["http", "graphql", "schema"].includes(document.kind) || !document.ui))
+  if (workspace.documents.some((document) => !document || !["http", "graphql", "schema", "extension"].includes(document.kind) || !document.ui))
     throw new Error("This workspace contains an unsupported document. Open it with a compatible version of Purr.");
   const requestShape = createHttpDocument().request;
   const normalizeRequest = (request: RequestDraft): RequestDraft => ({
@@ -445,8 +478,13 @@ export function validateWorkspace(value: unknown): Workspace {
     throw new Error("Invalid workspace request configuration. The original file has not been changed.");
   if (workspace.documents.some((document) => typeof document.id !== "string" || typeof document.name !== "string" || (isRequestDocument(document)
     ? !validRequest(document.request, document.kind)
-    : typeof document.sdl !== "string" || typeof document.sourceRequestId !== "string" || typeof document.sourceLabel !== "string"
-      || ![null, "file", "introspection"].includes(document.source)))
+    : isExtensionDocument(document)
+      ? !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(document.extensionType)
+        || !Number.isInteger(document.configVersion) || document.configVersion < 1 || !integrationConfigSchema.safeParse(document.config).success
+        || document.savedConfigVersion !== null && (!Number.isInteger(document.savedConfigVersion) || document.savedConfigVersion < 1)
+        || document.savedConfig !== null && !integrationConfigSchema.safeParse(document.savedConfig).success
+      : typeof document.sdl !== "string" || typeof document.sourceRequestId !== "string" || typeof document.sourceLabel !== "string"
+        || ![null, "file", "introspection"].includes(document.source)))
     || !Array.isArray(workspace.variables)
     || workspace.environments.some((environment) => !environment || typeof environment.id !== "string" || typeof environment.name !== "string" || !Array.isArray(environment.variables)
       || environment.variables.some((variable) => !isVariable(variable)))
@@ -501,7 +539,10 @@ export function validateWorkspace(value: unknown): Workspace {
       ui: { ...document.ui,
       requestSection: (document.kind === "graphql" ? graphqlEditorSections : requestEditorSections).some((section) => section.id === document.ui.requestSection)
         ? document.ui.requestSection : document.kind === "graphql" ? "gql-query" : "query",
-    } }) : { ...document,
+    } }) : isExtensionDocument(document) ? ({ ...document, ui: {} as Record<string, never>,
+      savedConfigVersion: document.saved ? document.savedConfigVersion ?? document.configVersion : null,
+      savedConfig: document.saved ? structuredClone(document.savedConfig ?? document.config) : null,
+    } satisfies ExtensionDocument) : { ...document,
       endpoint: typeof document.endpoint === "string" ? document.endpoint : document.source === "introspection" ? document.sourceLabel : "",
       saved: document.saved || Boolean(document.sdl), ui: {
       selectedType: typeof document.ui.selectedType === "string" ? document.ui.selectedType : null,

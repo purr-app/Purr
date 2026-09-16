@@ -49,7 +49,9 @@ canonical Project + local records + assets
 
 `src/application/ports/` owns the frontend contracts for HTTP transport, opaque request-file staging, response content, persistence, credentials, OAuth callbacks, import normalization, downloads, file dialogs, workspace shell actions, and application lifecycle. These contracts contain no Tauri command names or native paths. `src/app/application-services-context.tsx` exposes one typed service object at the shell; feature hooks consume that context rather than constructing platform implementations or receiving a chain of service props.
 
-`src/app/create-purr-app.tsx` is the OSS application factory. `src/app/composition/routes.tsx` validates and freezes the current route descriptors before rendering, so a later extension registry can contribute namespaced routes without replacing `AppRouter`. Phase 3 does not expose this internal route composition as the extension API.
+`src/app/create-purr-app.tsx` is the OSS application factory and the build-time composition root. It accepts zero or more `PurrExtensionModule`s, builds the extension registry once, freezes it, and adds validated namespaced page routes before React renders. The OSS entry passes no optional modules. `src/app/composition/routes.tsx` remains internal; modules contribute pages through `@purr/core/extension-api` rather than importing the router.
+
+`src/extension-api/` is the narrow public frontend boundary. A module can register an integration provider definition, trace provider factory, correlation extractor, namespaced page/navigation entry, or opaque workspace document type. Factories receive only named capabilities (`http`, bounded response content, and a module logger); they do not receive the runtime `Workspace`, persistence backend, secret store, router, or core feature components. The registry rejects incompatible API versions and duplicate IDs/routes during composition, then exposes frozen read-only views. Optional settings/response/workspace hooks are intentionally absent until a concrete integration needs a typed surface.
 
 ### Storage and native layers
 
@@ -80,11 +82,11 @@ Rust modules provide narrow privileged boundaries:
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
 8. Response protection is resolved by the TypeScript application layer before transport. Future workspace/folder/document preferences are local-only and default to encrypted; shared project files cannot disable encryption, and response policy never applies to credentials or secrets.
 
-ESLint and architecture tests enforce the current boundaries: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application and feature modules cannot import Tauri packages; platform adapters cannot reach feature UI or the application composition root. A source scan also fails when an `invoke()` call appears outside `src/platform/tauri`. Rules for the future `src/extension-api/` directory remain reserved so it cannot expose implementation-owned paths.
+ESLint and architecture tests enforce the current boundaries: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application and feature modules cannot import Tauri packages; platform adapters cannot reach feature UI or the application composition root. A source scan also fails when an `invoke()` call appears outside `src/platform/tauri`. Extension conformance tests import only the reviewed package entry points and exercise composition without internal paths.
 
 ## Public package and build identity
 
-The repository uses npm exclusively and treats `package-lock.json` as the JavaScript dependency lock. The root package reserves `@purr/core@0.1.0` while remaining private during migration. It intentionally has no package exports yet: internal source paths are unsupported, and Phase 15 introduces the reviewed `./app`, `./extension-api`, and `./styles` surfaces together with their build output and conformance checks.
+The repository uses npm exclusively and treats `package-lock.json` as the JavaScript dependency lock. The root package reserves `@purr/core@0.1.0` while remaining private during migration. Its reviewed source-level exports are `./app`, `./extension-api`, `./ui`, `./test-kit`, and `./styles`; internal source paths are unsupported. Phase 15 still owns distributable package build output and the final cross-repository package/version workflow.
 
 The checked-in Tauri configuration is the unsigned OSS build configuration. It contains no developer or release signing identity. macOS development uses ad-hoc signing unless `PURR_DEV_SIGNING_IDENTITY` is supplied locally; official certificates, signing identities, notarization credentials, and updater keys are release-composition inputs outside the public repository.
 
@@ -142,7 +144,8 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 | Environment | `Environment` | `EnvironmentDefinition` | Working |
 | Variable | `Variable` | `VariableDefinition` | Static and dynamic-request working; external-secret reserved |
 | Cookie jar | `SessionCookieJar` | none | Working, workspace-local only |
-| Integration | `extraResources` | provider-neutral integration `ProjectResource` | Canonical envelope and unavailable-provider settings UI working; no provider registry/runtime |
+| Integration | `extraResources` | provider-neutral integration `ProjectResource` | Canonical envelope, unavailable-provider UI, and definition registry working; no provider execution/settings runtime |
+| Extension document | `ExtensionDocument` | opaque versioned extension `ProjectResource` | Build-time type registration, unavailable host, and round-trip persistence working |
 | Trace / benchmark | discriminants only | none | Reserved, not working features |
 
 ## Current architectural limitations

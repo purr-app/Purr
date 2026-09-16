@@ -4,8 +4,8 @@ import { serializeResource } from "../storage/yaml";
 import { createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
 import type { RequestDraft } from "../features/request-workbench/model/request";
-import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isRequestDocument, validateWorkspace,
-  type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
+import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isExtensionDocument, isRequestDocument, validateWorkspace,
+  type ExtensionDocument, type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
 import type { SecureStore } from "./ports/credentials";
 import type { LocalRecord } from "./ports/persistence";
 import { decodeFiles, encodeFile, encodeFiles, type FileAttachmentLoader, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
@@ -217,13 +217,21 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
         ...(definition ? { definition: serializeResource(definition), editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`), attachments) } : {}) } });
       if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: responseForPersistence(document.lastResponse) } });
-    } else {
+    } else if (document.kind === "schema") {
       if (document.saved) resources.push({ id: document.id, kind: "schema", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), source: schemaSource(document),
         pin: document.pinned !== false,
         ...(document.pinned !== false ? { pinnedSdl: document.sdl } : {}) });
       else local.push({ table: "drafts", id: document.id, value: document });
       local.push({ table: "schema_cache", id: document.id, value: { sdl: document.sdl, loadedAt: document.loadedAt, source: schemaSource(document) } });
+      local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
+    } else {
+      const definition: ProjectResource = { id: document.id, kind: "extension", name: document.name,
+        ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
+        extensionType: document.extensionType, configVersion: document.savedConfigVersion ?? document.configVersion,
+        config: structuredClone(document.savedConfig ?? document.config) };
+      if (document.saved) resources.push(definition);
+      if (!document.saved || isDocumentDirty(document)) local.push({ table: "drafts", id: document.id, value: { ...document, base: document.saved ? definition : null } });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
     }
   }
@@ -299,6 +307,10 @@ export async function restoreWorkspace(
     if (resource.kind === "environment") workspace.environments.push({ id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId,
       variables: await Promise.all(resource.variables.map((variable) => variableFromDefinition(variable, secure, workspace.activeEnvironmentId === resource.id))) });
     if (resource.kind === "http" || resource.kind === "graphql") workspace.documents.push(await requestFromDefinition(resource, secure, assets));
+    if (resource.kind === "extension") workspace.documents.push({ id: resource.id, kind: "extension", name: resource.name,
+      description: resource.description, folderId: resource.folderId, saved: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      extensionType: resource.extensionType, configVersion: resource.configVersion, config: structuredClone(resource.config),
+      savedConfigVersion: resource.configVersion, savedConfig: structuredClone(resource.config), ui: {} });
     if (resource.kind === "schema") {
       const storedCache = get("schema_cache", resource.id) as { sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"] } | undefined;
       const source = resource.source;
@@ -311,10 +323,10 @@ export async function restoreWorkspace(
     }
   }
   for (const record of records.filter((item) => item.table === "drafts")) {
-    const draft = await resolveRuntime(decodeFiles(record.value, attachments, workspace.id, loadAttachment), secure) as (RequestDocument | SchemaDocument) & { base?: ProjectResource };
+    const draft = await resolveRuntime(decodeFiles(record.value, attachments, workspace.id, loadAttachment), secure) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
     if (index < 0 && !draft.saved) workspace.documents.push(draft);
-    else if (index >= 0 && isRequestDocument(draft)) {
+    else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
       const definition = project.resources.find((item) => item.id === draft.id);
       const baseAtCanonicalLocation = draft.base && definition
         ? { ...draft.base, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }

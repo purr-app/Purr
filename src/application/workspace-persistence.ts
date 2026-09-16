@@ -11,7 +11,7 @@ import type { Variable } from "../features/workspaces/model/workspace";
 // Requests and request-adjacent documents share one canonical directory. The
 // previous requests/ and graphql/ locations remain readable so existing
 // workspaces can be migrated safely on their next save.
-const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", schema: "schemas", "api-schema": "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
+const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", extension: "documents", schema: "schemas", "api-schema": "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
 const slug = (name: string) => name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "resource";
 const key = (record: LocalRecord | LocalChange) => `${record.table}/${record.id}`;
 const folderMarker = ".purr-folder.yaml";
@@ -101,7 +101,7 @@ export class WorkspacePersistence {
     for (const folder of folders.values()) legacyFolderDirectory(folder.id);
     for (let index = 0; index < resources.length; index += 1) {
       const resource = resources[index];
-      if (resource.kind !== "http" && resource.kind !== "graphql") continue;
+      if (resource.kind !== "http" && resource.kind !== "graphql" && resource.kind !== "extension") continue;
       const path = paths.get(resource.id) ?? "";
       const inDocuments = pathAfter(path, "documents/");
       const inLegacyRequests = pathAfter(path, "requests/");
@@ -210,7 +210,7 @@ export class WorkspacePersistence {
       // file only after its replacement is written.
       const path = resource.kind === "folder"
         ? `${documentDirectory(resource.id)}/${folderMarker}`
-        : resource.kind === "http" || resource.kind === "graphql"
+        : resource.kind === "http" || resource.kind === "graphql" || resource.kind === "extension"
           ? `${documentDirectory(resource.folderId)}/${existingPath?.startsWith("documents/") || existingPath?.startsWith("requests/") || existingPath?.startsWith("graphql/")
             ? fileName(existingPath) : `${slug(resource.name)}-${resource.id}.yaml`}`
           : existingPath ?? `${resourceDirectory(resource)}/${slug(resource.name)}-${resource.id}.yaml`;

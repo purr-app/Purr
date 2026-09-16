@@ -1,0 +1,16 @@
+purr: 1
+kind: extension
+id: private-protocol
+name: Private protocol
+description: Synthetic unavailable extension fixture
+extensionType: commercial.grpc
+configVersion: 2
+config:
+  enabled: true
+  emptyList: []
+  body:
+    type: none
+  endpoint:
+    host: synthetic.example
+    port: 443
+  message: preserved value

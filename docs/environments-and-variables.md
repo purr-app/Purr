@@ -102,7 +102,7 @@ On macOS, `NativeSecureStore` calls Rust `secure_*` commands. The Keychain store
 
 ## External secret providers
 
-`external-secret {provider,key}` is present in the canonical type so future integrations need not change request templates. There is currently no provider registry, resolver, authentication flow, or UI capable of producing its value. Treat it as reserved and fail explicitly if execution would require it. When a provider becomes real, document its lookup, cache, permission, error, and redaction boundaries in [Imports and integrations](imports-and-integrations.md).
+`external-secret {provider,key}` is present in the canonical type so future integrations need not change request templates. The Phase 12 integration registry does not register external-secret providers, and there is currently no resolver, authentication flow, or UI capable of producing this value. Treat it as reserved and fail explicitly if execution would require it. When a provider becomes real, document its lookup, cache, permission, error, and redaction boundaries in [Imports and integrations](imports-and-integrations.md).
 
 ## Persistence summary
 

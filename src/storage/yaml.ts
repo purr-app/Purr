@@ -7,13 +7,13 @@ export const projectFormatVersion = 1;
 function compact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(compact);
   if (value && typeof value === "object") {
-    const preserveIntegrationConfig = (value as { kind?: unknown }).kind === "integration";
+    const preserveOpaqueConfig = ["integration", "extension"].includes(String((value as { kind?: unknown }).kind));
     return Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
       if (child === undefined || Array.isArray(child) && !child.length || key === "enabled" && child === true || key === "sensitive" && child === false) return [];
       if (key === "body" && (child as { type?: string })?.type === "none") return [];
-      // Integration configuration is adapter-owned JSON. Compacting nested
-      // defaults here would mutate unavailable/private provider data.
-      return [[key, preserveIntegrationConfig && key === "config" ? child : compact(child)]];
+      // Integration and extension-document configuration is module-owned JSON.
+      // Compacting it would mutate unavailable/private data.
+      return [[key, preserveOpaqueConfig && key === "config" ? child : compact(child)]];
     }));
   }
   return value;

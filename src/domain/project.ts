@@ -91,6 +91,7 @@ export const integrationProviderIdSchema = z.string().min(1).max(128)
 export const integrationCredentialKeySchema = z.string().min(1).max(64)
   .regex(/^[a-z][a-zA-Z0-9_-]*$/, "Integration credential keys must be stable identifiers.");
 export const integrationConfigSchema = z.record(z.string(), z.json());
+export type JsonObject = z.infer<typeof integrationConfigSchema>;
 export const integrationDefinitionSchema = z.strictObject({
   ...base,
   kind: z.literal("integration"),
@@ -101,7 +102,15 @@ export const integrationDefinitionSchema = z.strictObject({
   credentials: z.record(integrationCredentialKeySchema, credentialSchema).default({}),
 });
 export type IntegrationDefinition = z.infer<typeof integrationDefinitionSchema>;
-export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, apiSchemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema]);
+export const extensionDocumentDefinitionSchema = z.strictObject({
+  ...base,
+  kind: z.literal("extension"),
+  extensionType: integrationProviderIdSchema,
+  configVersion: z.number().int().positive(),
+  config: integrationConfigSchema,
+});
+export type ExtensionDocumentDefinition = z.infer<typeof extensionDocumentDefinitionSchema>;
+export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, apiSchemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema, extensionDocumentDefinitionSchema]);
 export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
   id: entityId, name: z.string(), description: z.string().optional(),
@@ -131,6 +140,7 @@ export function validateProject(project: Project): Project {
     // Provider-owned config is opaque JSON. Core validates only the explicit
     // credential map and must not infer SecretRef semantics from vendor keys.
     if (resource.kind === "integration") checkRefs(resource.credentials);
+    else if (resource.kind === "extension") continue;
     else checkRefs(resource);
   }
   if (ids.size !== resources.length) throw new Error("Duplicate project resource identifiers.");
