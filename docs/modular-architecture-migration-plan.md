@@ -35,7 +35,7 @@ This tracker reflects the repository state reviewed on 2026-09-17. `PARTIALLY DO
 | 13 | Add provider-neutral observability use case and UI | DONE | Phase 13 working tree based on `44781e0` | PASS — 159 TypeScript, 66 UI, 88 Rust tests in both default/fixture builds; typecheck, lint, build, repository policy, fmt/check/clippy | COMPLETE — both providers, correlation, credentials/restart, empty/error, cancellation, paging/search and cache invalidation accepted 2026-09-16 |
 | 14 | Implement Jaeger public validation adapter | DONE | `architecture-migration` working tree based on `0bf5295` | PASS — 162 TS, 68 UI, 98 Rust default/fixture and 92 Rust provider-free tests; type/lint/build/policy, fmt/clippy, provider removal builds | COMPLETE — synthetic fixture and a real business-service/Jaeger deployment accepted by product owner on 2026-09-17; secrets remained confined to secure storage |
 | 15 | Expose reusable frontend and Rust composition surfaces | DONE | Phase 15 working tree based on `d420e98` | PASS — deterministic core artifact, external frontend/native consumer, 162 TS and 68 UI tests, type/lint/build/policy, Rust fmt/clippy/98 tests/provider-free check | COMPLETE — product owner accepted OSS and external desktop shells on 2026-09-17 |
-| 16 | Create `purr-commercial` and official build composition | TODO | — | Not run | Not run |
+| 16 | Create `purr-commercial` and official build composition | PARTIALLY DONE | Local sibling `../purr-commercial`, branch `main`; exact public revision lives in its `core-version.json` | PASS — minimal-shell exact-pin/API/import/React/dev-worker checks, type/lint/build/fmt/clippy/Cargo test, native executable and standalone OSS builds; signing deferred | Pending owner verification |
 
 ## Phase completion protocol
 
@@ -1874,34 +1874,45 @@ Known follow-ups:
 
 ### Phase 16 — create `purr-commercial` and official build composition
 
-Status: TODO
+Status: PARTIALLY DONE
 
-Implemented in: —
+Implemented in: Local Git repository `../purr-commercial`, branch `main`; the exact public core revision is pinned in its `core-version.json`.
 
-Started: —
+Started: 2026-09-17
 
 Completed: —
 
 Automated verification:
-- [ ] Run the private compatibility script against the exact public SHA/API versions in `core-version.json`.
-- [ ] Build/test the official shell with a commercial Rust provider plus its private presentation/settings module and a private page/module-owned use case; verify imports are limited to documented public frontend exports and Rust APIs.
+- [x] Run the private compatibility script against the exact public SHA/API versions in `core-version.json`.
+- [x] Build/test the official shell with no private modules/providers/plugins; verify its frontend imports only the public app/styles exports and its Rust entry uses only `core_builder()`.
 - [ ] Run the public OSS build in a checkout with no private sibling, then run official build/signing smoke checks with credentials injected only by CI/local secure configuration.
 
 Manual verification:
 - [ ] Prepare sibling `purr/` and `purr-commercial/` checkouts at the pinned revisions; launch OSS Purr from the public checkout and confirm it works with no private directory present.
-- [ ] Launch the official shell and verify its commercial provider is available while the same provider is absent from the OSS build.
-- [ ] Open a private navigation page and, if the first commercial module supplies one, create/reopen its protocol document; confirm the OSS build preserves that document as unavailable without interpreting its config.
-- [ ] Open a workspace containing commercial integration configuration in OSS Purr, save/reopen it, then open it in the official build and confirm the configuration was preserved.
+- [ ] Launch the official shell and confirm there is no commercial navigation, extension header, private document type, private integration/provider, or fixture command.
+- [ ] Open or reload a GraphQL schema in the official shell and confirm schema analysis, search, hover documentation and autocomplete work through the linked public-core worker.
+- [ ] Send REST and GraphQL requests, save/reopen a workspace, and confirm the empty official shell behaves like OSS Purr.
 - [ ] Inspect both build directories and confirm official composition did not modify/copy public application source or require public signing credentials.
 
 Implementation notes:
-- None yet.
+- Created a local-only sibling Git repository, with no remote or hosted publication. It consumes public ESM/types/CSS through npm `file:../purr` and the native core through Cargo `../../purr/src-tauri`; only the synthetic Phase 15 shell/module examples were adapted, never core application source.
+- Private shell owns only its config, capabilities and branding. `createPurrApp()` receives no extension modules and `core_builder()` receives no private providers or plugins. It uses the same visible product name, icon and macOS window chrome as OSS, while identifier `com.ihorpolishchuk.purr.official` keeps official local state isolated and prevents the removed fixture workspace from resurfacing.
+- `core-version.json` pins the exact public SHA, npm/Rust versions and frontend API version. The compatibility script rejects mismatches, unsupported core imports and multiple React versions. Vite dedupes React; private React packages are pinned to the tested public versions. Final npm/Cargo locks belong to the private shell.
+- Wrong-SHA and wrong-API probes failed as expected. After reducing the repository to an empty composition shell, `npm run check` passed exact-pin/import/React compatibility, typecheck, lint, linked-worker verification, frontend production build, native fmt/clippy and the Cargo test target; `npm run tauri -- build --debug --no-bundle` produced the arm64 macOS executable. Before the sibling existed, public `npm run build` and locked Cargo check passed. Public source remained unchanged by private builds.
+- Local compatibility permits only an uncommitted edit of this public tracker, so owner verification can start immediately; all other public changes fail. Release compatibility requires an entirely clean public checkout. After committing public notes, explicitly review/update the private SHA pin.
+- Private README contains bootstrap, ownership and parity checks for the empty official shell. `RELEASE.md` and `release:unsigned` define exact checkout, build/check, future signing/notarization and publish stages. No signing secret or CI destination was invented.
+- Push-ready private CI checks out the commercial repository and exact pinned public SHA as sibling directories on macOS, installs both lockfiles, validates the minimal composition and builds an unsigned native executable. The public commit must exist on GitHub before this workflow can resolve the pin; signing/updater publication remains a separate release workflow.
+- Manual testing found that Vite dev served the prebuilt GraphQL worker from the sibling public checkout as `403 Restricted`. The private Vite composition now explicitly allows the pinned sibling core root, and `verify-dev-assets.mjs` starts an isolated dev server and asserts that the transformed worker URL returns JavaScript rather than an HTML fallback. The check is part of `npm test`/`npm run check`; production asset relocation remains covered by the normal build.
+- After the linked-worker correction, the full private `npm run check` passed again: compatibility, typecheck, lint, TypeScript tests, dev worker asset verification, production build, Rust fmt, clippy with warnings denied, and Rust tests.
 
 Deviations from plan:
-- None.
+- Per owner request this is a local test repository, not a remote commercial deployment; no Datadog or paid integration is claimed.
+- Per the subsequent owner decision, the synthetic commercial provider/page/document/plugin were removed from the private repository. The external extension boundary remains validated by the public Phase 15 consumer fixture; `purr-commercial` stays an empty official shell until the first real private feature is selected.
+- Signing/notarization and publication were not executed because release identities, credentials and destination are not configured. The combined build/signing verification checkbox remains open even though the native executable and independent OSS builds passed.
 
 Known follow-ups:
-- Release signing, notarization, and publication remain pipeline work but must use this composed build rather than source overlays.
+- The first real private module must add its own frontend/native contract tests and rerun unavailable-resource round trips without changing the composition boundary. Signing/notarization/publication and hosted CI remain future release work using this composed build; no source overlays.
+- This phase stays PARTIALLY DONE pending owner acceptance and the explicitly deferred signing checks; `Completed` remains unset.
 
 - **Objective:** establish the real repository boundary after the public API is proven.
 - **Files/modules affected:** new private repo only, except public compatibility notes if defects are found.
