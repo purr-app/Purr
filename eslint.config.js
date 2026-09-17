@@ -1,7 +1,7 @@
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "src-tauri/target/**", "test-results/**"] },
+  { ignores: ["dist/**", "dist-core/**", "dist-consumer/**", "node_modules/**", "**/target/**", "test-results/**"] },
   ...tseslint.configs.recommended,
   {
     rules: {

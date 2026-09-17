@@ -73,8 +73,9 @@ Rust modules provide narrow privileged boundaries:
 - `src-tauri/src/observability/`: provider-neutral trace/span models, immutable descriptor/capability/correlation/propagation registries, integration-scoped credential resolution, bounded memory cache, native hierarchy/search/pagination, cancellation and response-linked lookup. The public Jaeger adapter owns HTTP/OTLP parsing under `providers/`; two synthetic providers are available only with `observability-fixtures`. React calls bounded typed commands and owns presentation only. Propagation is independent of provider selection; the final headers are prepared in Rust before HTTP transport.
 - `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.
-- `src-tauri/src/composition.rs`: registered Tauri commands, plugins, and managed services.
-- `src-tauri/src/lib.rs`: minimal public run surface.
+- `src-tauri/src/composition.rs`: the build-time native composition root. `core_builder()` installs core commands/services and permits only typed Tauri plugins plus normalized observability descriptor/provider/extractor/propagator registrations before `run(context)`.
+- `src-tauri/src/native_extension_api.rs`: the reviewed public native provider contracts. It exposes normalized observability types and scoped read-only credentials, never storage internals or a generic command dispatcher.
+- `src-tauri/src/lib.rs`: minimal public `core_builder`, `PurrBuilder`, and OSS `run(context)` surface.
 
 ## Dependency direction and invariants
 
@@ -92,7 +93,11 @@ ESLint and architecture tests enforce the current boundaries: domain modules can
 
 ## Public package and build identity
 
-The repository uses npm exclusively and treats `package-lock.json` as the JavaScript dependency lock. The root package reserves `@purr/core@0.1.0` while remaining private during migration. Its reviewed source-level exports are `./app`, `./extension-api`, `./ui`, `./test-kit`, and `./styles`; internal source paths are unsupported. Phase 15 still owns distributable package build output and the final cross-repository package/version workflow.
+The repository uses npm exclusively and treats `package-lock.json` as the JavaScript dependency lock. The root package reserves `@purr/core@0.1.0` while remaining unpublished during migration. `npm run build:core` emits deterministic ESM, declaration, CSS, and worker artifacts in `dist-core`; package exports resolve only to that output. The reviewed entry points are `./app`, `./extension-api`, `./ui`, `./test-kit`, and `./styles`; internal source paths are unsupported. React and React DOM are peer dependencies and are external to the core bundle, so the consuming shell supplies one runtime instance.
+
+`createPurrApp({ modules })` is the frontend composition root. On the native side an official shell depends on the `purr` crate as `purr_core`, supplies its own `tauri::Context`, and composes through `core_builder()`. It may register a typed Tauri plugin and the traits re-exported by `native_extension_api`; it cannot register arbitrary core commands or access Purr's SQLite, persistence coordinator, secure store, or credential constructors. The shell must list Purr's public Tauri plugins such as `tauri-plugin-dialog` and `tauri-plugin-opener` as direct Cargo dependencies because Tauri generates capability schemas from the final binary's dependency graph.
+
+The fixture at `tests/fixtures/core-consumer/` is the cross-repository contract test. It owns a frontend entry, Tauri configuration/capabilities, branding icon, native plugin, presentation/settings module, page, module service, extension document type, and fake trace provider. It imports package/crate surfaces and does not copy the Purr application source.
 
 The checked-in Tauri configuration is the unsigned OSS build configuration. It contains no developer or release signing identity. macOS development uses ad-hoc signing unless `PURR_DEV_SIGNING_IDENTITY` is supplied locally; official certificates, signing identities, notarization credentials, and updater keys are release-composition inputs outside the public repository.
 
@@ -190,4 +195,6 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - `src/application/workspace-persistence.ts` — file layout, revisions, commits, and external reconciliation.
 - `src/application/ports/` — frontend platform contracts and local table names.
 - `src/platform/tauri/application-services.ts` — Tauri commands and desktop adapters.
-- `src-tauri/src/lib.rs` — complete native command registration map.
+- `src-tauri/src/composition.rs` — complete native command registration map and constrained external builder.
+- `src-tauri/src/native_extension_api.rs` — reviewed native provider contracts.
+- `src-tauri/src/lib.rs` — public core builder and OSS run exports.

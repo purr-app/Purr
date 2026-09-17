@@ -8,4 +8,5 @@ mod observability;
 mod persistence;
 mod security;
 
-pub use composition::run;
+pub mod native_extension_api;
+pub use composition::{core_builder, run, PurrBuilder};

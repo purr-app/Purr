@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
-import { createPurrApp } from "@purr/core/app";
 import { defineExtensionModule, type PurrExtensionModule } from "@purr/core/extension-api";
 import { createExtensionRegistry } from "@purr/core/test-kit";
 import type { ResponseContentPort } from "../src/application/ports/response-content";
+import { createPurrApp } from "../src/app/public";
 import { fakeExtensionModule } from "./fixtures/extensions/fake-module";
 
 const unavailable = () => Promise.reject(new Error("unused extension test capability"));

@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 pub struct ScopedCredentials(BTreeMap<String, Zeroizing<String>>);
 
 impl ScopedCredentials {
-    pub fn new(values: BTreeMap<String, Zeroizing<String>>) -> Self {
+    pub(crate) fn new(values: BTreeMap<String, Zeroizing<String>>) -> Self {
         Self(values)
     }
     #[cfg_attr(not(any(test, feature = "observability-fixtures")), allow(dead_code))]
@@ -19,7 +19,7 @@ impl ScopedCredentials {
             .map(|value| value.as_str())
             .ok_or(ObservabilityError::CredentialUnavailable)
     }
-    pub fn validate_ref(
+    pub(crate) fn validate_ref(
         workspace: &str,
         integration: &str,
         key: &str,

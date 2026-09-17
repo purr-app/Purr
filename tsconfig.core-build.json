@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "./dist-core/types",
+    "rootDir": "./src"
+  },
+  "include": [
+    "src/app/public.ts",
+    "src/extension-api/index.ts",
+    "src/extension-api/ui.ts",
+    "src/extension-api/test-kit.ts"
+  ],
+  "references": []
+}

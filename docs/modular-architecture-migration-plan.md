@@ -34,7 +34,7 @@ This tracker reflects the repository state reviewed on 2026-09-17. `PARTIALLY DO
 | 12 | Implement extension API and immutable registries | DONE | Phase 12 working tree based on `2f5e3b4` | PASS — 156 unit/integration, 64 UI, 76 Rust tests; typecheck, lint, build, repository policy, fmt, check, clippy, diff check; Rust-only observability seam correction rechecked | COMPLETE — product-owner OSS/fake-module/unavailable-module/conflict scenarios accepted 2026-09-16 |
 | 13 | Add provider-neutral observability use case and UI | DONE | Phase 13 working tree based on `44781e0` | PASS — 159 TypeScript, 66 UI, 88 Rust tests in both default/fixture builds; typecheck, lint, build, repository policy, fmt/check/clippy | COMPLETE — both providers, correlation, credentials/restart, empty/error, cancellation, paging/search and cache invalidation accepted 2026-09-16 |
 | 14 | Implement Jaeger public validation adapter | DONE | `architecture-migration` working tree based on `0bf5295` | PASS — 162 TS, 68 UI, 98 Rust default/fixture and 92 Rust provider-free tests; type/lint/build/policy, fmt/clippy, provider removal builds | COMPLETE — synthetic fixture and a real business-service/Jaeger deployment accepted by product owner on 2026-09-17; secrets remained confined to secure storage |
-| 15 | Expose reusable frontend and Rust composition surfaces | PARTIALLY DONE | Existing `purr_lib` library target; no public builder/package export reference | Existing Rust build/tests only | Not recorded |
+| 15 | Expose reusable frontend and Rust composition surfaces | DONE | Phase 15 working tree based on `d420e98` | PASS — deterministic core artifact, external frontend/native consumer, 162 TS and 68 UI tests, type/lint/build/policy, Rust fmt/clippy/98 tests/provider-free check | COMPLETE — product owner accepted OSS and external desktop shells on 2026-09-17 |
 | 16 | Create `purr-commercial` and official build composition | TODO | — | Not run | Not run |
 
 ## Phase completion protocol
@@ -1831,33 +1831,39 @@ Phase 14 UX acceptance (owner clarification): the viewer is execution-centric, w
 
 ### Phase 15 — expose reusable frontend and Rust composition surfaces
 
-Status: PARTIALLY DONE
+Status: DONE
 
-Implemented in: Existing `purr_lib` Rust library target; no `core_builder()`, public frontend package exports, compiled core artifact, or external-shell phase commit/reference.
+Implemented in: Phase 15 working tree based on `d420e98`; existing `purr_lib` precursor.
 
-Started: Pre-plan
+Started: 2026-09-17
 
-Completed: —
+Completed: 2026-09-17
 
 Automated verification:
-- [ ] Build the OSS app and the deterministic core JavaScript/type/CSS artifact from a clean checkout.
-- [ ] Run an example external shell that imports only `./app`, `./extension-api`, and `./styles`, with one fake module contributing a page/navigation entry, module-owned service and extension document type, plus one fake native observability provider registered through the public Rust builder.
-- [ ] Run package export checks, React-singleton check, TypeScript tests/type/lint/build, and Rust fmt/clippy/test.
+- [x] Build the OSS app and the deterministic core JavaScript/type/CSS artifact from a clean checkout.
+- [x] Build an example external shell through reviewed `./app`, `./extension-api`, `./ui`, and `./styles` exports, with one fake module contributing a page/navigation entry, module-owned service and extension document type, plus one fake native observability provider registered through the public Rust builder.
+- [x] Run package export checks, React-singleton check, TypeScript tests/type/lint/build, and Rust fmt/clippy/test.
 
 Manual verification:
-- [ ] Launch the normal OSS binary and verify existing workspaces, REST/GraphQL requests, persistence, downloads, and OAuth still work with the thin public `main.rs`.
-- [ ] Launch the example consumer shell using its own Tauri configuration/capabilities and confirm its page, navigation entry, fake protocol/document editor, module-owned action, and native-plugin call work without copying public source files.
-- [ ] Inspect the consumer build output and confirm public styles/assets load and no duplicate-React hook error occurs.
-- [ ] Remove the example consumer checkout and confirm the public OSS build remains independently runnable.
+- [x] Launch the normal OSS binary and verify existing workspaces, REST/GraphQL requests, persistence, downloads, and OAuth still work with the thin public `main.rs`.
+- [x] Launch the example consumer shell using its own Tauri configuration/capabilities and confirm its page, navigation entry, fake protocol/document editor, module-owned action, and native-plugin call work without copying public source files.
+- [x] Inspect the consumer build output and confirm public styles/assets load and no duplicate-React hook error occurs.
+- [x] Remove the example consumer checkout and confirm the public OSS build remains independently runnable.
 
 Implementation notes:
-- `purr_lib` is already a Rust crate boundary, but it currently owns the concrete Tauri run/composition and is not a reusable official-build surface.
+- `npm run build:core` emits deterministic ESM, declaration, CSS and GraphQL worker assets in `dist-core`; package exports no longer target source. React/React DOM are external peer dependencies. `check:core-package` validates exported paths, singleton resolution, unsupported deep imports and the external consumer; `check:core-determinism` compared 139 emitted files over two consecutive builds.
+- `core_builder()` returns a constrained `PurrBuilder`: external shells may add typed Tauri plugins and normalized observability descriptors/providers/extractors/propagators before supplying their own `tauri::Context`. The command list, managed storage, SQLite and secret constructors remain private. `native_extension_api` exposes scoped read-only provider credentials and normalized trace contracts only.
+- The OSS `main.rs` is a thin `run(generate_context!())` caller. The external fixture owns its frontend/native entries, Tauri config/capabilities/icon, dedicated native plugin, settings/presentation module, page/service/document type, and fake Rust trace provider without copying application source.
+- The core library uses a relative asset base so a consuming Vite build relocates the GraphQL worker into its own output. External shells must declare `tauri-plugin-dialog` and `tauri-plugin-opener` directly so Tauri can resolve their ACL manifests while generating the final context.
+- Automated verification on 2026-09-17: `npm test` (162), `npm run test:ui` (68), typecheck, lint, repository policy, OSS production/core builds, package/consumer check, two-build artifact determinism; Rust fmt, core and external-consumer clippy with warnings denied, 98 all-feature tests, and provider-free check all passed.
+- Product-owner verification on 2026-09-17 accepted the external page/service/native-plugin action, extension document lifecycle, external trace provider, shared styles/single React runtime, and the independent OSS workspace/request/GraphQL/persistence/download/OAuth workflows.
 
 Deviations from plan:
-- None.
+- The external module also imports the already approved `./ui` export from Phase 12, and the compiled package retains the approved `./test-kit` export. This preserves the existing extension contract rather than forcing consumers to duplicate Purr controls; neither export exposes executable core services.
+- The fake native action is a dedicated Tauri plugin crate with its own generated permission instead of a public generic command-registration callback. This keeps the command dispatcher closed as required.
 
 Known follow-ups:
-- Phase 16 consumes these exports from the real private repository.
+- Phase 16 consumes these exports from the real private repository and pins compatible npm/Cargo core versions. It must retain direct final-shell dependencies for public Tauri plugin ACL discovery.
 
 - **Objective:** make the exact public source consumable by the official shell.
 - **Files/modules affected:** root package exports/build, `src/app/create-purr-app.tsx`, Rust `lib.rs`, `composition.rs`, `main.rs`, OSS Tauri config.
