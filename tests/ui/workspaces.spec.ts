@@ -546,7 +546,7 @@ test("unavailable integrations preserve opaque config and support enable, disabl
   await settings.getByRole("tab", { name: "Integrations", exact: true }).click();
   await expect(settings.getByText("Private observability", { exact: true })).toBeVisible();
   await expect(settings.getByText("Provider unavailable", { exact: true })).toBeVisible();
-  await expect(settings).toContainText("commercial.datadog · config v3 · 1 credential slots");
+  await expect(settings).toContainText("commercial.datadog");
   await expect(settings).not.toContainText("synthetic-private-token");
 
   const enabled = settings.getByRole("checkbox", { name: "Enable Private observability", exact: true });
@@ -580,7 +580,7 @@ test("unavailable integrations preserve opaque config and support enable, disabl
   await finalSettings.getByRole("button", { name: "Delete Private observability", exact: true }).click();
   await expect(finalSettings.getByText("Delete this integration configuration?", { exact: true })).toBeVisible();
   await finalSettings.getByRole("button", { name: "Delete permanently", exact: true }).click();
-  await expect(finalSettings.getByText("No integrations are configured for this workspace.", { exact: true })).toBeVisible();
+  await expect(finalSettings.getByText("Connect a provider to see traces and service timings alongside your responses.", { exact: true })).toBeVisible();
   await saved(page);
 });
 

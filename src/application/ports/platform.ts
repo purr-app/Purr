@@ -45,6 +45,7 @@ export interface ImportDialogPort {
 
 export interface WorkspaceShellPort {
   openWorkspaceFolder(id: string): Promise<void>;
+  openExternalUrl(url: string): Promise<void>;
 }
 
 export type CloseRequest = { preventDefault(): void };

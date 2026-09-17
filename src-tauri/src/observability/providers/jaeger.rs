@@ -22,6 +22,7 @@ enum Auth {
     #[default]
     None,
     Bearer,
+    Request,
 }
 
 pub struct JaegerDescriptor;
@@ -30,7 +31,9 @@ impl IntegrationDescriptor for JaegerDescriptor {
         "jaeger"
     }
     fn credential_keys(&self, config: &Value) -> Vec<&'static str> {
-        if config["auth"] == "bearer" {
+        if config["auth"] == "request" {
+            vec!["auth"]
+        } else if config["auth"] == "bearer" {
             vec!["apiToken"]
         } else {
             vec![]
@@ -42,7 +45,16 @@ impl IntegrationDescriptor for JaegerDescriptor {
         }
         let config: Config =
             serde_json::from_value(value.clone()).map_err(|_| ObservabilityError::InvalidConfig)?;
-        let url = Url::parse(&config.endpoint).map_err(|_| ObservabilityError::InvalidConfig)?;
+        let template = regex::Regex::new(r"\{\{[^{}]+\}\}").expect("endpoint variable pattern");
+        let candidate = template.replace_all(&config.endpoint, "purr-variable");
+        let candidate = if candidate.contains("://") {
+            candidate.to_string()
+        } else if template.is_match(&config.endpoint) {
+            format!("http://{candidate}")
+        } else {
+            candidate.to_string()
+        };
+        let url = Url::parse(&candidate).map_err(|_| ObservabilityError::InvalidConfig)?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -54,7 +66,7 @@ impl IntegrationDescriptor for JaegerDescriptor {
             return Err(ObservabilityError::InvalidConfig);
         }
         Ok(
-            json!({"endpoint": url.as_str().trim_end_matches('/'), "auth": if config.auth == Auth::Bearer { "bearer" } else { "none" }}),
+            json!({"endpoint": if template.is_match(&config.endpoint) { config.endpoint.trim_end_matches('/') } else { url.as_str().trim_end_matches('/') }, "auth": match config.auth { Auth::Bearer => "bearer", Auth::Request => "request", Auth::None => "none" }}),
         )
     }
 }
@@ -89,10 +101,25 @@ impl TraceProvider for JaegerProvider {
             let endpoint = context.config["endpoint"]
                 .as_str()
                 .ok_or(ObservabilityError::InvalidConfig)?;
-            let mut request = self
-                .client
-                .get(format!("{endpoint}/api/v3/traces/{trace_id}"));
-            if context.config["auth"] == "bearer" {
+            let mut url = Url::parse(
+                context
+                    .connection
+                    .map(|value| value.endpoint.as_str())
+                    .unwrap_or(endpoint),
+            )
+            .map_err(|_| ObservabilityError::InvalidConfig)?;
+            url.set_path(&format!(
+                "{}/api/v3/traces/{trace_id}",
+                url.path().trim_end_matches('/')
+            ));
+            let mut request = self.client.get(url);
+            if let Some(connection) = context.connection {
+                for (name, value) in &connection.headers {
+                    request = request.header(name, value);
+                }
+            } else if context.config["auth"] == "request" {
+                return Err(ObservabilityError::CredentialUnavailable);
+            } else if context.config["auth"] == "bearer" {
                 let token = context.credentials.get("apiToken")?;
                 if token.is_empty() {
                     return Err(ObservabilityError::CredentialUnavailable);
@@ -109,7 +136,7 @@ impl TraceProvider for JaegerProvider {
             if !response.status().is_success() {
                 return Err(ObservabilityError::ProviderFailed);
             }
-            const MAX_BYTES: usize = 4 * 1024 * 1024;
+            const MAX_BYTES: usize = 32 * 1024 * 1024;
             if response
                 .content_length()
                 .is_some_and(|size| size > MAX_BYTES as u64)
@@ -181,7 +208,7 @@ fn attributes(value: &Value) -> Result<BTreeMap<String, AttributeValue>> {
         let normalized = if let Some(value) = scalar(value) {
             Some(AttributeValue::Scalar(value))
         } else if let Some(values) = value["arrayValue"]["values"].as_array() {
-            if values.len() > 32 {
+            if values.len() > 128 {
                 return Err(ObservabilityError::LimitExceeded);
             }
             values
@@ -193,7 +220,7 @@ fn attributes(value: &Value) -> Result<BTreeMap<String, AttributeValue>> {
             None
         };
         if let Some(value) = normalized {
-            if key.len() > 128 || !value.is_bounded() || result.len() >= 32 {
+            if key.len() > 128 || !value.is_bounded() || result.len() >= 256 {
                 return Err(ObservabilityError::LimitExceeded);
             }
             result.insert(key.into(), value);
@@ -231,7 +258,7 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Trace>> {
                     if trace.id != trace_id {
                         return Err(ObservabilityError::ProviderFailed);
                     }
-                    if trace.spans.len() >= 1000 {
+                    if trace.spans.len() >= 50_000 {
                         return Err(ObservabilityError::LimitExceeded);
                     }
                     let start = number(&span["startTimeUnixNano"])?;
@@ -302,7 +329,7 @@ mod tests {
         stream.extend_from_slice(b"\n{\"result\":{\"resourceSpans\":[]}}\n");
         assert_eq!(decode(&stream).unwrap(), decode(FIXTURE).unwrap());
         let span = fixture["result"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0].clone();
-        fixture["result"]["resourceSpans"][0]["scopeSpans"][0]["spans"] = json!(vec![span; 1001]);
+        fixture["result"]["resourceSpans"][0]["scopeSpans"][0]["spans"] = json!(vec![span; 50_001]);
         assert_eq!(
             decode(&serde_json::to_vec(&fixture).unwrap()),
             Err(ObservabilityError::LimitExceeded)
@@ -324,7 +351,7 @@ mod tests {
                 }
                 if declared {
                     socket
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4194305\r\n\r\n")
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 33554433\r\n\r\n")
                         .await
                         .unwrap();
                 } else {
@@ -332,7 +359,7 @@ mod tests {
                         .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
                         .await
                         .unwrap();
-                    let _ = socket.write_all(&vec![b' '; 4 * 1024 * 1024 + 1]).await;
+                    let _ = socket.write_all(&vec![b' '; 32 * 1024 * 1024 + 1]).await;
                 }
             });
             let config = json!({"endpoint": format!("http://{address}"), "auth":"none"});
@@ -340,6 +367,7 @@ mod tests {
             let result = JaegerProvider::default()
                 .get_trace(
                     ProviderContext {
+                        connection: None,
                         config: &config,
                         credentials: &credentials,
                     },
@@ -463,6 +491,7 @@ mod tests {
             let result = provider
                 .get_trace(
                     ProviderContext {
+                        connection: None,
                         config: &config,
                         credentials: &credentials,
                     },

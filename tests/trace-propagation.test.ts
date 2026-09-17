@@ -55,3 +55,45 @@ test("cross-origin redirects drop automatically generated context and do not gen
   } });
   assert.deepEqual(response.timeline.request.headers, []);
 });
+
+test("request provider selection, templates and explicit headers follow one composition path", async () => {
+  const { integrationDefinitionSchema } = await import("../src/domain/project");
+  const { getRequestHeaders } = await import("../src/features/request-workbench/model/request");
+  const workspace = createWorkspace("synthetic", "synthetic");
+  const integration = integrationDefinitionSchema.parse({ kind: "integration", id: "jaeger", name: "Jaeger", provider: "jaeger", enabled: true, configVersion: 1,
+    tracing: { propagation: "w3c", requestHeaders: [{ name: "x-context", value: "{{$traceparent}}", enabled: true }, { name: "x-env", value: "{{stage}}", enabled: true }], responseHeaders: [{ name: "x-server-trace", value: "traceId", enabled: true }] } });
+  const config = { ...workspace.requestConfig, integrations: [integration] };
+  const original = workspace.documents.find(isRequestDocument)!.request;
+  const draft = { ...original, url: "https://example.test/", tracing: { enabled: true, integrationId: integration.id } };
+  const effective = applyWorkspaceRequestConfig(draft, "http", config);
+  assert.equal(effective.tracePropagation, "w3c");
+  assert.equal(getRequestHeaders(effective).find((header) => header.name === "x-context")?.readOnly, true);
+  const { request } = await prepareWireRequest(effective, { variables: { stage: "testing" } });
+  assert.deepEqual(request.headers, []);
+  assert.deepEqual(request.traceHeaders, [["x-context", "{{$traceparent}}"], ["x-env", "testing"]]);
+  const disabled = applyWorkspaceRequestConfig({ ...draft, tracing: { ...draft.tracing, enabled: false } }, "http", config);
+  assert.equal(disabled.tracePropagation, "off");
+  assert.equal(getRequestHeaders(disabled).filter((header) => header.enabled).length, 0);
+  await prepareWireRequest(disabled, { variables: {} }); // Inactive templates must not resolve missing variables.
+  const unavailable = applyWorkspaceRequestConfig(draft, "http", { ...config, integrations: [{ ...integration, enabled: false }] });
+  assert.equal(unavailable.tracePropagation, "off");
+  const explicit = { ...effective, headers: [{ id: "explicit", name: "traceparent", value: "user-value", enabled: true }] };
+  assert.equal(getRequestHeaders(explicit).length, 1);
+  assert.equal(getRequestHeaders(explicit)[0].value, "user-value");
+});
+
+test("per-request tracing selection round trips saved and working copies without generated templates", async () => {
+  const workspace = createWorkspace("tracing", "tracing");
+  const document = workspace.documents.find(isRequestDocument)!;
+  document.saved = true;
+  document.request.tracing = { enabled: true, integrationId: "provider-one" };
+  document.savedRequest = cloneRequestDraft(document.request);
+  document.request.tracing = { enabled: false, integrationId: "provider-two" };
+  const secure = new MemorySecureStore();
+  const result = await projectWorkspace(workspace, secure);
+  const restored = await restoreWorkspace(result.project, result.local, secure, result.assets);
+  const request = restored.documents.find(isRequestDocument)!;
+  assert.deepEqual(request.request.tracing, { enabled: false, integrationId: "provider-two" });
+  assert.deepEqual(request.savedRequest?.tracing, { enabled: true, integrationId: "provider-one" });
+  assert.doesNotMatch(JSON.stringify(result.project), /traceHeaderTemplates|trace-generated/);
+});

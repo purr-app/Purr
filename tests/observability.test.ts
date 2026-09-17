@@ -11,7 +11,11 @@ const fixture = JSON.parse(readFileSync(new URL("./fixtures/observability/trace-
 test("native trace fixture decodes through the bounded provider-neutral IPC schema", () => {
   assert.deepEqual(tracePageSchema.parse(fixture), fixture);
   assert.equal(tracePageSchema.safeParse({ ...fixture, apiKey: "synthetic-forbidden" }).success, false);
-  assert.equal(tracePageSchema.safeParse({ ...fixture, spans: Array(26).fill(fixture.spans[0]) }).success, false);
+  const batch = (size: number) => ({ ...fixture, total: size,
+    spans: Array.from({ length: size }, (_, index) => ({ ...fixture.spans[0], id: String(index) })),
+    rows: Array.from({ length: size }, (_, index) => ({ ...fixture.rows[0], spanId: String(index) })) });
+  assert.equal(tracePageSchema.safeParse(batch(500)).success, true);
+  assert.equal(tracePageSchema.safeParse(batch(501)).success, false);
   assert.equal(tracePageSchema.safeParse({ ...fixture, protocolVersion: 3 }).success, false);
   assert.equal(tracePageSchema.safeParse({ ...fixture, rows: [] }).success, false);
   assert.equal(tracePageSchema.safeParse({ ...fixture, rows: [{ ...fixture.rows[0], spanId: "wrong" }] }).success, false);

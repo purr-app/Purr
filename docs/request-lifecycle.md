@@ -62,7 +62,7 @@ Rust propagation registry → final context headers → native HTTP transport
 
 ### Trace propagation
 
-Trace propagation is independent of workspace integration/backend selection. Workspace Settings → Integrations selects a default; request Settings can inherit it or choose Off, W3C Trace Context, or B3. Existing projects default to Off, so installing this phase does not inject new headers into old requests. The optional stable `tracePropagation` format ID lives in workspace/request YAML; an unknown extension format is preserved but fails explicitly if its native propagator is unavailable. Folder-level propagation overrides are not implemented in this slice.
+Trace propagation is configured on the integration (Off, W3C Trace Context or B3), and Request Settings selects a tracing provider and whether to apply it. New requests default to disabled. Legacy propagation-only settings remain readable and retain their effective format when a tracing provider is configured. The optional stable `tracePropagation` format ID lives in workspace/request YAML; an unknown extension format is preserved but fails explicitly if its native propagator is unavailable. Folder-level propagation overrides are not implemented in this slice.
 
 Rust's propagation registry validates the effective format and prepares fresh context immediately before transport. W3C emits version-00 `traceparent`; B3 emits the single `b3` header. Explicit context headers (including invalid user values or another registered format) are preserved without adding conflicting context. Generation uses native random non-zero trace/span IDs; TypeScript neither generates nor parses them. A service must still record/export the trace—propagation alone cannot create a backend trace. See [W3C Trace Context](https://www.w3.org/TR/trace-context/) for the wire format.
 
@@ -235,3 +235,23 @@ Each send owns an execution counter. A later send or Escape cancellation invalid
 - `src/features/request-workbench/model/request-code.ts` — cURL/wget/HTTP rendering.
 - `src-tauri/src/http/transport.rs` — native HTTP and streamed file/multipart transport boundary.
 - `src-tauri/src/http/request_body.rs` — opaque request-file lifecycle, validation, cleanup, and repeatable file streams.
+
+
+### Request tracing
+
+A portable optional `tracing: { enabled, integrationId? }` selects a workspace
+provider independently from authentication. Request settings show enabled tracing
+integrations (one provider needs no dropdown); Add provider opens the workspace
+integration catalog. Old propagation-only definitions remain readable and use the
+first enabled tracing integration. New requests leave tracing disabled.
+
+Workspace composition projects the selected integration's propagation and enabled
+custom header templates into the effective request. Header editors display these as
+locked rows (`{{$traceparent}}`, `{{$b3}}`, `{{$traceId}}`, `{{$spanId}}`) and exclude
+preview rows from ordinary wire headers. Variables resolve through the existing
+request pipeline; native transport creates one fresh trace/span ID pair and renders
+all tracing templates from it. Explicit headers keep precedence. Cross-origin
+redirects remove injected context and disable further injection. Integration response
+header mappings identify W3C, B3 or plain trace IDs for native correlation, with
+response values taking precedence. These configuration rows are portable; generated
+IDs and response pages are local execution data.

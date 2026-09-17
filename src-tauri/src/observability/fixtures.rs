@@ -54,7 +54,7 @@ impl TraceProvider for SyntheticProvider {
             .await;
             Ok(Some(Trace {
                 id: trace_id.into(),
-                spans: (0..60)
+                spans: (0..600)
                     .map(|index| Span {
                         id: format!("{:016x}", index + 1),
                         parent_span_id: (index > 0).then(|| "0000000000000001".into()),

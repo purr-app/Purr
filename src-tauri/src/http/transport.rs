@@ -76,6 +76,8 @@ pub struct HttpRequest {
     injected_trace_headers: Vec<(String, String)>,
     #[serde(default)]
     trace_propagation: crate::observability::propagation::PropagationPolicy,
+    #[serde(default)]
+    trace_headers: Vec<(String, String)>,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
@@ -91,8 +93,11 @@ impl HttpRequest {
         &mut self,
         propagators: &crate::observability::propagation::PropagationRegistry,
     ) -> Result<(), String> {
-        self.injected_trace_headers =
-            propagators.prepare(&self.trace_propagation, &self.headers)?;
+        self.injected_trace_headers = propagators.prepare_mapped(
+            &self.trace_propagation,
+            &self.headers,
+            &self.trace_headers,
+        )?;
         self.headers.extend(self.injected_trace_headers.clone());
         Ok(())
     }
@@ -605,6 +610,7 @@ mod tests {
     fn request(url: String) -> HttpRequest {
         HttpRequest {
             trace_propagation: Default::default(),
+            trace_headers: vec![],
             injected_trace_headers: vec![],
             url,
             method: "GET".into(),
@@ -739,6 +745,7 @@ mod tests {
                 HttpRequest {
                     url: format!("http://{address}/upload"),
                     trace_propagation: Default::default(),
+                    trace_headers: vec![],
                     injected_trace_headers: vec![],
                     method: "POST".into(),
                     headers: vec![
@@ -802,6 +809,7 @@ mod tests {
             HttpRequest {
                 url: format!("http://{address}/multipart"),
                 trace_propagation: Default::default(),
+                trace_headers: vec![],
                 injected_trace_headers: vec![],
                 method: "POST".into(),
                 headers: vec![(
@@ -887,6 +895,7 @@ mod tests {
             HttpRequest {
                 url: format!("http://{address}/echo"),
                 trace_propagation: Default::default(),
+                trace_headers: vec![],
                 injected_trace_headers: vec![],
                 method: "POST".into(),
                 headers: vec![

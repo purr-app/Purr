@@ -169,3 +169,14 @@ Application/native support exists for attaching a project to an external directo
 - `src/application/workspace-persistence.ts` — physical document tree and external reconciliation.
 - `src-tauri/src/project_files.rs` — safe file operations and revisions.
 - `src-tauri/src/persistence.rs` — registry, watcher, and commit orchestration.
+
+### State while switching tabs
+
+Open document tabs own an in-memory `TabStateStore` scope. Workspace settings
+retain their section and unfinished editors; response viewers retain the selected
+view and find state across document switches. Closing a tab (including closing
+other/all tabs or replacing a preview) releases its scope. This state is never
+written to project files or local records. `TabStateStore.remember` defaults to
+`true` and is the policy switch for a future user preference; turning it off uses
+ordinary component-local state. New panels can use `useTabState` without retaining
+mounted editors, timers or network requests in background tabs.

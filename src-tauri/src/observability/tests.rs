@@ -56,6 +56,7 @@ fn setup() -> (ObservabilityService, MemoryRepository, TraceQuery) {
         .unwrap()
         .build();
     let items = ["alpha", "beta"].map(|id| Integration {
+        tracing: None,
         id: id.into(),
         name: id.into(),
         provider: format!("test.{id}"),
@@ -82,6 +83,7 @@ fn setup() -> (ObservabilityService, MemoryRepository, TraceQuery) {
             )],
         },
         TraceQuery {
+            connection: None,
             workspace_id: "workspace".into(),
             integration_id: "alpha".into(),
             document_id: "document".into(),
@@ -214,7 +216,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
         .await
         .unwrap();
     assert_eq!(first.trace_id.as_deref(), Some(TRACE));
-    assert_eq!(first.spans.len(), 25);
+    assert_eq!(first.spans.len(), 500);
     assert!(!first.cached);
     assert_eq!(first.spans[0].service, "alpha");
     assert!(
@@ -233,7 +235,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
             .unwrap()
             .spans[0]
             .operation,
-        "synthetic-operation-25"
+        "synthetic-operation-500"
     );
     next.cursor = None;
     next.integration_id = "beta".into();
@@ -246,7 +248,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
             .service,
         "beta"
     );
-    next.search = "operation-59".into();
+    next.search = "operation-599".into();
     assert_eq!(
         service
             .lookup(&repository, next, cancel())
@@ -498,4 +500,92 @@ async fn normalized_provider_results_are_bounded_before_caching_or_ipc() {
         service.lookup(&repository, query, cancelled).await,
         Err(ObservabilityError::Cancelled)
     );
+}
+
+#[tokio::test]
+async fn custom_response_headers_override_sent_context_and_keep_timing_bounds() {
+    let (service, mut repository, query) = setup();
+    repository.headers = vec![("x-backend-trace".into(), TRACE.into())];
+    repository.request_headers = vec![(
+        "x-client-context".into(),
+        "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0123456789abcdef-01".into(),
+    )];
+    repository.config.lock().unwrap()[0].tracing = Some(serde_json::from_value(json!({
+        "requestHeaders": [{"name":"x-client-context", "value":"{{$traceparent}}", "enabled":true}],
+        "responseHeaders": [{"name":"x-backend-trace", "value":"traceId", "enabled":true}]
+    })).unwrap());
+    let first = service
+        .lookup(&repository, query.clone(), cancel())
+        .await
+        .unwrap();
+    assert_eq!(first.trace_id.as_deref(), Some(TRACE));
+    assert_eq!(
+        first.correlation.injected_trace_id.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    let mut next = query;
+    next.cursor = first.next_cursor.clone();
+    let second = service.lookup(&repository, next, cancel()).await.unwrap();
+    assert_eq!(first.timing, second.timing);
+    assert_eq!(first.timing.unwrap().duration_us, 599_750);
+}
+
+#[tokio::test]
+async fn large_normalized_trace_is_paged_without_the_old_preview_limit() {
+    use super::registry::{IntegrationDescriptor, ProviderContext, ProviderFuture, TraceProvider};
+    struct Large;
+    impl IntegrationDescriptor for Large {
+        fn id(&self) -> &'static str {
+            "test.alpha"
+        }
+        fn credential_keys(&self, _: &serde_json::Value) -> Vec<&'static str> {
+            vec![]
+        }
+        fn validate_and_migrate(
+            &self,
+            _: u32,
+            value: &serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            Ok(value.clone())
+        }
+    }
+    impl TraceProvider for Large {
+        fn provider_id(&self) -> &'static str {
+            "test.alpha"
+        }
+        fn get_trace<'a>(&'a self, _: ProviderContext<'a>, id: &'a str) -> ProviderFuture<'a> {
+            Box::pin(async move {
+                Ok(Some(Trace {
+                    id: id.into(),
+                    spans: (0..2000)
+                        .map(|index| Span {
+                            id: format!("{index:016x}"),
+                            parent_span_id: (index > 0).then(|| "0000000000000000".into()),
+                            service: "api".into(),
+                            operation: format!("operation-{index}"),
+                            started_at_us: index * 1000,
+                            duration_us: 500,
+                            status: SpanStatus::Ok,
+                            attributes: [("details".into(), "x".repeat(128).as_str().into())]
+                                .into(),
+                        })
+                        .collect(),
+                }))
+            })
+        }
+    }
+    let (_, repository, query) = setup();
+    let service = ObservabilityService::new(
+        RegistryBuilder::default()
+            .provider(Large)
+            .unwrap()
+            .extractor(StandardCorrelation)
+            .unwrap()
+            .build(),
+    );
+    let page = service.lookup(&repository, query, cancel()).await.unwrap();
+    assert_eq!(page.total, 2000);
+    assert_eq!(page.spans.len(), 500);
+    assert!(page.next_cursor.is_some());
+    assert_eq!(page.timing.unwrap().duration_us, 1_999_500);
 }

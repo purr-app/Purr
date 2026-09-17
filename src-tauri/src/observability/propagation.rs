@@ -78,6 +78,69 @@ impl PropagationRegistry {
         self.0.insert(propagator.id(), Arc::new(propagator));
         Ok(())
     }
+    pub fn prepare_mapped(
+        &self,
+        policy: &PropagationPolicy,
+        headers: &[(String, String)],
+        templates: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, String> {
+        if templates.is_empty() {
+            return self.prepare(policy, headers);
+        }
+        if matches!(policy, PropagationPolicy::Off) {
+            return Ok(vec![]);
+        }
+        if templates.len() > 32 {
+            return Err("Too many tracing headers".into());
+        }
+        if templates.iter().any(|(name, value)| {
+            ["{{$traceparent}}", "{{$b3}}", "{{$traceId}}", "{{$spanId}}"]
+                .iter()
+                .any(|token| value.contains(token))
+                && headers
+                    .iter()
+                    .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        }) {
+            return Ok(vec![]);
+        }
+        let generated = self.prepare(policy, headers)?;
+        if generated.is_empty() {
+            return Ok(vec![]);
+        }
+        let value = &generated[0].1;
+        let parts: Vec<_> = value.split('-').collect();
+        let (trace, span) = match policy {
+            PropagationPolicy::W3c if parts.len() == 4 => (parts[1], parts[2]),
+            PropagationPolicy::B3 if parts.len() >= 2 => (parts[0], parts[1]),
+            _ => return Err("Custom header templates require W3C or B3 propagation".into()),
+        };
+        let traceparent = format!("00-{trace}-{span}-01");
+        let b3 = format!("{trace}-{span}-1");
+        let mut result = vec![];
+        for (name, template) in templates {
+            if headers
+                .iter()
+                .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
+            let value = template
+                .replace("{{$traceparent}}", &traceparent)
+                .replace("{{$b3}}", &b3)
+                .replace("{{$traceId}}", trace)
+                .replace("{{$spanId}}", span);
+            if name.len() > 256
+                || value.len() > 8192
+                || value.contains("{{")
+                || reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err()
+                || reqwest::header::HeaderValue::from_str(&value).is_err()
+            {
+                return Err("Invalid tracing header template".into());
+            }
+            result.push((name.clone(), value));
+        }
+        Ok(result)
+    }
     pub fn prepare(
         &self,
         policy: &PropagationPolicy,
@@ -169,6 +232,40 @@ mod tests {
     use crate::observability::correlation::{
         CorrelationExtractor, ExchangeInput, StandardCorrelation,
     };
+    #[test]
+    fn custom_templates_share_ids_and_preserve_explicit_header_values() {
+        let mut registry = PropagationRegistry::default();
+        registry.register(StandardPropagator(true)).unwrap();
+        let templates = vec![
+            ("x-context".into(), "{{$traceparent}}".into()),
+            ("x-trace".into(), "{{$traceId}}".into()),
+            ("x-span".into(), "{{$spanId}}".into()),
+        ];
+        let generated = registry
+            .prepare_mapped(&PropagationPolicy::W3c, &[], &templates)
+            .unwrap();
+        assert_eq!(generated.len(), 3);
+        assert_eq!(
+            generated[0].1,
+            format!("00-{}-{}-01", generated[1].1, generated[2].1)
+        );
+        let explicit = vec![("X-Trace".into(), "user-value".into())];
+        let next = registry
+            .prepare_mapped(&PropagationPolicy::W3c, &explicit, &templates)
+            .unwrap();
+        assert!(next.is_empty());
+        assert!(registry
+            .prepare_mapped(&PropagationPolicy::Off, &[], &templates)
+            .unwrap()
+            .is_empty());
+        assert!(registry
+            .prepare_mapped(
+                &PropagationPolicy::W3c,
+                &[],
+                &[("bad\r\nname".into(), "value".into())]
+            )
+            .is_err());
+    }
     #[test]
     fn registry_supports_independent_formats_and_rejects_duplicates_and_unknowns() {
         struct Custom;

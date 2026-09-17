@@ -236,6 +236,7 @@ export async function executeHttp(
         current.headers = current.headers.filter(([name]) => !generatedNames.has(name.toLowerCase()));
         generatedHeaders.length = 0;
         current.tracePropagation = "off";
+        current.traceHeaders = [];
         const sensitive = new Set([
           "authorization",
           "proxy-authorization",

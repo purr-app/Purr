@@ -1,3 +1,4 @@
+import { externalHttpUrl } from "../../shared/lib/external-url";
 import type { PlatformAdapters } from "../../application/ports/platform";
 import type { ResponseContentRef } from "../../domain/http";
 import {
@@ -124,7 +125,7 @@ export function createBrowserPlatformAdapters(): PlatformAdapters {
           "Workspace file selection requires the desktop application. Drag a local file into this dialog instead.",
         ),
     },
-    workspaceShell: { openWorkspaceFolder: async () => {} },
+    workspaceShell: { openWorkspaceFolder: async () => {}, openExternalUrl: async (url) => { window.open(externalHttpUrl(url), "_blank", "noopener,noreferrer"); } },
     lifecycle: {
       onCloseRequested: async () => () => {},
       exit: async () => {},

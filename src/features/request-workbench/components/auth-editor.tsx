@@ -19,6 +19,7 @@ type Props = {
   context: AuthContext;
   runtime: AuthRuntime;
   allowInherit?: boolean;
+  secureStorageOnly?: boolean;
   idPrefix?: string;
   ariaLabel?: string;
   variableActions?: TemplateVariableActions;
@@ -30,6 +31,7 @@ export function AuthEditor({
   context,
   runtime,
   allowInherit = true,
+  secureStorageOnly = false,
   idPrefix = "request",
   ariaLabel,
   variableActions,
@@ -78,6 +80,7 @@ export function AuthEditor({
 
         {auth.type === "bearer" ? (
           <BearerAuthForm
+            secureStorageOnly={secureStorageOnly}
             auth={auth}
             onAuthChange={onAuthChange}
             context={context}

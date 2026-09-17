@@ -1,3 +1,4 @@
+import { traceHeaderPreview } from "./request-tracing";
 import type { HttpMethod } from "../../../shared/model/http-method";
 import {
   createRequestAuth,
@@ -55,6 +56,9 @@ export type RequestPathParam = {
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export type RequestDraft = {
+  tracing?: { enabled: boolean; integrationId?: string };
+  /** Prepared runtime templates. Never persisted with the request definition. */
+  traceHeaderTemplates?: { name: string; value: string }[];
   tracePropagation?: string;
   environmentId?: string;
   graphql?: { query: string; variables: string; operationName: string; schemaId?: string };
@@ -102,6 +106,7 @@ const isContentTypeHeader = (header: RequestHeader) =>
 export function getRequestHeaders(
   draft: RequestDraft,
   context: AuthContext = {},
+  includeTracePreview = true,
 ): RequestHeader[] {
   const contentType = draft.graphql ? "application/json" : getBodyContentType(draft.body);
   let headers = draft.headers;
@@ -162,7 +167,7 @@ export function getRequestHeaders(
       ...headers.filter((header) => header.name.toLowerCase() !== "cookie"),
     ];
   }
-  return headers;
+  return includeTracePreview ? [...headers, ...traceHeaderPreview(draft)] : headers;
 }
 
 export function updateRequestHeaders(

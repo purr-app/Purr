@@ -1,3 +1,6 @@
+import { useWorkspaceIntegrations } from "../../../integrations/workspace-integrations";
+import { resolveRequestTracing } from "../model/request-tracing";
+import { useTabState } from "../../../shared/state/tab-state";
 import {
   Braces,
   Check,
@@ -1199,14 +1202,17 @@ function ResponseFindBar({
 }
 
 export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable, workspaceId, documentId }: { response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; workspaceId?: string; documentId?: string }) {
+  const integrations = useWorkspaceIntegrations();
+  const tracing = integrations.request ? resolveRequestTracing(integrations.request, integrations.definitions, integrations.workspacePropagation) : undefined;
   const response = useMemo(() => responseDetails(storedResponse), [storedResponse]);
   const inlineResponse = isInlineHttpResponse(storedResponse) ? storedResponse : null;
   const referencedResponse = isInlineHttpResponse(storedResponse) ? null : storedResponse;
-  const [tab, setTab] = useState<ResponseTab>("response");
-  const [findOpen, setFindOpen] = useState(false);
-  const [regularExpression, setRegularExpression] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [findMatchIndex, setFindMatchIndex] = useState(0);
+  const [storedTab, setTab] = useTabState<ResponseTab>("response.tab", "response");
+  const tab = storedTab === "trace" && !integrations.traces.length ? "response" : storedTab;
+  const [findOpen, setFindOpen] = useTabState("response.findOpen", false);
+  const [regularExpression, setRegularExpression] = useTabState("response.regularExpression", false);
+  const [findQuery, setFindQuery] = useTabState("response.findQuery", "");
+  const [findMatchIndex, setFindMatchIndex] = useTabState("response.findMatchIndex", 0);
   const [findMatchCount, setFindMatchCount] = useState(0);
   const responsePanelRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -1222,7 +1228,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
     () => getResponseCookies(response.headers).length,
     [response.headers],
   );
-  const searchable = tab === "response" || tab === "headers" || tab === "timeline";
+  const searchable = tab === "response" || tab === "headers" || tab === "timeline" || tab === "trace";
   const selectPanelFindMatch = useCallback((requestedIndex: number) => {
     const panel = responsePanelRef.current;
     if (!panel) return;
@@ -1231,7 +1237,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
     setFindMatchIndex(match.index);
   }, [findQuery]);
   const moveFindMatch = useCallback((direction: -1 | 1) => {
-    if (tab === "response") setFindMatchIndex((current) => findMatchCount
+    if (tab === "response" || tab === "trace") setFindMatchIndex((current) => findMatchCount
       ? (current + direction + findMatchCount) % findMatchCount
       : 0);
     else selectPanelFindMatch(findMatchIndex + direction);
@@ -1245,13 +1251,15 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
     window.getSelection()?.removeAllRanges();
   }, []);
 
+  const [execution, setExecution] = useTabState("response.execution", response.timeline.startedAtMs);
   useEffect(() => {
-    setTab("response");
+    if (execution === response.timeline.startedAtMs) return;
+    setExecution(response.timeline.startedAtMs);
     closeFind();
-  }, [closeFind, storedResponse, response.timeline.startedAtMs]);
+  }, [closeFind, execution, setExecution, response.timeline.startedAtMs]);
   useEffect(() => {
     if (!findOpen || !searchable) return;
-    if (tab === "response") {
+    if (tab === "response" || tab === "trace") {
       clearResponseTextHighlights();
       setFindMatchIndex(0);
       return;
@@ -1287,7 +1295,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           role="tablist"
           aria-label="Response details"
         >
-          {tabs.map((option) => {
+          {tabs.filter((item) => item.value !== "trace" || integrations.traces.length > 0).map((option) => {
             const Icon = option.icon;
             const count =
               option.value === "headers"
@@ -1370,8 +1378,8 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           : referencedResponse ? <ReferencedResponseBody regularExpression={regularExpression} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} exchange={referencedResponse} graphql={graphql} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} /> : null
           : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
-        {tab === "trace" ? workspaceId && documentId
-          ? <TracePanel key={`${workspaceId}:${documentId}:${storedResponse.timeline.startedAtMs}`} workspaceId={workspaceId} documentId={documentId} startedAtMs={storedResponse.timeline.startedAtMs} />
+        {tab === "trace" ? !tracing?.enabled ? <p className="p-ui-4 text-ui-md text-content-secondary">Tracing is not enabled for this request. Enable it in Request settings to inspect traces.</p> : workspaceId && documentId
+          ? <TracePanel key={`${workspaceId}:${documentId}:${storedResponse.timeline.startedAtMs}:${tracing.integration?.id}`} workspaceId={workspaceId} documentId={documentId} startedAtMs={storedResponse.timeline.startedAtMs} integrationId={tracing.integration?.id ?? ""} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} />
           : <p className="p-ui-4 text-ui-sm text-content-tertiary">Open this response in a workspace to look up traces.</p> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}

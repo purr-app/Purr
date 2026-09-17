@@ -55,6 +55,7 @@ const body = z.discriminatedUnion("type", [
 ]);
 const base = { id: entityId, name: z.string(), description: z.string().optional(), folderId: entityId.optional() };
 const request = {
+  tracing: z.strictObject({ enabled: z.boolean(), integrationId: entityId.optional() }).optional(),
   tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
   ...base, url: z.string(), method: z.string().regex(/^[A-Z][A-Z0-9_-]*$/), documentation: z.string().optional(),
   params: z.array(pair).default([]), pathParams: z.array(pair).default([]), headers: z.array(pair).default([]), body: body.default({ type: "none" }),
@@ -93,9 +94,15 @@ export const integrationCredentialKeySchema = z.string().min(1).max(64)
   .regex(/^[a-z][a-zA-Z0-9_-]*$/, "Integration credential keys must be stable identifiers.");
 export const integrationConfigSchema = z.record(z.string(), z.json());
 export type JsonObject = z.infer<typeof integrationConfigSchema>;
+export const integrationTracingSchema = z.strictObject({
+  propagation: z.enum(["off", "w3c", "b3"]).default("w3c"),
+  requestHeaders: z.array(pair).max(32).default([]),
+  responseHeaders: z.array(pair).max(32).default([]),
+});
 export const integrationDefinitionSchema = z.strictObject({
   ...base,
   kind: z.literal("integration"),
+  tracing: integrationTracingSchema.optional(),
   provider: integrationProviderIdSchema,
   enabled: z.boolean().default(true),
   configVersion: z.number().int().positive().default(1),

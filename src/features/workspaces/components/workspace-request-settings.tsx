@@ -1,3 +1,5 @@
+import { Modal } from "../../../shared/components/ui/modal";
+import { useTabState, useForgetTabState } from "../../../shared/state/tab-state";
 import { Pencil, Plus, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
@@ -66,11 +68,17 @@ export function WorkspaceSettings({
 }) {
   const { observability, secureStore } = useApplicationServices();
   const extensions = useExtensionRegistry();
-  const [editingIntegration, setEditingIntegration] = useState<IntegrationDefinition | null>(null);
+  const forgetState = useForgetTabState();
+  const [catalogOpen, setCatalogOpen] = useTabState("settings.catalog", false);
+  const [editingIntegration, setEditingIntegration] = useTabState<IntegrationDefinition | null>("settings.editingIntegration", null);
+  const closeIntegrationEditor = () => {
+    if (editingIntegration) forgetState(`integration.${editingIntegration.id}.`);
+    setEditingIntegration(null); setCatalogOpen(false);
+  };
   const [availableIntegrations, setAvailableIntegrations] = useState<IntegrationSummary[]>([]);
   const integrationPresentation = editingIntegration ? extensions.integration(editingIntegration.provider) : undefined;
   const IntegrationEditor = integrationPresentation?.Settings;
-  const [tab, setTab] = useState<SettingsTab>("general");
+  const [tab, setTab] = useTabState<SettingsTab>("settings.tab", "general");
   useEffect(() => {
     if (tab !== "integrations") return;
     let live = true;
@@ -79,11 +87,11 @@ export function WorkspaceSettings({
     }).catch(() => { if (live) setAvailableIntegrations([]); });
     return () => { live = false; };
   }, [observability, workspaceId, tab, integrations]);
-  const [editingAuth, setEditingAuth] = useState<WorkspaceSharedAuth | null>(null);
+  const [editingAuth, setEditingAuth] = useTabState<WorkspaceSharedAuth | null>("settings.editingAuth", null);
   const [authContext, setAuthContext] = useState<AuthContext>({ variables });
   const [emptyHeaderId, setEmptyHeaderId] = useState(() => crypto.randomUUID());
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmDeleteIntegration, setConfirmDeleteIntegration] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useTabState("settings.confirmDelete", false);
+  const [confirmDeleteIntegration, setConfirmDeleteIntegration] = useTabState<string | null>("settings.confirmDeleteIntegration", null);
   const [deleting, setDeleting] = useState(false);
   useEffect(() => setAuthContext((current) => ({ ...current, variables })), [variables]);
   const authDraft: RequestDraft = {
@@ -225,51 +233,69 @@ export function WorkspaceSettings({
             </div>
           ) : (
             <div className="space-y-ui-4">
-              <div>
-                <h2 className="m-ui-0 text-ui-md font-medium text-content-primary">Integrations</h2>
-                <p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">Integration settings are preserved even when their provider is unavailable in this build. Credential values remain in secure storage.</p>
+              <div className="flex items-start justify-between gap-ui-4">
+                <div><h2 className="m-ui-0 text-ui-lg font-medium text-content-primary">Integrations</h2>
+                  <p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">Connect your tools to explore more from each request.</p></div>
+                <Button variant="brand" onClick={() => setCatalogOpen(true)}><Plus className="size-ui-4" />Add integration</Button>
               </div>
-              <SelectField label="Default trace propagation" value={config.tracePropagation ?? "off"}
-                options={[{ value: "off", label: "Off" }, { value: "w3c", label: "W3C Trace Context" }, { value: "b3", label: "B3" },
-                  ...(config.tracePropagation && !["off", "w3c", "b3"].includes(config.tracePropagation) ? [{ value: config.tracePropagation, label: config.tracePropagation }] : [])]}
-                onValueChange={(value) => onConfigChange({ ...config, tracePropagation: value })} />
-              <div className="flex gap-ui-2">{extensions.integrations.filter((item) => item.Settings).map((item) => <Button key={item.id} size="sm" variant="secondary" onClick={() => setEditingIntegration({ kind: "integration", id: crypto.randomUUID(), name: item.label, provider: item.id, enabled: true, configVersion: 1, config: item.initialConfig ?? {}, credentials: {} })}>Add {item.label}</Button>)}</div>
-              {editingIntegration && IntegrationEditor ? <IntegrationEditor key={editingIntegration.id} value={editingIntegration} onCancel={() => setEditingIntegration(null)}
-                setCredential={async (key, value) => {
-                  if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                  await secureStore.set(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`, value);
-                }}
-                onSave={async (value) => {
-                  if (value.id !== editingIntegration.id || value.provider !== editingIntegration.provider) throw new Error("Integration identity cannot change");
-                  const normalized = await observability.validateConfig(value.provider, value.configVersion, value.config);
-                  const credentials = { ...value.credentials };
-                  for (const key of integrationPresentation?.credentialKeys ?? []) credentials[key] = { kind: "secret", ref: `purr/${workspaceId}/integrations/${value.id}/${key}` };
-                  onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }));
-                  setEditingIntegration(null);
-                }} /> : null}
+              {catalogOpen || editingIntegration ? <Modal title={editingIntegration ? `${integrationPresentation?.label ?? "Integration"} settings` : "Add integration"} className="ui-integration-dialog w-ui-integration-dialog" onClose={closeIntegrationEditor}>
+                <div className="ui-integration-content overflow-auto">
+                  {editingIntegration && IntegrationEditor ? <IntegrationEditor key={editingIntegration.id} value={editingIntegration} variables={variables} variableActions={variableActions}
+                    authContext={{ variables, workspaceProfiles: config.auth.filter((entry) => entry.enabled).map((entry) => ({ id: entry.id, name: entry.name, auth: entry.value })) }}
+                    onCancel={closeIntegrationEditor}
+                    getCredential={async (key) => {
+                      if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
+                      return secureStore.get(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`);
+                    }}
+                    setCredential={async (key, value) => {
+                      if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
+                      await secureStore.set(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`, value);
+                    }}
+                    onSave={async (value) => {
+                      if (value.id !== editingIntegration.id || value.provider !== editingIntegration.provider) throw new Error("Integration identity cannot change");
+                      const normalized = await observability.validateConfig(value.provider, value.configVersion, value.config);
+                      const credentials = { ...value.credentials };
+                      for (const key of integrationPresentation?.credentialKeys ?? []) {
+                        const ref = `purr/${workspaceId}/integrations/${value.id}/${key}`;
+                        if (await secureStore.exists(ref)) credentials[key] = { kind: "secret", ref };
+                      }
+                      onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }));
+                      closeIntegrationEditor();
+                    }} /> : <div className="space-y-ui-5 p-ui-5">
+                    <p className="m-ui-0 text-ui-md text-content-secondary">Choose a provider to connect to this workspace.</p>
+                    <div className="grid grid-cols-2 gap-ui-4 md:grid-cols-4">{extensions.integrations.filter((item) => item.Settings).map((item) => <button key={item.id} type="button" className="ui-focus-ring flex flex-col items-center gap-ui-3 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-5 text-center transition-colors hover:border-action-brand hover:bg-purr-elevated" title={item.description}
+                      onClick={() => setEditingIntegration({ kind: "integration", id: crypto.randomUUID(), name: item.label, provider: item.id, enabled: true, configVersion: 1, config: item.initialConfig ?? {}, credentials: {} })}>
+                      {item.icon ? <img src={item.icon} alt="" className="size-ui-12 object-contain" /> : <Unplug className="size-ui-12 text-action-brand" />}
+                      <span className="text-ui-lg font-medium text-content-primary">{item.label}</span>
+                      {item.description ? <span className="line-clamp-2 text-ui-sm text-content-tertiary">{item.description}</span> : null}
+                    </button>)}</div>
+                  </div>}
+                </div>
+              </Modal> : null}
               <div className="space-y-ui-2">
                 {integrations.map((integration) => (
                   <div key={integration.id} className="rounded-ui-lg border border-border-subtle bg-purr-codefield px-ui-3 py-ui-3">
                     <div className="flex items-center gap-ui-3">
+                      <>{extensions.integration(integration.provider)?.icon ? <img src={extensions.integration(integration.provider)?.icon} alt="" className="size-ui-8 object-contain" /> : null}</>
                       <Checkbox checked={integration.enabled} hideLabel label={`Enable ${integration.name}`} onCheckedChange={(enabled) => onIntegrationChange(integration.id, { enabled })} />
                       <div className="min-w-0 flex-1">
                         <p className="m-ui-0 truncate text-ui-sm font-medium text-content-primary">{integration.name}</p>
-                        <p className="m-ui-0 truncate font-code text-ui-xs text-content-tertiary">{integration.provider} · config v{integration.configVersion} · {Object.keys(integration.credentials).length} credential slots</p>
+                        <p className="m-ui-0 truncate font-code text-ui-xs text-content-tertiary">{extensions.integration(integration.provider)?.label ?? integration.provider}{integration.config.endpoint ? ` · ${String(integration.config.endpoint)}` : ""}</p>
                       </div>
                       <span className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-elevated px-ui-2 py-ui-1 text-ui-xs text-content-tertiary"><Unplug className="size-ui-3" />{availableIntegrations.find((item) => item.id === integration.id)?.capabilities.join(" · ") || "Provider unavailable"}</span>
                       {extensions.integration(integration.provider)?.Settings ? <Button size="icon" variant="ghost" aria-label={`Edit ${integration.name}`} onClick={() => setEditingIntegration(integration)}><Pencil className="size-ui-4" /></Button> : null}
                       {confirmDeleteIntegration !== integration.id
-                        ? <Button variant="ghost" size="icon" className="text-accent-red" aria-label={`Delete ${integration.name}`} onClick={() => setConfirmDeleteIntegration(integration.id)}><Trash2 className="size-ui-4" /></Button>
+                        ? <Button variant="ghost" className="text-accent-red hover:text-accent-red" size="icon" aria-label={`Delete ${integration.name}`} onClick={() => setConfirmDeleteIntegration(integration.id)}><Trash2 className="size-ui-4" /></Button>
                         : null}
                     </div>
                     {confirmDeleteIntegration === integration.id ? <div className="mt-ui-3 flex items-center justify-end gap-ui-2 border-t border-border-subtle pt-ui-3">
                       <span className="mr-auto text-ui-xs text-accent-red">Delete this integration configuration?</span>
                       <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteIntegration(null)}>Cancel</Button>
-                      <Button variant="secondary" size="sm" className="text-accent-red" onClick={() => { onIntegrationDelete(integration.id); setConfirmDeleteIntegration(null); }}>Delete permanently</Button>
+                      <Button variant="brand" size="sm" onClick={() => { onIntegrationDelete(integration.id); setConfirmDeleteIntegration(null); }}>Delete permanently</Button>
                     </div> : null}
                   </div>
                 ))}
-                {!integrations.length ? <p className="rounded-ui-lg border border-dashed border-border-subtle p-ui-5 text-center text-ui-sm text-content-tertiary">No integrations are configured for this workspace.</p> : null}
+                {!integrations.length ? <p className="rounded-ui-lg border border-dashed border-border-subtle p-ui-5 text-center text-ui-sm text-content-tertiary">Connect a provider to see traces and service timings alongside your responses.</p> : null}
               </div>
             </div>
           )}

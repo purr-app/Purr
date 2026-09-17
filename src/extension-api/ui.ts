@@ -4,3 +4,4 @@ export { FormField } from "../shared/components/ui/form-field";
 export { Input } from "../shared/components/ui/input";
 export { SelectField } from "../shared/components/ui/select-field";
 export { SegmentedTabs } from "../shared/components/ui/segmented-tabs";
+export { IntegrationConnectionSettings } from "../integrations/connection-settings";
