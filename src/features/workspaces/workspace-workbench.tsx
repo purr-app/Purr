@@ -1,3 +1,4 @@
+import { TabStateProvider, TabStateStore } from "../../shared/state/tab-state";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type SetStateAction } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { Columns2, Cookie as CookieIcon, Copy, FilePlus2, Globe2, Network, PanelLeft, RotateCcw, Rows2, Save, SendHorizontal, Settings2, Square, TextCursorInput, Trash2, Waypoints } from "lucide-react";
@@ -114,6 +115,7 @@ function pruneVariableCache(workspace: Workspace, globalVariables: readonly Vari
 }
 
 export function WorkspaceWorkbench() {
+  const [tabStates] = useState(() => new TabStateStore());
   const services = useApplicationServices();
   const extensions = useExtensionRegistry();
   const { persistence } = services;
@@ -136,6 +138,15 @@ export function WorkspaceWorkbench() {
     return () => window.clearTimeout(timeout);
   }, [actionError]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  useEffect(() => {
+    if (!store) return;
+    tabStates.retain(new Set(store.workspaces.flatMap((item) => [
+      ...item.ui.openDocumentIds.map((id) => `${item.id}:${id}`),
+      ...(item.ui.settingsTabOpen ? [`${item.id}:settings`] : []),
+      ...(item.ui.cookiesTabOpen ? [`${item.id}:cookies`] : []),
+      ...(item.ui.variablesTabOpen ? [`${item.id}:variables`] : []),
+    ])));
+  }, [store, tabStates]);
   const activeDocument = workspace?.documents.find((item) => item.id === workspace.ui.activeDocumentId);
   const currentDocument = activeDocument && isRequestDocument(activeDocument) ? activeDocument : undefined;
   const sourceDocuments = useMemo(() => workspace?.documents
@@ -608,6 +619,7 @@ export function WorkspaceWorkbench() {
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
+          <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
           {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
             variables={variables}
@@ -742,6 +754,7 @@ export function WorkspaceWorkbench() {
               onPasteCommand={(command) => { if (isCurlCommand(command)) importCurlAsDocument(command); }}
               pasteTargetRef={emptyPasteTarget}
             />}
+          </TabStateProvider>
         </div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { useTabState } from "../../../shared/state/tab-state";
 import {
   Braces,
   Check,
@@ -1202,11 +1203,11 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
   const response = useMemo(() => responseDetails(storedResponse), [storedResponse]);
   const inlineResponse = isInlineHttpResponse(storedResponse) ? storedResponse : null;
   const referencedResponse = isInlineHttpResponse(storedResponse) ? null : storedResponse;
-  const [tab, setTab] = useState<ResponseTab>("response");
-  const [findOpen, setFindOpen] = useState(false);
-  const [regularExpression, setRegularExpression] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [findMatchIndex, setFindMatchIndex] = useState(0);
+  const [tab, setTab] = useTabState<ResponseTab>("response.tab", "response");
+  const [findOpen, setFindOpen] = useTabState("response.findOpen", false);
+  const [regularExpression, setRegularExpression] = useTabState("response.regularExpression", false);
+  const [findQuery, setFindQuery] = useTabState("response.findQuery", "");
+  const [findMatchIndex, setFindMatchIndex] = useTabState("response.findMatchIndex", 0);
   const [findMatchCount, setFindMatchCount] = useState(0);
   const responsePanelRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -1245,10 +1246,12 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
     window.getSelection()?.removeAllRanges();
   }, []);
 
+  const [execution, setExecution] = useTabState("response.execution", response.timeline.startedAtMs);
   useEffect(() => {
-    setTab("response");
+    if (execution === response.timeline.startedAtMs) return;
+    setExecution(response.timeline.startedAtMs);
     closeFind();
-  }, [closeFind, storedResponse, response.timeline.startedAtMs]);
+  }, [closeFind, execution, setExecution, response.timeline.startedAtMs]);
   useEffect(() => {
     if (!findOpen || !searchable) return;
     if (tab === "response") {

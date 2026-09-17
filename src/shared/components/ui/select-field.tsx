@@ -1,5 +1,6 @@
+import { useTabState } from "../../state/tab-state";
 import { Check, ChevronDown } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { useId, useRef } from "react";
 
 import { cn } from "../../lib/cn";
 import { Popover, PopoverContent, PopoverTrigger } from "./popover";
@@ -28,7 +29,7 @@ export function SelectField<Value extends string>({
   muted = false,
   size = "sm",
 }: SelectFieldProps<Value>) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useTabState(`select.${label}`, false);
   const listboxId = useId();
   const optionRefs = useRef(new Map<Value, HTMLButtonElement>());
   const selected =

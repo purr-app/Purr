@@ -1,3 +1,4 @@
+import { useTabState } from "../../../shared/state/tab-state";
 import { Pencil, Plus, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
@@ -66,11 +67,11 @@ export function WorkspaceSettings({
 }) {
   const { observability, secureStore } = useApplicationServices();
   const extensions = useExtensionRegistry();
-  const [editingIntegration, setEditingIntegration] = useState<IntegrationDefinition | null>(null);
+  const [editingIntegration, setEditingIntegration] = useTabState<IntegrationDefinition | null>("settings.editingIntegration", null);
   const [availableIntegrations, setAvailableIntegrations] = useState<IntegrationSummary[]>([]);
   const integrationPresentation = editingIntegration ? extensions.integration(editingIntegration.provider) : undefined;
   const IntegrationEditor = integrationPresentation?.Settings;
-  const [tab, setTab] = useState<SettingsTab>("general");
+  const [tab, setTab] = useTabState<SettingsTab>("settings.tab", "general");
   useEffect(() => {
     if (tab !== "integrations") return;
     let live = true;
@@ -79,11 +80,11 @@ export function WorkspaceSettings({
     }).catch(() => { if (live) setAvailableIntegrations([]); });
     return () => { live = false; };
   }, [observability, workspaceId, tab, integrations]);
-  const [editingAuth, setEditingAuth] = useState<WorkspaceSharedAuth | null>(null);
+  const [editingAuth, setEditingAuth] = useTabState<WorkspaceSharedAuth | null>("settings.editingAuth", null);
   const [authContext, setAuthContext] = useState<AuthContext>({ variables });
   const [emptyHeaderId, setEmptyHeaderId] = useState(() => crypto.randomUUID());
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmDeleteIntegration, setConfirmDeleteIntegration] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useTabState("settings.confirmDelete", false);
+  const [confirmDeleteIntegration, setConfirmDeleteIntegration] = useTabState<string | null>("settings.confirmDeleteIntegration", null);
   const [deleting, setDeleting] = useState(false);
   useEffect(() => setAuthContext((current) => ({ ...current, variables })), [variables]);
   const authDraft: RequestDraft = {
