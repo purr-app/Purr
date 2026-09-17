@@ -171,7 +171,7 @@ export async function prepareWireRequest(
       const sensitiveQuery = maskCredentials && binding?.target === "query" ? binding.name.toLowerCase() : "";
       const url = new URL(applyRequestQueryParamsToUrl(source.url, getRequestQueryParams(source, sourceContext)));
       if (sensitiveQuery) for (const [name] of url.searchParams) if (name.toLowerCase() === sensitiveQuery) url.searchParams.set(name, "********");
-      const headers = getRequestHeaders(source, sourceContext).filter((header) => header.enabled && header.name.trim()).map((header): [string, string] => {
+      const headers = getRequestHeaders(source, sourceContext, false).filter((header) => header.enabled && header.name.trim()).map((header): [string, string] => {
         if (!maskCredentials || !header.secret) return [header.name, header.value];
         if (header.name.toLowerCase() === "authorization") return [header.name, `${header.value.split(/\s+/, 1)[0] || "Token"} ********`];
         if (header.name.toLowerCase() === "cookie") return [header.name, header.value.replace(/(^|;\s*)([^=;]+)=([^;]*)/g, "$1$2=********")];
@@ -187,7 +187,7 @@ export async function prepareWireRequest(
     };
     const request = await makeRequest(outgoing, context, false);
     return {
-      request: { ...request, ...(outgoing.tracePropagation ? { tracePropagation: outgoing.tracePropagation } : {}), ...(preparedBody.bodySource ? { bodySource: preparedBody.bodySource } : {}) },
+      request: { ...request, ...(outgoing.traceHeaderTemplates?.length ? { traceHeaders: outgoing.traceHeaderTemplates.map(({ name, value }): [string, string] => [name, value]) } : {}), ...(outgoing.tracePropagation ? { tracePropagation: outgoing.tracePropagation } : {}), ...(preparedBody.bodySource ? { bodySource: preparedBody.bodySource } : {}) },
       displayRequest: await makeRequest(maskedOutgoing, maskedContext, true),
       sensitiveHeaders: authResult.binding?.target === "header" ? [authResult.binding.name] : [],
       sensitiveQueryParams: authResult.binding?.target === "query" ? [authResult.binding.name] : [],

@@ -35,6 +35,8 @@ pub struct Integration {
     pub config: Value,
     #[serde(default)]
     pub credentials: BTreeMap<String, Credential>,
+    #[serde(default)]
+    pub tracing: Option<super::correlation::TracingHeaders>,
 }
 fn enabled_default() -> bool {
     true
@@ -161,19 +163,30 @@ impl ObservabilityService {
             &instance.config,
         )?;
         if let Some(connection) = &query.connection {
-            let url = reqwest::Url::parse(&connection.endpoint).map_err(|_| ObservabilityError::InvalidConfig)?;
-            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
-                || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some()
-                || connection.endpoint.len() > 8192 || connection.headers.len() > 64
-                || connection.headers.iter().any(|(name, value)| name.len() > 256 || value.len() > 16384
-                    || reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err()
-                    || reqwest::header::HeaderValue::from_str(value).is_err()) {
+            let url = reqwest::Url::parse(&connection.endpoint)
+                .map_err(|_| ObservabilityError::InvalidConfig)?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || connection.endpoint.len() > 8192
+                || connection.headers.len() > 64
+                || connection.headers.iter().any(|(name, value)| {
+                    name.len() > 256
+                        || value.len() > 16384
+                        || reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err()
+                        || reqwest::header::HeaderValue::from_str(value).is_err()
+                })
+            {
                 return Err(ObservabilityError::InvalidConfig);
             }
         }
         let mut digest = Sha256::new();
         // Resolved environment and auth are memory-only and isolate cache entries.
-        digest.update(serde_json::to_vec(&query.connection).map_err(|_| ObservabilityError::InvalidConfig)?);
+        digest.update(
+            serde_json::to_vec(&query.connection).map_err(|_| ObservabilityError::InvalidConfig)?,
+        );
         digest.update(
             serde_json::to_vec(&(
                 &query.workspace_id,
@@ -241,7 +254,10 @@ impl ObservabilityService {
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            let exchange = exchange?;
+            let mut exchange = exchange?;
+            if let Some(mapping) = &instance.tracing {
+                mapping.apply(&mut exchange);
+            }
             correlation.injected_trace_id = self
                 .registry
                 .references(&ExchangeInput {
@@ -283,11 +299,11 @@ impl ObservabilityService {
                     return Ok(page);
                 };
                 if !valid_trace_id(&trace.id)
-                    || trace.spans.len() > 1000
+                    || trace.spans.len() > 50_000
                     || serde_json::to_vec(&trace)
                         .map_err(|_| ObservabilityError::ProviderFailed)?
                         .len()
-                        > 64 * 1024
+                        > 16 * 1024 * 1024
                     || trace.spans.iter().any(|span| {
                         span.id.is_empty()
                             || span.id.len() > 64
@@ -299,7 +315,7 @@ impl ObservabilityService {
                             || span.duration_us > 9_007_199_254_740_991
                             || span.service.len() > 256
                             || span.operation.len() > 256
-                            || span.attributes.len() > 32
+                            || span.attributes.len() > 256
                             || span
                                 .attributes
                                 .iter()
@@ -366,7 +382,23 @@ impl ObservabilityService {
             })
             .collect();
         correlation.resolved_trace_id = Some(trace.id.clone());
+        let started_at_us = trace
+            .spans
+            .iter()
+            .map(|span| span.started_at_us)
+            .min()
+            .unwrap_or(0);
+        let ended_at_us = trace
+            .spans
+            .iter()
+            .map(|span| span.started_at_us.saturating_add(span.duration_us))
+            .max()
+            .unwrap_or(started_at_us);
         Ok(TracePage {
+            timing: Some(TraceTiming {
+                started_at_us,
+                duration_us: ended_at_us.saturating_sub(started_at_us),
+            }),
             protocol_version: 2,
             trace_id: Some(trace.id),
             spans,
@@ -380,6 +412,7 @@ impl ObservabilityService {
 }
 fn empty_page() -> TracePage {
     TracePage {
+        timing: None,
         protocol_version: 2,
         trace_id: None,
         spans: vec![],

@@ -139,6 +139,9 @@ export function WorkspaceWorkbench() {
     return () => window.clearTimeout(timeout);
   }, [actionError]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  const requestConfig = useMemo(() => ({ ...(workspace?.requestConfig ?? { headers: [], auth: [] }),
+    integrations: (workspace?.extraResources ?? []).filter((item) => item.kind === "integration").filter((item) => extensions.integration(item.provider)?.capabilities?.includes("traces")),
+  }), [workspace?.requestConfig, workspace?.extraResources, extensions]);
   useEffect(() => {
     if (!store) return;
     tabStates.retain(new Set(store.workspaces.flatMap((item) => [
@@ -244,7 +247,7 @@ export function WorkspaceWorkbench() {
     }
     let document: RequestDocument = { ...(kind === "graphql" ? createGraphqlDocument() : createHttpDocument()), ...(folderId ? { folderId } : {}) };
     if (workspace)
-      document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
+      document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, requestConfig) };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
   const addExtensionDocument = (extensionType: string, folderId?: string) => {
@@ -433,7 +436,7 @@ export function WorkspaceWorkbench() {
     const base = schemaSource?.request ?? { ...created.request, url: activeDocument.endpoint || (activeDocument.source === "introspection" ? activeDocument.sourceLabel : "") };
     const request = withWorkspaceAuthDefault({ ...cloneRequestDraft(base), method: "POST", graphql: {
       query: operation.query, variables: operation.variables, operationName: operation.name, schemaId: activeDocument.id,
-    } }, "graphql", workspace.requestConfig);
+    } }, "graphql", requestConfig);
     const document: RequestDocument = { ...created, name: operation.name, request, ui: { requestSection: "gql-query" } };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
@@ -620,9 +623,9 @@ export function WorkspaceWorkbench() {
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
-          <WorkspaceIntegrationsProvider workspaceId={workspace.id}
-            definitions={(workspace.extraResources ?? []).filter((item) => item.kind === "integration")}
-            authContext={{ variables, workspaceProfiles: workspace.requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
+          <WorkspaceIntegrationsProvider workspaceId={workspace.id} request={currentDocument?.request} workspacePropagation={workspace.requestConfig.tracePropagation}
+            definitions={requestConfig.integrations}
+            authContext={{ variables, workspaceProfiles: requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
             addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
           {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
@@ -702,12 +705,12 @@ export function WorkspaceWorkbench() {
                   forceVariableIds: new Set([variable.id]),
                   execute: async (document, resolvedVariables, environmentId) => {
                     const scoped = await variablesForEnvironment(environmentId);
-                    const auth = getWorkspaceAuth(workspace.requestConfig, document.kind,
+                    const auth = getWorkspaceAuth(requestConfig, document.kind,
                       document.request.auth.type === "inherit" ? document.request.auth.inherit.profileId : undefined);
-                    return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspace.requestConfig), {
+                    return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, requestConfig), {
                       variables: resolvedVariables, sensitiveVariableNames: scoped.filter((item) => item.sensitive).map((item) => item.name),
                       requestDocumentId: document.id,
-                      workspaceProfiles: getWorkspaceAuthProfiles(workspace.requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
+                      workspaceProfiles: getWorkspaceAuthProfiles(requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
                     }, cookieJar!, runtime, services.httpTransport, services.responseContent, undefined, services.requestBodies);
@@ -727,12 +730,12 @@ export function WorkspaceWorkbench() {
             onChange={(change) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && isExtensionDocument(item)
               ? { ...item, ...change, updatedAt: new Date().toISOString() } : item) }))} />
           : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
-            source={schemaSource} variables={variables} workspaceConfig={workspace.requestConfig} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
+            source={schemaSource} variables={variables} workspaceConfig={requestConfig} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${contextKey}`} draft={currentDocument.request} setDraft={setDraft}
-            requestKind={currentDocument.kind} workspaceConfig={workspace.requestConfig}
+            requestKind={currentDocument.kind} workspaceConfig={requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             onOpenVariable={openVariableDefinition}
             onCreateMissingVariable={createMissingVariableDefinition}

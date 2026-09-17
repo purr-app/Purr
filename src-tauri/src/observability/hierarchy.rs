@@ -40,15 +40,13 @@ pub fn rows(spans: &[Span], search: &str) -> Result<Vec<SpanRow>> {
         })
         .map(|span| span.id.as_str())
         .collect();
-    let mut included = matched.clone();
+    let mut included = BTreeSet::new();
     for id in &matched {
-        let mut visited = BTreeSet::new();
         let mut current = Some(*id);
         while let Some(id) = current {
-            if !visited.insert(id) {
-                return Err(ObservabilityError::ProviderFailed);
+            if !included.insert(id) {
+                break;
             }
-            included.insert(id);
             current = by_id
                 .get(id)
                 .and_then(|span| span.parent_span_id.as_deref())

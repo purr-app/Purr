@@ -94,3 +94,46 @@ impl CorrelationExtractor for StandardCorrelation {
         Ok(refs)
     }
 }
+
+// Portable header mappings augment standard extraction, with response precedence.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TracingHeaders {
+    #[serde(default)]
+    request_headers: Vec<HeaderMapping>,
+    #[serde(default)]
+    response_headers: Vec<HeaderMapping>,
+}
+#[derive(Clone, serde::Deserialize)]
+struct HeaderMapping {
+    name: String,
+    value: String,
+    enabled: bool,
+}
+impl TracingHeaders {
+    pub fn apply(&self, exchange: &mut ExchangeInput) {
+        fn mapped(rows: &[HeaderMapping], headers: &[(String, String)]) -> Vec<(String, String)> {
+            rows.iter()
+                .filter(|row| row.enabled)
+                .take(32)
+                .flat_map(|row| {
+                    let target = match row.value.trim() {
+                        "traceparent" | "{{$traceparent}}" => "traceparent",
+                        "b3" | "{{$b3}}" => "b3",
+                        "traceId" | "{{$traceId}}" => "x-b3-traceid",
+                        _ => return vec![],
+                    };
+                    headers
+                        .iter()
+                        .filter(|(name, _)| name.eq_ignore_ascii_case(&row.name))
+                        .map(|(_, value)| (target.to_string(), value.clone()))
+                        .collect()
+                })
+                .collect()
+        }
+        let request = mapped(&self.request_headers, &exchange.request_headers);
+        let response = mapped(&self.response_headers, &exchange.response_headers);
+        exchange.request_headers.splice(0..0, request);
+        exchange.response_headers.splice(0..0, response);
+    }
+}

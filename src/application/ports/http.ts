@@ -24,6 +24,7 @@ export type PreparedHttpTransportRequest = Omit<
   bodyBase64: string | null;
   bodySource?: PreparedRequestBody;
   tracePropagation?: string;
+  traceHeaders?: [string, string][];
 };
 
 export type ResponseContentProtection = "encrypted" | "plaintext";

@@ -22,13 +22,13 @@ impl From<&str> for AttributeValue {
 impl AttributeValue {
     pub fn is_bounded(&self) -> bool {
         let valid = |value: &AttributeScalar| match value {
-            AttributeScalar::String(value) => value.len() <= 1024,
+            AttributeScalar::String(value) => value.len() <= 4096,
             AttributeScalar::Number(value) => value.is_finite(),
             AttributeScalar::Bool(_) => true,
         };
         match self {
             Self::Scalar(value) => valid(value),
-            Self::Array(values) => values.len() <= 32 && values.iter().all(valid),
+            Self::Array(values) => values.len() <= 128 && values.iter().all(valid),
         }
     }
 }
@@ -64,6 +64,8 @@ pub struct Trace {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TracePage {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timing: Option<TraceTiming>,
     pub protocol_version: u32,
     pub trace_id: Option<String>,
     pub spans: Vec<Span>,
@@ -72,6 +74,13 @@ pub struct TracePage {
     pub cached: bool,
     pub correlation: CorrelationProvenance,
     pub rows: Vec<SpanRow>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TraceTiming {
+    pub started_at_us: u64,
+    pub duration_us: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

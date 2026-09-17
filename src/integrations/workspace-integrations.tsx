@@ -1,3 +1,4 @@
+import type { RequestDraft } from "../features/request-workbench/model/request";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { IntegrationDefinition } from "../domain/project";
 import type { IntegrationSummary } from "../domain/observability";
@@ -6,6 +7,8 @@ import { useApplicationServices } from "../app/application-services-context";
 import { useExtensionRegistry } from "../extension-api/extension-context";
 
 type WorkspaceIntegrations = {
+  request?: RequestDraft;
+  workspacePropagation?: string;
   definitions: readonly IntegrationDefinition[];
   traces: readonly IntegrationSummary[];
   authContext: AuthContext;
@@ -13,7 +16,7 @@ type WorkspaceIntegrations = {
 };
 const Context = createContext<WorkspaceIntegrations>({ definitions: [], traces: [], authContext: {}, addProvider: () => {} });
 export const useWorkspaceIntegrations = () => useContext(Context);
-export function WorkspaceIntegrationsProvider({ workspaceId, definitions, authContext, addProvider, children }: Omit<WorkspaceIntegrations, "traces"> & { workspaceId: string; children: ReactNode }) {
+export function WorkspaceIntegrationsProvider({ workspaceId, definitions, authContext, addProvider, children, request, workspacePropagation }: Omit<WorkspaceIntegrations, "traces"> & { workspaceId: string; children: ReactNode }) {
   const { observability } = useApplicationServices();
   const extensions = useExtensionRegistry();
   const [summaries, setSummaries] = useState<IntegrationSummary[]>([]);
@@ -28,5 +31,5 @@ export function WorkspaceIntegrationsProvider({ workspaceId, definitions, authCo
     return capabilities.includes("traces") ? [{ id: item.id, name: item.name, enabled: item.enabled,
       available: summary?.available ?? Boolean(extensions.integration(item.provider)), capabilities: [...capabilities] }] : [];
   }), [definitions, summaries, extensions]);
-  return <Context.Provider value={{ definitions, traces, authContext, addProvider }}>{children}</Context.Provider>;
+  return <Context.Provider value={{ definitions, traces, authContext, addProvider, request, workspacePropagation }}>{children}</Context.Provider>;
 }

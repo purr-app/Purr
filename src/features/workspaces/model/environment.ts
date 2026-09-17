@@ -42,6 +42,8 @@ export function resolveRequestEnvironment(draft: RequestDraft, variables: Record
     .map((param) => ({ ...param, key: resolve(param.key), value: resolve(param.value) }))
     .filter((param) => !params.some((row) => row.key === param.key));
   return { ...draft,
+    traceHeaderTemplates: draft.traceHeaderTemplates?.map((header) => ({ name: resolve(header.name),
+      value: header.value.replace(/\{\{([^{}]+)\}\}/g, (template, name: string) => ["$traceparent", "$b3", "$traceId", "$spanId"].includes(name.trim()) ? `{{${name.trim()}}}` : resolve(template)) })),
     ...(draft.graphql ? { graphql: { ...draft.graphql, query: resolve(draft.graphql.query), variables: resolveGraphqlVariables(draft.graphql.variables), operationName: resolve(draft.graphql.operationName) } } : {}),
     url, body,
     ...(pathParams ? { pathParams } : {}),

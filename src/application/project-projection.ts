@@ -180,6 +180,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
       .filter((field) => field.key || field.value || field.attachment).map(async (field) => ({ name: field.key, value: field.value, enabled: field.enabled,
         ...(field.attachment ? { file: await fileRef(field.attachment) } : {}), ...(field.contentType ? { contentType: field.contentType } : {}) }))) };
   const common = { id: document.id, name: document.name, ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), ...(document.origin ? { origin: document.origin } : {}),
+    ...(draft.tracing ? { tracing: draft.tracing } : {}),
     ...(draft.tracePropagation ? { tracePropagation: draft.tracePropagation } : {}),
     method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []), headers: pairs(draft.headers), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
@@ -263,6 +264,7 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
     if (resource.body.type === "form-data") body.formData = rows; else body.urlEncoded = rows;
   }
   const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure),
+    tracing: resource.tracing,
     tracePropagation: resource.tracePropagation,
     params: [...resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })), { id: "param-empty", key: "", value: "", enabled: false }],
     pathParams: resource.pathParams.map((row, index) => ({ id: `path-param-${index}`, key: row.name, value: row.value, enabled: row.enabled })),

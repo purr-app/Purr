@@ -1,3 +1,5 @@
+import type { IntegrationDefinition } from "../../../domain/project";
+import { resolveRequestTracing } from "./request-tracing";
 import type { RequestAuth } from "./request-auth";
 import type { RequestDraft, RequestHeader } from "./request";
 
@@ -17,6 +19,8 @@ export type WorkspaceSharedAuth = {
   value: RequestAuth;
 };
 export type WorkspaceRequestConfig = {
+  /** Runtime projection only; canonical integrations remain separate resources. */
+  integrations?: readonly IntegrationDefinition[];
   tracePropagation?: string;
   headers: WorkspaceSharedHeader[];
   auth: WorkspaceSharedAuth[];
@@ -95,10 +99,12 @@ export function applyWorkspaceRequestConfig(
     && request.auth.inherit.source === "workspace"
       ? { ...request.auth, type: "none" as const }
       : withWorkspaceAuthDefault(request, kind, config).auth;
+  const tracing = config.integrations ? resolveRequestTracing(request, config.integrations, config.tracePropagation) : undefined;
   return {
     ...request,
     headers: [...sharedHeaders, ...request.headers],
-    tracePropagation: request.tracePropagation ?? config.tracePropagation,
+    tracePropagation: tracing?.propagation ?? request.tracePropagation ?? config.tracePropagation,
+    traceHeaderTemplates: tracing?.enabled ? tracing.integration?.tracing?.requestHeaders.filter((header) => header.enabled && header.name.trim()).map(({ name, value }) => ({ name, value })) : undefined,
     auth,
   };
 }
