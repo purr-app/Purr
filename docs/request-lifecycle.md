@@ -53,10 +53,20 @@ executeRequest()
   ↓
 executeHttp() → cookie merge + redirect policy
   ↓
-nativeTransport() → Tauri send_http
+ApplicationServices.httpTransport → Tauri start_http / cancel_http
+  ↓
+Rust propagation registry → final context headers → native HTTP transport
 ```
 
 `RequestWorkbench` creates `effectiveDraft` with `applyWorkspaceRequestConfig` before resolving dynamic variables. Dependency requests are executed through the same `executeRequest` path. `prepareWireRequest` performs static interpolation for the final request and separately with masked variable values for the display request.
+
+### Trace propagation
+
+Trace propagation is independent of workspace integration/backend selection. Workspace Settings → Integrations selects a default; request Settings can inherit it or choose Off, W3C Trace Context, or B3. Existing projects default to Off, so installing this phase does not inject new headers into old requests. The optional stable `tracePropagation` format ID lives in workspace/request YAML; an unknown extension format is preserved but fails explicitly if its native propagator is unavailable. Folder-level propagation overrides are not implemented in this slice.
+
+Rust's propagation registry validates the effective format and prepares fresh context immediately before transport. W3C emits version-00 `traceparent`; B3 emits the single `b3` header. Explicit context headers (including invalid user values or another registered format) are preserved without adding conflicting context. Generation uses native random non-zero trace/span IDs; TypeScript neither generates nor parses them. A service must still record/export the trace—propagation alone cannot create a backend trace. See [W3C Trace Context](https://www.w3.org/TR/trace-context/) for the wire format.
+
+Native transport returns only the automatically added header pairs as bounded metadata. `executeHttp` includes these in the effective Request/Timeline snapshots, so later native correlation reads what was sent. Same-origin redirects retain that context. Cross-origin redirects drop automatically generated context and disable regeneration for the remaining chain; explicitly supplied headers retain the existing redirect policy. Opening the request-code dialog does not mint a trace ID. Generated IDs are execution-local encrypted metadata, never added to a saved request definition. This does not change the response display/storage priority.
 
 ## URL and method
 
@@ -133,12 +143,16 @@ Dynamic variables execute source requests only when referenced by the root reque
 | XML | text editor | XML parser diagnostics; UTF-8 blob; `application/xml` | string data |
 | Text | text editor | UTF-8 blob; `text/plain` | string data |
 | URL encoded | ordered enabled/disabled fields | `URLSearchParams`; duplicates preserved; standard form content type | field array |
-| Form data | ordered text/file fields | manually assembled multipart bytes and boundary; field/file validation | fields plus asset refs |
-| Binary | one live `File` | exact file bytes; file MIME or octet-stream | nullable asset ref |
+| Form data | ordered text/file fields | text-only forms keep the inline serializer; file-bearing forms stage each file through a bounded native handle and Reqwest streams the multipart body; field/file validation is shared | fields plus asset refs |
+| Binary | one live `File` | staged in 256 KiB IPC chunks to an opaque native handle, then streamed as exact bytes with file MIME or octet-stream | nullable asset ref |
 
 Only the active mode is validated, interpolated, serialized, and saved canonically. Inactive modes and body conversion metadata are encrypted in `document_session_state` so switching back restores editor state. JSON/XML format and conversion helpers live in the same model; conversion can be refused when it would lose information.
 
 Attachments are content-addressed with SHA-256 and written as `assets/<digest>.bin`. Canonical body fields contain asset identity, original name, and media type, never an absolute local path.
+
+Native request-file handles are execution-scoped transport resources, not canonical attachments. The WebView never sends a complete file as base64 or one `ArrayBuffer`: the Tauri adapter stages bounded slices into an application-cache file registered under a random opaque ID. The transient file uses owner-only permissions on Unix, is removed after the request, and crash leftovers are deleted when the native request store next opens. Rust validates declared size, append order, completion, metadata, and registry membership before Reqwest can open it. Binary and multipart streams can be reopened for 307/308 replay; `executeRequest` releases every handle after success, failure, or cancellation, and abandoned live-process entries have a one-hour cleanup TTL.
+
+Editor autosave has a separate lifetime. A working-copy `File` is encoded once into an encrypted, immutable local `attachments` record, while draft and session records retain only its content-and-metadata reference. Large first encodes yield between bounded chunks; later edits to another body mode neither re-encode the file nor copy its base64 through each editor record. On native restore, only attachment metadata crosses IPC and the runtime uses a lazy `File`. Sending that file asks Rust to decrypt the local attachment and create the execution handle directly; the bytes do not round-trip through the WebView. Explicitly saving the working copy into the canonical project may materialize it once because the Git-portable `assets/` file is a separate ownership class. Local attachment records are never themselves transport handles or canonical project assets.
 
 ## Real and display requests
 
@@ -147,6 +161,8 @@ Attachments are content-addressed with SHA-256 and written as `assets/<digest>.b
 - `request`: resolved values suitable for transport;
 - `displayRequest`: the same logical request prepared with sensitive variable/auth values masked;
 - sensitive header/query name sets used by redirect and response-request display policy.
+
+For native file bodies, both request snapshots carry only a byte-free `bodySummary` (kind, filename, media type, byte count, and multipart part count). This summary remains in encrypted local execution state and never enters project YAML. The opaque transport handle never enters response history or any persisted request snapshot, while Response → Request can still show that a file or multipart body was sent.
 
 The redacted representation is the default in Request Code and Response → Request. Revealing is an explicit UI action. Do not log the real request or replace display usage with the transport object.
 
@@ -158,13 +174,18 @@ Rust redirects are disabled so this policy remains in one TypeScript layer. See 
 
 ## Frontend/native boundary
 
-The IPC request is `WireRequest`: final URL, method, duplicate-preserving header tuples, and optional base64 body. The Rust `send_http` command:
+The IPC request is `PreparedHttpTransportRequest`: final URL, method, duplicate-preserving header tuples, an optional inline base64 body for small/text modes, and an optional opaque file or multipart body source. The Rust `start_http` command:
 
 - validates HTTP(S), host, method, headers, body encoding, and URL credentials;
 - sends with Reqwest using a fixed timeout and redirects disabled;
 - preserves duplicate response headers;
-- buffers at most the configured 20 MiB response preview;
-- returns bytes as base64 plus status, protocol, addresses, and transport timings.
+- streams at most the configured 128 MiB response capture into encrypted native chunks through a bounded worker queue, grouping up to 8 MiB per storage transaction while retaining 256 KiB encrypted chunks;
+- emits coalesced header/progress events and returns an opaque content reference plus status, protocol, addresses, and transport timings;
+- observes `cancel_http` before headers and throughout download/storage, releasing partial content on failure or cancellation.
+
+`request_file_create`/`append`/`finish`/`release` are the only request-file IPC operations. Chunk append and filesystem work run through Tauri's async command threadpool. The native body store accepts only IDs it created in the current process; no frontend-supplied path is opened. Multipart boundaries are generated by Reqwest, while logical field order, duplicate field names, filenames, content types, CRLF-normalized text values, and exact file bytes are preserved.
+
+The desktop completion IPC never contains the complete response body. Responses smaller than 1 MiB retain the compatibility viewer; responses at or above 1 MiB remain opaque handles and the UI reads only bounded pages.
 
 Rust intentionally does not understand workspace inheritance, `RequestDraft`, template variables, auth schemes, logical body modes, cookies, or redirect credential policy.
 
@@ -190,13 +211,13 @@ Other options are currently ignored, often silently. File upload and `@file` sem
 
 `RequestCodeDialog` receives the workspace-effective draft and calls `prepareWireRequest`; it then applies current jar cookies. Generated output therefore includes resolved static templates, shared headers/auth, managed content type, and cookies. It does not run the dynamic dependency resolver, so a dynamic placeholder not already available in its context cannot be materialized there.
 
-The default output uses `displayRequest`; secrets and cookie values are masked. The user must explicitly Reveal before Copy can place the real values on the clipboard. `formatRequestCode` supports POSIX-style cURL quoting, wget, and an HTTP/1.1 representation. Text bodies are included; a body whose bytes do not decode safely is represented by a non-executable `<binary body: N bytes>` placeholder.
+The default output uses `displayRequest`; secrets and cookie values are masked. The user must explicitly Reveal before Copy can place the real values on the clipboard. `formatRequestCode` supports POSIX-style cURL quoting, wget, and an HTTP/1.1 representation. Text bodies are included. File and file-bearing multipart bodies use byte-free filename/media-type/size summaries, so opening Request Code never reads, stages, or renders the selected file. Binary inline compatibility bodies use a non-executable `<binary body: N bytes>` placeholder.
 
 ## Failure and cancellation points
 
 Validation, missing variables, dynamic dependency failures, malformed GraphQL, auth/OAuth errors, invalid URL/body/header, redirect policy, and native transport can all fail before an `HttpResult`. `RequestWorkbench` catches them and assigns the error to the originating document session.
 
-Each send owns an execution counter. A later send or Escape cancellation invalidates the earlier completion so stale results cannot replace current state. Cancellation currently does **not** abort the Reqwest request; it only stops the UI from accepting its eventual result.
+Each send owns an execution counter. A later send or Escape cancellation invalidates the earlier completion so stale results cannot replace current state. Escape also invokes `cancel_http`; Rust stops pending network/content work, releases partial response content, and the TypeScript `finally` releases staged request-file handles.
 
 ## Key files
 
@@ -207,8 +228,10 @@ Each send owns an execution counter. A later send or Escape cancellation invalid
 - `src/features/workspaces/model/environment.ts` — active-field static interpolation.
 - `src/features/workspaces/services/dynamic-variable-resolver.ts` — dependency execution and caching.
 - `src/features/request-workbench/services/execute-request.ts` — auth and final wire/display preparation.
-- `src/features/request-workbench/services/http-client.ts` — cookie, redirect, DTO normalization, and native invocation.
+- `src/features/request-workbench/services/http-client.ts` — cookie, redirect, and transport-response normalization through `HttpTransportPort`.
+- `src/platform/tauri/application-services.ts` — native HTTP/OAuth/download command adapters and bounded request-file staging.
 - `src/features/request-workbench/request-workbench.tsx` — send ownership, sessions, cancellation, and UI orchestration.
 - `src/features/request-workbench/model/curl-import.ts` — supported cURL parser/mapping.
 - `src/features/request-workbench/model/request-code.ts` — cURL/wget/HTTP rendering.
-- `src-tauri/src/http.rs` — native transport boundary.
+- `src-tauri/src/http/transport.rs` — native HTTP and streamed file/multipart transport boundary.
+- `src-tauri/src/http/request_body.rs` — opaque request-file lifecycle, validation, cleanup, and repeatable file streams.

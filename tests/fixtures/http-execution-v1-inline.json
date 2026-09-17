@@ -1,0 +1,40 @@
+{
+  "url": "https://fixture.invalid/graphql",
+  "status": 200,
+  "statusText": "OK",
+  "headers": [
+    ["content-type", "application/json; charset=utf-8"],
+    ["x-purr-fixture", "inline-v1"]
+  ],
+  "bodyBase64": "eyJkYXRhIjp7ImZpeHR1cmUiOiJwdXJyLXYxIn0sImVycm9ycyI6W3sibWVzc2FnZSI6InN5bnRoZXRpYyBlcnJvciJ9XSwiZXh0ZW5zaW9ucyI6eyJmaXh0dXJlIjoicHVyci1leHRlbnNpb24ifX0=",
+  "text": "{\"data\":{\"fixture\":\"purr-v1\"},\"errors\":[{\"message\":\"synthetic error\"}],\"extensions\":{\"fixture\":\"purr-extension\"}}",
+  "size": 113,
+  "durationMs": 84,
+  "headersDurationMs": 70,
+  "downloadDurationMs": 12,
+  "httpVersion": "HTTP/2",
+  "localAddress": "127.0.0.1:43119",
+  "remoteAddress": "127.0.0.1:443",
+  "timeline": {
+    "startedAtMs": 1700000000000,
+    "prepareMs": 2,
+    "waitingMs": 70,
+    "downloadMs": 12,
+    "completedAtMs": 1700000000084,
+    "request": {
+      "url": "https://fixture.invalid/graphql",
+      "method": "POST",
+      "headers": [["content-type", "application/json"]],
+      "bodyBase64": "e30="
+    },
+    "displayRequest": {
+      "url": "https://fixture.invalid/graphql",
+      "method": "POST",
+      "headers": [["content-type", "application/json"]],
+      "bodyBase64": "e30="
+    },
+    "followRedirects": true,
+    "usesCookieJar": true,
+    "timeoutMs": 60000
+  }
+}

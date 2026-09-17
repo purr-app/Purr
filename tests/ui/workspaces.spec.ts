@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 import { installPersistenceMock } from "./persistence-mock";
 test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
@@ -34,7 +35,7 @@ async function mockDesktop(page: Page, delayed = false) {
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
         (window as any).__commands.push(command);
-        if (command !== "send_http") return;
+        if (command !== "start_http") return;
         (window as any).__requests.push(args.request);
         const response = { status: 200, statusText: "OK", durationMs: 42, httpVersion: "HTTP/2", headers: [["content-type", "application/json"], ["set-cookie", "persisted=one; Secure; HttpOnly; Path=/"]], bodyBase64: btoa('{"source":"first-document"}') };
         if (delayed) return new Promise((resolve) => { (window as any).__finishRequest = () => resolve(response); });
@@ -515,6 +516,74 @@ test("workspace settings tab manages identity, shared headers and scoped auth", 
   await expect(response.getByLabel("HTTP request viewer")).toContainText("Authorization: Bearer partner-token");
 });
 
+test("unavailable integrations preserve opaque config and support enable, disable, and safe delete", async ({ page }) => {
+  const integration = await readFile(new URL("../fixtures/projects/integration-private.yaml", import.meta.url), "utf8");
+  await page.addInitScript(({ integration }) => {
+    if (!location.protocol.startsWith("http")) return;
+    (window as any).isTauri = true;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async () => undefined };
+    if (sessionStorage.getItem("purr-phase-11-fixture-seeded")) return;
+    localStorage.setItem("purr-native-persistence-test", JSON.stringify({
+      activeWorkspaceId: "integration-fixture",
+      workspaces: [{
+        id: "integration-fixture",
+        files: {
+          "purr.yaml": { content: "purr: 1\nworkspace:\n  id: integration-fixture\n  name: Integration fixture\n", revision: "manifest" },
+          "integrations/private-observability.yaml": { content: integration, revision: "integration" },
+        },
+        local: [],
+      }],
+    }));
+    localStorage.setItem("purr-native-secure-test", JSON.stringify({
+      "purr/integration-fixture/integrations/private-observability/apiKey": "synthetic-private-token",
+    }));
+    sessionStorage.setItem("purr-phase-11-fixture-seeded", "true");
+  }, { integration });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const settings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await settings.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await expect(settings.getByText("Private observability", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Provider unavailable", { exact: true })).toBeVisible();
+  await expect(settings).toContainText("commercial.datadog · config v3 · 1 credential slots");
+  await expect(settings).not.toContainText("synthetic-private-token");
+
+  const enabled = settings.getByRole("checkbox", { name: "Enable Private observability", exact: true });
+  await expect(enabled).toHaveAttribute("aria-checked", "false");
+  await enabled.click();
+  await saved(page);
+  const canonical = await page.evaluate(() => {
+    const snapshot = JSON.parse(localStorage.getItem("purr-native-persistence-test")!);
+    return snapshot.workspaces[0].files["integrations/private-observability.yaml"].content as string;
+  });
+  expect(canonical).toContain("enabled: true");
+  expect(canonical).toContain("emptyList: []");
+  expect(canonical).toContain("type: none");
+  expect(canonical).not.toContain("synthetic-private-token");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const restoredSettings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await restoredSettings.getByRole("tab", { name: "Integrations", exact: true }).click();
+  const restoredToggle = restoredSettings.getByRole("checkbox", { name: "Enable Private observability", exact: true });
+  await expect(restoredToggle).toHaveAttribute("aria-checked", "true");
+  await restoredToggle.click();
+  await saved(page);
+  await page.reload();
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const finalSettings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await finalSettings.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await expect(finalSettings.getByRole("checkbox", { name: "Enable Private observability", exact: true })).toHaveAttribute("aria-checked", "false");
+  await finalSettings.getByRole("button", { name: "Delete Private observability", exact: true }).click();
+  await expect(finalSettings.getByText("Delete this integration configuration?", { exact: true })).toBeVisible();
+  await finalSettings.getByRole("button", { name: "Delete permanently", exact: true }).click();
+  await expect(finalSettings.getByText("No integrations are configured for this workspace.", { exact: true })).toBeVisible();
+  await saved(page);
+});
+
 test("sidebar context menu renames saved documents", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/original");
@@ -746,11 +815,41 @@ test("binary attachments restore their bytes from workspace storage", async ({ p
   await saved(page); await page.reload();
   await expect(page.getByText("payload.bin", { exact: true })).toBeVisible();
   const bytes = await page.evaluate(async () => {
-    const { loadWorkspaceStore } = await import("/src/features/workspaces/services/workspace-storage.ts" as string);
-    const store = await loadWorkspaceStore();
+    const { createCoreServices } = await import("/src/app/composition/core-services.ts" as string);
+    const store = await createCoreServices().persistence.load();
     return [...new Uint8Array(await store.workspaces[0].documents[0].request.body.binary.file.arrayBuffer())];
   });
   expect(bytes).toEqual([0, 127, 255, 42]);
+});
+
+test("request code and form editing stay usable with an inactive file body", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/upload");
+  await page.getByRole("tab", { name: "Body", exact: true }).click();
+  await page.getByRole("tab", { name: "Binary", exact: true }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "large.bin",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.alloc(2 * 1024 * 1024, 42),
+  });
+
+  await page.getByRole("button", { name: "Open request code", exact: true }).click();
+  const code = page.getByRole("dialog", { name: "Request code" });
+  await expect(code.getByLabel("Request code viewer")).toContainText(
+    "<binary file: large.bin, 2097152 bytes>",
+  );
+  await code.getByRole("button", { name: "Close dialog", exact: true }).click();
+
+  await page.getByRole("tab", { name: "Form-Data", exact: true }).click();
+  const fieldName = page.getByLabel("name", { exact: true }).first();
+  await fieldName.fill("name");
+  await page.getByLabel("Value for name", { exact: true }).fill("test");
+  await expect(fieldName).toHaveValue("name");
+  await expect(page.getByLabel("Value for name", { exact: true })).toHaveValue("test");
+  await saved(page);
+  await page.reload();
+  await page.getByRole("tab", { name: "Binary", exact: true }).click();
+  await expect(page.getByText("large.bin", { exact: true })).toBeVisible();
 });
 
 test("damaged workspace data is reported without overwriting the original", async ({ page }) => {

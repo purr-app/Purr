@@ -1,7 +1,8 @@
 import { validateProject, type Project, type ProjectResource } from "../domain/project";
 import { createWorkspace, validateWorkspace, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
 import { decodeFiles } from "../storage/file-codec";
-import type { FileChange, LocalChange, LocalRecord, PersistenceBackend, SecureStore, StoredWorkspace } from "../storage/contracts";
+import type { SecureStore } from "./ports/credentials";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace } from "./ports/persistence";
 import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource } from "../storage/yaml";
 import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, restoreGlobalVariables, restoreWorkspace } from "./project-projection";
 import { CachedSecureStore } from "../storage/secrets";
@@ -10,7 +11,7 @@ import type { Variable } from "../features/workspaces/model/workspace";
 // Requests and request-adjacent documents share one canonical directory. The
 // previous requests/ and graphql/ locations remain readable so existing
 // workspaces can be migrated safely on their next save.
-const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", schema: "schemas", "api-schema": "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
+const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", extension: "documents", schema: "schemas", "api-schema": "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
 const slug = (name: string) => name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "resource";
 const key = (record: LocalRecord | LocalChange) => `${record.table}/${record.id}`;
 const folderMarker = ".purr-folder.yaml";
@@ -40,7 +41,12 @@ export class WorkspacePersistence {
   private deleted = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
-  constructor(readonly backend: PersistenceBackend, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
+  constructor(readonly backend: PersistencePort, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
+  private attachmentLoader(id: string) {
+    return this.backend.readAttachment
+      ? (attachmentId: string) => this.backend.readAttachment!(id, attachmentId)
+      : undefined;
+  }
   private readProject(snapshot: StoredWorkspace, index = true): Project {
     if (!snapshot.files["purr.yaml"]) throw new Error("Workspace manifest is missing. Existing local data has not been changed.");
     const manifest = deserializeManifestFile(snapshot.files["purr.yaml"].content); const workspace = manifest.value;
@@ -95,7 +101,7 @@ export class WorkspacePersistence {
     for (const folder of folders.values()) legacyFolderDirectory(folder.id);
     for (let index = 0; index < resources.length; index += 1) {
       const resource = resources[index];
-      if (resource.kind !== "http" && resource.kind !== "graphql") continue;
+      if (resource.kind !== "http" && resource.kind !== "graphql" && resource.kind !== "extension") continue;
       const path = paths.get(resource.id) ?? "";
       const inDocuments = pathAfter(path, "documents/");
       const inLegacyRequests = pathAfter(path, "requests/");
@@ -123,7 +129,7 @@ export class WorkspacePersistence {
       if (!snapshot.files["purr.yaml"] && !Object.keys(snapshot.files).length && !snapshot.local.length) continue;
       const project = this.readProject(snapshot);
       const local = migrateWorkspaceAuthRuntime(snapshot.local, snapshot.id);
-      const workspace = await restoreWorkspace(project, local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])));
+      const workspace = await restoreWorkspace(project, local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id));
       this.snapshots.set(snapshot.id, snapshot); this.projects.set(snapshot.id, project); workspaces.push(workspace);
     }
     const legacy = stored.legacy as WorkspaceStore | undefined;
@@ -204,7 +210,7 @@ export class WorkspacePersistence {
       // file only after its replacement is written.
       const path = resource.kind === "folder"
         ? `${documentDirectory(resource.id)}/${folderMarker}`
-        : resource.kind === "http" || resource.kind === "graphql"
+        : resource.kind === "http" || resource.kind === "graphql" || resource.kind === "extension"
           ? `${documentDirectory(resource.folderId)}/${existingPath?.startsWith("documents/") || existingPath?.startsWith("requests/") || existingPath?.startsWith("graphql/")
             ? fileName(existingPath) : `${slug(resource.name)}-${resource.id}.yaml`}`
           : existingPath ?? `${resourceDirectory(resource)}/${slug(resource.name)}-${resource.id}.yaml`;
@@ -226,7 +232,9 @@ export class WorkspacePersistence {
     const localChanges: LocalChange[] = [];
     for (const id of new Set([...oldLocal.keys(), ...nextLocal.keys()])) {
       const next = nextLocal.get(id); const previous = oldLocal.get(id);
-      if (JSON.stringify(next) !== JSON.stringify(previous)) localChanges.push(next ?? { ...previous!, value: null });
+      if (next?.table === "attachments" || previous?.table === "attachments") {
+        if (!next || !previous) localChanges.push(next ?? { ...previous!, value: null });
+      } else if (JSON.stringify(next) !== JSON.stringify(previous)) localChanges.push(next ?? { ...previous!, value: null });
     }
     if (changes.length || localChanges.length) {
       const files = await this.backend.commit(workspace.id, changes, localChanges);
@@ -271,7 +279,7 @@ export class WorkspacePersistence {
       // Removing a saved definition must not discard an unsaved working copy.
       if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
     }
-    const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])));
+    const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project); return workspace;
   }
   reconcileExternalChanges(store: WorkspaceStore): Promise<WorkspaceStore> {
@@ -298,7 +306,7 @@ export class WorkspacePersistence {
   async saveProject(project: Project, initialize: (workspace: Workspace) => Workspace = (workspace) => workspace): Promise<Workspace> {
     validateProject(project);
     const snapshot = this.snapshots.get(project.workspace.id);
-    const restored = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])));
+    const restored = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])), this.attachmentLoader(project.workspace.id));
     const workspace = initialize(restored);
     await this.save({ activeWorkspaceId: workspace.id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }
@@ -316,7 +324,7 @@ export class WorkspacePersistence {
     this.deleted.delete(id);
     const snapshot = await this.backend.attachDirectory(id, directory);
     const project = this.readProject(snapshot, false);
-    const workspace = await restoreWorkspace(project, snapshot.local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])));
+    const workspace = await restoreWorkspace(project, snapshot.local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     await this.save({ activeWorkspaceId: id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }

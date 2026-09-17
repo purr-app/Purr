@@ -24,15 +24,17 @@ import { WorkspaceHeader } from "./components/workspace-header";
 import { WorkspaceSidebar } from "./components/workspace-sidebar";
 import { WorkspaceSettings } from "./components/workspace-request-settings";
 import { EmptyWorkspace } from "./components/empty-workspace";
+import { ExtensionDocumentHost } from "./components/extension-document-host";
 import { Collapsible } from "../../shared/components/ui/collapsible";
 import { cn } from "../../shared/lib/cn";
 import { useWorkspaces } from "./hooks/use-workspaces";
-import { openWorkspaceFolder, workspacePersistence } from "./services/workspace-storage";
 import { secretRef } from "../../storage/secrets";
 import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
 import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
 import type { ImportSource } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
+import { useApplicationServices } from "../../app/application-services-context";
+import { useExtensionRegistry } from "../../extension-api/extension-context";
 import {
   cloneRequestDraft,
   closeDocument,
@@ -40,6 +42,7 @@ import {
   createHttpDocument,
   createGraphqlDocument,
   createSchemaDocument,
+  createExtensionDocument,
   createWorkspace,
   discardDocument,
   deleteDocument,
@@ -49,6 +52,7 @@ import {
   getVariableNamespace,
   getDocumentDisplayName,
   isDocumentDirty,
+  isExtensionDocument,
   isMeaningfulDraft,
   isRequestDocument,
   openDocument,
@@ -110,6 +114,9 @@ function pruneVariableCache(workspace: Workspace, globalVariables: readonly Vari
 }
 
 export function WorkspaceWorkbench() {
+  const services = useApplicationServices();
+  const extensions = useExtensionRegistry();
+  const { persistence } = services;
   const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave } = useWorkspaces();
   const [dialog, setDialog] = useState<Dialog>(null);
   const [sessions, setSessions] = useState<Record<string, RequestSession>>({});
@@ -196,7 +203,7 @@ export function WorkspaceWorkbench() {
           .map(([, entry]) => secretRef(workspace?.id ?? "global", `dynamic-variables/${variable.id}`, `cache/${entry.environmentId ?? "none"}`));
       return [];
     });
-    if (removed.length) void Promise.all(removed.map((reference) => workspacePersistence().secure.delete(reference))).catch(() => setActionError("Could not remove an obsolete variable secret."));
+    if (removed.length) void Promise.all(removed.map((reference) => persistence.secure.delete(reference))).catch(() => setActionError("Could not remove an obsolete variable secret."));
   };
   const updateDocument = (change: (document: RequestDocument) => RequestDocument) => {
     if (!currentDocument) return;
@@ -227,6 +234,16 @@ export function WorkspaceWorkbench() {
     if (workspace)
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, workspace.requestConfig) };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
+  };
+  const addExtensionDocument = (extensionType: string, folderId?: string) => {
+    const registration = extensions.documentType(extensionType);
+    if (!registration) { setActionError(`Extension document type is unavailable: ${extensionType}`); return; }
+    try {
+      const initial = registration.controller.createNew();
+      const validated = registration.validateAndMigrate(initial.configVersion, initial.config);
+      const document = createExtensionDocument(extensionType, initial.name, validated.configVersion, validated.config, folderId);
+      update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
   };
   const createFolder = (parentId?: string) => setDialog({ newFolder: parentId ?? null });
   const moveDocument = (id: string, folderId: string | null) => update((current) => ({ ...current, documents: current.documents.map((document) => document.id === id
@@ -434,7 +451,7 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, activeEnvironmentId: environment.id, environments: [...current.environments, environment] }));
         openVariables(`environment:${environment.id}`, null, null);
       } else if (existing) {
-        const environment = await resolveEnvironmentSecrets(existing, workspacePersistence().secure);
+        const environment = await resolveEnvironmentSecrets(existing, persistence.secure);
         update((current) => ({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }));
         openVariables(`environment:${environment.id}`, null, null);
       } else openVariables("effective", null, null);
@@ -442,12 +459,21 @@ export function WorkspaceWorkbench() {
     catch { setActionError("Could not unlock environment secrets."); }
   };
   const saveCurrentDocument = () => {
+    if (activeDocument && isExtensionDocument(activeDocument)) {
+      update((current) => ({ ...current, documents: current.documents.map((document) => document.id === activeDocument.id && isExtensionDocument(document)
+        ? { ...document, saved: true, savedConfigVersion: document.configVersion, savedConfig: structuredClone(document.config), updatedAt: new Date().toISOString() }
+        : document) }));
+      return;
+    }
     if (!currentDocument) return;
     if (!currentDocument.saved) { setDialog("save-document"); return; }
     if (!isDocumentDirty(currentDocument)) return;
     updateDocument((document) => ({ ...document, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() }));
   };
   const actions: PaletteAction[] = [
+    ...(activeDocument && isExtensionDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)) ? [
+      { id: "save-extension", title: "Save extension document", icon: <Save className="size-ui-4" />, shortcut: keyboardShortcuts.saveDocument, run: saveCurrentDocument },
+    ] : []),
     ...(currentDocument && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive && !workspace?.ui.variablesTabActive ? [
       { id: "send", title: "Run request", icon: <SendHorizontal className="size-ui-4" />, shortcut: keyboardShortcuts.sendRequest, run: () => requestActions.current?.send() },
       ...(!currentDocument.saved || isDocumentDirty(currentDocument) ? [{ id: "save", title: currentDocument.saved ? "Save document changes" : "Save document", icon: <Save className="size-ui-4" />, shortcut: keyboardShortcuts.saveDocument, run: saveCurrentDocument }] : []),
@@ -499,7 +525,7 @@ export function WorkspaceWorkbench() {
   const changeEnvironment = async (id: string | null, environments = workspace.environments) => {
     try {
       const selected = environments.find((item) => item.id === id);
-      const resolved = selected ? await resolveEnvironmentSecrets(selected, workspacePersistence().secure) : undefined;
+      const resolved = selected ? await resolveEnvironmentSecrets(selected, persistence.secure) : undefined;
       update((current) => ({ ...current,
     activeEnvironmentId: id, environments: environments.map((item) => item.id === resolved?.id ? resolved : item),
     documents: current.documents.map((document) => isRequestDocument(document) ? ({ ...document, request: { ...document.request, auth: {
@@ -510,7 +536,7 @@ export function WorkspaceWorkbench() {
   };
   const variablesForEnvironment = async (id: string | null) => {
     const environment = workspace.environments.find((item) => item.id === id);
-    const resolved = environment ? await resolveEnvironmentSecrets(environment, workspacePersistence().secure) : undefined;
+    const resolved = environment ? await resolveEnvironmentSecrets(environment, persistence.secure) : undefined;
     const environments = resolved ? workspace.environments.map((item) => item.id === resolved.id ? resolved : item) : workspace.environments;
     if (resolved && resolved !== environment) update((current) => ({ ...current, environments: current.environments.map((item) => item.id === resolved.id ? resolved : item) }));
     return getVariableNamespace({ ...workspace, environments }, store.globalVariables, id);
@@ -539,12 +565,12 @@ export function WorkspaceWorkbench() {
     }
   };
   const importWorkspace = async (source: ImportSource) => {
-    const imported = await importWorkspaceSource(source, workspacePersistence());
+    const imported = await importWorkspaceSource(source, persistence, services.imports);
     setStore((current) => current ? { ...current, activeWorkspaceId: imported.id,
       workspaces: [...current.workspaces.filter((candidate) => candidate.id !== imported.id), imported] } : current);
     setDialog(null);
   };
-  return <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
+  return <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} variablesActive={workspace.ui.variablesTabActive} onCookies={openCookies} onVariables={() => openVariables("effective", null, null)}
       onNewWorkspace={() => setDialog("new-workspace")}
@@ -553,9 +579,9 @@ export function WorkspaceWorkbench() {
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
       onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
-        void openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
+        void services.workspaceShell.openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
       }} /></Collapsible>
       {workspace.ui.sidebarOpen && <div role="separator" tabIndex={0} aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin={12} aria-valuemax={28} aria-valuenow={Math.round(workspace.ui.sidebarWidth)} className="ui-focus-ring flex w-ui-1 shrink-0 touch-none cursor-col-resize" onPointerDown={(event) => {
         if (event.button !== 0) return;
@@ -578,15 +604,19 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, ui: { ...current.ui, sidebarWidth: Math.max(12, Math.min(28, current.ui.sidebarWidth + (event.key === "ArrowRight" ? 1 : -1))) } }));
       }} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
+        <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
-          onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onSave={saveCurrentDocument} />
+          onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
-          {workspace.ui.settingsTabActive ? <WorkspaceSettings name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+            integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
             variables={variables}
             variableActions={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}
             onNameChange={(name) => update((current) => ({ ...current, name }))}
             onDescriptionChange={(description) => update((current) => ({ ...current, description }))}
+            onIntegrationChange={(id, change) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.kind === "integration" && resource.id === id ? { ...resource, ...change } : resource) }))}
+            onIntegrationSave={(value) => update((current) => ({ ...current, extraResources: [...(current.extraResources ?? []).filter((resource) => resource.id !== value.id), value] }))}
+            onIntegrationDelete={(id) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).filter((resource) => resource.kind !== "integration" || resource.id !== id) }))}
             onConfigChange={(requestConfig) => update((current) => {
               const reconcile = (request: RequestDraft, kind: "http" | "graphql") => {
                 const selected = request.auth.type === "inherit" ? request.auth.inherit.profileId : undefined;
@@ -651,6 +681,7 @@ export function WorkspaceWorkbench() {
               try {
                 const resolution = await resolveDynamicVariables({ root, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
                   variablesForEnvironment, persistentCache: workspace.dynamicVariableCache, sessionCache: dynamicVariableSessionCache,
+                  responseContent: services.responseContent,
                   forceVariableIds: new Set([variable.id]),
                   execute: async (document, resolvedVariables, environmentId) => {
                     const scoped = await variablesForEnvironment(environmentId);
@@ -662,7 +693,7 @@ export function WorkspaceWorkbench() {
                       workspaceProfiles: getWorkspaceAuthProfiles(workspace.requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
-                    }, cookieJar!, runtime);
+                    }, cookieJar!, runtime, services.httpTransport, services.responseContent, undefined, services.requestBodies);
                   } });
                 update((current) => ({ ...current, dynamicVariableCache: resolution.cache }));
               } catch (cause) {
@@ -675,14 +706,17 @@ export function WorkspaceWorkbench() {
               <CookieJarEditor jar={cookieJar!} url={currentDocument?.request.url ?? ""} enabled={currentDocument?.request.useCookieJar ?? true}
                 onEnabledChange={(useCookieJar) => setDraft((request) => ({ ...request, useCookieJar }))} />
             </div>
-          </section> : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
+          </section> : activeDocument?.kind === "extension" ? <ExtensionDocumentHost key={`${workspace.id}:${activeDocument.id}`} document={activeDocument} registration={extensions.documentType(activeDocument.extensionType)}
+            onChange={(change) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && isExtensionDocument(item)
+              ? { ...item, ...change, updatedAt: new Date().toISOString() } : item) }))} />
+          : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
             source={schemaSource} variables={variables} workspaceConfig={workspace.requestConfig} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${contextKey}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={workspace.requestConfig}
-            workspaceName={workspace.name} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
+            workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             onOpenVariable={openVariableDefinition}
             onCreateMissingVariable={createMissingVariableDefinition}
             onWorkspaceAuthChange={updateWorkspaceAuth}

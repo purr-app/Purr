@@ -1,4 +1,5 @@
-import type { FileChange, LocalChange, LocalRecord, PersistenceBackend, ProjectFile, SecureStore, StorageSnapshot, StoredWorkspace } from "./contracts";
+import type { SecureStore } from "../application/ports/credentials";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, StorageSnapshot, StoredWorkspace } from "../application/ports/persistence";
 import type { SecretRef } from "../domain/project";
 
 // Browser preview only; desktop always uses SQLite + the native secure store.
@@ -50,7 +51,7 @@ export class BrowserSecureStore implements SecureStore {
   async delete(ref: SecretRef) { await writeMany([{ store: "secrets", key: ref }]); }
   async exists(ref: SecretRef) { return (await this.get(ref)) !== null; }
 }
-export class BrowserPersistenceBackend implements PersistenceBackend {
+export class BrowserPersistenceBackend implements PersistencePort {
   async load(): Promise<StorageSnapshot> {
     const ids = await read<string[]>("app", "workspaces") ?? [];
     const raw = localStorage.getItem("purr.workspaces.v1"); let legacy: unknown;

@@ -6,11 +6,16 @@ export type DecodedProjectFile<T> = { value: T; developmentRewrite: boolean };
 export const projectFormatVersion = 1;
 function compact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(compact);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
-    if (child === undefined || Array.isArray(child) && !child.length || key === "enabled" && child === true || key === "sensitive" && child === false) return [];
-    if (key === "body" && (child as { type?: string })?.type === "none") return [];
-    return [[key, compact(child)]];
-  }));
+  if (value && typeof value === "object") {
+    const preserveOpaqueConfig = ["integration", "extension"].includes(String((value as { kind?: unknown }).kind));
+    return Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
+      if (child === undefined || Array.isArray(child) && !child.length || key === "enabled" && child === true || key === "sensitive" && child === false) return [];
+      if (key === "body" && (child as { type?: string })?.type === "none") return [];
+      // Integration and extension-document configuration is module-owned JSON.
+      // Compacting it would mutate unavailable/private data.
+      return [[key, preserveOpaqueConfig && key === "config" ? child : compact(child)]];
+    }));
+  }
   return value;
 }
 function yaml(value: unknown) {
@@ -77,6 +82,12 @@ export function deserializeResourceFile(text: string, readSdl: (path: string) =>
     if (value.kind === "environment" && Array.isArray(value.variables)) value.variables = value.variables.map((candidate) => {
       const converted = convertDevelopmentVariable(candidate); developmentRewrite ||= converted.developmentRewrite; return converted.value;
     });
+    if (value.kind === "integration") {
+      const converted = convertLegacyIntegration(value);
+      developmentRewrite ||= converted.developmentRewrite;
+      Object.assign(value, converted.value);
+      for (const key of Object.keys(value)) if (!(key in converted.value)) delete value[key];
+    }
     if (pinned !== undefined) {
       if (value.kind !== "schema" || typeof pinned !== "string" || !/^schemas\/[a-zA-Z0-9_/-]+\.graphql$/.test(pinned)) throw new Error();
       value.pinnedSdl = readSdl(pinned);
@@ -87,6 +98,25 @@ export function deserializeResourceFile(text: string, readSdl: (path: string) =>
     }
     return { value: resourceSchema.parse(value), developmentRewrite };
   } catch { throw new Error("Invalid Purr resource definition. The original file has not been changed."); }
+}
+
+function convertLegacyIntegration(candidate: Record<string, unknown>): DecodedProjectFile<Record<string, unknown>> {
+  const legacyEndpoint = candidate.endpoint;
+  if (legacyEndpoint !== undefined && typeof legacyEndpoint !== "string") return { value: candidate, developmentRewrite: false };
+  const config = candidate.config === undefined ? {} : candidate.config;
+  const configObject = config && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : undefined;
+  const developmentRewrite = "endpoint" in candidate || !("configVersion" in candidate) || !("config" in candidate);
+  if (!developmentRewrite) return { value: candidate, developmentRewrite: false };
+  const { endpoint: _endpoint, ...rest } = candidate;
+  return {
+    value: {
+      ...rest,
+      enabled: candidate.enabled ?? true,
+      configVersion: candidate.configVersion ?? 1,
+      config: legacyEndpoint === undefined || !configObject || "endpoint" in configObject ? config : { endpoint: legacyEndpoint, ...configObject },
+    },
+    developmentRewrite: true,
+  };
 }
 
 function convertDevelopmentVariable(candidate: unknown): DecodedProjectFile<unknown> {

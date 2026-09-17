@@ -1,6 +1,11 @@
 import { buildClientSchema, buildSchema, getOperationAST, Kind, parse, print, printSchema, validateSchema, type IntrospectionQuery } from "graphql";
 import type { RequestDraft } from "../../request-workbench/model/request";
 
+function recordMeasure(name: string, started: number) {
+  try { performance.measure(name, { start: started, end: performance.now() }); }
+  catch { /* Performance entries are diagnostics and must not affect GraphQL behavior. */ }
+}
+
 export function prepareGraphqlRequest(draft: RequestDraft): RequestDraft {
   if (!draft.graphql) return draft;
   const { query, variables: rawVariables, operationName } = draft.graphql;
@@ -21,20 +26,25 @@ export function prepareGraphqlRequest(draft: RequestDraft): RequestDraft {
 }
 
 export function parseGraphqlSchema(text: string) {
+  const started = performance.now();
   let schema;
-  if (text.trimStart().startsWith("{")) {
-    const result = JSON.parse(text);
-    if (result.errors?.length) throw new Error(result.errors.map((error: { message: string }) => error.message).join("\n"));
-    schema = buildClientSchema((result.data ?? result) as IntrospectionQuery);
-  } else schema = buildSchema(text);
-  const errors = validateSchema(schema);
-  if (errors.length) throw new Error(errors.map((error) => error.message).join("\n"));
-  return schema;
+  try {
+    if (text.trimStart().startsWith("{")) {
+      const result = JSON.parse(text);
+      if (result.errors?.length) throw new Error(result.errors.map((error: { message: string }) => error.message).join("\n"));
+      schema = buildClientSchema((result.data ?? result) as IntrospectionQuery);
+    } else schema = buildSchema(text);
+    const errors = validateSchema(schema);
+    if (errors.length) throw new Error(errors.map((error) => error.message).join("\n"));
+    return schema;
+  } finally { recordMeasure("purr.graphql.schema.parse", started); }
 }
 
 export function normalizeSchema(text: string): string {
+  const started = performance.now();
   const schema = parseGraphqlSchema(text);
   // Printing the imported AST preserves applied custom directives and extensions,
   // which cannot be reconstructed by printSchema's introspection representation.
-  return text.trimStart().startsWith("{") ? printSchema(schema) : print(parse(text));
+  try { return text.trimStart().startsWith("{") ? printSchema(schema) : print(parse(text)); }
+  finally { recordMeasure("purr.graphql.schema.normalize", started); }
 }

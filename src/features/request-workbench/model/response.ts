@@ -1,5 +1,5 @@
 import { prettifyBodyCode } from "./request-body";
-import type { HttpResult } from "../services/http-client";
+import type { InlineHttpResponse } from "../../../domain/http";
 
 export type ResponseBodyKind = "json" | "ndjson" | "yaml" | "csv" | "xml" | "html" | "text" | "image" | "audio" | "video" | "binary";
 export type ResponseViewMode = "pretty" | "prettify" | "raw" | "hex" | "base64";
@@ -166,7 +166,7 @@ export function formatHexResponse(bodyBase64: string) {
 }
 
 export function formatResponseBody(
-  response: Pick<HttpResult, "text" | "bodyBase64">,
+  response: Pick<InlineHttpResponse, "text" | "bodyBase64">,
   info: ResponseBodyInfo,
   mode: ResponseViewMode,
   queriedJson?: unknown,
@@ -182,6 +182,32 @@ export function formatResponseBody(
     return JSON.stringify(info.parsedJson, null, 2);
   if ((mode === "pretty" || mode === "prettify") && info.kind === "xml") return prettifyBodyCode("xml", response.text);
   return response.text;
+}
+
+export function formatBoundedJsonPreview(
+  value: unknown,
+  maximumStringBytes = 16 * 1024,
+) {
+  let hiddenValues = 0;
+  const shorten = (candidate: unknown): unknown => {
+    if (typeof candidate === "string") {
+      const bytes = new TextEncoder().encode(candidate).length;
+      if (bytes <= maximumStringBytes) return candidate;
+      hiddenValues++;
+      const edge = 96;
+      return `${candidate.slice(0, edge)}… [${bytes - edge * 2} bytes hidden] …${candidate.slice(-edge)}`;
+    }
+    if (Array.isArray(candidate)) return candidate.map(shorten);
+    if (candidate && typeof candidate === "object")
+      return Object.fromEntries(
+        Object.entries(candidate).map(([key, child]) => [key, shorten(child)]),
+      );
+    return candidate;
+  };
+  return {
+    text: JSON.stringify(shorten(value), null, 2),
+    hiddenValues,
+  };
 }
 
 function readBracket(expression: string, start: number) {

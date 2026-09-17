@@ -1,0 +1,25 @@
+purr: 1
+kind: integration
+id: private-observability
+name: Private observability
+description: Synthetic unavailable-provider fixture
+provider: commercial.datadog
+enabled: false
+configVersion: 3
+config:
+  site: synthetic.example
+  enabled: true
+  sensitive: false
+  emptyList: []
+  ingestion:
+    region: test-1
+    tags:
+      - synthetic
+      - fixture
+  presentation:
+    body:
+      type: none
+credentials:
+  apiKey:
+    kind: secret
+    ref: purr/integration-fixture/integrations/private-observability/apiKey

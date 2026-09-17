@@ -1,6 +1,6 @@
 # Imports, exports, and integrations
 
-This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow and a native OpenAPI 3.x workspace importer. Postman, Insomnia, Bruno, Yaak, and integration providers remain extension points.
+This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow, a native OpenAPI 3.x workspace importer, and a native Jaeger trace lookup adapter. Postman, Insomnia, Bruno, Yaak, and other integration providers remain extension points.
 
 ## Current feature status
 
@@ -16,8 +16,10 @@ This document distinguishes working import/export behavior from architectural ex
 | OpenAPI 3.0/3.1 adapter | Working first version |
 | Postman/Insomnia/Bruno/Yaak adapters | Not implemented |
 | Generic project export package | Not implemented; canonical directory is the portable artifact |
-| Integration provider runtime/UI | Not implemented |
-| Trace/observability providers | Reserved only |
+| Canonical integration envelope and unavailable-provider management | Working |
+| Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
+| Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
+| Trace/observability providers | Native Jaeger Query API v3 adapter, propagation, response-linked hierarchy/details UI; two opt-in synthetic providers for conformance |
 | Benchmark/history browser | Benchmark reserved; history storage API only |
 
 ## cURL paste/import
@@ -129,25 +131,57 @@ Do not advertise an adapter based only on its registration; it needs mapping, pe
 
 ## Integration resources
 
-`integrationDefinitionSchema` reserves a canonical resource with provider, endpoint, and credential map. `projectWorkspace` preserves these resources in `extraResources`, and `WorkspacePersistence` writes them under `integrations/`.
+`integrationDefinitionSchema` defines a provider-neutral canonical envelope with a stable provider ID, enable state, positive config version, opaque JSON config, and an explicit credential map. `projectWorkspace` preserves these resources in `extraResources`, and `WorkspacePersistence` writes them under `integrations/`.
 
-There is currently no integration registry, provider adapter, settings/editor UI, execution lifecycle, or credential acquisition flow. The schema is a persistence extension point only. New providers must define typed runtime ownership and use `Credential`/`SecretRef`; they must not interpret arbitrary integration YAML directly in feature components.
+Legacy resources with a top-level `endpoint` migrate it to `config.endpoint` when loaded. Canonical saves omit the legacy field. The YAML codec preserves `config` recursively rather than applying core compaction rules inside provider-owned JSON, so unknown private fields, empty arrays, and provider values that resemble core defaults survive save/reload unchanged. Core validates `SecretRef` ownership only through the explicit credential map; JSON inside `config` is data and is never interpreted as a credential.
+
+Workspace settings list every configured integration once, with its native capability labels, and obtain execution availability through `ObservabilityPort`. Frontend presentation registration alone cannot make a provider executable. Unavailable definitions remain enableable/deletable and survive canonical round trips. Registered settings components can edit their own config; the host submits it to native `observability_validate_config` before the normal project save. Integration identity cannot change through the editor. The host supplies a write-only credential setter limited to the instance's declared slots. Token entry is transient UI state; existing tokens are never read into the editor.
+
+The build-time frontend extension registry accepts integration presentation metadata/settings through the public extension API and rejects duplicate presentation IDs before rendering. It does not accept executable trace/log providers, correlation extractors, credential resolvers, or provider caches. The Rust registry separates one `IntegrationDescriptor` (versioned config and credential slots) from capability-specific provider registrations. A provider can gain a second capability without creating another integration instance or adding optional methods to a monolithic provider trait. Logs execution is not implemented yet. Provider credentials use `SecretRef`; plaintext resolution, HTTP/vendor parsing, correlation, normalization, caching, pagination, and cancellation belong to Rust. Core viewer components must not interpret arbitrary integration YAML or branch on provider IDs.
+
+## Build-time extension modules
+
+`createPurrApp({ modules })` is the only supported frontend composition seam. Each module declares an extension API version and stable module ID, then registers named contributions. Page routes are always `/extensions/<module-id>/<route-segment>`. Registry arrays and lookup views freeze after composition; duplicate module/provider/page/document IDs, route collisions, late registration, and unsupported API versions fail startup before a partial application renders.
+
+The curated entry points are `@purr/core/app`, `@purr/core/extension-api`, `@purr/core/ui`, `@purr/core/test-kit`, and `@purr/core/styles`. They resolve to the compiled `dist-core` artifact; source paths are not a compatibility contract. React and React DOM remain external peer dependencies. A module may own its React page, editor, services, and adapters, but it cannot import core workspaces, storage implementations, router internals, or feature components. The conformance fixture under `tests/fixtures/extensions/` demonstrates zero-module, unavailable-module, restore, and conflict behavior. `tests/fixtures/core-consumer/` additionally builds a complete external frontend from only the published surfaces, including the CSS and GraphQL worker asset.
+
+The matching native composition seam is `purr_core::core_builder()`. The consuming binary supplies its own Tauri context and may add typed Tauri plugins, `IntegrationDescriptor`s, capability-specific `TraceProvider`s, `CorrelationExtractor`s, and `TracePropagator`s. These provider traits and normalized domain values are re-exported from `purr_core::native_extension_api`. `ProviderContext` contains validated opaque config plus a scoped credential reader limited to the descriptor's declared keys; extensions cannot construct that reader or access the underlying secret store. Raw persistence, SQLite, content storage, core command registration, and credential mutation are not public APIs.
+
+The final shell owns its Tauri configuration, capabilities, icon and plugin permissions. It must directly depend on the public Tauri plugins used by core (`tauri-plugin-dialog` and `tauri-plugin-opener`) so their ACL manifests are visible while generating the shell context. The core consumer fixture compiles a separate plugin crate and fake provider to enforce this exact path. See [Phase 15 verification](testing/phase-15-core-consumer.md).
 
 ## Tracing and observability
 
-Trace is currently a disabled response tab plus a reserved document discriminant. There is no trace ID extraction, trace context propagation, provider lookup, normalized trace/log model, cache, persistence, or Jaeger/Datadog/CloudWatch/Grafana/Loki integration.
+The response Trace tab renders bounded normalized native results through `ObservabilityPort`. The public build registers Jaeger by default in both Rust and frontend composition. `VITE_PURR_JAEGER=disabled` removes its frontend module; Cargo `--no-default-features` removes its native adapter independently. These flags do not remove propagation or the generic viewer. An explicit `observability-fixtures` Cargo feature additionally registers `test.trace-alpha` and `test.trace-beta`; they return deterministic synthetic spans and require a synthetic scoped credential. They make no network calls and are not production integrations.
 
-When tracing becomes real, documentation must be expanded from actual code to cover:
+The current flow is:
 
 ```text
 request/response
-  → correlation identifier source
-  → provider lookup boundary
-  → normalized trace/log model
-  → response Trace UI
+  → observability_trace IPC using workspace/integration/document/start timestamp
+  → Rust loads exact encrypted execution metadata and canonical integration
+  → Rust correlation extraction, scoped credential resolution and provider lookup
+  → Rust bounded cache, provider result validation, ancestor-preserving search and pagination
+  → bounded normalized TracePage v2 (spans, hierarchical rows, correlation provenance)
+  → one incremental hierarchy, selection and separate span inspector
 ```
 
-Do not hardcode that future design in canonical schemas until implementation confirms ownership, credential, local-cache, and IPC boundaries.
+Provider-specific DTOs and plaintext credentials must never cross into React. Canonical integration YAML stores `SecretRef` values and opaque provider config; the Rust provider validates/migrates that config and resolves only its declared credential keys. The frontend renders normalized bounded results and UI state only.
+
+The core extractor supports W3C version-00 `traceparent`, B3 single/multi-header trace IDs and manual input. Response headers take precedence over request headers; only the first valid reference is used per lookup. Extractors can request a native body prefix of at most 64 KiB; standard header extraction does not read body bytes. The exact saved execution lookup is scoped by workspace/document/start timestamp and does not hydrate bodies. The native service retries the normal save debounce for up to one second, then reports a missing-save state. It independently records `injectedTraceId` (context actually sent, including an explicit user header), `lookupReference` (ID/source/format), and `resolvedTraceId` (provider result). A valid resolved ID may differ from the lookup ID. UI groups equal IDs and labels differing roles explicitly.
+
+Limits: 1,000 spans / 64 KiB per normalized trace, 25 spans per IPC page, 32 memory-cache entries with a 60-second TTL, four concurrent operations, 15-second timeout. Cache keys bind workspace, integration, provider/config and current credential fingerprints; credentials are re-resolved before cache hits. Search checks normalized span ID, service, operation, status, attribute keys and scalar/array values in Rust, retaining each match's ancestors. Missing parents become roots; duplicate IDs and cycles are rejected before caching. Cursors bind the exact normalized trace snapshot as well as query/config/credentials, so a changed trace cannot silently corrupt incremental loading.
+
+The viewer is execution-centric. Integration selection and manual override are secondary source context, not the primary navigation. Loading more spans enriches the same hierarchy and preserves selection/folding. The reusable row model already permits an optional timeline column; a waterfall is not implemented. Changing the document, execution, integration or query silently cancels stale work. Explicit Cancel has its own UI state. Opening Trace starts a debounced lookup; normal response display never waits for it. There is no persisted trace cache, provider-wide trace discovery, log API, event/link inspector or background auto-refresh yet.
+
+### Jaeger adapter
+
+The native adapter uses the documented [Jaeger Query HTTP API v3](https://www.jaegertracing.io/docs/2.20/architecture/apis/) at `/api/v3/traces/{traceId}`, matching its [official streaming response schema](https://github.com/jaegertracing/jaeger-idl/blob/main/swagger/api_v3/query_service.openapi.yaml). It does not depend on the internal Jaeger UI `/api/traces` endpoint. Use a query server that exposes v3. Config v1 contains an HTTP(S) `endpoint` (optional base path) and `auth: none | bearer`; missing auth migrates to `none`. Embedded URL credentials, query/fragment secrets and unknown config fields are rejected. Bearer tokens resolve natively from the instance's `apiToken` SecretRef only when bearer auth is selected. Redirects are refused to prevent credential forwarding.
+
+The reusable HTTP client has a 12-second request timeout and a 4 MiB wire-body cap even without Content-Length. Bounded OTLP JSON/NDJSON parsing runs on a blocking worker. Resource `service.name`, parent IDs, operation, microsecond timings, status and bounded primitive/array attributes map to the normalized domain; complex attributes, span events and links are not displayed in this slice. Hex/base64 ID encodings are accepted. HTTP 404/empty traces produce a not-found state; auth/transport/parse errors produce safe provider-neutral codes, never raw vendor error bodies. No automatic retries are made; Load trace retries the lookup (successful traces remain cached for up to 60 seconds).
+
+See [Phase 14 verification](testing/phase-14-jaeger.md) for the loopback synthetic service/query server, settings, propagation, provenance, hierarchy, cancellation and provider-free build checks.
+
+See [Phase 13 manual verification](testing/phase-13-observability.md) for the opt-in build, synthetic fixture generator, secure-store provisioning, cancellation and restart scenarios.
 
 ## History and benchmark concepts
 
@@ -166,5 +200,7 @@ Execution history currently has encrypted native storage and metadata pagination
 - `src/features/workspaces/components/import-workspace-dialog.tsx` — source selection, progress, and modal error state.
 - `src-tauri/src/importing.rs` — native loaders, OpenAPI adapter, `$ref` resolver, intermediate model, and canonical normalization.
 - `src/application/workspace-persistence.ts` — additive collision handling and normal persistence path.
-- `src/domain/project.ts` — canonical import targets and reserved integration shape.
-- `src/features/request-workbench/components/response-viewer.tsx` — disabled Trace surface.
+- `src/domain/project.ts` — canonical import targets and the provider-neutral integration envelope.
+- `src/features/observability/trace-panel.tsx` — bounded Trace UI through the observability port.
+- `src-tauri/src/observability/service.rs` — native provider selection, credentials, correlation, cache and pagination.
+- `src-tauri/src/persistence/observability.rs` — read-only canonical integration and saved execution projection.

@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
 import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
-import { createWorkspace, createGraphqlDocument, createSchemaDocument, cloneRequestDraft, isRequestDocument } from "../src/features/workspaces/model/workspace";
-import { deserializeManifest, deserializeResource, serializeManifest, serializeResource } from "../src/storage/yaml";
+import { validateProject } from "../src/domain/project";
+import { createWorkspace, createGraphqlDocument, createSchemaDocument, cloneRequestDraft, isExtensionDocument, isRequestDocument } from "../src/features/workspaces/model/workspace";
+import { deserializeManifest, deserializeResource, deserializeResourceFile, serializeManifest, serializeResource } from "../src/storage/yaml";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { persistImport } from "../src/application/import-project";
@@ -18,6 +19,140 @@ test("versioned YAML fixtures round-trip with disabled params and stable referen
   assert.throws(() => deserializeManifest("purr: 99\nworkspace: {}"), /unsupported/);
   assert.throws(() => deserializeManifest("purr: 1\npurr: 1\nworkspace: {}"), /Invalid/);
   assert.throws(() => deserializeManifest("purr: 1\nworkspace: &a [*a]"), /Invalid/);
+});
+
+test("integration envelopes migrate legacy endpoints and preserve unavailable provider config", async () => {
+  const legacyText = await readFile(new URL("./fixtures/projects/integration-legacy.yaml", import.meta.url), "utf8");
+  const privateText = await readFile(new URL("./fixtures/projects/integration-private.yaml", import.meta.url), "utf8");
+  const legacy = deserializeResourceFile(legacyText);
+  assert.equal(legacy.developmentRewrite, true);
+  assert.equal(legacy.value.kind, "integration");
+  if (legacy.value.kind !== "integration") return;
+  assert.equal(legacy.value.enabled, true);
+  assert.equal(legacy.value.configVersion, 1);
+  assert.deepEqual(legacy.value.config, { endpoint: "http://127.0.0.1:16686" });
+  const legacyYaml = serializeResource(legacy.value);
+  assert.doesNotMatch(legacyYaml, /^endpoint:/m);
+  assert.match(legacyYaml, /configVersion: 1/);
+  assert.match(legacyYaml, /config:\n  endpoint: http:\/\/127\.0\.0\.1:16686/);
+
+  const unavailable = deserializeResource(privateText);
+  assert.equal(unavailable.kind, "integration");
+  if (unavailable.kind !== "integration") return;
+  const config = structuredClone(unavailable.config);
+  const canonical = serializeResource(unavailable);
+  const roundTrip = deserializeResource(canonical);
+  assert.deepEqual(roundTrip, unavailable);
+  assert.deepEqual(roundTrip.kind === "integration" ? roundTrip.config : undefined, config);
+  assert.match(canonical, /enabled: true/);
+  assert.match(canonical, /emptyList: \[\]/);
+  assert.match(canonical, /body:\n      type: none/);
+
+  const workspace = createWorkspace("Integration fixture", "integration-fixture");
+  workspace.extraResources = [unavailable];
+  const secure = new MemorySecureStore();
+  await secure.set("purr/integration-fixture/integrations/private-observability/apiKey", "synthetic-private-token");
+  const first = await projectWorkspace(workspace, secure);
+  const yaml = first.project.resources.map((resource) => serializeResource(resource)).join("\n");
+  assert.doesNotMatch(yaml, /synthetic-private-token/);
+  const restored = await restoreWorkspace(first.project, first.local, secure, {});
+  const restoredIntegration = restored.extraResources?.find((resource) => resource.id === unavailable.id);
+  assert.deepEqual(restoredIntegration, unavailable);
+  if (!restoredIntegration || restoredIntegration.kind !== "integration") return;
+  restoredIntegration.enabled = true;
+  const reprojected = await projectWorkspace(restored, secure);
+  const enabled = reprojected.project.resources.find((resource) => resource.id === unavailable.id);
+  assert.equal(enabled?.kind === "integration" ? enabled.enabled : false, true);
+  assert.deepEqual(enabled?.kind === "integration" ? enabled.config : undefined, config);
+
+  const wrongWorkspace = structuredClone(unavailable);
+  wrongWorkspace.credentials.apiKey = { kind: "secret", ref: "purr/another-workspace/integrations/private-observability/apiKey" };
+  assert.throws(() => validateProject({ workspace: first.project.workspace, resources: [wrongWorkspace] }), /belong to this workspace/);
+  assert.throws(() => deserializeResource(privateText.replace("commercial.datadog", "Commercial/Datadog")), /Invalid Purr resource/);
+  assert.throws(() => deserializeResource(privateText.replace("apiKey:", "api.key:")), /Invalid Purr resource/);
+});
+
+test("unknown extension documents preserve canonical config and local edits without their module", async () => {
+  const source = await readFile(new URL("./fixtures/projects/extension-private.yaml", import.meta.url), "utf8");
+  const unavailable = deserializeResource(source);
+  assert.equal(unavailable.kind, "extension");
+  if (unavailable.kind !== "extension") return;
+  const originalConfig = structuredClone(unavailable.config);
+  const yaml = serializeResource(unavailable);
+  assert.deepEqual(deserializeResource(yaml), unavailable);
+  assert.match(yaml, /emptyList: \[\]/);
+  assert.match(yaml, /body:\n    type: none/);
+
+  const project = validateProject({
+    workspace: { id: "extension-fixture", name: "Extension fixture", variables: [], headers: [], auth: [] },
+    resources: [unavailable],
+  });
+  const secure = new MemorySecureStore();
+  const restored = await restoreWorkspace(project, [], secure, {});
+  const document = restored.documents.find((item) => item.id === unavailable.id);
+  assert.ok(document && isExtensionDocument(document));
+  assert.deepEqual(document.config, originalConfig);
+  document.name = "Renamed without module";
+  document.config = { ...document.config, message: "local working copy" };
+  document.configVersion = 3;
+
+  const projected = await projectWorkspace(restored, secure);
+  const canonical = projected.project.resources.find((item) => item.id === unavailable.id);
+  assert.equal(canonical?.name, "Renamed without module");
+  assert.equal(canonical?.kind === "extension" ? canonical.configVersion : 0, 2);
+  assert.deepEqual(canonical?.kind === "extension" ? canonical.config : undefined, originalConfig);
+  assert.ok(projected.local.some((record) => record.table === "drafts" && record.id === unavailable.id));
+
+  const withWorkingCopy = await restoreWorkspace(projected.project, projected.local, secure, {});
+  const working = withWorkingCopy.documents.find((item) => item.id === unavailable.id);
+  assert.ok(working && isExtensionDocument(working));
+  assert.equal(working.name, "Renamed without module");
+  assert.equal(working.configVersion, 3);
+  assert.equal(working.config.message, "local working copy");
+  assert.deepEqual(working.savedConfig, originalConfig);
+
+  working.savedConfigVersion = working.configVersion;
+  working.savedConfig = structuredClone(working.config);
+  const saved = await projectWorkspace(withWorkingCopy, secure);
+  const savedDefinition = saved.project.resources.find((item) => item.id === unavailable.id);
+  assert.equal(savedDefinition?.kind === "extension" ? savedDefinition.configVersion : 0, 3);
+  assert.equal(savedDefinition?.kind === "extension" ? savedDefinition.config.message : undefined, "local working copy");
+
+  const backend = new MemoryPersistenceBackend();
+  const persistence = new WorkspacePersistence(backend, secure);
+  await persistence.save({ activeWorkspaceId: withWorkingCopy.id, workspaces: [withWorkingCopy], globalVariables: [] });
+  const files = backend.snapshot.workspaces[0].files;
+  const extensionPath = Object.keys(files).find((path) => path.startsWith("documents/") && path.endsWith(".yaml"));
+  assert.ok(extensionPath);
+  assert.match(files[extensionPath].content, /kind: extension/);
+  const reloaded = await persistence.load();
+  const reloadedDocument = reloaded.workspaces[0].documents.find((item) => item.id === unavailable.id);
+  assert.ok(reloadedDocument && isExtensionDocument(reloadedDocument));
+  assert.equal(reloadedDocument.config.message, "local working copy");
+});
+
+test("workspace load rewrites legacy integration YAML to the canonical envelope", async () => {
+  const backend = new MemoryPersistenceBackend();
+  const legacy = await readFile(new URL("./fixtures/projects/integration-legacy.yaml", import.meta.url), "utf8");
+  backend.snapshot = {
+    activeWorkspaceId: "integration-fixture",
+    workspaces: [{
+      id: "integration-fixture",
+      files: {
+        "purr.yaml": { content: "purr: 1\nworkspace:\n  id: integration-fixture\n  name: Integration fixture\n", revision: "manifest" },
+        "integrations/legacy-jaeger.yaml": { content: legacy, revision: "legacy" },
+      },
+      local: [],
+    }],
+  };
+  const persistence = new WorkspacePersistence(backend, new MemorySecureStore());
+  const store = await persistence.load();
+  const integration = store.workspaces[0].extraResources?.find((resource) => resource.id === "legacy-jaeger");
+  assert.equal(integration?.kind === "integration" ? integration.config.endpoint : undefined, "http://127.0.0.1:16686");
+  const rewritten = backend.snapshot.workspaces[0].files["integrations/legacy-jaeger.yaml"].content;
+  assert.doesNotMatch(rewritten, /^endpoint:/m);
+  assert.match(rewritten, /configVersion: 1/);
+  assert.equal(deserializeResourceFile(rewritten).developmentRewrite, false);
 });
 
 test("project projection excludes drafts, execution data, cookies and all credential values", async () => {

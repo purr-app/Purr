@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 import { createHttpDocument, type Variable } from "../src/features/workspaces/model/workspace";
 import { inspectDynamicVariableGraph, resolveDynamicVariables, type DynamicVariableRequest } from "../src/features/workspaces/services/dynamic-variable-resolver";
-import type { HttpResult } from "../src/features/request-workbench/services/http-client";
+import { createInlineHttpResponse, type InlineHttpResponse } from "../src/domain/http";
+import type { ResponseContentPort } from "../src/application/ports/response-content";
+import type { HttpExchange } from "../src/domain/http";
 
 function document(id: string, name: string, url: string): DynamicVariableRequest {
   const request = createHttpDocument().request;
@@ -11,11 +13,11 @@ function document(id: string, name: string, url: string): DynamicVariableRequest
   return { id, name, kind: "http", request };
 }
 
-function result(request: DynamicVariableRequest, value: unknown): HttpResult {
+function result(request: DynamicVariableRequest, value: unknown): InlineHttpResponse {
   const text = JSON.stringify(value);
-  return { status: 200, statusText: "OK", headers: [["content-type", "application/json"]], bodyBase64: btoa(text), durationMs: 1,
+  return createInlineHttpResponse({ status: 200, statusText: "OK", headers: [["content-type", "application/json"]], bodyBase64: btoa(text), durationMs: 1,
     url: request.request.url, text, size: text.length, timeline: { startedAtMs: 1, prepareMs: 0, waitingMs: 1, downloadMs: 0, completedAtMs: 2,
-      request: { url: request.request.url, method: "GET", headers: [], bodyBase64: null }, followRedirects: true, usesCookieJar: false, timeoutMs: 60_000 } };
+      request: { url: request.request.url, method: "GET", headers: [], bodyBase64: null }, followRedirects: true, usesCookieJar: false, timeoutMs: 60_000 } });
 }
 
 function dynamic(id: string, name: string, source: string, expression = "$.value", refresh: "every-time" | "session" | "cache" = "every-time"): Variable {
@@ -31,6 +33,45 @@ test("dynamic variables execute saved request dependencies and extract a JSONPat
     execute: async (request) => { calls++; return result(request, { value: "signed/path" }); } });
   assert.equal(calls, 1);
   assert.equal(resolved.values.upload_url, "signed/path");
+});
+
+test("dynamic variables query referenced native responses without materializing the body", async () => {
+  const root = document("a", "Upload", "https://example.test/{{upload_url}}");
+  const source = document("b", "Create upload", "https://example.test/create");
+  const released: string[] = [];
+  const unavailable = () => Promise.reject(new Error("unused operation"));
+  const responseContent: ResponseContentPort = {
+    inspect: unavailable,
+    readRange: unavailable,
+    readLines: unavailable,
+    search: unavailable,
+    format: unavailable,
+    query: async (_reference, request) => {
+      assert.deepEqual(request, { language: "jsonpath", expression: "$.value" });
+      return { kind: "value", value: "native/signed/path" };
+    },
+    save: unavailable,
+    release: async (reference) => { released.push(reference.id); },
+  };
+  const exchange: HttpExchange = {
+    protocolVersion: 2,
+    request: { url: source.request.url, method: "GET", headers: [], bodyBase64: null },
+    response: { url: source.request.url, status: 200, statusText: "OK", headers: [["content-type", "application/json"]], byteLength: 2 * 1024 * 1024, durationMs: 1 },
+    content: { id: "content-dynamic", byteLength: 2 * 1024 * 1024, mediaType: "application/json", charset: "utf-8", complete: true },
+    timeline: { startedAtMs: 1, prepareMs: 0, waitingMs: 1, downloadMs: 0, completedAtMs: 2, request: { url: source.request.url, method: "GET", headers: [], bodyBase64: null }, followRedirects: true, usesCookieJar: false, timeoutMs: 60_000 },
+  };
+  const resolved = await resolveDynamicVariables({
+    root,
+    environmentId: "local",
+    documents: [root, source],
+    variablesForEnvironment: async () => [dynamic("upload", "upload_url", "b")],
+    persistentCache: {},
+    sessionCache: new Map(),
+    responseContent,
+    execute: async () => exchange,
+  });
+  assert.equal(resolved.values.upload_url, "native/signed/path");
+  assert.deepEqual(released, ["content-dynamic"]);
 });
 
 test("dynamic variable cycles fail with the complete request and variable path", async () => {

@@ -62,14 +62,14 @@ A dynamic variable definition names:
 resolve that request's effective namespace
   → resolve its own dynamic dependencies
   → execute the source request through normal request/auth/cookie transport
-  → require JSON response text
-  → queryResponseJson(expression, language)
+  → inline JSON: queryResponseJson(expression, language)
+  → referenced JSON: ResponseContentPort.query(expression, language)
   → stringify scalar/object result for {{name}}
 ```
 
 Missing/unsaved source requests, disabled dependencies, JSON parse failures, extraction failures, and document cycles stop the root request before it is sent. `inspectDynamicVariableGraph` provides the side-effect-free dependency preview used by the Variables UI.
 
-The extraction languages are the same limited evaluator used by the response viewer, not full jq/JSONPath implementations. See [Response lifecycle](response-lifecycle.md).
+The extraction languages are the same limited evaluator used by the response viewer, not full jq/JSONPath implementations. Referenced source bodies remain native and are released after extraction; a selected value larger than the bounded IPC result tier is rejected instead of becoming a request variable. See [Response lifecycle](response-lifecycle.md).
 
 ## Cache behavior
 
@@ -102,7 +102,7 @@ On macOS, `NativeSecureStore` calls Rust `secure_*` commands. The Keychain store
 
 ## External secret providers
 
-`external-secret {provider,key}` is present in the canonical type so future integrations need not change request templates. There is currently no provider registry, resolver, authentication flow, or UI capable of producing its value. Treat it as reserved and fail explicitly if execution would require it. When a provider becomes real, document its lookup, cache, permission, error, and redaction boundaries in [Imports and integrations](imports-and-integrations.md).
+`external-secret {provider,key}` is present in the canonical type so future integrations need not change request templates. The Phase 12 integration registry does not register external-secret providers, and there is currently no resolver, authentication flow, or UI capable of producing this value. Treat it as reserved and fail explicitly if execution would require it. When a provider becomes real, document its lookup, cache, permission, error, and redaction boundaries in [Imports and integrations](imports-and-integrations.md).
 
 ## Persistence summary
 

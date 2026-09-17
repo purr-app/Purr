@@ -11,9 +11,13 @@ import type { AuthContext, RequestAuth } from "../../request-workbench/model/req
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
 import { useAuthRuntime } from "../../request-workbench/hooks/use-auth-runtime";
 import { executeRequest } from "../../request-workbench/services/execute-request";
+import { materializeHttpExchange } from "../../request-workbench/services/http-client";
+import { isInlineHttpResponse } from "../../../domain/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
-import { normalizeSchema, parseGraphqlSchema } from "../model/graphql";
+import { parseGraphqlSchema } from "../model/graphql";
+import { GraphqlSchemaAnalyzer } from "../services/schema-analysis";
 import { GraphqlCodeEditor } from "./graphql-code-editor";
+import { useApplicationServices } from "../../../app/application-services-context";
 
 type RootKind = "query" | "mutation" | "subscription";
 type SearchResult = { path: string; type: GraphQLNamedType; field?: GraphQLField<unknown, unknown> | GraphQLInputField };
@@ -70,6 +74,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
+  const { httpTransport, responseContent, requestBodies } = useApplicationServices();
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -87,7 +92,17 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   const upload = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   const mounted = useRef(true);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const operation = useRef<AbortController>(undefined);
+  const schemaAnalyzer = useRef<GraphqlSchemaAnalyzer>(undefined);
+  if (!schemaAnalyzer.current) schemaAnalyzer.current = new GraphqlSchemaAnalyzer();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      operation.current?.abort();
+      schemaAnalyzer.current?.dispose();
+    };
+  }, []);
   const endpoint = source?.request.url || document.endpoint || (document.source === "introspection" ? document.sourceLabel : "");
   const schemaDraft = useMemo<RequestDraft>(() => source?.request ?? {
     ...initialRequestDraft,
@@ -111,26 +126,58 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   useEffect(() => setCopied(false), [code]);
   const selectType = (name: string) => onChange({ ui: { ...document.ui, selectedType: name, selectedField: null } });
   const selectField = (type: string, field: string) => onChange({ ui: { ...document.ui, selectedType: type, selectedField: field } });
-  const install = (text: string, sourceKind: "file" | "introspection", sourceLabel: string) => {
-    const sdl = normalizeSchema(text); if (!mounted.current) return;
+  const install = async (text: string, sourceKind: "file" | "introspection", sourceLabel: string, signal: AbortSignal) => {
+    const { normalizedSdl: sdl } = await schemaAnalyzer.current!.analyze(text, signal);
+    if (!mounted.current || signal.aborted) return;
     const loadedAt = new Date().toISOString(); onChange({ sdl, saved: true, source: sourceKind, sourceLabel, loadedAt, updatedAt: loadedAt,
       schemaSource: sourceKind === "introspection" ? { type: "introspection", endpoint, ...(source ? { requestId: source.id } : {}) }
         : { type: text.trim().startsWith("{") ? "introspection-json" : "sdl-file", location: sourceLabel, endpoint } }); setError("");
   };
   const introspect = async () => {
     if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError("");
+    const controller = new AbortController(); operation.current = controller;
     try {
       const request = applyWorkspaceRequestConfig({ ...schemaDraft, url: endpoint, graphql: { ...schemaDraft.graphql!, query: getIntrospectionQuery(), variables: "", operationName: "IntrospectionQuery" } }, "graphql", workspaceConfig);
-      const result = await executeRequest(request, context, cookieJar, runtime);
-      if (result.status < 200 || result.status >= 300) throw new Error(`Introspection failed: HTTP ${result.status} ${result.statusText}`);
-      install(result.text, "introspection", result.url);
-    } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { pending.current = false; if (mounted.current) setBusy(false); }
+      const result = await executeRequest(
+        request,
+        context,
+        cookieJar,
+        runtime,
+        httpTransport,
+        responseContent,
+        { signal: controller.signal },
+        requestBodies,
+      );
+      const response = isInlineHttpResponse(result) ? result : result.response;
+      let text: string;
+      if (isInlineHttpResponse(result)) {
+        if (response.status < 200 || response.status >= 300) throw new Error(`Introspection failed: HTTP ${response.status} ${response.statusText}`);
+        text = result.text;
+      } else {
+        try {
+          if (response.status < 200 || response.status >= 300) throw new Error(`Introspection failed: HTTP ${response.status} ${response.statusText}`);
+          text = (await materializeHttpExchange(result, responseContent, controller.signal)).text;
+        }
+        finally { await responseContent.release(result.content).catch(() => {}); }
+      }
+      await install(text, "introspection", response.url, controller.signal);
+    } catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally {
+      if (operation.current === controller) operation.current = undefined;
+      pending.current = false;
+      if (mounted.current) setBusy(false);
+    }
   };
   const loadFile = async (file?: File) => {
     if (!file || pending.current) return; pending.current = true; setBusy(true); setError("");
-    try { install(await file.text(), "file", file.name); } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { pending.current = false; if (mounted.current) setBusy(false); }
+    const controller = new AbortController(); operation.current = controller;
+    try { await install(await file.text(), "file", file.name, controller.signal); }
+    catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally {
+      if (operation.current === controller) operation.current = undefined;
+      pending.current = false;
+      if (mounted.current) setBusy(false);
+    }
   };
   const download = () => {
     if (!schema) return; const json = format === "json"; const content = json ? JSON.stringify(introspectionFromSchema(schema), null, 2) : document.sdl;

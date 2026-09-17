@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    purr_lib::run()
+    purr_lib::run(tauri::generate_context!()).expect("error while running Purr");
 }

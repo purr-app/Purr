@@ -1,17 +1,24 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
 import { WorkspacePersistence } from "../../../application/workspace-persistence";
-import { BrowserPersistenceBackend, BrowserSecureStore } from "../../../storage/browser-backend";
-import { NativePersistenceBackend, NativeSecureStore } from "../../../storage/native-backend";
 import type { Workspace, WorkspaceStore } from "../model/workspace";
 
-let persistence: WorkspacePersistence | undefined;
-export function workspacePersistence() {
-  return persistence ??= isTauri()
-    ? new WorkspacePersistence(new NativePersistenceBackend(), new NativeSecureStore())
-    : new WorkspacePersistence(new BrowserPersistenceBackend(), new BrowserSecureStore());
+const loading = new WeakMap<WorkspacePersistence, Promise<WorkspaceStore>>();
+
+export function loadWorkspaceStore(persistence: WorkspacePersistence) {
+  const existing = loading.get(persistence);
+  if (existing) return existing;
+  const pending = persistence.load().finally(() => loading.delete(persistence));
+  loading.set(persistence, pending);
+  return pending;
 }
-let loading: Promise<WorkspaceStore> | undefined;
-export const loadWorkspaceStore = () => loading ??= workspacePersistence().load().finally(() => { loading = undefined; });
-export const saveWorkspaceStore = (store: WorkspaceStore) => workspacePersistence().save(store);
-export const watchWorkspaceChanges = (onReload: (workspace: Workspace) => void, onError: (message: string) => void, current: () => WorkspaceStore | null) => workspacePersistence().watchChanges(onReload, onError, current);
-export async function openWorkspaceFolder(id: string): Promise<void> { if (isTauri()) await invoke("open_project_folder", { id }); }
+
+export const saveWorkspaceStore = (
+  persistence: WorkspacePersistence,
+  store: WorkspaceStore,
+) => persistence.save(store);
+
+export const watchWorkspaceChanges = (
+  persistence: WorkspacePersistence,
+  onReload: (workspace: Workspace) => void,
+  onError: (message: string) => void,
+  current: () => WorkspaceStore | null,
+) => persistence.watchChanges(onReload, onError, current);

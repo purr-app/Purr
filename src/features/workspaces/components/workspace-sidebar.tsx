@@ -15,10 +15,12 @@ type FolderResource = Extract<ProjectResource, { kind: "folder" }>;
 type FolderId = string | null;
 let draggedSidebarItem: { id: string; kind: "document" | "folder" } | null = null;
 
-export function WorkspaceSidebar({ workspace, onOpen, onPin, onNew, onNewFolder, onDuplicate, onDiscard, onDiscardAll, onDelete, onRename, onMoveDocument, onMoveDocuments, onReorderDocument, onMoveFolder, onRenameFolder, onDeleteFolder, onOpenFolder }: {
+export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin, onNew, onNewExtension, onNewFolder, onDuplicate, onDiscard, onDiscardAll, onDelete, onRename, onMoveDocument, onMoveDocuments, onReorderDocument, onMoveFolder, onRenameFolder, onDeleteFolder, onOpenFolder }: {
   workspace: Workspace;
+  extensionTypes?: readonly { extensionType: string; label: string }[];
   onOpen: (id: string) => void;
   onNew: (kind: CreatableDocumentKind, folderId?: string) => void;
+  onNewExtension?: (extensionType: string, folderId?: string) => void;
   onNewFolder: (parentId?: string) => void;
   onPin: (id: string) => void;
   onDuplicate: (id: string) => void;
@@ -64,12 +66,12 @@ export function WorkspaceSidebar({ workspace, onOpen, onPin, onNew, onNewFolder,
       <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-ui-2 top-1/2 size-ui-3-5 -translate-y-1/2 text-content-tertiary" />
         <Input aria-label="Search documents" placeholder="Search documents…" className="ui-focus-ring h-control-md pl-ui-7 text-ui-md" value={query} onChange={(event) => setQuery(event.target.value)} />
       </div>
-      <NewDocumentButton onNew={onNew} onNewFolder={onNewFolder} />
+      <NewDocumentButton onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} onNewFolder={onNewFolder} />
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-ui-2 pb-ui-2 pt-ui-1">
       <div aria-label="Documents">
         {rootItems.map((item) => item.kind === "folder" ? <FolderRow key={item.id} folder={item} folders={folders} documentsIn={documentsIn} children={children} ordered={ordered} depth={0} activeId={activeId}
-          onOpen={onOpen} onPin={onPin} onNew={onNew} onNewFolder={onNewFolder} onDuplicate={onDuplicate} onDelete={onDelete} onRename={onRename}
+          onOpen={onOpen} onPin={onPin} onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} onNewFolder={onNewFolder} onDuplicate={onDuplicate} onDelete={onDelete} onRename={onRename}
           onMoveDocument={onMoveDocument} onMoveDocuments={onMoveDocuments} onReorderDocument={onReorderDocument} onMoveFolder={onMoveFolder} onRenameFolder={onRenameFolder} onDeleteFolder={onDeleteFolder}
           selectedDocumentIds={selectedDocumentIds} onSelectDocument={selectDocument} onClearSelection={clearSelection} />
           : <DocumentRow key={item.id} document={item} active={item.id === activeId} selected={selectedDocumentIds.includes(item.id)} selectedDocumentIds={selectedDocumentIds} draft={false} folders={folders}
@@ -86,7 +88,7 @@ export function WorkspaceSidebar({ workspace, onOpen, onPin, onNew, onNewFolder,
   </aside>;
 }
 
-function FolderRow({ folder, folders, documentsIn, children, ordered, depth, activeId, onOpen, onPin, onNew, onNewFolder, onDuplicate, onDelete, onRename, onMoveDocument, onMoveDocuments, onReorderDocument, onMoveFolder, onRenameFolder, onDeleteFolder, selectedDocumentIds, onSelectDocument, onClearSelection }: {
+function FolderRow({ folder, folders, documentsIn, children, ordered, depth, activeId, extensionTypes, onOpen, onPin, onNew, onNewExtension, onNewFolder, onDuplicate, onDelete, onRename, onMoveDocument, onMoveDocuments, onReorderDocument, onMoveFolder, onRenameFolder, onDeleteFolder, selectedDocumentIds, onSelectDocument, onClearSelection }: {
   folder: FolderResource;
   folders: FolderResource[];
   documentsIn: (folderId: FolderId) => WorkspaceDocument[];
@@ -97,6 +99,8 @@ function FolderRow({ folder, folders, documentsIn, children, ordered, depth, act
   onOpen: (id: string) => void;
   onPin: (id: string) => void;
   onNew: (kind: CreatableDocumentKind, folderId?: string) => void;
+  extensionTypes: readonly { extensionType: string; label: string }[];
+  onNewExtension?: (extensionType: string, folderId?: string) => void;
   onNewFolder: (parentId?: string) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
@@ -139,13 +143,13 @@ function FolderRow({ folder, folders, documentsIn, children, ordered, depth, act
         <span className="truncate">{folder.name}</span>
       </button>
       <span className="pointer-events-none absolute right-ui-2 font-code text-ui-sm text-content-tertiary group-hover:opacity-ui-hidden">{documentCount}</span>
-      <span className="pointer-events-none absolute right-ui-1 flex items-center opacity-ui-hidden transition-opacity duration-ui-fast group-hover:pointer-events-auto group-hover:opacity-ui-visible focus-within:pointer-events-auto focus-within:opacity-ui-visible"><NewDocumentButton onNew={onNew} onNewFolder={onNewFolder} folderId={folder.id} />
+      <span className="pointer-events-none absolute right-ui-1 flex items-center opacity-ui-hidden transition-opacity duration-ui-fast group-hover:pointer-events-auto group-hover:opacity-ui-visible focus-within:pointer-events-auto focus-within:opacity-ui-visible"><NewDocumentButton onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} onNewFolder={onNewFolder} folderId={folder.id} />
         <FolderActions folder={folder} folders={folders} open={actionsOpen} onOpenChange={setActionsOpen} onMove={onMoveFolder} onRename={onRenameFolder} onDelete={onDeleteFolder} /></span>
     </div>
     <Collapsible open={open}><div className="relative">
       <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 border-l border-border-subtle" style={{ left: `calc(var(--space-3-5) + ${depth} * var(--space-7))` }} />
       {childItems.map((item) => item.kind === "folder" ? <FolderRow key={item.id} folder={item} folders={folders} documentsIn={documentsIn} children={children} ordered={ordered} depth={depth + 1} activeId={activeId}
-        onOpen={onOpen} onPin={onPin} onNew={onNew} onNewFolder={onNewFolder} onDuplicate={onDuplicate} onDelete={onDelete} onRename={onRename}
+        onOpen={onOpen} onPin={onPin} onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} onNewFolder={onNewFolder} onDuplicate={onDuplicate} onDelete={onDelete} onRename={onRename}
         onMoveDocument={onMoveDocument} onMoveDocuments={onMoveDocuments} onReorderDocument={onReorderDocument} onMoveFolder={onMoveFolder} onRenameFolder={onRenameFolder} onDeleteFolder={onDeleteFolder}
         selectedDocumentIds={selectedDocumentIds} onSelectDocument={onSelectDocument} onClearSelection={onClearSelection} />
         : <DocumentRow key={item.id} document={item} active={item.id === activeId} selected={selectedDocumentIds.includes(item.id)} selectedDocumentIds={selectedDocumentIds} draft={false} folders={folders} folderDepth={depth}

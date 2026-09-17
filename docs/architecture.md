@@ -9,11 +9,15 @@ Purr is a local-first desktop API client. React owns editing and application orc
 ```text
 React feature UI
   ↓
-runtime Workspace / RequestDraft / HttpResult
-  ↓
-TypeScript domain and application services
-  ↓ typed adapters and Tauri commands
+runtime Workspace / RequestDraft / StoredHttpResponse
+  ↓ ApplicationServices context
+TypeScript domain and application services → application ports
+  ↓ platform/browser or platform/tauri adapters
 Rust HTTP · OAuth callback · project files · encrypted SQLite · Keychain
+
+React observability UI
+  ↓ bounded ObservabilityPort DTOs
+Rust observability service · provider/correlation registries · scoped credentials · cache
 ```
 
 The browser adapter exists for development and tests. It is not a transparent replacement for the desktop backend: browser mode has IndexedDB/WebCrypto persistence but intentionally has no native HTTP transport, filesystem watcher, Keychain, or desktop save dialog.
@@ -24,7 +28,7 @@ The browser adapter exists for development and tests. It is not a transparent re
 
 `src/features/workspaces/model/workspace.ts` defines the mutable runtime aggregate used by the UI. It contains canonical-looking definitions together with open documents, unsaved edits, editor state, latest responses, cookies, caches, and layout state. This type is convenient runtime state, not a file format.
 
-`src/features/request-workbench/model/request.ts` defines `RequestDraft`; request body/auth/workspace configuration are split into neighboring model files. `HttpResult` in `services/http-client.ts` is the normalized frontend response.
+`src/features/request-workbench/model/request.ts` defines `RequestDraft`; request body/auth/workspace configuration are split into neighboring model files. `src/domain/http.ts` owns provider-neutral request snapshots, response metadata, timelines, opaque content references, and the transitional inline response contract. The runtime workspace accepts both legacy inline responses and versioned response-reference descriptors while migration is in progress.
 
 ### Canonical domain layer
 
@@ -47,38 +51,63 @@ canonical Project + local records + assets
 
 `src/application/workspace-persistence.ts` assigns canonical resources to files, calculates revisions/change sets, serializes writes, reconciles external changes, and calls the persistence adapter. `src/application/import-project.ts` validates and commits normalized imports.
 
+`src/application/ports/` owns the frontend contracts for HTTP transport, opaque request-file staging, response content, persistence, credentials, OAuth callbacks, import normalization, downloads, file dialogs, workspace shell actions, and application lifecycle. These contracts contain no Tauri command names or native paths. `src/app/application-services-context.tsx` exposes one typed service object at the shell; feature hooks consume that context rather than constructing platform implementations or receiving a chain of service props.
+
+`src/app/create-purr-app.tsx` is the OSS application factory and the build-time composition root. It accepts zero or more `PurrExtensionModule`s, builds the extension registry once, freezes it, and adds validated namespaced page routes before React renders. The OSS entry passes no optional modules. `src/app/composition/routes.tsx` remains internal; modules contribute pages through `@purr/core/extension-api` rather than importing the router.
+
+`src/extension-api/` is the narrow public frontend boundary. A module can register integration presentation metadata, a namespaced page/navigation entry, or an opaque workspace document type. Page/document factories receive only named capabilities (`http`, bounded response content, and a module logger); they do not receive the runtime `Workspace`, persistence backend, secret store, router, or core feature components. The registry rejects incompatible API versions and duplicate IDs/routes during composition, then exposes frozen read-only views. It deliberately exposes no executable trace/log provider, correlation extractor, credential resolver, or provider cache. Optional settings/response/workspace hooks are absent until a concrete integration needs a typed surface.
+
 ### Storage and native layers
 
-`src/storage/contracts.ts` defines `PersistenceBackend`, `FilesystemWorkspaceStore`, `LocalStateStore`, and `SecureStore`. `yaml.ts` owns the canonical YAML codec; `native-backend.ts` is the Tauri adapter; `browser-backend.ts` is the development adapter.
+`src/application/ports/persistence.ts` and `credentials.ts` define `PersistencePort`, `FilesystemWorkspaceStore`, `LocalStateStore`, and `SecureStore`. `src/storage/contracts.ts` temporarily re-exports those types for existing internal callers. `yaml.ts` owns the canonical YAML codec; `browser-backend.ts` is the IndexedDB development adapter. The native persistence implementation and every Tauri command string live in `src/platform/tauri/application-services.ts`; `storage/native-backend.ts` is a temporary compatibility re-export.
+
+`src/app/composition/core-services.ts` is the only platform-selection point. It chooses browser or desktop adapters once, constructs `WorkspacePersistence`, and supplies the frozen service object to the app factory. Browser and desktop keep their existing capability differences.
 
 Rust modules provide narrow privileged boundaries:
 
-- `src-tauri/src/http.rs`: validated HTTP(S) transport without automatic redirects.
-- `src-tauri/src/importing.rs`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
-- `src-tauri/src/project_files.rs`: safe project scanning and revision-checked atomic file operations.
-- `src-tauri/src/local_state.rs`: encrypted local records, execution metadata/history, and secret vault.
-- `src-tauri/src/secure_store.rs`: Keychain root key and derived encryption keys.
-- `src-tauri/src/persistence.rs`: workspace registry, commit journal, watchers, and Tauri persistence commands.
+- `src-tauri/src/http/`: validated HTTP(S) transport without automatic redirects, plus opaque repeatable request-file handles for streamed binary and multipart bodies.
+- `src-tauri/src/content/`: response-content chunks, lifecycle, direct save, allowlisted range-capable media protocol, bounded reads/segmented lines, cancellable search/format/query adapters, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
+- `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
+- `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
+- `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
+- `src-tauri/src/observability/`: provider-neutral trace/span models, immutable descriptor/capability/correlation/propagation registries, integration-scoped credential resolution, bounded memory cache, native hierarchy/search/pagination, cancellation and response-linked lookup. The public Jaeger adapter owns HTTP/OTLP parsing under `providers/`; two synthetic providers are available only with `observability-fixtures`. React calls bounded typed commands and owns presentation only. Propagation is independent of provider selection; the final headers are prepared in Rust before HTTP transport.
+- `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.
-- `src-tauri/src/downloads.rs`: native response-body save.
-- `src-tauri/src/lib.rs`: registered Tauri commands and managed services.
+- `src-tauri/src/composition.rs`: the build-time native composition root. `core_builder()` installs core commands/services and permits only typed Tauri plugins plus normalized observability descriptor/provider/extractor/propagator registrations before `run(context)`.
+- `src-tauri/src/native_extension_api.rs`: the reviewed public native provider contracts. It exposes normalized observability types and scoped read-only credentials, never storage internals or a generic command dispatcher.
+- `src-tauri/src/lib.rs`: minimal public `core_builder`, `PurrBuilder`, and OSS `run(context)` surface.
 
 ## Dependency direction and invariants
 
-1. Feature components may depend on feature models/services, application services, domain types, storage contracts, and shared UI.
+1. Feature components may depend on feature models/services, application services and ports, domain types, storage contracts, and shared UI. They must not import Tauri packages or construct platform adapters.
 2. The canonical domain must not depend on UI, Tauri, storage implementation, or serialization details.
 3. Storage adapters implement contracts; projection decides what belongs to project files, local records, and the secret vault.
 4. Rust accepts final transport/file/secret operations. It does not reconstruct a `RequestDraft`, resolve template variables, apply workspace inheritance, choose auth, or serialize logical body modes.
 5. Canonical definitions remain deterministic and Git-friendly. Runtime/session data and secret values must not leak into them.
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
+8. Response protection is resolved by the TypeScript application layer before transport. Future workspace/folder/document preferences are local-only and default to encrypted; shared project files cannot disable encryption, and response policy never applies to credentials or secrets.
+9. Observability execution is Rust-owned. React may render normalized bounded trace/log DTOs and issue typed lookup/search/cancel commands; it must not perform provider HTTP, parse vendor DTOs, resolve provider credentials, extract correlation, or own the authoritative provider cache.
+
+ESLint and architecture tests enforce the current boundaries: domain modules cannot import React, Tauri, feature, application, storage, importing, app, or shared implementation modules; application and feature modules cannot import Tauri packages; platform adapters cannot reach feature UI or the application composition root. A source scan also fails when an `invoke()` call appears outside `src/platform/tauri`. Extension conformance tests import only the reviewed package entry points and exercise composition without internal paths.
+
+## Public package and build identity
+
+The repository uses npm exclusively and treats `package-lock.json` as the JavaScript dependency lock. The root package reserves `@purr/core@0.1.0` while remaining unpublished during migration. `npm run build:core` emits deterministic ESM, declaration, CSS, and worker artifacts in `dist-core`; package exports resolve only to that output. The reviewed entry points are `./app`, `./extension-api`, `./ui`, `./test-kit`, and `./styles`; internal source paths are unsupported. React and React DOM are peer dependencies and are external to the core bundle, so the consuming shell supplies one runtime instance.
+
+`createPurrApp({ modules })` is the frontend composition root. On the native side an official shell depends on the `purr` crate as `purr_core`, supplies its own `tauri::Context`, and composes through `core_builder()`. It may register a typed Tauri plugin and the traits re-exported by `native_extension_api`; it cannot register arbitrary core commands or access Purr's SQLite, persistence coordinator, secure store, or credential constructors. The shell must list Purr's public Tauri plugins such as `tauri-plugin-dialog` and `tauri-plugin-opener` as direct Cargo dependencies because Tauri generates capability schemas from the final binary's dependency graph.
+
+The fixture at `tests/fixtures/core-consumer/` is the cross-repository contract test. It owns a frontend entry, Tauri configuration/capabilities, branding icon, native plugin, presentation/settings module, page, module service, extension document type, and fake trace provider. It imports package/crate surfaces and does not copy the Purr application source.
+
+The checked-in Tauri configuration is the unsigned OSS build configuration. It contains no developer or release signing identity. macOS development uses ad-hoc signing unless `PURR_DEV_SIGNING_IDENTITY` is supplied locally; official certificates, signing identities, notarization credentials, and updater keys are release-composition inputs outside the public repository.
 
 ## Major flows
 
 ### Load and save
 
 ```text
-NativePersistenceBackend.load()
+ApplicationServices.persistence.load()
+  → NativePersistenceBackend.load()
   → Rust scans registered project directories + reads local SQLite
   → WorkspacePersistence.readProject()
   → validateProject()
@@ -100,12 +129,15 @@ Request editor
   → workspace-effective RequestDraft
   → dynamic dependency requests and variables
   → static interpolation + GraphQL/auth/body preparation
-  → WireRequest + redacted display request
+  → PreparedHttpTransportRequest + redacted display request
+      ↳ binary/file multipart: bounded staging → opaque repeatable request handles
   → TypeScript cookie/redirect policy
-  → Rust send_http
-  → WireResponse
-  → HttpResult
-  → response viewer + latest execution persistence
+  → ApplicationServices.httpTransport
+  → Tauri adapter → Rust start_http / cancel_http
+  → bounded background encryption/SQLite pipeline
+  → ready encrypted content reference + request-stage diagnostics
+  → compatibility materialization or size/line-aware bounded content pages
+  → response viewer + v2 exchange persistence/content adoption
 ```
 
 See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-lifecycle.md) for ordering and edge cases.
@@ -123,17 +155,20 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 | Environment | `Environment` | `EnvironmentDefinition` | Working |
 | Variable | `Variable` | `VariableDefinition` | Static and dynamic-request working; external-secret reserved |
 | Cookie jar | `SessionCookieJar` | none | Working, workspace-local only |
-| Integration | `extraResources` | integration `ProjectResource` | Storage shape only; no provider runtime/UI |
-| Trace / benchmark | discriminants only | none | Reserved, not working features |
+| Integration | `extraResources` | provider-neutral integration `ProjectResource` | Canonical envelope and native availability/lookup working; settings editors and real providers pending |
+| Extension document | `ExtensionDocument` | opaque versioned extension `ProjectResource` | Build-time type registration, unavailable host, and round-trip persistence working |
+| Trace | Rust `ObservabilityService`; React presentation | none; configuration is an integration | Native Jaeger lookup, correlation provenance, hierarchical rows/inspector and incremental loading; synthetic provider conformance |
+| Benchmark | discriminant only | none | Reserved |
 
 ## Current architectural limitations
 
-- UI cancellation invalidates ownership of a pending completion but does not abort the native HTTP request.
+- Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Direct handle download and range-capable image/audio/video preview avoid body IPC; full-body clipboard copy remains unavailable for opaque large content.
+- GraphQL introspection responses may cross the inline boundary: schema installation reads a native content reference in bounded windows, releases it, and normalizes the complete source in a cancellable Web Worker. The UI still builds one `GraphQLSchema` from normalized SDL for CodeMirror and `graphql-language-service`; current measurements do not justify a second Rust schema model.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
 - Execution history has an indexed native pagination API, but no history-browser UI.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
 - Attached external project directories have application/native support but no current UI.
-- Registry schema sources, external secret providers, non-OpenAPI collection adapters, integrations, tracing, benchmarks, and subscriptions are not implemented end-to-end.
+- Registry schema sources, external secret providers, non-OpenAPI collection adapters, non-Jaeger tracing adapters, logs, benchmarks, and subscriptions are not implemented end-to-end. Trace lookup uses the exact persisted execution metadata, tolerates save debounce for one second, and reports a retryable missing-save state without delaying ordinary HTTP response display. Its cache is bounded and memory-only. Phase 14 adds optional propagation preferences to existing request/workspace YAML; no new persisted trace table or file format is introduced.
 
 ## Documentation ownership
 
@@ -145,15 +180,21 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - [Persistence](persistence-architecture.md): exact file/local/vault classification and recovery.
 - [GraphQL](graphql.md): request and schema lifecycles.
 - [Imports and integrations](imports-and-integrations.md): normalized import boundary and reserved concepts.
+- [Modular architecture migration plan](modular-architecture-migration-plan.md): target public/private composition, extension contracts, and the incremental native content-engine migration.
 
 ## Key files
 
-- `src/App.tsx` — mounts the product shell.
-- `src/app/app-router.tsx` — chooses the application route.
+- `src/App.tsx` — creates the OSS product through `createPurrApp`.
+- `src/app/create-purr-app.tsx` — installs services, theme, and the shared router.
+- `src/app/composition/core-services.ts` — selects and assembles browser/desktop adapters.
+- `src/app/app-router.tsx` — renders validated immutable route descriptors.
 - `src/features/workspaces/workspace-workbench.tsx` — top-level workspace orchestration and feature composition.
 - `src/features/workspaces/hooks/use-workspaces.ts` — load, autosave, flush, and failure handling.
 - `src/domain/project.ts` — canonical schemas and cross-resource validation.
 - `src/application/project-projection.ts` — runtime/canonical/local/secret projection.
 - `src/application/workspace-persistence.ts` — file layout, revisions, commits, and external reconciliation.
-- `src/storage/contracts.ts` — adapter interfaces and local table names.
-- `src-tauri/src/lib.rs` — complete native command registration map.
+- `src/application/ports/` — frontend platform contracts and local table names.
+- `src/platform/tauri/application-services.ts` — Tauri commands and desktop adapters.
+- `src-tauri/src/composition.rs` — complete native command registration map and constrained external builder.
+- `src-tauri/src/native_extension_api.rs` — reviewed native provider contracts.
+- `src-tauri/src/lib.rs` — public core builder and OSS run exports.

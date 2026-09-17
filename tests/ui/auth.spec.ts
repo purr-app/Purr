@@ -208,7 +208,7 @@ test("request pipeline applies auth, learns cookies and sends them on the next r
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
-        if (command !== "send_http") throw new Error("Unexpected command");
+        if (command !== "start_http") throw new Error("Unexpected command");
         calls.push(args.request);
         return {
           status: 200,
@@ -248,7 +248,7 @@ test("OAuth refreshes while another request tab is open", async ({ page }) => {
     (window as any).__tokenCalls = [];
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
-        if (command !== "send_http") return;
+        if (command !== "start_http") return;
         const calls = (window as any).__tokenCalls;
         calls.push(args.request);
         return {
@@ -298,7 +298,7 @@ test("OAuth ignores a late token after the client configuration changes", async 
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
-        if (command !== "send_http") return;
+        if (command !== "start_http") return;
         return new Promise((resolve) => {
           (window as any).__completeToken = () =>
             resolve({
@@ -347,7 +347,7 @@ test("PKCE authorization passes a challenge and exchanges the code with its veri
           (window as any).__authorization = args;
           return "returned-code";
         }
-        if (command === "send_http") {
+        if (command === "start_http") {
           (window as any).__exchange = args.request;
           return {
             status: 200,

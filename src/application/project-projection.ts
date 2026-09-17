@@ -1,12 +1,14 @@
 import { credentialSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
+import { responseForPersistence, restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
 import { serializeResource } from "../storage/yaml";
-import { createRequestAuth, base64Bytes, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
+import { createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
 import type { RequestDraft } from "../features/request-workbench/model/request";
-import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isRequestDocument, validateWorkspace,
-  type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
-import type { LocalRecord, SecureStore } from "../storage/contracts";
-import { decodeFiles, encodeFiles } from "../storage/file-codec";
+import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isExtensionDocument, isRequestDocument, validateWorkspace,
+  type ExtensionDocument, type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
+import type { SecureStore } from "./ports/credentials";
+import type { LocalRecord } from "./ports/persistence";
+import { decodeFiles, encodeFile, encodeFiles, type FileAttachmentLoader, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
 import { protectRuntime, resolveCredential, resolveRuntime, secretRef, storeCredential } from "../storage/secrets";
 
 type StoredOAuthToken = Omit<OAuthToken, "accessToken" | "refreshToken"> & { accessToken: Credential; refreshToken?: Credential };
@@ -166,10 +168,9 @@ export async function restoreGlobalVariables(value: unknown, secure: SecureStore
 async function requestDefinition(document: RequestDocument, workspace: string, secure: SecureStore, assets: Record<string, string>): Promise<RequestDefinition> {
   const draft = document.savedRequest ?? document.request;
   const fileRef = async (file: File) => {
-    const buffer = await file.arrayBuffer();
-    const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", buffer)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-    assets[`assets/${digest}.bin`] = base64Bytes(new Uint8Array(buffer));
-    return { id: digest, name: file.name, mediaType: file.type };
+    const encoded = await encodeFile(file);
+    assets[`assets/${encoded.contentDigest}.bin`] = encoded.record.base64;
+    return { id: encoded.contentDigest, name: file.name, mediaType: file.type };
   };
   const body = draft.body;
   const payload = body.type === "none" ? { type: "none" as const }
@@ -179,6 +180,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
       .filter((field) => field.key || field.value || field.attachment).map(async (field) => ({ name: field.key, value: field.value, enabled: field.enabled,
         ...(field.attachment ? { file: await fileRef(field.attachment) } : {}), ...(field.contentType ? { contentType: field.contentType } : {}) }))) };
   const common = { id: document.id, name: document.name, ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), ...(document.origin ? { origin: document.origin } : {}),
+    ...(draft.tracePropagation ? { tracePropagation: draft.tracePropagation } : {}),
     method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []), headers: pairs(draft.headers), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
     ...(!draft.workspace.headersEnabled || !draft.workspace.authEnabled || !draft.useCookieJar || Object.values(draft.workspace.headerOverrides).some((value) => !value)
@@ -192,6 +194,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
 export async function projectWorkspace(workspace: Workspace, secure: SecureStore): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string> }> {
   const resources: ProjectResource[] = [...(workspace.extraResources ?? [])];
   const assets: Record<string, string> = {};
+  const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();
   const allVariables = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)];
   const local: LocalRecord[] = [
     { table: "workspace_local_state", id: "state", value: { ui: workspace.ui, activeEnvironmentId: workspace.activeEnvironmentId } },
@@ -211,11 +214,11 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
       if (definition) resources.push(definition);
       if (!document.saved || isDocumentDirty(document)) local.push({ table: "drafts", id: document.id, value: await encodeFiles(await protectRuntime({
         ...document, lastResponse: null, sentAt: null, base: definition ?? null,
-      }, secure, workspace.id, `drafts/${document.id}`)) });
+      }, secure, workspace.id, `drafts/${document.id}`), attachments) });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
-        ...(definition ? { definition: serializeResource(definition), editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)) } : {}) } });
-      if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: document.lastResponse } });
-    } else {
+        ...(definition ? { definition: serializeResource(definition), editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`), attachments) } : {}) } });
+      if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: responseForPersistence(document.lastResponse) } });
+    } else if (document.kind === "schema") {
       if (document.saved) resources.push({ id: document.id, kind: "schema", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), source: schemaSource(document),
         pin: document.pinned !== false,
@@ -223,10 +226,20 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
       else local.push({ table: "drafts", id: document.id, value: document });
       local.push({ table: "schema_cache", id: document.id, value: { sdl: document.sdl, loadedAt: document.loadedAt, source: schemaSource(document) } });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
+    } else {
+      const definition: ProjectResource = { id: document.id, kind: "extension", name: document.name,
+        ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
+        extensionType: document.extensionType, configVersion: document.savedConfigVersion ?? document.configVersion,
+        config: structuredClone(document.savedConfig ?? document.config) };
+      if (document.saved) resources.push(definition);
+      if (!document.saved || isDocumentDirty(document)) local.push({ table: "drafts", id: document.id, value: { ...document, base: document.saved ? definition : null } });
+      local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
     }
   }
+  for (const [id, value] of attachments) local.push({ table: "attachments", id, value });
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
   return { project: { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
+    ...(workspace.requestConfig.tracePropagation ? { tracePropagation: workspace.requestConfig.tracePropagation } : {}),
     variables: await Promise.all(workspace.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, "variables"))),
     headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets };
 }
@@ -250,6 +263,7 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
     if (resource.body.type === "form-data") body.formData = rows; else body.urlEncoded = rows;
   }
   const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure),
+    tracePropagation: resource.tracePropagation,
     params: [...resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })), { id: "param-empty", key: "", value: "", enabled: false }],
     pathParams: resource.pathParams.map((row, index) => ({ id: `path-param-${index}`, key: row.name, value: row.value, enabled: row.enabled })),
     headers: [...resource.headers.map((row, index) => ({ id: `header-${index}`, ...row })), { id: "header-empty", name: "", value: "", enabled: false }],
@@ -260,13 +274,21 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
   return { ...document, id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, origin: resource.origin, saved: true, request: draft, savedRequest: draft };
 }
 
-export async function restoreWorkspace(project: Project, records: LocalRecord[], secure: SecureStore, assets: Record<string, string>): Promise<Workspace> {
+export async function restoreWorkspace(
+  project: Project,
+  records: LocalRecord[],
+  secure: SecureStore,
+  assets: Record<string, string>,
+  loadAttachment?: FileAttachmentLoader,
+): Promise<Workspace> {
   const workspace = createWorkspace(project.workspace.name, project.workspace.id); workspace.documents = [];
   workspace.description = project.workspace.description ?? "";
   workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration" || item.kind === "api-schema");
   workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, true)));
   workspace.requestConfig = { headers: project.workspace.headers, auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure) }))) };
+  workspace.requestConfig.tracePropagation = project.workspace.tracePropagation;
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
+  const attachments = new Map(records.filter((item) => item.table === "attachments").map((item) => [item.id, item.value]));
   const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null } | undefined;
   if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; }
   else workspace.ui = { ...workspace.ui, openDocumentIds: [], activeDocumentId: null };
@@ -289,6 +311,10 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
     if (resource.kind === "environment") workspace.environments.push({ id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId,
       variables: await Promise.all(resource.variables.map((variable) => variableFromDefinition(variable, secure, workspace.activeEnvironmentId === resource.id))) });
     if (resource.kind === "http" || resource.kind === "graphql") workspace.documents.push(await requestFromDefinition(resource, secure, assets));
+    if (resource.kind === "extension") workspace.documents.push({ id: resource.id, kind: "extension", name: resource.name,
+      description: resource.description, folderId: resource.folderId, saved: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      extensionType: resource.extensionType, configVersion: resource.configVersion, config: structuredClone(resource.config),
+      savedConfigVersion: resource.configVersion, savedConfig: structuredClone(resource.config), ui: {} });
     if (resource.kind === "schema") {
       const storedCache = get("schema_cache", resource.id) as { sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"] } | undefined;
       const source = resource.source;
@@ -301,10 +327,10 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
     }
   }
   for (const record of records.filter((item) => item.table === "drafts")) {
-    const draft = await resolveRuntime(decodeFiles(record.value), secure) as (RequestDocument | SchemaDocument) & { base?: ProjectResource };
+    const draft = await resolveRuntime(decodeFiles(record.value, attachments, workspace.id, loadAttachment), secure) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
     if (index < 0 && !draft.saved) workspace.documents.push(draft);
-    else if (index >= 0 && isRequestDocument(draft)) {
+    else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
       const definition = project.resources.find((item) => item.id === draft.id);
       const baseAtCanonicalLocation = draft.base && definition
         ? { ...draft.base, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }
@@ -329,7 +355,7 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
       const definition = project.resources.find((item) => item.id === result.id);
       if (session?.editor && definition && session.definition === serializeResource(definition) && !records.some((record) => record.table === "drafts" && record.id === result.id)) {
         const canonicalAuth = result.request.auth;
-        const editor = await resolveRuntime(decodeFiles(session.editor), secure) as RequestDraft;
+        const editor = await resolveRuntime(decodeFiles(session.editor, attachments, workspace.id, loadAttachment), secure) as RequestDraft;
         // Cached editor modes must not shadow a credential changed in SecureStore.
         // Dirty working copies use their own local refs until explicitly saved.
         const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[canonicalAuth.type] as "bearer" | "basic" | "apiKey" | "oauth2" | "inherit" | null;
@@ -339,8 +365,10 @@ export async function restoreWorkspace(project: Project, records: LocalRecord[],
         result.request = editor;
         result.savedRequest = result.request;
       }
-      const executions = records.filter((record) => record.table === "request_executions" && (record.value as { documentId: string }).documentId === document.id)
-        .map((record) => (record.value as { response: RequestDocument["lastResponse"] }).response).filter((response) => response !== null).sort((a, b) => b.timeline.startedAtMs - a.timeline.startedAtMs);
+      const executions = records.filter((record) => record.table === "request_executions" && (record.value as { documentId?: unknown }).documentId === document.id)
+        .map((record) => restoreStoredHttpResponse((record.value as { response?: unknown }).response))
+        .filter((response): response is StoredHttpResponse => response !== null)
+        .sort((a, b) => storedHttpResponseStartedAt(b) - storedHttpResponseStartedAt(a));
       result.lastResponse = executions[0] ?? null;
     }
     return result;

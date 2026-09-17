@@ -1,0 +1,11 @@
+purr: 1
+kind: integration
+id: legacy-jaeger
+name: Legacy Jaeger
+description: Synthetic legacy integration fixture
+provider: jaeger
+endpoint: http://127.0.0.1:16686
+credentials:
+  apiToken:
+    kind: secret
+    ref: purr/integration-fixture/integrations/legacy-jaeger/apiToken

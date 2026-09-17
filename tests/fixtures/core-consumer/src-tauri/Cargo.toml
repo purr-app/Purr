@@ -1,0 +1,19 @@
+[package]
+name = "purr-core-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "PurrCoreConsumer"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+purr_core = { package = "purr", path = "../../../../src-tauri" }
+serde_json = { version = "1", features = ["preserve_order"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-consumer-fixture = { path = "plugins/consumer-fixture" }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"

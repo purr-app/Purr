@@ -1,8 +1,7 @@
 [package]
 name = "purr"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Local-first desktop HTTP and GraphQL client"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -21,16 +20,22 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["jaeger"]
+jaeger = []
+observability-fixtures = []
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "multipart", "stream"] }
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 base64 = "0.22"
-tokio = { version = "1", features = ["net", "io-util", "time", "sync", "macros"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "macros", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tauri-plugin-dialog = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 aes-gcm = "0.10"
@@ -39,6 +44,15 @@ sha2 = "0.10"
 notify = "8"
 tempfile = "3"
 zeroize = "1"
+jaq-core = "3.1.1"
+jaq-std = "3.0.3"
+regex = "1.13.1"
+regex-syntax = "0.8.11"
+serde_json_path = "0.7.2"
+quick-xml = "0.42.0"
+jaq-json = { version = "2.0.3", features = ["serde", "sync"] }
+serde-transcode = "1.1.1"
+jsonpath-rfc9535 = { version = "0.1.1", features = ["scan"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
@@ -52,3 +66,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
   "NSData",
 ] }
+
+# Keep Purr itself debuggable while avoiding debug-mode network, crypto, and
+# SQLite throughput that is orders of magnitude slower than the signed build.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

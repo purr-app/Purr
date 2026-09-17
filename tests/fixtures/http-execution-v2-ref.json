@@ -1,0 +1,46 @@
+{
+  "protocolVersion": 2,
+  "request": {
+    "url": "https://fixture.invalid/large-response",
+    "method": "GET",
+    "headers": [["accept", "application/json"]],
+    "bodyBase64": null
+  },
+  "response": {
+    "url": "https://fixture.invalid/large-response",
+    "status": 200,
+    "statusText": "OK",
+    "headers": [
+      ["content-type", "application/json; charset=utf-8"],
+      ["x-purr-fixture", "reference-v2"]
+    ],
+    "byteLength": 1048576,
+    "durationMs": 125,
+    "headersDurationMs": 20,
+    "downloadDurationMs": 100,
+    "httpVersion": "HTTP/2"
+  },
+  "content": {
+    "id": "fixture-content-0001",
+    "byteLength": 1048576,
+    "mediaType": "application/json",
+    "charset": "utf-8",
+    "complete": true
+  },
+  "timeline": {
+    "startedAtMs": 1700000001000,
+    "prepareMs": 5,
+    "waitingMs": 20,
+    "downloadMs": 100,
+    "completedAtMs": 1700000001125,
+    "request": {
+      "url": "https://fixture.invalid/large-response",
+      "method": "GET",
+      "headers": [["accept", "application/json"]],
+      "bodyBase64": null
+    },
+    "followRedirects": true,
+    "usesCookieJar": false,
+    "timeoutMs": 60000
+  }
+}

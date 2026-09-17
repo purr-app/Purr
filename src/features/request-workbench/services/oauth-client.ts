@@ -1,4 +1,6 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { OAuthCallbackPort } from "../../../application/ports/platform";
+import type { ResponseContentPort } from "../../../application/ports/response-content";
+import { isInlineHttpResponse } from "../../../domain/http";
 import {
   base64Bytes,
   encodeBasicAuth,
@@ -73,6 +75,8 @@ export async function fetchOAuthToken(
   grant: "initial" | "refresh",
   code?: { code: string; verifier: string },
   transport?: HttpTransport,
+  content?: ResponseContentPort,
+  signal?: AbortSignal,
 ): Promise<OAuthToken> {
   requireOAuthUrl(config.tokenUrl);
   if (!config.clientId.trim()) throw new Error("Enter a Client ID.");
@@ -116,8 +120,12 @@ export async function fetchOAuthToken(
       headers,
       bodyBase64: base64Bytes(new TextEncoder().encode(params.toString())),
     },
-    { transport, followRedirects: false },
+    { transport, content, signal, followRedirects: false },
   );
+  if (!isInlineHttpResponse(result)) {
+    await content?.release(result.content).catch(() => {});
+    throw new Error("Token endpoint responses at or above the 1 MiB safety limit are not supported yet.");
+  }
   // OAuth response bodies can contain secrets. Expose only a known error identifier.
   let data: Record<string, unknown>;
   try {
@@ -191,11 +199,12 @@ export async function fetchOAuthToken(
 export async function authorizeOAuth(
   config: OAuthConfig,
   sessionId: string,
+  callback: OAuthCallbackPort,
+  transport: HttpTransport,
+  content?: ResponseContentPort,
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
-  if (!isTauri())
-    throw new Error("Open Purr desktop to authorize using the system browser.");
   const authorization = requireOAuthUrl(config.authorizationUrl);
   requireOAuthUrl(config.tokenUrl);
   if (!config.clientId.trim()) throw new Error("Enter a Client ID.");
@@ -224,15 +233,19 @@ export async function authorizeOAuth(
   Object.entries(values).forEach(([key, value]) =>
     authorization.searchParams.set(key, value),
   );
-  const code = await invoke<string>("authorize_oauth", {
+  const code = await callback.authorize({
     authorizationUrl: authorization.toString(),
     redirectUri: config.redirectUri,
     state: pkce.state,
     sessionId,
   });
   signal?.throwIfAborted();
-  return fetchOAuthToken(config, "initial", { code, verifier: pkce.verifier });
-}
-export async function cancelOAuth(sessionId: string) {
-  if (isTauri()) await invoke("cancel_oauth", { sessionId });
+  return fetchOAuthToken(
+    config,
+    "initial",
+    { code, verifier: pkce.verifier },
+    transport,
+    content,
+    signal,
+  );
 }

@@ -52,7 +52,7 @@ async function mockDesktop(page: Page) {
     (window as any).__requests = [];
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
-        if (command !== "send_http") return;
+        if (command !== "start_http") return;
         (window as any).__requests.push(args.request);
         const payload = JSON.parse(atob(args.request.bodyBase64));
         if ((window as any).__holdGraphqlRequest && payload.operationName !== "IntrospectionQuery") {
@@ -108,6 +108,57 @@ test("GraphQL creation menus, last-used request type, and saved query snapshots"
   await saved(page); await page.reload();
   await expect(page.getByRole("button", { name: "New GraphQL request", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Query", exact: true })).toHaveAttribute("aria-selected", "true");
+});
+
+test("large GraphQL envelopes extract data, errors and extensions through native queries", async ({ page }) => {
+  await page.addInitScript(() => {
+    const size = 2 * 1024 * 1024;
+    (window as any).isTauri = true;
+    (window as any).__largeGraphqlQueries = [];
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 8,
+          headers: [["content-type", "application/json"]],
+          content: { id: "large-graphql-envelope", byteLength: size, mediaType: "application/json", charset: "utf-8", lineCount: 1, maxLineBytes: size, complete: true },
+        };
+        if (command === "response_content_read_lines") {
+          const value = '{"data":{"fixture":"purr-v1"},"errors":[{"message":"Synthetic partial result"}],"extensions":{"fixture":"purr-extension"}}';
+          return { offset: 0, bytesRead: value.length, segments: [{ byteOffset: 0, byteLength: value.length, text: value, continuesFromPrevious: false, continuesToNext: false }], complete: true };
+        }
+        if (command === "response_content_format") return { kind: "value", value: { data: { fixture: "purr-v1" } } };
+        if (command === "response_content_query") {
+          (window as any).__largeGraphqlQueries.push(args.request.expression);
+          if (args.request.expression === ".data") return { kind: "value", value: { fixture: "purr-v1" } };
+          if (args.request.expression === ".errors") return { kind: "value", value: [{ message: "Synthetic partial result" }] };
+          if (args.request.expression === ".extensions") return { kind: "value", value: { fixture: "purr-extension" } };
+        }
+        if (command === "cancel_response_content_operation") return null;
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  });
+  await page.goto("/");
+  await createGraphql(page);
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/large-graphql");
+  await page.getByLabel("GraphQL query", { exact: true }).fill("{ fixture }");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const response = page.getByRole("region", { name: "HTTP response" });
+  const viewer = response.getByLabel("Large response body viewer", { exact: true });
+  await response.getByRole("button", { name: "Data", exact: true }).click();
+  await expect(viewer).toContainText("purr-v1");
+  await response.getByRole("button", { name: "Errors", exact: true }).click();
+  await expect(viewer).toContainText("Synthetic partial result");
+  await response.getByRole("button", { name: "Extensions", exact: true }).click();
+  await expect(viewer).toContainText("purr-extension");
+  expect(await page.evaluate(() => (window as any).__largeGraphqlQueries)).toEqual([
+    ".data",
+    ".errors",
+    ".extensions",
+  ]);
 });
 
 test("GraphQL shares HTTP auth/cookies, validates variables, introspects and persists the schema tab", async ({ page }) => {
@@ -309,6 +360,63 @@ test("standalone GraphQL schemas accept an endpoint and introspect without a req
   await expect(endpoint).toHaveValue("https://example.com/graphql");
 });
 
+test("referenced introspection responses above 1 MiB install through bounded reads", async ({ page }) => {
+  const introspection = introspectionFromSchema(buildSchema(sdl));
+  await page.addInitScript(({ introspection }) => {
+    const base = JSON.stringify({ data: introspection });
+    const source = base + " ".repeat(1024 * 1024 + 1 - base.length);
+    (window as any).isTauri = true;
+    (window as any).__releasedSchemaContent = 0;
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "start_http") return {
+          status: 200,
+          statusText: "OK",
+          durationMs: 8,
+          httpVersion: "HTTP/2",
+          headers: [["content-type", "application/json"]],
+          content: {
+            id: "large-introspection",
+            byteLength: source.length,
+            mediaType: "application/json",
+            charset: "utf-8",
+            complete: true,
+          },
+        };
+        if (command === "response_content_read_range") {
+          const offset = args.range.offset;
+          const end = Math.min(source.length, offset + args.range.length);
+          return {
+            offset,
+            bytesRead: end - offset,
+            content: btoa(source.slice(offset, end)),
+            complete: end === source.length,
+          };
+        }
+        if (command === "response_content_release") {
+          (window as any).__releasedSchemaContent += 1;
+          return null;
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    };
+  }, { introspection });
+
+  await page.goto("/");
+  await createSchema(page);
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://example.com/graphql");
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  const registry = page.getByRole("complementary", { name: "Schema type registry", exact: true });
+  await expect(registry).toContainText("Customer");
+  await expect.poll(() => page.evaluate(() => (window as any).__releasedSchemaContent)).toBe(1);
+  const measures = await page.evaluate(() => ({
+    worker: performance.getEntriesByName("purr.graphql.schema.worker-round-trip").length,
+    parse: performance.getEntriesByName("purr.graphql.schema.parse").length,
+  }));
+  expect(measures.worker).toBe(1);
+  expect(measures.parse).toBeGreaterThanOrEqual(1);
+});
+
 test("schema file import supports SDL and introspection JSON and keeps the previous schema on invalid input", async ({ page }) => {
   await page.goto("/");
   await createGraphql(page);
@@ -376,6 +484,7 @@ test("multiple operations expose inline run actions and variables navigate to th
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/graphql");
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
   await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "Schema type registry", exact: true })).toContainText("Customer");
   await tabs(page).filter({ hasText: "GQL" }).click();
   const operations = 'query Read { customer(id: "42") { id } }\nmutation Update($input: CustomerInput!) { update(input: $input) { id } }';
   await page.getByLabel("GraphQL query", { exact: true }).fill(operations);

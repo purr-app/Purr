@@ -1,5 +1,5 @@
 import type { SessionCookie } from "../features/request-workbench/model/cookie-jar";
-import type { LocalChange, LocalStateStore } from "./contracts";
+import type { LocalChange, LocalStateStore } from "../application/ports/persistence";
 
 export interface CookieJarStore {
   load(workspaceId: string): Promise<SessionCookie[]>;

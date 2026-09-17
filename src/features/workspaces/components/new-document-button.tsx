@@ -1,14 +1,16 @@
 import { useState } from "react";
-import { FileCode2, FolderPlus, Network, Plus, Waypoints } from "lucide-react";
+import { Blocks, FileCode2, FolderPlus, Network, Plus, Waypoints } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { Popover, PopoverAnchor, PopoverContent } from "../../../shared/components/ui/popover";
 import type { CreatableDocumentKind, RequestDocumentKind } from "../model/workspace";
 
-export function NewDocumentButton({ onNew, onNewFolder, defaultKind, folderId }: {
+export function NewDocumentButton({ onNew, onNewFolder, defaultKind, folderId, extensionTypes = [], onNewExtension }: {
   onNew: (kind: CreatableDocumentKind, folderId?: string) => void;
   onNewFolder?: (folderId?: string) => void;
   defaultKind?: RequestDocumentKind;
   folderId?: string;
+  extensionTypes?: readonly { extensionType: string; label: string }[];
+  onNewExtension?: (extensionType: string, folderId?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const label = defaultKind ? `New ${defaultKind === "graphql" ? "GraphQL" : "HTTP"} request` : "Create document";
@@ -24,6 +26,7 @@ export function NewDocumentButton({ onNew, onNewFolder, defaultKind, folderId }:
       <Button role="menuitem" variant="ghost" className="w-full justify-start font-normal" onClick={() => { setOpen(false); onNew("http", folderId); }}><FileCode2 className="size-ui-4 text-action-brand" />HTTP request</Button>
       <Button role="menuitem" variant="ghost" className="w-full justify-start font-normal" onClick={() => { setOpen(false); onNew("graphql", folderId); }}><Network className="size-ui-4 text-action-graphql" />GraphQL request</Button>
       {!folderId && <Button role="menuitem" variant="ghost" className="w-full justify-start font-normal" onClick={() => { setOpen(false); onNew("schema", folderId); }}><Waypoints className="size-ui-4 text-action-graphql" />GraphQL schema</Button>}
+      {extensionTypes.map((type) => <Button key={type.extensionType} role="menuitem" variant="ghost" className="w-full justify-start font-normal" onClick={() => { setOpen(false); onNewExtension?.(type.extensionType, folderId); }}><Blocks className="size-ui-4 text-action-brand" />{type.label}</Button>)}
       {onNewFolder ? <Button role="menuitem" variant="ghost" className="w-full justify-start font-normal" onClick={() => { setOpen(false); onNewFolder(folderId); }}><FolderPlus className="size-ui-4 text-action-brand" />Folder</Button> : null}
     </PopoverContent>
   </Popover>;

@@ -21,6 +21,7 @@ import type { GraphQLSchema } from "graphql";
 import { GraphqlQueryEditor } from "../../graphql/components/graphql-query-editor";
 import type { TemplateVariableActions } from "./template-variable-popover";
 import { MarkdownDocumentationEditor } from "./markdown-documentation-editor";
+import { SelectField } from "../../../shared/components/ui/select-field";
 
 type RequestSectionPanelProps = {
   schema?: GraphQLSchema;
@@ -58,6 +59,13 @@ export function RequestSectionPanel({
     value={draft.documentation}
     onChange={(documentation) => onDraftChange({ ...draft, documentation })}
   />;
+  if (activeSection === "settings") return <section className="p-ui-4 font-ui text-ui-sm">
+    <SelectField label="Trace propagation" value={draft.tracePropagation ?? "inherit"}
+      options={[{ value: "inherit", label: "Inherit workspace" }, { value: "off", label: "Off" }, { value: "w3c", label: "W3C Trace Context" }, { value: "b3", label: "B3" },
+        ...(draft.tracePropagation && !["off", "w3c", "b3"].includes(draft.tracePropagation) ? [{ value: draft.tracePropagation, label: draft.tracePropagation }] : [])]}
+      onValueChange={(value) => onDraftChange({ ...draft, tracePropagation: value === "inherit" ? undefined : value })} />
+    <p className="text-content-tertiary">Purr creates context before sending. Explicit trace headers are preserved. The service must record and export the trace for it to appear.</p>
+  </section>;
 
   return section?.id === "body" ? (
     <BodyEditor
