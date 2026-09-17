@@ -241,6 +241,7 @@
     --trace-row-height: 2.75rem;
     --trace-bar-height: 0.875rem;
     --trace-bar-min-width: 0.125rem;
+    --trace-duration-width: 7rem;
     --trace-inspector-width: 22rem;
     --line-height-code: 1.625rem;
     --font-weight-normal: 400;
@@ -308,7 +309,7 @@
     }
   }
   .ui-trace-table { min-width: 0; width: 100%; }
-  .ui-trace-grid { display: grid; grid-template-columns: min(40%, var(--trace-label-width)) minmax(0, 1fr); }
+  .ui-trace-grid { display: grid; grid-template-columns: min(40%, var(--trace-label-width)) minmax(0, 1fr) var(--trace-duration-width); }
   .ui-trace-row { height: var(--trace-row-height); }
   .ui-trace-bar { height: var(--trace-bar-height); min-width: var(--trace-bar-min-width); }
   .ui-trace-inspector { width: var(--trace-inspector-width); max-width: 40%; font-size: var(--font-size-code); line-height: var(--line-height-code); }

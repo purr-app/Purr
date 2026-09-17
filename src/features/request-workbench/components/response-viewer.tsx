@@ -1228,7 +1228,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
     () => getResponseCookies(response.headers).length,
     [response.headers],
   );
-  const searchable = tab === "response" || tab === "headers" || tab === "timeline";
+  const searchable = tab === "response" || tab === "headers" || tab === "timeline" || tab === "trace";
   const selectPanelFindMatch = useCallback((requestedIndex: number) => {
     const panel = responsePanelRef.current;
     if (!panel) return;
@@ -1237,7 +1237,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
     setFindMatchIndex(match.index);
   }, [findQuery]);
   const moveFindMatch = useCallback((direction: -1 | 1) => {
-    if (tab === "response") setFindMatchIndex((current) => findMatchCount
+    if (tab === "response" || tab === "trace") setFindMatchIndex((current) => findMatchCount
       ? (current + direction + findMatchCount) % findMatchCount
       : 0);
     else selectPanelFindMatch(findMatchIndex + direction);
@@ -1259,7 +1259,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
   }, [closeFind, execution, setExecution, response.timeline.startedAtMs]);
   useEffect(() => {
     if (!findOpen || !searchable) return;
-    if (tab === "response") {
+    if (tab === "response" || tab === "trace") {
       clearResponseTextHighlights();
       setFindMatchIndex(0);
       return;
@@ -1379,7 +1379,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           : null}
         {tab === "request" ? <ResponseRequestPanel response={response} /> : null}
         {tab === "trace" ? !tracing?.enabled ? <p className="p-ui-4 text-ui-md text-content-secondary">Tracing is not enabled for this request. Enable it in Request settings to inspect traces.</p> : workspaceId && documentId
-          ? <TracePanel key={`${workspaceId}:${documentId}:${storedResponse.timeline.startedAtMs}`} workspaceId={workspaceId} documentId={documentId} startedAtMs={storedResponse.timeline.startedAtMs} integrationId={tracing.integration?.id ?? ""} />
+          ? <TracePanel key={`${workspaceId}:${documentId}:${storedResponse.timeline.startedAtMs}:${tracing.integration?.id}`} workspaceId={workspaceId} documentId={documentId} startedAtMs={storedResponse.timeline.startedAtMs} integrationId={tracing.integration?.id ?? ""} findQuery={findQuery} findMatchIndex={findMatchIndex} onFindMatchCount={setFindMatchCount} onOpenFind={() => { setFindOpen(true); requestAnimationFrame(() => findInputRef.current?.focus()); }} />
           : <p className="p-ui-4 text-ui-sm text-content-tertiary">Open this response in a workspace to look up traces.</p> : null}
         {tab === "errors" ? <GraphqlErrorsPanel errors={graphqlResult?.errors ?? []} /> : null}
         {tab === "extensions" ? <div className="h-full min-h-0 bg-purr-codefield"><ResponseCodeViewer value={JSON.stringify(graphqlResult?.extensions ?? {}, null, 2)} language="json" /></div> : null}

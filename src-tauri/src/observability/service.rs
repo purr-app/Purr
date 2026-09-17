@@ -369,17 +369,12 @@ impl ObservabilityService {
             return Err(ObservabilityError::InvalidCursor);
         }
         let total = rows.len();
-        let end = offset.saturating_add(25).min(total);
+        let end = offset.saturating_add(500).min(total);
         let rows = rows[offset..end].to_vec();
+        let by_id: BTreeMap<_, _> = trace.spans.iter().map(|span| (&span.id, span)).collect();
         let spans = rows
             .iter()
-            .filter_map(|row| {
-                trace
-                    .spans
-                    .iter()
-                    .find(|span| span.id == row.span_id)
-                    .cloned()
-            })
+            .filter_map(|row| by_id.get(&row.span_id).map(|span| (*span).clone()))
             .collect();
         correlation.resolved_trace_id = Some(trace.id.clone());
         let started_at_us = trace

@@ -90,6 +90,7 @@ export default {
         "ui-trace-label": "var(--trace-label-width)",
         "ui-trace-row": "var(--trace-row-height)",
         "ui-trace-bar": "var(--trace-bar-height)",
+        "ui-trace-duration": "var(--trace-duration-width)",
         "ui-trace-inspector": "var(--trace-inspector-width)",
         "ui-0": "var(--space-0)",
         "ui-1": "var(--space-1)",

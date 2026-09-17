@@ -14,6 +14,7 @@ test.beforeEach(async ({ page }) => {
       if (command === "start_http") return { status: 200, statusText: "OK", durationMs: 1,
         headers: [["content-type", "application/json"]], bodyBase64: btoa('{"ok":true}') };
       if (command === "observability_integrations") return [];
+      if (command === "plugin:opener|open_url") return;
       if (command === "cancel_observability") { state.cancelled++; return; }
       if (command === "observability_validate_config") {
         if (!String(args.config.endpoint).startsWith("http")) throw new Error("invalid_config");
@@ -25,13 +26,13 @@ test.beforeEach(async ({ page }) => {
         if (state.mode === "malformed") return { ...tracePage, vendorPayload: { token: "should-not-render" } };
         const offset = Number(args.query.cursor ?? 0);
         const total = args.query.search ? 2 : 500;
-        const spans = Array.from({ length: Math.min(25, total - offset) }, (_, index) => {
+        const spans = Array.from({ length: Math.min(200, total - offset) }, (_, index) => {
           const position = offset + index;
           return { ...tracePage.spans[0], id: position.toString(16).padStart(16, "0"), parentSpanId: position ? "0000000000000000" : null,
             service: position % 3 === 0 ? "api" : position % 3 === 1 ? "database" : "cache",
             operation: position ? `Operation ${position}` : "First operation", startedAtUs: 1000 + (position ? position * 200 : 0), durationUs: position ? 500 + position * 10 : 110000 };
         });
-        return { ...tracePage, total, timing: { startedAtUs: 1000, durationUs: 110000 }, spans,
+        return { ...tracePage, traceId: args.query.manualTraceId ?? tracePage.traceId, correlation: { ...tracePage.correlation, resolvedTraceId: args.query.manualTraceId ?? tracePage.traceId }, total, timing: { startedAtUs: 1000, durationUs: 110000 }, spans,
           rows: spans.map((span, index) => ({ spanId: span.id, depth: offset + index ? 1 : 0, hasChildren: offset + index === 0, matchesSearch: true })), nextCursor: offset + spans.length < total ? String(offset + spans.length) : null };
       }
       throw new Error(`Unexpected command ${command}`);
@@ -132,9 +133,18 @@ test("request tracing controls provider onboarding, hidden tabs and locked gener
   await page.getByRole("switch", { name: "Enable tracing for this request" }).click();
   await page.getByRole("tab", { name: /^Headers/ }).first().click();
   await expect(page.locator('input[value="{{$traceparent}}"]')).toBeVisible();
+  await page.getByRole("tab", { name: /^Auth/ }).first().click();
+  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  await page.getByLabel("Bearer token", { exact: true }).fill("synthetic-request-token");
+  await page.getByRole("tab", { name: /^Headers/ }).first().click();
+  const fields = page.getByRole("region", { name: "header entries" }).getByPlaceholder("Header-name");
+  await expect(fields).toHaveCount(3);
+  await expect(fields.nth(0)).toHaveValue("Authorization");
+  await expect(fields.nth(1)).toHaveValue("traceparent");
+  await expect(fields.nth(2)).toHaveValue("");
 });
 
-test("waterfall virtualizes lazy pages, folds parents, and restores inspector and response tab", async ({ page }) => {
+test("waterfall loads a stable snapshot, virtualizes rows, folds parents, and restores inspector and response tab", async ({ page }) => {
   await openTrace(page);
   await expect(page.getByRole("complementary", { name: "Span details" })).toHaveCount(0);
   await page.getByRole("button", { name: "api First operation", exact: true }).click();
@@ -142,8 +152,21 @@ test("waterfall virtualizes lazy pages, folds parents, and restores inspector an
   await expect(inspector).toContainText("Timing");
   await expect(inspector).toContainText("110 ms");
   await expect(inspector).toContainText("Attributes");
+  const stats = page.getByLabel("Trace statistics");
+  await expect(stats).toContainText("Total Spans500");
+  await expect(stats).toContainText("Depth2");
+  const bars = page.locator(".ui-trace-bar");
+  expect(new Set(await bars.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).backgroundColor))).size).toBeGreaterThan(2);
+  const bar = await bars.first().boundingBox();
+  const duration = await page.getByRole("button", { name: "Inspect First operation", exact: true }).boundingBox();
+  expect(bar!.x + bar!.width).toBeLessThanOrEqual(duration!.x + 1);
   await page.screenshot({ path: test.info().outputPath("trace-waterfall.png") });
   await page.getByRole("button", { name: "Collapse First operation" }).click();
+  await expect(page.getByRole("treeitem")).toHaveCount(1);
+  await page.keyboard.press("Meta+f");
+  await page.getByLabel("Find in response", { exact: true }).fill("Operation 499");
+  await expect(page.getByRole("button", { name: "database Operation 499", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close find", exact: true }).click();
   await expect(page.getByRole("treeitem")).toHaveCount(1);
   await page.getByRole("button", { name: "Expand First operation" }).click();
   const tree = page.getByRole("tree", { name: "Trace spans" });
@@ -156,10 +179,22 @@ test("waterfall virtualizes lazy pages, folds parents, and restores inspector an
   await expect(page.getByRole("tab", { name: "Trace", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(inspector).toContainText("First operation");
   await page.keyboard.press("Meta+f");
-  await expect(page.getByLabel("Search trace spans")).toBeFocused();
-  await page.getByLabel("Search trace spans").fill("database");
-  await expect.poll(() => page.evaluate(() => (window as any).traceTest.calls.filter((call: any) => call.command === "observability_trace").at(-1).args.query.search)).toBe("database");
-  await expect(page.getByRole("treeitem")).toHaveCount(2);
+  const find = page.getByLabel("Find in response", { exact: true });
+  await expect(find).toBeFocused();
+  await find.fill("Operation 499");
+  await expect(page.locator("[data-response-find-bar]")).toContainText("1/1");
+  await expect(page.getByRole("button", { name: "database Operation 499", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close find", exact: true }).click();
+  await expect(page.getByRole("treeitem")).not.toHaveCount(0);
+  const height = await tree.evaluate((element) => element.scrollHeight);
+  await tree.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(page.getByRole("button", { name: "database Operation 499", exact: true })).toBeVisible();
+  expect(await tree.evaluate((element) => element.scrollHeight)).toBe(height);
+  await page.getByLabel("Trace ID", { exact: true }).fill("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await page.getByRole("button", { name: "Load trace", exact: true }).click();
+  await expect(page.getByLabel("Trace correlation")).toContainText("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await page.getByRole("button", { name: "Open in browser", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).traceTest.calls.find((call: any) => call.command === "plugin:opener|open_url")?.args.url)).toBe("http://127.0.0.1:16686/trace/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 });
 
 test("trace cancellation ignores late results and reload handles empty responses", async ({ page }) => {
@@ -189,4 +224,29 @@ test("workspace settings retain unfinished editors until the settings tab closes
   await expect(page.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "Shared auth", exact: true }).click();
   await expect(page.getByLabel("Auth name", { exact: true })).toHaveCount(0);
+});
+
+test("changing the request provider isolates the loaded trace and manual ID", async ({ page }) => {
+  await openTrace(page);
+  await page.getByLabel("Trace ID", { exact: true }).fill("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await page.getByRole("button", { name: "Load trace", exact: true }).click();
+  await expect(page.getByLabel("Trace correlation")).toContainText("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  const region = await settings(page);
+  await region.getByRole("button", { name: "Add integration", exact: true }).click();
+  await page.getByRole("button", { name: /Jaeger Explore distributed traces/ }).click();
+  await page.getByLabel("Integration name", { exact: true }).fill("Second traces");
+  await page.getByLabel("Integration endpoint URL", { exact: true }).fill("http://127.0.0.1:16687/base");
+  await page.getByRole("button", { name: "Save integration", exact: true }).click();
+  await page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab").first().click();
+  await page.getByRole("combobox", { name: "Tracing provider" }).click();
+  await page.getByRole("option", { name: "Second traces", exact: true }).click();
+  await expect(page.getByLabel("Trace ID", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Trace correlation")).not.toContainText("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await expect(page.getByRole("tree", { name: "Trace spans" })).toBeVisible();
+  await page.getByRole("button", { name: "Open in browser", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).traceTest.calls.find((call: any) => call.command === "plugin:opener|open_url")?.args.url)).toBe(`http://127.0.0.1:16687/base/trace/${fixture.traceId}`);
+  await page.getByRole("combobox", { name: "Tracing provider" }).click();
+  await page.getByRole("option", { name: "Local traces", exact: true }).click();
+  await expect(page.getByLabel("Trace ID", { exact: true })).toHaveValue("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await expect(page.getByLabel("Trace correlation")).toContainText("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 });

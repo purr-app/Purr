@@ -216,7 +216,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
         .await
         .unwrap();
     assert_eq!(first.trace_id.as_deref(), Some(TRACE));
-    assert_eq!(first.spans.len(), 25);
+    assert_eq!(first.spans.len(), 500);
     assert!(!first.cached);
     assert_eq!(first.spans[0].service, "alpha");
     assert!(
@@ -235,7 +235,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
             .unwrap()
             .spans[0]
             .operation,
-        "synthetic-operation-25"
+        "synthetic-operation-500"
     );
     next.cursor = None;
     next.integration_id = "beta".into();
@@ -248,7 +248,7 @@ async fn native_service_dispatches_two_providers_pages_searches_and_invalidates_
             .service,
         "beta"
     );
-    next.search = "operation-59".into();
+    next.search = "operation-599".into();
     assert_eq!(
         service
             .lookup(&repository, next, cancel())
@@ -527,7 +527,7 @@ async fn custom_response_headers_override_sent_context_and_keep_timing_bounds() 
     next.cursor = first.next_cursor.clone();
     let second = service.lookup(&repository, next, cancel()).await.unwrap();
     assert_eq!(first.timing, second.timing);
-    assert_eq!(first.timing.unwrap().duration_us, 59_750);
+    assert_eq!(first.timing.unwrap().duration_us, 599_750);
 }
 
 #[tokio::test]
@@ -585,7 +585,7 @@ async fn large_normalized_trace_is_paged_without_the_old_preview_limit() {
     );
     let page = service.lookup(&repository, query, cancel()).await.unwrap();
     assert_eq!(page.total, 2000);
-    assert_eq!(page.spans.len(), 25);
+    assert_eq!(page.spans.len(), 500);
     assert!(page.next_cursor.is_some());
     assert_eq!(page.timing.unwrap().duration_us, 1_999_500);
 }
