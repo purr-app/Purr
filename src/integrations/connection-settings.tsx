@@ -15,6 +15,7 @@ import { SelectField } from "../shared/components/ui/select-field";
 /** Shared connection editor available to first-party and private provider modules. */
 export function IntegrationConnectionSettings({ value, onSave, onCancel, setCredential, getCredential, variables = {}, variableActions, authContext, endpointHint }: IntegrationSettingsProps & { endpointHint?: string }) {
   const prefix = `integration.${value.id}`;
+  const [headersOpen, setHeadersOpen] = useTabState(`${prefix}.headersOpen`, false);
   const [name, setName] = useTabState(`${prefix}.name`, value.name);
   const [endpoint, setEndpoint] = useTabState(`${prefix}.endpoint`, String(value.config.endpoint ?? ""));
   const [tracing, setTracing] = useTabState(`${prefix}.tracing`, value.tracing ?? { propagation: "w3c" as const, requestHeaders: [], responseHeaders: [] });
@@ -66,11 +67,11 @@ export function IntegrationConnectionSettings({ value, onSave, onCancel, setCred
       {endpointHint ? <p className="m-ui-0 text-ui-sm text-content-tertiary">{endpointHint}</p> : null}
     </div>
     <section className="space-y-ui-2"><h3 className="text-ui-md font-medium">Authentication</h3>
-      <div className="overflow-hidden rounded-ui-lg border border-border-subtle"><AuthEditor auth={draft.auth} onAuthChange={(auth) => setDraft((current) => ({ ...current, auth }))} context={context} runtime={runtime} variableActions={variableActions} allowInherit={Boolean(context.workspaceProfiles?.length)} idPrefix={`integration-${value.id}`} ariaLabel="Integration authentication" /></div>
+      <div className="overflow-hidden rounded-ui-lg border border-border-subtle"><AuthEditor secureStorageOnly auth={draft.auth} onAuthChange={(auth) => setDraft((current) => ({ ...current, auth }))} context={context} runtime={runtime} variableActions={variableActions} allowInherit={Boolean(context.workspaceProfiles?.length)} idPrefix={`integration-${value.id}`} ariaLabel="Integration authentication" /></div>
     </section>
     <section className="space-y-ui-3"><h3 className="text-ui-md font-medium">Propagation</h3>
       <SelectField label="Trace propagation" value={tracing.propagation} onValueChange={(propagation) => setTracing((current) => ({ ...current, propagation }))} options={[{ value: "off", label: "Off" }, { value: "w3c", label: "W3C Trace Context" }, { value: "b3", label: "B3" }]} />
-      <details className="rounded-ui-lg border border-border-subtle"><summary className="ui-focus-ring cursor-pointer p-ui-3 text-ui-sm text-content-secondary">Custom propagation headers</summary>
+      <details open={headersOpen} onToggle={(event) => setHeadersOpen(event.currentTarget.open)} className="rounded-ui-lg border border-border-subtle"><summary className="ui-focus-ring cursor-pointer p-ui-3 text-ui-sm text-content-secondary">Custom propagation headers</summary>
         <div className="space-y-ui-3 border-t border-border-subtle py-ui-3">
           <p className="m-ui-0 px-ui-3 text-ui-sm text-content-secondary">Request headers</p>
           <p className="m-ui-0 px-ui-3 text-ui-sm text-content-tertiary">Leave empty for standard headers. Values support {'{{$traceparent}}'}, {'{{$b3}}'}, {'{{$traceId}}'}, {'{{$spanId}}'} and workspace variables.</p>
@@ -82,6 +83,6 @@ export function IntegrationConnectionSettings({ value, onSave, onCancel, setCred
       </details>
     </section>
     {error ? <p role="alert" className="text-ui-sm text-accent-red">{error}</p> : null}
-    <div className="flex justify-end gap-ui-2 border-t border-border-subtle pt-ui-4"><Button variant="brand" disabled={saving} onClick={onCancel}>Cancel</Button><Button variant="brand" disabled={saving || !ready || !name.trim() || !endpoint.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save integration"}</Button></div>
+    <div className="sticky bottom-0 flex justify-end gap-ui-2 border-t border-border-subtle bg-purr-overlay py-ui-4"><Button variant="brand" disabled={saving} onClick={onCancel}>Cancel</Button><Button variant="brand" disabled={saving || !ready || !name.trim() || !endpoint.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save integration"}</Button></div>
   </div>;
 }

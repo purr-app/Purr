@@ -78,7 +78,7 @@ export function RequestSectionPanel({
     </div>
     <div className="flex items-center justify-between gap-ui-4">
       <div><p className="m-ui-0 text-content-primary">Is enabled</p><p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">Apply tracing to this request and inspect its spans.</p></div>
-      <Switch label="Enable tracing for this request" checked={tracing.enabled} disabled={!providers.length}
+      <Switch label="Enable tracing for this request" checked={draft.tracing?.enabled ?? tracing.enabled} disabled={!providers.length && !(draft.tracing?.enabled ?? tracing.enabled)}
         onCheckedChange={(enabled) => onDraftChange({ ...draft, tracing: { enabled, integrationId: (selectedProvider ?? providers[0])?.id } })} />
     </div>
   </section>;

@@ -86,6 +86,11 @@ export default {
         },
       },
       spacing: {
+        "ui-integration-dialog": "var(--integration-dialog-width)",
+        "ui-trace-label": "var(--trace-label-width)",
+        "ui-trace-row": "var(--trace-row-height)",
+        "ui-trace-bar": "var(--trace-bar-height)",
+        "ui-trace-inspector": "var(--trace-inspector-width)",
         "ui-0": "var(--space-0)",
         "ui-1": "var(--space-1)",
         "ui-1-5": "var(--space-1-5)",
@@ -160,6 +165,7 @@ export default {
         mono: ["Google Sans Code", "ui-monospace", "monospace"],
       },
       fontSize: {
+        "ui-code": ["var(--font-size-code)", { lineHeight: "var(--line-height-code)" }],
         "ui-2xs": [
           "var(--font-size-2xs)",
           { lineHeight: "var(--line-height-2xs)" },

@@ -19,11 +19,13 @@ export function BearerAuthForm({
   onAuthChange,
   context,
   now,
+  secureStorageOnly = false,
 }: {
   auth: RequestAuth;
   onAuthChange: (auth: RequestAuth) => void;
   context: AuthContext;
   now: number;
+  secureStorageOnly?: boolean;
 }) {
   const [inspect, setInspect] = useState(false);
   let bearer = "";
@@ -79,7 +81,7 @@ export function BearerAuthForm({
                 },
               })
             }
-          /><Checkbox label="Store token as secret" checked={auth.credentialStorage?.bearer !== "plain"} onCheckedChange={(secret) => onAuthChange({ ...auth, credentialStorage: { ...auth.credentialStorage, bearer: secret ? "secret" : "plain" } })} /></div>
+          />{!secureStorageOnly ? <Checkbox label="Store token as secret" checked={auth.credentialStorage?.bearer !== "plain"} onCheckedChange={(secret) => onAuthChange({ ...auth, credentialStorage: { ...auth.credentialStorage, bearer: secret ? "secret" : "plain" } })} /> : null}</div>
       </div>
       {jwt ? (
         <div className="flex justify-end">

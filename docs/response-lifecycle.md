@@ -63,7 +63,7 @@ Content-Type is authoritative when present. Safe sniffing is intentionally narro
 - **Headers**: repeated response header rows.
 - **Cookie**: cookies parsed from response `Set-Cookie`; values are masked until reveal.
 - **Timeline**: preparation/connection-and-waiting/download segments, redirects, protocol, addresses, and safe request metadata.
-- **Trace**: provider-neutral hierarchy/details from a Rust-owned lookup, ancestor-preserving attribute search and incremental loading. Integration/manual ID are secondary context; correlation provenance explains differing sent/lookup/resolved IDs. Context changes cancel silently; explicit user cancellation is shown separately.
+- **Trace**: provider-neutral hierarchy/details from a Rust-owned lookup, ancestor-preserving attribute search and incremental loading. The provider comes from request settings; correlation provenance explains differing sent/lookup/resolved IDs. Context changes cancel silently; explicit user cancellation is shown separately.
 - **Request**: the prepared display request by default, with explicit secret reveal.
 
 The parent response state also presents status, protocol, addresses, total duration, and byte size. HTTP errors still have a normal response viewer; transport/preparation errors use the Error state.
@@ -107,7 +107,7 @@ All response code themes come from `src/shared/theme/code-editor-theme.ts`; fold
 
 ## Find in response
 
-Cmd/Ctrl+F is intercepted only while Response, Headers, or Timeline is active. It opens a find control at the top-right with match count and previous/next navigation. Enter moves forward; Shift+Enter moves backward. Inline body matches use CodeMirror’s search state. Large-body matches are found by native literal or regex search over bounded 4 MiB windows, and navigation requests only the preview around the selected byte offset. The `.*` toggle lives in Find, has an explicit pressed state, and sends `regularExpression` to Rust; native byte offset/length are used for regex highlighting without evaluating a JavaScript regex on the body. Closing find aborts the opaque native operation. Headers and Timeline use the viewer’s stable text-node highlighter. Search state is viewer-local and does not alter response content.
+Cmd/Ctrl+F is intercepted while Response, Headers, Timeline, or Trace is active. In Trace it focuses the span/attribute search in the trace header. It opens a find control at the top-right with match count and previous/next navigation. Enter moves forward; Shift+Enter moves backward. Inline body matches use CodeMirror’s search state. Large-body matches are found by native literal or regex search over bounded 4 MiB windows, and navigation requests only the preview around the selected byte offset. The `.*` toggle lives in Find, has an explicit pressed state, and sends `regularExpression` to Rust; native byte offset/length are used for regex highlighting without evaluating a JavaScript regex on the body. Closing find aborts the opaque native operation. Headers and Timeline use the viewer’s stable text-node highlighter. Search state is viewer-local and does not alter response content.
 
 ## jq and JSONPath extraction
 
@@ -174,3 +174,11 @@ Every send captures an execution counter and an `AbortController`. Escape aborts
 - `src-tauri/src/content/protocol.rs` — allowlisted media handle protocol and byte-range validation.
 - `src-tauri/src/persistence/local_records.rs` and `response_bodies.rs` — execution persistence, atomic content adoption, deletion, and history pagination.
 - `src-tauri/src/commands/response.rs` — native response-content IPC and inline save boundary.
+
+
+Trace spans use a virtualized waterfall with native timing bounds and automatic
+cursor loading near the viewport. The inspector is absent until a span is selected.
+The Trace tab is hidden when the workspace has no integration with tracing capability;
+when tracing is disabled for a request it explains how to enable it. Open-tab state
+retains response view, trace search, loaded pages, collapsed spans and selection until
+the document tab closes. Background tab unmounts cancel pending lookups.

@@ -29,3 +29,10 @@ export function useTabState<T>(key: string, initial: T | (() => T)): [T, Dispatc
   }, [cache, key]);
   return [value, update];
 }
+
+export function useForgetTabState() {
+  const cache = useContext(TabStateContext);
+  return useCallback((prefix: string) => {
+    for (const key of cache?.keys() ?? []) if (key.startsWith(prefix)) cache?.delete(key);
+  }, [cache]);
+}

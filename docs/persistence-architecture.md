@@ -225,3 +225,12 @@ The last category is currently incomplete. Workspace auth runtime has an explici
 - `src-tauri/src/local_state.rs` — SQLite schema, encryption, history, cookie indexes, and vault.
 - `src-tauri/src/secure_store.rs` — Keychain root and cryptographic key derivation.
 - `src-tauri/src/persistence.rs` — registry, journals, Tauri commands, and watcher.
+
+Integration tracing settings and request `{ enabled, integrationId? }` bindings are
+optional canonical fields. Missing fields retain legacy propagation behavior; new
+requests start with tracing disabled. Generated header templates are an effective
+runtime projection, and generated IDs remain in encrypted execution metadata.
+The shared integration AuthEditor keeps its full configuration and OAuth token in
+a declared `auth` SecureStore slot, referenced by canonical integration credentials;
+legacy `apiToken` slots remain readable. Open-tab UI state is an in-memory scope
+released on tab close and does not add project fields or local database records.
