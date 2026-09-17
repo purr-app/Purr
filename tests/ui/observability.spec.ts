@@ -177,6 +177,11 @@ test("waterfall loads a stable snapshot, virtualizes rows, folds parents, and re
   await expect(page.getByRole("treeitem")).toHaveCount(1);
   await page.getByRole("button", { name: "Expand First operation" }).click();
   const tree = page.getByRole("tree", { name: "Trace spans" });
+  const waterfallHeader = page.getByText("Service & operation", { exact: true });
+  await expect(tree.getByText("Service & operation", { exact: true })).toHaveCount(0);
+  const headerBounds = await waterfallHeader.boundingBox();
+  const treeBounds = await tree.boundingBox();
+  expect(headerBounds!.y + headerBounds!.height).toBeLessThanOrEqual(treeBounds!.y + 1);
   await tree.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect.poll(() => page.evaluate(() => (window as any).traceTest.calls.filter((call: any) => call.command === "observability_trace").length)).toBeGreaterThan(1);
   expect(await page.getByRole("treeitem").count()).toBeLessThan(60);

@@ -71,15 +71,18 @@ export function TraceHierarchy({ spans, rows, stateKey = "trace", startedAtUs, d
     setCollapsed((previous) => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   }
   return <div className="flex min-h-0 flex-1 overflow-hidden">
-    <div ref={scrollRef} role="tree" aria-label="Trace spans" className="min-h-0 min-w-0 flex-1 overflow-auto" onScroll={(event) => setScrollOffset(event.currentTarget.scrollTop)}>
-      <div className="ui-trace-table">
-        <div className="ui-trace-grid sticky top-0 z-10 border-b border-border-subtle bg-purr-elevated text-ui-md">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="ui-trace-table shrink-0">
+        <div className="ui-trace-grid border-b border-border-subtle bg-purr-elevated text-ui-md">
           <div className="px-ui-3 py-ui-3 text-content-secondary">Service &amp; operation</div>
           <div className="relative flex items-center justify-between border-l border-border-subtle px-ui-2 font-code text-content-tertiary">
             {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <span key={fraction}>{traceDuration(bounds.duration * fraction)}</span>)}
           </div>
           <div className="flex items-center justify-end px-ui-2 text-content-tertiary">Duration</div>
         </div>
+      </div>
+      <div ref={scrollRef} role="tree" aria-label="Trace spans" className="min-h-0 min-w-0 flex-1 overflow-auto" onScroll={(event) => setScrollOffset(event.currentTarget.scrollTop)}>
+        <div className="ui-trace-table">
         <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
           {items.map((item) => {
             const row = visible[item.index]; const span = byId.get(row.spanId); if (!span) return null;
@@ -108,6 +111,7 @@ export function TraceHierarchy({ spans, rows, stateKey = "trace", startedAtUs, d
           })}
         </div>
         {!rows.length ? <p className="p-ui-3 text-ui-md text-content-tertiary">No spans match this search.</p> : null}
+        </div>
       </div>
     </div>
     {inspected ? <aside aria-label="Span details" className="ui-trace-inspector min-h-0 shrink-0 overflow-auto border-l border-border-subtle bg-purr-surface p-ui-4 text-ui-code">
