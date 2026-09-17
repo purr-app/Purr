@@ -82,6 +82,7 @@ fn setup() -> (ObservabilityService, MemoryRepository, TraceQuery) {
             )],
         },
         TraceQuery {
+            connection: None,
             workspace_id: "workspace".into(),
             integration_id: "alpha".into(),
             document_id: "document".into(),

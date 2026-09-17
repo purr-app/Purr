@@ -299,6 +299,13 @@
       grid-template-columns: var(--auth-prefix-width) repeat(2, minmax(0, 1fr));
     }
   }
+  .ui-select-options {
+    width: max-content;
+    min-width: var(--radix-popover-trigger-width);
+    max-width: var(--radix-popover-content-available-width);
+  }
+  .ui-integration-dialog { width: min(56rem, calc(100vw - var(--space-8))); }
+  .ui-integration-content { max-height: 75vh; min-height: 24rem; }
   .ui-popover-match-anchor {
     width: var(--radix-popover-trigger-width);
   }

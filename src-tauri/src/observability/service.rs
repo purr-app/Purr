@@ -160,7 +160,20 @@ impl ObservabilityService {
             instance.config_version,
             &instance.config,
         )?;
+        if let Some(connection) = &query.connection {
+            let url = reqwest::Url::parse(&connection.endpoint).map_err(|_| ObservabilityError::InvalidConfig)?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+                || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some()
+                || connection.endpoint.len() > 8192 || connection.headers.len() > 64
+                || connection.headers.iter().any(|(name, value)| name.len() > 256 || value.len() > 16384
+                    || reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err()
+                    || reqwest::header::HeaderValue::from_str(value).is_err()) {
+                return Err(ObservabilityError::InvalidConfig);
+            }
+        }
         let mut digest = Sha256::new();
+        // Resolved environment and auth are memory-only and isolate cache entries.
+        digest.update(serde_json::to_vec(&query.connection).map_err(|_| ObservabilityError::InvalidConfig)?);
         digest.update(
             serde_json::to_vec(&(
                 &query.workspace_id,
@@ -257,6 +270,7 @@ impl ObservabilityService {
                 let Some(trace) = provider
                     .get_trace(
                         ProviderContext {
+                            connection: query.connection.as_ref(),
                             config: &config,
                             credentials: &credentials,
                         },

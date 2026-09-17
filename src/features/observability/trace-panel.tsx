@@ -1,3 +1,5 @@
+import { useWorkspaceIntegrations } from "../../integrations/workspace-integrations";
+import { prepareIntegrationConnection } from "../../integrations/prepare-connection";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApplicationServices } from "../../app/application-services-context";
 import type { IntegrationSummary, TracePage } from "../../domain/observability";
@@ -20,7 +22,10 @@ const errors: Record<string, string> = {
 export function TracePanel({ workspaceId, documentId, startedAtMs }: {
   workspaceId: string; documentId: string; startedAtMs: number;
 }) {
-  const { observability } = useApplicationServices();
+  const services = useApplicationServices();
+  const { observability } = services;
+  const connections = useWorkspaceIntegrations();
+  const connectionRef = useRef(connections); connectionRef.current = connections;
   const [integrations, setIntegrations] = useState<IntegrationSummary[]>([]);
   const [selected, setSelected] = useState("");
   const [manualTraceId, setManualTraceId] = useState("");
@@ -43,7 +48,9 @@ export function TracePanel({ workspaceId, documentId, startedAtMs }: {
     const controller = new AbortController(); active.current = controller;
     setStatus("loading"); setError("");
     try {
-      const result = await observability.trace({ workspaceId, documentId, startedAtMs, integrationId: selected,
+      const definition = connectionRef.current.definitions.find((item) => item.id === selected);
+      const connection = definition ? await prepareIntegrationConnection(definition, workspaceId, connectionRef.current.authContext, services, controller.signal) : undefined;
+      const result = await observability.trace({ connection, workspaceId, documentId, startedAtMs, integrationId: selected,
         manualTraceId: manualTraceId.trim() || null, search, cursor }, controller.signal);
       if (active.current !== controller || controller.signal.aborted) return;
       setPage((previous) => cursor && previous && previous.traceId === result.traceId
@@ -56,7 +63,7 @@ export function TracePanel({ workspaceId, documentId, startedAtMs }: {
     } finally {
       if (active.current === controller) active.current = null;
     }
-  }, [stop, observability, workspaceId, documentId, startedAtMs, selected, manualTraceId, search]);
+  }, [stop, services, observability, workspaceId, documentId, startedAtMs, selected, manualTraceId, search]);
   const available = integrations.some((item) => item.id === selected && item.enabled && item.available && item.capabilities.includes("traces"));
   useEffect(() => {
     stop(); setPage(null); setError(""); setStatus("idle");

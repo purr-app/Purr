@@ -32,5 +32,6 @@ export type TraceRow = TracePage["rows"][number];
 export type IntegrationSummary = z.infer<typeof integrationSummariesSchema>[number];
 export type TraceQuery = {
   workspaceId: string; integrationId: string; documentId: string; startedAtMs: number;
+  connection?: { endpoint: string; headers: [string, string][] };
   manualTraceId: string | null; search: string; cursor: string | null;
 };

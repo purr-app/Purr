@@ -83,7 +83,7 @@ export function SelectField<Value extends string>({
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className="ui-popover-match-anchor z-50 overflow-hidden rounded-ui-md border border-border-default bg-purr-overlay p-ui-1 shadow-popover"
+        className="ui-select-options z-50 overflow-hidden rounded-ui-md border border-border-default bg-purr-overlay p-ui-1 shadow-popover"
         side="bottom"
         align="start"
         sideOffset={4}
@@ -104,7 +104,7 @@ export function SelectField<Value extends string>({
               role="option"
               aria-selected={option.value === value}
               className={cn(
-                "ui-focus-ring flex h-control-sm w-full items-center justify-between rounded-ui-sm px-ui-2 font-ui text-ui-sm text-content-secondary transition-colors duration-ui-fast hover:bg-purr-highlight hover:text-content-primary",
+                "ui-focus-ring flex h-control-sm w-full items-center justify-between gap-ui-3 whitespace-nowrap rounded-ui-sm px-ui-2 font-ui text-ui-sm text-content-secondary transition-colors duration-ui-fast hover:bg-purr-highlight hover:text-content-primary",
                 option.value === value &&
                   "bg-purr-highlight text-content-primary",
               )}
@@ -137,7 +137,7 @@ export function SelectField<Value extends string>({
               <span>{option.label}</span>
               {option.value === value ? (
                 <Check
-                  className="size-ui-3 text-action-brand"
+                  className="size-ui-3 shrink-0 text-action-brand"
                   aria-hidden="true"
                 />
               ) : null}

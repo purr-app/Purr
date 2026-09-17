@@ -93,9 +93,15 @@ export const integrationCredentialKeySchema = z.string().min(1).max(64)
   .regex(/^[a-z][a-zA-Z0-9_-]*$/, "Integration credential keys must be stable identifiers.");
 export const integrationConfigSchema = z.record(z.string(), z.json());
 export type JsonObject = z.infer<typeof integrationConfigSchema>;
+export const integrationTracingSchema = z.strictObject({
+  propagation: z.enum(["off", "w3c", "b3"]).default("w3c"),
+  requestHeaders: z.array(pair).max(32).default([]),
+  responseHeaders: z.array(pair).max(32).default([]),
+});
 export const integrationDefinitionSchema = z.strictObject({
   ...base,
   kind: z.literal("integration"),
+  tracing: integrationTracingSchema.optional(),
   provider: integrationProviderIdSchema,
   enabled: z.boolean().default(true),
   configVersion: z.number().int().positive().default(1),

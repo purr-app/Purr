@@ -1,3 +1,4 @@
+import { WorkspaceIntegrationsProvider } from "../../integrations/workspace-integrations";
 import { TabStateProvider, TabStateStore } from "../../shared/state/tab-state";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type SetStateAction } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -619,6 +620,10 @@ export function WorkspaceWorkbench() {
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
         <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
+          <WorkspaceIntegrationsProvider workspaceId={workspace.id}
+            definitions={(workspace.extraResources ?? []).filter((item) => item.kind === "integration")}
+            authContext={{ variables, workspaceProfiles: workspace.requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
+            addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
           {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
@@ -755,6 +760,7 @@ export function WorkspaceWorkbench() {
               pasteTargetRef={emptyPasteTarget}
             />}
           </TabStateProvider>
+          </WorkspaceIntegrationsProvider>
         </div>
       </div>
     </div>

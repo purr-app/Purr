@@ -10,6 +10,7 @@ pub type ProviderFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<Trace>>>
 // Provider implementation methods are exercised by the opt-in fixture build.
 #[cfg_attr(not(any(test, feature = "observability-fixtures")), allow(dead_code))]
 pub struct ProviderContext<'a> {
+    pub connection: Option<&'a super::domain::TraceConnection>,
     pub config: &'a Value,
     pub credentials: &'a ScopedCredentials,
 }

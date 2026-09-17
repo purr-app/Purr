@@ -22,6 +22,7 @@ enum Auth {
     #[default]
     None,
     Bearer,
+    Request,
 }
 
 pub struct JaegerDescriptor;
@@ -30,7 +31,9 @@ impl IntegrationDescriptor for JaegerDescriptor {
         "jaeger"
     }
     fn credential_keys(&self, config: &Value) -> Vec<&'static str> {
-        if config["auth"] == "bearer" {
+        if config["auth"] == "request" {
+            vec!["auth"]
+        } else if config["auth"] == "bearer" {
             vec!["apiToken"]
         } else {
             vec![]
@@ -42,7 +45,10 @@ impl IntegrationDescriptor for JaegerDescriptor {
         }
         let config: Config =
             serde_json::from_value(value.clone()).map_err(|_| ObservabilityError::InvalidConfig)?;
-        let url = Url::parse(&config.endpoint).map_err(|_| ObservabilityError::InvalidConfig)?;
+        let template = regex::Regex::new(r"\{\{[^{}]+\}\}").expect("endpoint variable pattern");
+        let candidate = template.replace_all(&config.endpoint, "purr-variable");
+        let candidate = if candidate.contains("://") { candidate.to_string() } else if template.is_match(&config.endpoint) { format!("http://{candidate}") } else { candidate.to_string() };
+        let url = Url::parse(&candidate).map_err(|_| ObservabilityError::InvalidConfig)?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -54,7 +60,7 @@ impl IntegrationDescriptor for JaegerDescriptor {
             return Err(ObservabilityError::InvalidConfig);
         }
         Ok(
-            json!({"endpoint": url.as_str().trim_end_matches('/'), "auth": if config.auth == Auth::Bearer { "bearer" } else { "none" }}),
+            json!({"endpoint": if template.is_match(&config.endpoint) { config.endpoint.trim_end_matches('/') } else { url.as_str().trim_end_matches('/') }, "auth": match config.auth { Auth::Bearer => "bearer", Auth::Request => "request", Auth::None => "none" }}),
         )
     }
 }
@@ -89,10 +95,15 @@ impl TraceProvider for JaegerProvider {
             let endpoint = context.config["endpoint"]
                 .as_str()
                 .ok_or(ObservabilityError::InvalidConfig)?;
-            let mut request = self
-                .client
-                .get(format!("{endpoint}/api/v3/traces/{trace_id}"));
-            if context.config["auth"] == "bearer" {
+            let mut url = Url::parse(context.connection.map(|value| value.endpoint.as_str()).unwrap_or(endpoint))
+                .map_err(|_| ObservabilityError::InvalidConfig)?;
+            url.set_path(&format!("{}/api/v3/traces/{trace_id}", url.path().trim_end_matches('/')));
+            let mut request = self.client.get(url);
+            if let Some(connection) = context.connection {
+                for (name, value) in &connection.headers { request = request.header(name, value); }
+            } else if context.config["auth"] == "request" {
+                return Err(ObservabilityError::CredentialUnavailable);
+            } else if context.config["auth"] == "bearer" {
                 let token = context.credentials.get("apiToken")?;
                 if token.is_empty() {
                     return Err(ObservabilityError::CredentialUnavailable);
@@ -340,6 +351,7 @@ mod tests {
             let result = JaegerProvider::default()
                 .get_trace(
                     ProviderContext {
+                        connection: None,
                         config: &config,
                         credentials: &credentials,
                     },
@@ -463,6 +475,7 @@ mod tests {
             let result = provider
                 .get_trace(
                     ProviderContext {
+                        connection: None,
                         config: &config,
                         credentials: &credentials,
                     },

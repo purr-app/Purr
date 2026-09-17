@@ -204,3 +204,26 @@ Execution history currently has encrypted native storage and metadata pagination
 - `src/features/observability/trace-panel.tsx` — bounded Trace UI through the observability port.
 - `src-tauri/src/observability/service.rs` — native provider selection, credentials, correlation, cache and pagination.
 - `src-tauri/src/persistence/observability.rs` — read-only canonical integration and saved execution projection.
+
+### Integration catalog and connection editor
+
+Workspace Integrations opens a modal catalog. Frontend presentation contributions
+can supply `icon` (a bundled asset URL), `description`, and `capabilities` alongside
+`label` and `Settings`; the native registry still determines execution availability.
+Private modules can import `IntegrationConnectionSettings` from `@purr/core/ui`
+and declare the `auth` credential slot to reuse the name/endpoint, request AuthEditor,
+variable controls and propagation editor. No catalog switch statement is needed.
+The Jaeger artwork is sourced from the [Jaeger UI project](https://github.com/jaegertracing/jaeger-ui/blob/main/packages/jaeger-ui/src/img/jaeger-logo.svg).
+
+The host scopes both credential reads and writes to declared slots for the current
+workspace and integration. The shared editor stores the entire auth configuration,
+including inactive modes and OAuth tokens, in SecureStore; project files contain
+only its SecretRef. Legacy Jaeger `apiToken` credentials remain readable. Endpoint
+variables remain portable templates. Trace lookup uses the existing request
+composition and OAuth helpers to prepare a memory-only connection (resolved endpoint
+and auth headers) passed across typed IPC. Native validation, credential scoping,
+redirect policy and provider transport remain authoritative; resolved connection
+values also isolate trace cache entries. Browser builds cannot execute providers.
+
+Optional `integration.tracing` holds propagation and enabled/disabled custom request
+and response header rows; absent fields preserve older integration definitions.

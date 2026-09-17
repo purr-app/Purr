@@ -109,7 +109,16 @@ pub struct IntegrationSummary {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TraceConnection {
+    pub endpoint: String,
+    pub headers: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TraceQuery {
+    #[serde(default)]
+    pub connection: Option<TraceConnection>,
     pub workspace_id: String,
     pub integration_id: String,
     pub document_id: String,
