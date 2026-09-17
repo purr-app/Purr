@@ -31,6 +31,8 @@ export type IntegrationPresentationContribution = Readonly<{
   icon?: string;
   /** Presentation hint; native registry remains authoritative for availability. */
   capabilities?: readonly string[];
+  /** Browser navigation only; receives canonical config, never prepared auth headers. */
+  traceUrl?: (config: JsonObject, traceId: string) => string;
   initialConfig?: JsonObject;
   credentialKeys?: readonly string[];
   Settings?: ComponentType<IntegrationSettingsProps>;

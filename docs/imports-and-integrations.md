@@ -210,6 +210,11 @@ Execution history currently has encrypted native storage and metadata pagination
 Workspace Integrations opens a modal catalog. Frontend presentation contributions
 can supply `icon` (a bundled asset URL), `description`, and `capabilities` alongside
 `label` and `Settings`; the native registry still determines execution availability.
+An optional `traceUrl(config, traceId)` contribution supplies the provider browser
+link. The host resolves config variables without composing auth and accepts only
+HTTP(S) URLs without embedded credentials. `WorkspaceShellPort.openExternalUrl`
+uses the desktop system opener (an isolated new tab in browser previews). Jaeger
+retains the endpoint base path and appends `/trace/:traceId`.
 Private modules can import `IntegrationConnectionSettings` from `@purr/core/ui`
 and declare the `auth` credential slot to reuse the name/endpoint, request AuthEditor,
 variable controls and propagation editor. No catalog switch statement is needed.

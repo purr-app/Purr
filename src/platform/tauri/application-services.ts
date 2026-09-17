@@ -2,6 +2,8 @@ import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { externalHttpUrl } from "../../shared/lib/external-url";
 import { z } from "zod";
 
 import { defaultResponseStoragePolicy, type HttpTransportOptions, type HttpTransportResponse, type PreparedHttpTransportRequest, type RequestFileRef } from "../../application/ports/http";
@@ -513,6 +515,7 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
       },
     },
     workspaceShell: {
+      openExternalUrl: (url) => openUrl(externalHttpUrl(url)),
       openWorkspaceFolder: (id) =>
         invoke<void>("open_project_folder", { id }),
     },

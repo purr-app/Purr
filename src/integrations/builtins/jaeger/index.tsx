@@ -12,6 +12,7 @@ export const jaegerModule = defineExtensionModule({
       id: "jaeger", label: "Jaeger", icon,
       description: "Explore distributed traces, service timings and span attributes.",
       capabilities: ["traces"],
+      traceUrl: (config, traceId) => `${String(config.endpoint).replace(/[?#].*$/, "").replace(/\/$/, "")}/trace/${encodeURIComponent(traceId)}`,
       initialConfig: { endpoint: "http://127.0.0.1:16686", auth: "none" },
       credentialKeys: ["apiToken", "auth"], Settings: JaegerSettings,
     });

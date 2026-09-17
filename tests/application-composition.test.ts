@@ -51,7 +51,7 @@ function memoryServices(): ApplicationServices {
     imports: { normalize: unavailable },
     downloads: { saveInlineResponse: unavailable },
     importDialog: { choosePath: async () => null },
-    workspaceShell: { openWorkspaceFolder: async () => {} },
+    workspaceShell: { openWorkspaceFolder: async () => {}, openExternalUrl: async () => {} },
     lifecycle: {
       onCloseRequested: async () => () => {},
       exit: async () => {},
