@@ -72,6 +72,9 @@ test("catalog, shared auth and readable propagation options keep credentials in 
   const catalog = page.getByRole("dialog", { name: "Add integration" });
   await expect(catalog.getByRole("img")).toHaveCount(0); // Decorative provider artwork has empty alt text.
   await expect(catalog.locator("img")).toBeVisible();
+  const bounds = await catalog.boundingBox();
+  expect(Math.abs(bounds!.y - (page.viewportSize()!.height - bounds!.y - bounds!.height))).toBeLessThan(3);
+  expect(bounds!.height).toBeGreaterThan(page.viewportSize()!.height * 0.85);
   await page.screenshot({ path: test.info().outputPath("integration-catalog.png") });
   await catalog.getByRole("button", { name: /Jaeger Explore distributed traces/ }).click();
   const dialog = page.getByRole("dialog", { name: "Jaeger settings" });
@@ -87,6 +90,13 @@ test("catalog, shared auth and readable propagation options keep credentials in 
   await expect(option).toBeVisible();
   expect(await option.evaluate((node) => getComputedStyle(node).whiteSpace)).toBe("nowrap");
   await page.getByRole("option", { name: "B3", exact: true }).click();
+  await dialog.getByText("Custom propagation headers", { exact: true }).click();
+  const headerForms = dialog.getByRole("region", { name: "header entries" });
+  await headerForms.nth(0).getByPlaceholder("Header-name").fill("x-client-trace");
+  await headerForms.nth(0).getByLabel("Value for x-client-trace", { exact: true }).fill("{{$b3}}");
+  await headerForms.nth(1).getByPlaceholder("Header-name").fill("x-server-trace");
+  await headerForms.nth(1).getByLabel("Value for x-server-trace", { exact: true }).fill("traceId");
+  await expect(headerForms.nth(0).getByPlaceholder("Header-name")).toHaveCount(2);
   await page.screenshot({ path: test.info().outputPath("integration-settings.png") });
   await dialog.getByRole("button", { name: "Save integration", exact: true }).click();
   await expect(region.getByRole("checkbox", { name: "Enable Local traces", exact: true })).toBeVisible();
@@ -100,6 +110,9 @@ test("catalog, shared auth and readable propagation options keep credentials in 
   await settings(page);
   await region.getByRole("button", { name: "Edit Local traces", exact: true }).click();
   await expect(page.getByLabel("Bearer token", { exact: true })).toHaveValue("synthetic-jaeger-token");
+  await page.getByText("Custom propagation headers", { exact: true }).click();
+  await expect(page.getByLabel("Value for x-client-trace", { exact: true })).toHaveValue("{{$b3}}");
+  await expect(page.getByLabel("Value for x-server-trace", { exact: true })).toHaveValue("traceId");
 });
 
 test("request tracing controls provider onboarding, hidden tabs and locked generated headers", async ({ page }) => {

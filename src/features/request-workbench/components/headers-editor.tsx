@@ -9,6 +9,7 @@ import type { TemplateVariableActions } from "./template-variable-popover";
 
 type HeadersEditorProps = {
   headers: RequestHeader[];
+  fillHeight?: boolean;
   onHeadersChange: (headers: RequestHeader[]) => void;
   onWorkspaceHeaderEnabledChange?: (id: string, enabled: boolean) => void;
   variableActions?: TemplateVariableActions;
@@ -28,6 +29,7 @@ function createEmptyHeader(entries: KeyValueEntry[]): KeyValueEntry {
 
 export function HeadersEditor({
   headers,
+  fillHeight = true,
   onHeadersChange,
   onWorkspaceHeaderEnabledChange,
   variableActions,
@@ -35,6 +37,12 @@ export function HeadersEditor({
   const [inheritedOpen, setInheritedOpen] = useState(true);
   const inherited = headers.filter((header) => header.workspaceHeaderId);
   const local = headers.filter((header) => !header.workspaceHeaderId);
+  // Keep generated values together above the editable rows, including the blank row.
+  const localRows = [...local.filter((header) => header.readOnly), ...local.filter((header) => !header.readOnly)];
+  if (!localRows.some((header) => !header.readOnly && !header.name && !header.value)) {
+    const blank = createEmptyHeader(localRows.map((header) => ({ ...header, key: header.name })));
+    localRows.push({ id: blank.id, name: "", value: "", enabled: false });
+  }
   const toEntry = (header: RequestHeader): KeyValueEntry => ({
     id: header.id,
     key: header.name,
@@ -46,6 +54,7 @@ export function HeadersEditor({
     hideReadOnlyIndicator: Boolean(header.workspaceHeaderId),
   });
   const editor = (source: RequestHeader[]) => <KeyValueEditor
+    fillHeight={fillHeight}
     entries={source.map(toEntry)}
     onEntriesChange={(nextEntries) =>
       onHeadersChange(
@@ -78,7 +87,7 @@ export function HeadersEditor({
   />;
 
   return (
-    <div className="min-h-full bg-purr-surface">
+    <div className={cn(fillHeight && "min-h-full", "bg-purr-surface")}>
       {inherited.length ? (
         <section className="m-ui-3 rounded-ui-lg border border-dashed border-border-subtle bg-purr-codefield">
           <button type="button" className="ui-focus-ring flex w-full items-center gap-ui-2 rounded-ui-md px-ui-3 py-ui-2 text-left text-ui-sm text-content-tertiary"
@@ -90,7 +99,7 @@ export function HeadersEditor({
         </section>
       ) : null}
       {inherited.length ? <p className="m-ui-0 px-ui-4 pb-ui-1 font-ui text-ui-xs text-content-tertiary">Local</p> : null}
-      {editor(local)}
+      {editor(localRows)}
     </div>
   );
 }

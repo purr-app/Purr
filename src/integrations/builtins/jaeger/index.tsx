@@ -3,7 +3,7 @@ import { IntegrationConnectionSettings } from "../../../extension-api/ui";
 import icon from "./jaeger-logo.svg";
 
 function JaegerSettings(props: IntegrationSettingsProps) {
-  return <IntegrationConnectionSettings {...props} endpointHint="Connect to your Jaeger query server. A base path and {{variables}} are supported." />;
+  return <IntegrationConnectionSettings {...props} />;
 }
 export const jaegerModule = defineExtensionModule({
   manifest: { id: "purr.jaeger", version: "1.0.0", extensionApi: 1 },

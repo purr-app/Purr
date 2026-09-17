@@ -317,8 +317,10 @@
     min-width: var(--radix-popover-trigger-width);
     max-width: var(--radix-popover-content-available-width);
   }
-  .ui-integration-dialog { inset: 0; height: fit-content; }
-  .ui-integration-content { max-height: 75vh; min-height: var(--integration-dialog-min-height); }
+  .ui-integration-dialog { inset: 0; height: calc(100dvh - var(--space-8)); }
+  .ui-integration-dialog[open] { display: flex; flex-direction: column; }
+  .ui-integration-dialog > :first-child { flex-shrink: 0; }
+  .ui-integration-content { flex: 1; min-height: 0; }
   .ui-popover-match-anchor {
     width: var(--radix-popover-trigger-width);
   }

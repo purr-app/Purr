@@ -4,7 +4,7 @@ import { useTabState } from "../shared/state/tab-state";
 import { AuthEditor } from "../features/request-workbench/components/auth-editor";
 import { HeadersEditor } from "../features/request-workbench/components/headers-editor";
 import { TemplateVariablePopover } from "../features/request-workbench/components/template-variable-popover";
-import { ColorizedUrlInput } from "../features/request-workbench/components/colorized-url-input";
+import { Input } from "../shared/components/ui/input";
 import { useAuthRuntime } from "../features/request-workbench/hooks/use-auth-runtime";
 import { createRequestAuth, normalizeRequestAuth, type AuthContext } from "../features/request-workbench/model/request-auth";
 import { initialRequestDraft, type RequestDraft } from "../features/request-workbench/model/request";
@@ -52,17 +52,17 @@ export function IntegrationConnectionSettings({ value, onSave, onCancel, setCred
     } catch { setError("Could not save this integration. Check the endpoint and secure storage."); }
     finally { setSaving(false); }
   }
-  const headerEditor = (kind: "requestHeaders" | "responseHeaders") => <HeadersEditor
+  const headerEditor = (kind: "requestHeaders" | "responseHeaders") => <HeadersEditor fillHeight={false}
     headers={tracing[kind].map((header, index) => ({ ...header, id: `${kind}-${index}` }))}
     variableActions={variableActions}
     onHeadersChange={(headers) => setTracing((current) => ({ ...current, [kind]: headers.filter((header) => header.name || header.value).map(({ name, value, enabled }) => ({ name, value, enabled })) }))} />;
-  return <div className="space-y-ui-5 p-ui-5">
+  return <div className="min-h-full space-y-ui-5 bg-purr-surface p-ui-5">
     <FormField label="Integration name" value={name} placeholder="Production traces" onChange={(event) => setName(event.target.value)} />
     <div className="space-y-ui-2">
       <label htmlFor={`${value.id}-endpoint`} className="block text-ui-sm text-content-secondary">Endpoint URL</label>
       <TemplateVariablePopover value={endpoint} actions={variableActions ?? { definitions: [], onOpenVariable: () => {}, onCreateMissingVariable: () => {} }} onValueChange={setEndpoint}>
         {(bindings) => 
-        <ColorizedUrlInput {...bindings} id={`${value.id}-endpoint`} aria-label="Integration endpoint URL" value={endpoint} placeholder="https://jaeger.example.com or {{jaegerUrl}}" />}
+        <Input {...bindings} className="ui-focus-ring font-code" id={`${value.id}-endpoint`} aria-label="Integration endpoint URL" value={endpoint} placeholder="https://jaeger.example.com or {{jaegerUrl}}" />}
       </TemplateVariablePopover>
       {endpointHint ? <p className="m-ui-0 text-ui-sm text-content-tertiary">{endpointHint}</p> : null}
     </div>
@@ -83,6 +83,6 @@ export function IntegrationConnectionSettings({ value, onSave, onCancel, setCred
       </details>
     </section>
     {error ? <p role="alert" className="text-ui-sm text-accent-red">{error}</p> : null}
-    <div className="sticky bottom-0 flex justify-end gap-ui-2 border-t border-border-subtle bg-purr-overlay py-ui-4"><Button variant="brand" disabled={saving} onClick={onCancel}>Cancel</Button><Button variant="brand" disabled={saving || !ready || !name.trim() || !endpoint.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save integration"}</Button></div>
+    <div className="sticky bottom-0 flex justify-end gap-ui-2 border-t border-border-subtle bg-purr-surface py-ui-4"><Button variant="ghost" disabled={saving} onClick={onCancel}>Cancel</Button><Button variant="brand" disabled={saving || !ready || !name.trim() || !endpoint.trim()} onClick={() => void save()}>{saving ? "Saving…" : "Save integration"}</Button></div>
   </div>;
 }

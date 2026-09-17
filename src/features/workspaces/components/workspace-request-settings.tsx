@@ -283,14 +283,14 @@ export function WorkspaceSettings({
                         <p className="m-ui-0 truncate font-code text-ui-xs text-content-tertiary">{extensions.integration(integration.provider)?.label ?? integration.provider}{integration.config.endpoint ? ` · ${String(integration.config.endpoint)}` : ""}</p>
                       </div>
                       <span className="flex shrink-0 items-center gap-ui-1 rounded-ui-md bg-purr-elevated px-ui-2 py-ui-1 text-ui-xs text-content-tertiary"><Unplug className="size-ui-3" />{availableIntegrations.find((item) => item.id === integration.id)?.capabilities.join(" · ") || "Provider unavailable"}</span>
-                      {extensions.integration(integration.provider)?.Settings ? <Button size="icon" variant="brand" aria-label={`Edit ${integration.name}`} onClick={() => setEditingIntegration(integration)}><Pencil className="size-ui-4" /></Button> : null}
+                      {extensions.integration(integration.provider)?.Settings ? <Button size="icon" variant="ghost" aria-label={`Edit ${integration.name}`} onClick={() => setEditingIntegration(integration)}><Pencil className="size-ui-4" /></Button> : null}
                       {confirmDeleteIntegration !== integration.id
-                        ? <Button variant="brand" size="icon" aria-label={`Delete ${integration.name}`} onClick={() => setConfirmDeleteIntegration(integration.id)}><Trash2 className="size-ui-4" /></Button>
+                        ? <Button variant="ghost" className="text-accent-red hover:text-accent-red" size="icon" aria-label={`Delete ${integration.name}`} onClick={() => setConfirmDeleteIntegration(integration.id)}><Trash2 className="size-ui-4" /></Button>
                         : null}
                     </div>
                     {confirmDeleteIntegration === integration.id ? <div className="mt-ui-3 flex items-center justify-end gap-ui-2 border-t border-border-subtle pt-ui-3">
                       <span className="mr-auto text-ui-xs text-accent-red">Delete this integration configuration?</span>
-                      <Button variant="brand" size="sm" onClick={() => setConfirmDeleteIntegration(null)}>Cancel</Button>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteIntegration(null)}>Cancel</Button>
                       <Button variant="brand" size="sm" onClick={() => { onIntegrationDelete(integration.id); setConfirmDeleteIntegration(null); }}>Delete permanently</Button>
                     </div> : null}
                   </div>
