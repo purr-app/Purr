@@ -86,22 +86,29 @@ export function TracePanel({ workspaceId, documentId, startedAtMs, integrationId
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not open this trace in the browser."); }
   };
   return <section aria-label="Trace lookup" className="flex h-full min-h-0 flex-col font-ui text-ui-md text-content-primary">
-    <header className="shrink-0 space-y-ui-2 border-b border-border-subtle p-ui-3">
-      <div className="flex flex-wrap items-center gap-ui-3">
-        <div className="min-w-0 flex-1"><p className="m-ui-0 font-medium">Trace for this execution</p><p className="m-ui-0 text-ui-sm text-content-tertiary">{source?.name}</p></div>
+    <header className="shrink-0 space-y-ui-2 border-b border-border-subtle px-ui-3 py-ui-2">
+      <div className="flex flex-wrap items-center gap-x-ui-4 gap-y-ui-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-ui-2">
+            <p className="m-ui-0 font-medium">Trace for this execution</p>
+            {provider?.traceUrl ? <Button size="xs" variant="ghost" disabled={!page?.traceId} onClick={() => void openInBrowser()}><ExternalLink className="size-ui-3" />Open in browser</Button> : null}
+          </div>
+          <p className="m-ui-0 truncate text-ui-sm text-content-tertiary">{source?.name}</p>
+        </div>
         <Input aria-label="Trace ID" placeholder="Trace ID (optional)" value={traceId} maxLength={32} spellCheck={false}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void lookup(traceId.trim() || null); } }}
           onChange={(event) => setTraceId(event.target.value)} className="ui-focus-ring h-control-md w-auto rounded-ui-md font-code text-ui-md" />
         {status === "loading" ? <Button variant="ghost" onClick={() => { stop(); setStatus("cancelled"); }}>Cancel</Button>
           : <Button variant="brand" disabled={!available} onClick={() => void lookup(traceId.trim() || null)}>Load trace</Button>}
-        {provider?.traceUrl ? <Button variant="ghost" disabled={!page?.traceId} onClick={() => void openInBrowser()}><ExternalLink className="size-ui-4" />Open in browser</Button> : null}
         <Button size="icon" variant="ghost" aria-label="Find in trace" onClick={onOpenFind}><Search className="size-ui-4" /></Button>
       </div>
-      {page ? <CorrelationSummary value={page.correlation} /> : null}
-      {summary ? <dl aria-label="Trace statistics" className="m-ui-0 flex flex-wrap gap-x-ui-4 gap-y-ui-1 text-ui-sm">
-        <Statistic label="Trace Start" value={formatTraceStart(summary.start)} />
-        <Statistic label="Duration" value={traceDuration(summary.duration)} /><Statistic label="Services" value={summary.services} /><Statistic label="Depth" value={summary.depth} /><Statistic label="Total Spans" value={page!.total} />
-      </dl> : null}
+      {summary ? <div className="flex flex-nowrap items-center justify-between gap-ui-3 text-ui-xs">
+        <dl aria-label="Trace statistics" className="m-ui-0 flex min-w-0 flex-nowrap gap-ui-3">
+          <Statistic label="Trace Start" value={formatTraceStart(summary.start)} />
+          <Statistic label="Duration" value={traceDuration(summary.duration)} /><Statistic label="Services" value={summary.services} /><Statistic label="Depth" value={summary.depth} /><Statistic label="Total Spans" value={page!.total} />
+        </dl>
+        {page ? <CorrelationSummary value={page.correlation} /> : null}
+      </div> : null}
     </header>
     {status === "loading" ? <p role="status" className="px-ui-3 text-content-tertiary">{progress ? `Loading spans… ${progress.loaded} / ${progress.total}` : "Finding this execution’s trace…"}</p> : null}
     {status === "cancelled" ? <p role="status" className="px-ui-3 text-content-secondary">Trace lookup cancelled.</p> : null}

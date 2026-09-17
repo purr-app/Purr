@@ -153,8 +153,15 @@ test("waterfall loads a stable snapshot, virtualizes rows, folds parents, and re
   await expect(inspector).toContainText("110 ms");
   await expect(inspector).toContainText("Attributes");
   const stats = page.getByLabel("Trace statistics");
+  const correlation = page.getByLabel("Trace correlation");
   await expect(stats).toContainText("Total Spans500");
   await expect(stats).toContainText("Depth2");
+  const titleBounds = await page.getByText("Trace for this execution", { exact: true }).boundingBox();
+  const browserBounds = await page.getByRole("button", { name: "Open in browser", exact: true }).boundingBox();
+  const statsBounds = await stats.boundingBox();
+  const correlationBounds = await correlation.boundingBox();
+  expect(Math.abs((titleBounds!.y + titleBounds!.height / 2) - (browserBounds!.y + browserBounds!.height / 2))).toBeLessThan(3);
+  expect(Math.abs((statsBounds!.y + statsBounds!.height / 2) - (correlationBounds!.y + correlationBounds!.height / 2))).toBeLessThan(3);
   const bars = page.locator(".ui-trace-bar");
   expect(new Set(await bars.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).backgroundColor))).size).toBeGreaterThan(2);
   const bar = await bars.first().boundingBox();
