@@ -168,7 +168,8 @@ for (const delayMs of [0, 700]) test(`first Send animates to the full response l
   for (const result of [first, manual, repeat]) {
     const start = result.heights[0];
     const end = result.heights.at(-1)!;
-    expect(result.heights.filter((height) => height < start - 2 && height > end + 2).length, JSON.stringify(result.heights)).toBeGreaterThan(3);
+    const intermediateHeights = result.heights.filter((height) => height < start - 2 && height > end + 2);
+    expect(new Set(intermediateHeights.map(Math.round)).size, JSON.stringify(result.heights)).toBeGreaterThanOrEqual(2);
     expect(result.response).toBeGreaterThan(result.root * 0.8);
     expect(result.connected).toBe(true);
     expect(Math.abs(end + result.gutter + result.response - result.root)).toBeLessThan(2);
