@@ -299,10 +299,14 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   const completion = page.locator(".cm-tooltip-autocomplete");
   await expect(page.getByRole("option", { name: /^name/ })).toHaveAttribute("aria-selected", "true");
   expect(Number(await completion.evaluate((element) => getComputedStyle(element).zIndex))).toBeGreaterThan(10);
-  const completionBox = await completion.boundingBox();
   const variablesBox = await variablesDock.boundingBox();
-  expect(completionBox).not.toBeNull();
   expect(variablesBox).not.toBeNull();
+  await expect.poll(async () => {
+    const box = await completion.boundingBox();
+    return box ? box.y + box.height : Number.NEGATIVE_INFINITY;
+  }).toBeGreaterThan(variablesBox!.y);
+  const completionBox = await completion.boundingBox();
+  expect(completionBox).not.toBeNull();
   expect(completionBox!.y + completionBox!.height).toBeGreaterThan(variablesBox!.y);
   const overlap = { x: completionBox!.x + completionBox!.width / 2, y: Math.max(completionBox!.y, variablesBox!.y) + 2 };
   expect(await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest(".cm-tooltip-autocomplete")), overlap)).toBe(true);
