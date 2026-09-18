@@ -40,6 +40,7 @@
     "./styles": "./dist-core/styles.css"
   },
   "scripts": {
+    "prepare": "npm run build:core",
     "dev": "vite",
     "test": "npm run build:core && tsx --test tests/*.test.ts",
     "test:ui": "npm run build:core && playwright test",
