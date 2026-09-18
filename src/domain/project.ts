@@ -55,7 +55,7 @@ const body = z.discriminatedUnion("type", [
 ]);
 const base = { id: entityId, name: z.string(), description: z.string().optional(), folderId: entityId.optional() };
 const request = {
-  tracing: z.strictObject({ enabled: z.boolean(), integrationId: entityId.optional() }).optional(),
+  tracing: z.strictObject({ enabled: z.boolean().default(true), integrationId: entityId.optional() }).optional(),
   tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
   ...base, url: z.string(), method: z.string().regex(/^[A-Z][A-Z0-9_-]*$/), documentation: z.string().optional(),
   params: z.array(pair).default([]), pathParams: z.array(pair).default([]), headers: z.array(pair).default([]), body: body.default({ type: "none" }),

@@ -1,13 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installPersistenceMock } from "./persistence-mock";
+type PaneTransition = { heights: number[]; response: number; root: number; gutter: number; connected: boolean };
 test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
-async function mockSuccessfulRequest(page: Page) {
-  await page.addInitScript(() => {
+async function mockSuccessfulRequest(page: Page, delayMs = 0) {
+  await page.addInitScript((delayMs) => {
     (window as any).isTauri = true;
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string) => {
         if (command !== "start_http") throw new Error("Unexpected command");
+        if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
         return {
           status: 200,
           statusText: "OK",
@@ -18,7 +20,7 @@ async function mockSuccessfulRequest(page: Page) {
         };
       },
     };
-  });
+  }, delayMs);
 }
 
 test("canvas collapses to the request tabs and reopens request details beside a dimmed response", async ({
@@ -97,6 +99,83 @@ test("canvas collapses to the request tabs and reopens request details beside a 
   await page.getByRole("button", { name: "Focus Response viewer" }).click();
   await expect(details).toHaveAttribute("inert", "");
   await expect(page.getByRole("region", { name: "HTTP response" })).toBeVisible();
+});
+
+for (const delayMs of [0, 700]) test(`first Send animates to the full response layout (${delayMs} ms response)`, async ({ page }) => {
+  await mockSuccessfulRequest(page, delayMs);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select environment" }).click();
+  await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByLabel("Environment name", { exact: true }).fill("Development");
+  if (delayMs) {
+    await page.getByRole("button", { name: "Variable", exact: true }).click();
+    await page.getByLabel("Variable name", { exact: true }).fill("test_secret");
+    await page.getByLabel("Variable value", { exact: true }).fill("test-only-value");
+    await page.getByRole("switch", { name: "Sensitive & masked secret", exact: true }).click();
+    await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  }
+  await page.getByRole("tab", { name: "Variables", exact: true }).hover();
+  await page.getByRole("button", { name: "Close variables", exact: true }).click();
+  if (delayMs) {
+    await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+    await page.reload();
+  }
+  await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
+  await page.getByRole("tab", { name: "Body", exact: true }).click();
+  await page.getByRole("tab", { name: "JSON", exact: true }).click();
+  await page.getByRole("textbox", { name: "JSON request body" }).fill('{"name":"Focus animation","settings":{"visible":true}}');
+  const sampleTransition = async (label: string) => {
+    await page.evaluate((label) => {
+      const request = document.querySelector<HTMLElement>('[aria-label="Request editor"]')!;
+      const response = document.querySelector<HTMLElement>('[aria-label="Response viewer"]')!;
+      const root = request.parentElement!;
+      const durationToken = getComputedStyle(root).getPropertyValue("--duration-layout").trim();
+      const duration = Number.parseFloat(durationToken) * (durationToken.endsWith("ms") ? 1 : 1000);
+      (window as Window & { paneTransition?: Promise<PaneTransition> }).paneTransition = new Promise((resolve) => {
+        document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.addEventListener("click", () => {
+          const heights = [request.getBoundingClientRect().height];
+          const started = performance.now();
+          const sample = () => {
+            heights.push(request.getBoundingClientRect().height);
+            if (performance.now() - started < duration + 200) requestAnimationFrame(sample);
+            else resolve({ heights, response: response.getBoundingClientRect().height, root: root.getBoundingClientRect().height,
+              gutter: root.querySelector('[role="separator"]')!.getBoundingClientRect().height,
+              connected: request.isConnected });
+          };
+          requestAnimationFrame(sample);
+        }, { once: true, capture: true });
+      });
+    }, label);
+    await page.getByRole("button", { name: label, exact: true }).click();
+    return page.evaluate(() => (window as Window & { paneTransition: Promise<PaneTransition> }).paneTransition);
+  };
+  const first = await sampleTransition("Send");
+  expect(first.connected, "Send must preserve the animated request pane").toBe(true);
+  await expect(page.getByRole("region", { name: "HTTP response", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Expand request details", exact: true }).click();
+  const focus = page.getByRole("button", { name: "Focus Response viewer", exact: true });
+  await expect(focus).toBeVisible();
+  // Wait for the reverse transition before comparing the manual focus path.
+  await page.locator('[data-split-orientation]').evaluate(async (element) => {
+    await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished));
+  });
+  const manual = await sampleTransition("Focus Response viewer");
+  await page.getByRole("button", { name: "Expand request details", exact: true }).click();
+  await page.locator('[data-split-orientation]').evaluate(async (element) => {
+    await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished));
+  });
+  const repeat = await sampleTransition("Send");
+  for (const result of [first, manual, repeat]) {
+    const start = result.heights[0];
+    const end = result.heights.at(-1)!;
+    expect(result.heights.filter((height) => height < start - 2 && height > end + 2).length, JSON.stringify(result.heights)).toBeGreaterThan(3);
+    expect(result.response).toBeGreaterThan(result.root * 0.8);
+    expect(result.connected).toBe(true);
+    expect(Math.abs(end + result.gutter + result.response - result.root)).toBeLessThan(2);
+    expect(Math.abs(end - first.heights.at(-1)!)).toBeLessThan(2);
+  }
+  expect(Math.abs(first.heights.at(-1)! - manual.heights.at(-1)!)).toBeLessThan(2);
+  expect(Math.abs(first.response - manual.response)).toBeLessThan(2);
 });
 
 test("empty URLs focus an invalid input and URL parts use semantic colors", async ({ page }) => {

@@ -69,6 +69,12 @@ test("inactive environment secrets are resolved on demand and saving does not ov
   await projectWorkspace(restored, secure);
   const resolved = await resolveEnvironmentSecrets(restored.environments[0], secure);
   assert.equal(resolved.variables[0].kind === "static" ? resolved.variables[0].value : "", "retained-secret");
+  assert.equal(await resolveEnvironmentSecrets(resolved, secure), resolved, "already unlocked environments must not trigger a workspace update");
+});
+
+test("resolving an environment without secrets preserves its identity", async () => {
+  const environment = { id: "local", name: "Local", variables: [] };
+  assert.equal(await resolveEnvironmentSecrets(environment, new MemorySecureStore()), environment);
 });
 
 test("sensitive dynamic cache values use SecureStore instead of SQLite plaintext", async () => {

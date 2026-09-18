@@ -734,7 +734,7 @@ export function WorkspaceWorkbench() {
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
-          : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${contextKey}`} draft={currentDocument.request} setDraft={setDraft}
+          : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             onOpenVariable={openVariableDefinition}

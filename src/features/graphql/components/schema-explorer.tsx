@@ -160,7 +160,7 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
         }
         finally { await responseContent.release(result.content).catch(() => {}); }
       }
-      await install(text, "introspection", response.url, controller.signal);
+      await install(text, "introspection", endpoint, controller.signal);
     } catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally {
       if (operation.current === controller) operation.current = undefined;

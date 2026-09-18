@@ -315,3 +315,10 @@ test("OpenAPI imports persist operation metadata and the source document as a sc
   const schema = reloaded.workspaces[0].extraResources?.find((resource) => resource.id === schemaId);
   assert.ok(schema?.kind === "api-schema"); assert.equal(schema.document, result.resources[1].document);
 });
+
+test("request tracing survives compact YAML serialization when enabled and disabled", () => {
+  for (const enabled of [true, false]) {
+    const request = { kind: "http" as const, id: "traced-request", name: "Garden restoration", method: "GET", url: "{{base_url}}/case/{{case_id}}/details", tracing: { enabled, integrationId: "jaeger" }, params: [], pathParams: [], headers: [], body: { type: "none" as const }, auth: { type: "none" as const } };
+    assert.deepEqual(deserializeResource(serializeResource(request)), request);
+  }
+});
