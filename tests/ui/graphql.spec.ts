@@ -284,7 +284,9 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await expect(editor).toContainText("id");
   await expect(page.locator(".cm-tooltip-autocomplete")).toBeVisible();
   await expect.poll(async () => editor.locator(".cm-line").allTextContents()).toEqual(['{ customer(id: "42") { id', ""]);
+  await editor.press("Escape");
   await editor.type("na");
+  await editor.press("Control+Space");
   await expect(page.getByRole("option", { name: /^name/ })).toHaveAttribute("aria-selected", "true");
   await editor.press("Tab");
   await expect.poll(async () => editor.locator(".cm-line").allTextContents()).toEqual(['{ customer(id: "42") { id', "name", ""]);

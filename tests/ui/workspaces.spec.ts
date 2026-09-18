@@ -6,6 +6,7 @@ test.beforeEach(async ({ page }) => installPersistenceMock(page));
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 const tabs = (page: Page) => page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab");
 const saved = (page: Page) => expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+const variableScope = (page: Page, name: "Workspace" | "Effective") => page.getByRole("navigation", { name: "Variable scopes" }).getByRole("button", { name, exact: true });
 
 async function saveDocument(page: Page, name: string) {
   await page.getByRole("button", { name: "Save document", exact: true }).click();
@@ -654,13 +655,13 @@ test("new workspace hover options open the import source modal", async ({ page }
 test("variables use explicit drafts, validate duplicate names without blocking typing, and toggle atomically", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Open variables", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await variableScope(page, "Workspace").click();
   await page.getByRole("button", { name: "Variable", exact: true }).click();
   await expect(page.getByLabel("Variable name", { exact: true })).toBeFocused();
   await page.getByLabel("Variable name", { exact: true }).fill("test");
   await page.getByLabel("Variable value", { exact: true }).fill("draft-only");
   await saved(page); await page.reload();
-  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await variableScope(page, "Workspace").click();
   await expect(page.getByText("draft-only", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Variable", exact: true }).click();
@@ -680,9 +681,9 @@ test("variables use explicit drafts, validate duplicate names without blocking t
 
   await page.getByRole("checkbox", { name: "Enable test", exact: true }).click();
   await saved(page); await page.reload();
-  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await variableScope(page, "Workspace").click();
   await expect(page.getByRole("checkbox", { name: "Enable test", exact: true })).not.toBeChecked();
-  await page.getByRole("button", { name: "Effective", exact: true }).click();
+  await variableScope(page, "Effective").click();
   await expect(page.getByText("test", { exact: true })).toHaveCount(0);
 });
 
@@ -690,7 +691,7 @@ test("Static variables support the bottom quick row and a Dynamic form survives 
   await page.goto("/");
   await saveDocument(page, "Source request");
   await page.getByRole("button", { name: "Open variables", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await variableScope(page, "Workspace").click();
   await expect(page.getByText("Select a variable to inspect its definition and usage.", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Add static variable", exact: true }).click();
