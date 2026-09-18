@@ -38,3 +38,7 @@ npm is the only supported JavaScript package manager. The repository pins it thr
 The root package reserves the public identity `@purr/core` at version `0.1.0` and remains unpublished while the migration is in progress. `npm run build:core` emits the supported JavaScript, declarations, CSS, worker assets, and curated `./app`, `./extension-api`, `./ui`, `./test-kit`, and `./styles` exports into `dist-core`. React and React DOM are peer dependencies so an official shell owns the single runtime instance. Consumers must not import source paths such as `src/features/*`.
 
 `npm run check:core-package` builds the example external frontend and Rust/Tauri shell under `tests/fixtures/core-consumer`, validates package exports and the React singleton, and compiles a fake native provider/plugin through the public composition API. `npm run check:core-determinism` confirms two clean core artifact builds are byte-identical.
+
+## Licensing
+
+The public Purr core in this repository is licensed under the [MIT License](LICENSE). The Purr name and branding are governed separately by the [trademark policy](TRADEMARK.md). Some integrations and commercial features may be developed and distributed separately under proprietary licenses and are not covered by this repository's MIT License.
