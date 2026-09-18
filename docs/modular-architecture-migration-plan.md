@@ -2005,40 +2005,39 @@ Avoid mixing these high-conflict files in broad migrations:
 
 ### K.1 Findings from the current checkout
 
-- A limited regex scan of the current tree and non-test Git patches found no committed private key block, common cloud key/token format, updater signing private key, or obvious production credential. Synthetic tests contain values such as `test-token`, `secret-password`, and `private-token`; keep them clearly fake.
-- `src-tauri/tauri.conf.json` commits a personal Apple Development signing identity including email and team ID. This is not the signing private key, but it should be removed from the public config and injected only in local/private release configuration.
-- No `LICENSE` file is present. `package.json` is still `private: true`; Cargo metadata says `authors = ["you"]` and generic description.
-- Both npm and Yarn lock/config artifacts are present. `.yarn/install-state.gz` is tracked despite being ignored now and is the largest repeated blob in the repository history. Standardize and remove it from the index; history cleanup for size is optional unless other sensitive history is found.
-- `.DS_Store`, `dist/`, and `test-results/` exist locally but are ignored and were not shown as tracked. Verify this again from a clean clone.
-- `theme-ref.html` is a standalone generated/design reference using CDN assets and includes secret-looking mock text. Establish its provenance/license and either remove it, document it, or sanitize it before publication.
-- Bundled fonts, icons, `public/tauri.svg`, `public/vite.svg`, and other visual assets need an ownership/license inventory. Remove unused starter assets.
+- On 2026-09-19, Gitleaks 8.30.1 scanned every reachable Git revision and the current tracked/untracked source tree. The only matches were synthetic cURL-auth fixtures; the repository config allow-lists their exact fake values. A separate filename, signature, URL, email, and large-blob review found no committed private key, common cloud/service token, updater signing key, database, environment file, or obvious production credential.
+- The checked-in Tauri configuration contains no signing identity, updater key, or release credential. npm is the sole JavaScript package manager, and the current tree contains no tracked Yarn state or generated build output.
+- The repository includes the MIT license, contribution and security policies, a separate trademark policy, and notices/license texts for the bundled fonts and Jaeger artwork. Unused Vite/Tauri/React starter artwork and the standalone design reference were removed.
+- npm audit reports no known vulnerability. RustSec identified `rustls` 0.23.44 and the lockfile was updated to 0.23.45. Remaining informational RustSec warnings come through the current Tauri dependency graph and should be revisited as upstream releases move them.
+- Public CI validates policy, tests, type checking, lint, builds, npm advisories, RustSec advisories, and Git history secret scanning.
+- Commit metadata contains the repository owner's author email. The owner must decide whether that address is suitable for public history before changing visibility.
 - The Tauri app CSP is currently `null`. Define an explicit production CSP before public binaries are distributed; it must allow the Phase 9 `purr-content` protocol only for the required image/media sources.
 - Native secure storage currently fails closed outside macOS. Document supported platforms accurately or add native root-key adapters before advertising those builds.
-- There is no visible `.github/` pipeline in the current checkout, so secret scanning, dependency review, and reproducible OSS builds still need CI setup.
+- Remote issues, pull requests, Actions history, repository variables/environments, releases, collaborators, branch protection, private vulnerability reporting, and GitHub secret scanning require an authenticated GitHub-side review before the visibility change.
 
-The limited scan is evidence about this checkout, not a complete history/security audit.
+The scan covers repository content available in this checkout. It cannot inspect GitHub-hosted settings or data that is not present in local refs.
 
 ### K.2 Checklist before changing repository visibility
 
-- [ ] Run Gitleaks or an equivalent scanner over all refs, commits, tags, large blobs, and LFS objects; review findings manually.
-- [ ] If any real secret ever existed, revoke/rotate it first, then rewrite history if exposure reduction is useful. History deletion alone does not make a credential safe.
-- [ ] Inspect deleted historical `.env`, databases, logs, exports, screenshots, HAR files, fixtures, provisioning profiles, certificates, and archives.
-- [ ] Remove the personal `bundle.macOS.signingIdentity` from public Tauri config. Keep Apple certificates, API keys, app-specific passwords, notarization credentials, and CI issuer/key IDs only in secret storage.
-- [ ] Keep any Tauri updater private key outside all repos; only the updater public key may be committed to the build that uses it.
+- [x] Run Gitleaks over all local refs and the current source tree; manually review the narrow synthetic-fixture allow-list.
+- [x] Inspect reachable history for environment files, databases, logs, exports, screenshots, HAR files, fixtures, provisioning profiles, certificates, archives, known secret signatures, and large blobs.
+- [x] Remove the personal `bundle.macOS.signingIdentity` from public Tauri config. Keep Apple certificates, API keys, app-specific passwords, notarization credentials, and CI issuer/key IDs only in secret storage.
+- [x] Keep any Tauri updater private key outside all repos; only the updater public key may be committed to the build that uses it.
 - [ ] Audit GitHub Actions, repository variables, environments, caches, build logs, release assets, and artifact retention before enabling public workflow logs.
-- [ ] Add an OSI license and confirm copyright ownership for all code.
-- [ ] Generate a third-party dependency/license inventory for npm, Cargo, fonts, icons, and design assets; resolve incompatible or missing licenses.
-- [ ] Decide whether the Purr name/logo is available for OSS use and document the trademark/branding policy separately from the code license.
-- [ ] Remove unused Vite/Tauri starter assets and confirm `theme-ref.html` provenance.
-- [ ] Standardize npm; remove `.yarn/install-state.gz`, `.yarnrc.yml`, and `yarn.lock` if npm is selected. Verify no credentials exist in package-manager config/registry URLs.
-- [ ] Add `.env.example` only if configuration is actually needed; it must contain names/placeholders, never values.
-- [ ] Verify `.gitignore` covers `.env*` except an explicit example, signing files, `*.p12`, `*.mobileprovision`, databases, logs, HAR files, local workspaces, build output, and test artifacts.
-- [ ] Review all test fixtures for real hosts, internal organization names, customer payloads, emails, trace IDs, tokens, and proprietary API schemas. Prefer synthetic `example.test` data.
-- [ ] Confirm project YAML/asset fixtures contain no response history, cookies, local file paths, username/home paths, or secret values.
+- [x] Add an OSI license.
+- [ ] Confirm copyright ownership for all code before publication.
+- [x] Review npm/Cargo license metadata and document bundled fonts and artwork with their license texts.
+- [x] Document the trademark/branding policy separately from the code license.
+- [x] Remove unused Vite/Tauri/React starter assets and the unneeded standalone design reference.
+- [x] Standardize npm and verify package-manager configuration contains no private registry or credential.
+- [x] Keep `.env.example` absent while no environment configuration is required.
+- [x] Cover environment files, signing material, databases, logs, HAR files, build output, and test artifacts in `.gitignore`.
+- [x] Review test fixtures for real hosts, organization names, customer payloads, emails, trace IDs, tokens, and proprietary schemas; retained credential-like values are explicit synthetic fixtures.
+- [x] Confirm project YAML/asset fixtures contain no response history, cookies, local user paths, or plaintext secret values.
 - [ ] Inspect error paths and logs so request URLs with query secrets, headers, OAuth codes/tokens, response bodies, and filesystem paths are not emitted to console/CI.
-- [ ] Add dependency vulnerability review, lockfile verification, Rust audit, secret scan, and source/build tests to public CI.
-- [ ] Add `SECURITY.md` with a private reporting channel and supported-version policy.
-- [ ] Replace package/Cargo placeholder metadata; add repository, license, authorship/contact, description, and minimum supported Rust/Node versions.
+- [x] Add dependency vulnerability review, lockfile verification, Rust audit, secret scan, and source/build tests to public CI.
+- [x] Add `SECURITY.md` with a private reporting channel and supported-version policy.
+- [x] Add package/Cargo repository, license, description, and minimum supported Rust/Node metadata. Commit authorship remains in Git metadata.
 - [ ] Create separate public/official bundle identifiers and release channels. Do not make the OSS build depend on a private updater endpoint.
 - [ ] Set a restrictive production CSP, allow the `purr-content` protocol only in the required `img-src`/`media-src` directives, and test dialogs, editors, OAuth opener, image preview, and audio/video seeking under it.
 - [ ] Verify Keychain service/bundle identifier migration so changing public/official identifiers does not orphan or accidentally share credentials.

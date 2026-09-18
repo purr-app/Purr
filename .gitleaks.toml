@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic bearer values used by cURL import tests"
+regexTarget = "match"
+regexes = [
+  '''Authorization: Bearer (?:top-secret|imported-token)''',
+  '''X-API-Key: secret-key''',
+]

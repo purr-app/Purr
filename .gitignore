@@ -18,6 +18,14 @@ playwright-report
 .env
 .env.*
 !.env.example
+*.har
+*.key
+*.mobileprovision
+*.p12
+*.pfx
+*.pem
+*.sqlite
+*.sqlite3
 
 # Editor directories and files
 .vscode/*
