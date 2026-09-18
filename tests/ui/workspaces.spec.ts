@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { parse } from "yaml";
 import { installPersistenceMock } from "./persistence-mock";
 test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
@@ -680,6 +681,27 @@ test("variables use explicit drafts, validate duplicate names without blocking t
   await page.getByRole("button", { name: "Cancel variable changes", exact: true }).click();
 
   await page.getByRole("checkbox", { name: "Enable test", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Enable test", exact: true })).not.toBeChecked();
+  // The status label can still describe an earlier save. Wait for this value
+  // in the actual browser backend before testing restoration after reload.
+  await expect.poll(async () => {
+    const manifests = await page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+      const open = indexedDB.open("purr-preview-v2", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const request = db.transaction("projects").objectStore("projects").getAll();
+        request.onsuccess = () => {
+          resolve(request.result.flatMap((files) => files["purr.yaml"] ? [files["purr.yaml"].content] : []));
+          db.close();
+        };
+        request.onerror = () => { db.close(); reject(request.error); };
+      };
+    }));
+    return manifests.some((manifest) => parse(manifest).workspace.variables?.some(
+      (variable: { name: string; enabled: boolean }) => variable.name === "test" && variable.enabled === false,
+    ));
+  }).toBe(true);
   await saved(page); await page.reload();
   await variableScope(page, "Workspace").click();
   await expect(page.getByRole("checkbox", { name: "Enable test", exact: true })).not.toBeChecked();

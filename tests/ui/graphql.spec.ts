@@ -288,6 +288,8 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await editor.type("na");
   await editor.press("Control+Space");
   await expect(page.getByRole("option", { name: /^name/ })).toHaveAttribute("aria-selected", "true");
+  // CodeMirror intentionally ignores acceptance keys for 75 ms after opening.
+  await page.waitForTimeout(100);
   await editor.press("Tab");
   await expect.poll(async () => editor.locator(".cm-line").allTextContents()).toEqual(['{ customer(id: "42") { id', "name", ""]);
   const tallQuery = ["query Tall($id: ID!) {", "  customer(id: $id) {", ...Array.from({ length: 16 }, () => "    id"), "    na", "  }", "}"].join("\n");
@@ -314,6 +316,7 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await editor.press("Escape");
   await editor.fill('{ customer(id: "42") { i');
   await expect(page.getByRole("option", { name: /^id/ })).toHaveAttribute("aria-selected", "true");
+  await page.waitForTimeout(100);
   await editor.press("Enter");
   await editor.type("}");
   await page.waitForTimeout(150);
