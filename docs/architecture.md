@@ -170,6 +170,12 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - Attached external project directories have application/native support but no current UI.
 - Registry schema sources, external secret providers, non-OpenAPI collection adapters, non-Jaeger tracing adapters, logs, benchmarks, and subscriptions are not implemented end-to-end. Trace lookup uses the exact persisted execution metadata, tolerates save debounce for one second, and reports a retryable missing-save state without delaying ordinary HTTP response display. Its cache is bounded and memory-only. Phase 14 adds optional propagation preferences to existing request/workspace YAML; no new persisted trace table or file format is introduced.
 
+## Desktop release follow-ups
+
+- The OSS Tauri configuration currently has no production CSP. Define and validate one before distributing production binaries, including the native `purr-content` image/media protocol, editors, dialogs, and OAuth flows.
+- Secure storage currently requires macOS; other platforms need native root-key adapters before they are supported.
+- Official distribution still requires signing/notarization configuration and verification of bundle identifiers, release channels, and Keychain migration. Validate fresh installations, upgrades, and missing/corrupt local storage before a release.
+
 ## Documentation ownership
 
 - [Workspaces](workspaces.md): runtime aggregate, filesystem tree, tabs/layout/navigation.
@@ -180,7 +186,6 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - [Persistence](persistence-architecture.md): exact file/local/vault classification and recovery.
 - [GraphQL](graphql.md): request and schema lifecycles.
 - [Imports and integrations](imports-and-integrations.md): normalized import boundary and reserved concepts.
-- [Modular architecture migration plan](modular-architecture-migration-plan.md): target public/private composition, extension contracts, and the incremental native content-engine migration.
 
 ## Key files
 

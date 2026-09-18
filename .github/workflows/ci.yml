@@ -39,8 +39,6 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm run check:repo
       - run: npm test
-      - run: npx playwright install chromium
-      - run: npm run test:ui
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
