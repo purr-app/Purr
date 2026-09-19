@@ -80,6 +80,7 @@ Start with [AGENTS.md](AGENTS.md) for repository conventions, then use the subsy
 - [Persistence architecture](docs/persistence-architecture.md)
 - [GraphQL](docs/graphql.md)
 - [Imports and integrations](docs/imports-and-integrations.md)
+- [Versioning and releases](docs/releases.md)
 
 ## Contributing
 

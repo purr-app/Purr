@@ -41,10 +41,14 @@
   },
   "scripts": {
     "prepare": "npm run build:core",
+    "changeset": "changeset",
+    "changeset:status": "changeset status",
+    "release:version": "changeset version && node scripts/sync-release-version.mjs --write",
+    "release:check": "node scripts/sync-release-version.mjs --check",
     "dev": "vite",
     "test": "npm run build:core && tsx --test tests/*.test.ts",
     "test:ui": "npm run build:core && playwright test",
-    "check:repo": "node scripts/check-repository-policy.mjs",
+    "check:repo": "node scripts/check-repository-policy.mjs && npm run release:check",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests scripts eslint.config.js playwright.config.ts tailwind.config.ts vite.config.ts vite.core.config.ts",
     "build": "npm run build:app && npm run build:core",
@@ -93,6 +97,7 @@
     "zod": "^4.6.1"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.3",
     "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "^2",
     "@types/node": "^26.4.1",

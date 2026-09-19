@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -48,10 +49,45 @@ jobs:
         working-directory: src-tauri
       - run: cargo test
         working-directory: src-tauri
-      - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1
-        name: Audit Rust dependencies
-        with:
-          workingDirectory: src-tauri
-          createIssues: false
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit Rust dependencies
+        run: cargo audit --file Cargo.lock
+        working-directory: src-tauri
       - name: Build unsigned OSS application bundle
         run: npm run tauri -- build --bundles app --no-sign --ci
+
+  release:
+    name: Prepare or publish release
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [secret-scan, validate-and-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Create or update the release pull request
+        id: changesets
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-script: npm run release:version
+          commit-message: "chore: release Purr"
+          pr-title: "chore: release Purr"
+          pr-base-branch: main
+      - name: Create version tag and GitHub Release
+        if: steps.changesets.outputs['has-changesets'] == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/create-github-release.mjs

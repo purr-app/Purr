@@ -11,8 +11,8 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 const tauriConfig = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
 
-if (packageJson.name !== "@purr/core" || packageJson.version !== "0.1.0") {
-  failures.push("package.json must reserve @purr/core@0.1.0 during the migration.");
+if (packageJson.name !== "@purr/core") {
+  failures.push("package.json must reserve the @purr/core package identity.");
 }
 if (!String(packageJson.packageManager ?? "").startsWith("npm@")) {
   failures.push("package.json must pin npm through packageManager.");
