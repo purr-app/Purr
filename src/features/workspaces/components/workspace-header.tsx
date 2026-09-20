@@ -1,3 +1,4 @@
+import { useUpdates } from "../../updates/update-context";
 import { useState, useSyncExternalStore } from "react";
 import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, FileInput, FilePlus2, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2 } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
@@ -25,6 +26,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   onEnvironment: (id: string | null) => void; onEditEnvironment: () => void; onNewEnvironment: () => void;
   onToggleSidebar: () => void; onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
 }) {
+  const updates = useUpdates();
   const { runtime } = useApplicationServices();
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [newWorkspaceOptionsOpen, setNewWorkspaceOptionsOpen] = useState(false);
@@ -54,7 +56,8 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
               <Check className={cn("size-ui-4 text-action-brand", item.id !== workspace.id && "invisible")} /><span className="max-w-ui-document-tab truncate">{item.name}</span>
             </Button>)}
           </div>
-          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
+          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); updates.leaveTab(); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
+          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); updates.openTab("about"); }}><Settings2 className="size-ui-4" />About Purr</Button>
         </PopoverContent>
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />

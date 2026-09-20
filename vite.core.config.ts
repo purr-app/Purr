@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
@@ -6,7 +7,14 @@ const entry = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
 export default defineConfig({
   base: "./",
-  plugins: [react()],
+  plugins: [react(), {
+    name: "distribution-metadata",
+    generateBundle() {
+      for (const [fileName, source] of [["tauri.conf.json", "src-tauri/tauri.conf.json"], ["CHANGELOG.md", "CHANGELOG.md"]]) {
+        this.emitFile({ type: "asset", fileName, source: readFileSync(entry(`./${source}`), "utf8") });
+      }
+    },
+  }],
   publicDir: false,
   resolve: {
     alias: { "@": entry("./src") },

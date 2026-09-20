@@ -1,3 +1,5 @@
+import { useUpdates } from "../updates/update-context";
+import { VersionFooter, ApplicationUpdatePanel } from "../updates/update-ui";
 import { WorkspaceIntegrationsProvider } from "../../integrations/workspace-integrations";
 import { TabStateProvider, TabStateStore } from "../../shared/state/tab-state";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type SetStateAction } from "react";
@@ -116,11 +118,13 @@ function pruneVariableCache(workspace: Workspace, globalVariables: readonly Vari
 }
 
 export function WorkspaceWorkbench() {
+  const updates = useUpdates();
   const [tabStates] = useState(() => new TabStateStore());
   const services = useApplicationServices();
   const extensions = useExtensionRegistry();
   const { persistence } = services;
-  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave } = useWorkspaces();
+  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave, flush } = useWorkspaces();
+  useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [sessions, setSessions] = useState<Record<string, RequestSession>>({});
   const [actionError, setActionError] = useState("");
@@ -240,6 +244,7 @@ export function WorkspaceWorkbench() {
   });
   const setDraft = (change: SetStateAction<RequestDraft>) => setRequestDraft(currentDocument?.id, change);
   const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http", folderId?: string) => {
+    updates.leaveTab();
     if (kind === "schema") {
       const document = createSchemaDocument();
       update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
@@ -251,6 +256,7 @@ export function WorkspaceWorkbench() {
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
   const addExtensionDocument = (extensionType: string, folderId?: string) => {
+    updates.leaveTab();
     const registration = extensions.documentType(extensionType);
     if (!registration) { setActionError(`Extension document type is unavailable: ${extensionType}`); return; }
     try {
@@ -445,11 +451,12 @@ export function WorkspaceWorkbench() {
     if (view === "canvas") changeSession({ canvasFocus: session.response || session.error || session.sending ? "response" : "request" });
   };
   const toggleSidebar = () => update((current) => ({ ...current, ui: { ...current.ui, sidebarOpen: !current.ui.sidebarOpen } }));
-  const openCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false } }));
+  const openCookies = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false } })); };
   const closeCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: false, cookiesTabActive: false } }));
-  const openSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false } }));
+  const openSettings = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false } })); };
   const closeSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: false, settingsTabActive: false } }));
   const openVariables = (scope: VariableScope = variableScope, selectedId?: string | null, draft?: Variable | null) => {
+    updates.leaveTab();
     setVariableScope(scope);
     if (selectedId !== undefined) setVariableSelection(selectedId);
     if (draft !== undefined) setVariableDraft(draft);
@@ -513,7 +520,7 @@ export function WorkspaceWorkbench() {
     { id: "horizontal", title: "Horizontal split view", icon: <Rows2 className="size-ui-4" />, shortcut: keyboardShortcuts.horizontalSplitView, run: () => selectView("horizontal") },
     { id: "vertical", title: "Vertical split view", icon: <Columns2 className="size-ui-4" />, shortcut: keyboardShortcuts.verticalSplitView, run: () => selectView("vertical") },
   ];
-  const shortcutOptions = { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true, enabled: Boolean(workspace) && !dialog };
+  const shortcutOptions = { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true, enabled: Boolean(workspace) && !dialog && !updates.activeTab };
   useHotkeys(actions.map((action) => action.shortcut?.hotkey).filter(Boolean).join(","), (_, handler) => {
     actions.find((action) => action.shortcut?.hotkey === handler.hotkey)?.run();
   }, shortcutOptions, [actions]);
@@ -525,11 +532,12 @@ export function WorkspaceWorkbench() {
   }, [dialog, workspace]);
   useHotkeys(`${keyboardShortcuts.commandPalette.hotkey},${keyboardShortcuts.openRecentRequest.hotkey}`, () => setDialog((current) => current === "palette" ? null : "palette"), { ...shortcutOptions, enabled: Boolean(workspace) && (!dialog || dialog === "palette") });
   useHotkeys(keyboardShortcuts.closeDocument.hotkey, () => {
-    if (workspace?.ui.settingsTabActive) closeSettings();
+    if (updates.activeTab) updates.closeTab(updates.activeTab);
+    else if (workspace?.ui.settingsTabActive) closeSettings();
     else if (workspace?.ui.variablesTabActive) closeVariables();
     else if (workspace?.ui.cookiesTabActive) closeCookies();
     else if (activeDocument) closeById(activeDocument.id);
-  }, shortcutOptions, [activeDocument, workspace]);
+  }, { ...shortcutOptions, enabled: Boolean(workspace) && !dialog }, [activeDocument, workspace, updates]);
   useHotkeys(keyboardShortcuts.closeOtherDocuments.hotkey, () => {
     if (activeDocument && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive && !workspace?.ui.variablesTabActive) closeOtherTabs(activeDocument.id);
   }, shortcutOptions, [activeDocument, workspace]);
@@ -594,7 +602,7 @@ export function WorkspaceWorkbench() {
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
       onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => previewDocument(current, id))} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => { updates.leaveTab(); update((current) => previewDocument(current, id)); }} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
         void services.workspaceShell.openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
       }} /></Collapsible>
@@ -622,7 +630,8 @@ export function WorkspaceWorkbench() {
         <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
-        <div id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
+        {updates.activeTab && <div id="application-update-panel" role="tabpanel" aria-labelledby={`document-tab-${updates.activeTab}`} className="min-h-0 flex-1"><ApplicationUpdatePanel /></div>}
+        <div hidden={Boolean(updates.activeTab)} id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
           <WorkspaceIntegrationsProvider workspaceId={workspace.id} request={currentDocument?.request} workspacePropagation={workspace.requestConfig.tracePropagation}
             definitions={requestConfig.integrations}
             authContext={{ variables, workspaceProfiles: requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
@@ -768,6 +777,7 @@ export function WorkspaceWorkbench() {
       </div>
     </div>
     <footer className="flex h-control-sm shrink-0 items-center justify-end gap-ui-3 border-t border-border-subtle bg-purr-base px-ui-3 text-ui-xs text-content-tertiary">
+      <VersionFooter />
       {saveError || actionError ? <><span role="alert" className="min-w-0 truncate text-accent-red" title={saveError || actionError}>{saveError ? `Could not save workspace: ${saveError}` : actionError}</span>{saveError ? <Button variant="ghost" size="xs" onClick={() => { void retrySave().catch(() => {}); }}>Reload and retry</Button> : null}</>
         : <span role="status">{saving ? "Saving…" : "Saved locally"}</span>}
     </footer>

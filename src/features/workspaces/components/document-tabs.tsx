@@ -1,3 +1,4 @@
+import { useUpdates, type ApplicationTab } from "../../updates/update-context";
 import { Braces, Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "../../../shared/components/ui/button";
@@ -26,7 +27,7 @@ type TabDrag = {
   moved: boolean;
 };
 
-export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onNewExtension, onSave }: {
+export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensionTypes = [], onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onNewExtension, onSave }: {
   workspace: Workspace;
   cookieCount: number;
   extensionTypes?: readonly { extensionType: string; label: string }[];
@@ -47,6 +48,8 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
   onNewExtension?: (extensionType: string) => void;
   onSave: () => void;
 }) {
+  const updates = useUpdates();
+  const workspace = updates.activeTab ? { ...sourceWorkspace, ui: { ...sourceWorkspace.ui, activeDocumentId: null, cookiesTabActive: false, variablesTabActive: false, settingsTabActive: false } } : sourceWorkspace;
   const list = useRef<HTMLDivElement>(null);
   const geometry = useRef<TabGeometry[]>([]);
   const dragState = useRef<TabDrag | null>(null);
@@ -56,8 +59,15 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
   const [menuId, setMenuId] = useState<string | null>(null);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
   const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && activeDocument.kind !== "schema" && (!activeDocument.saved || isDocumentDirty(activeDocument)));
-  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : [])];
-  const openTab = (id: string) => id === cookiesTabId ? onOpenCookies() : id === settingsTabId ? onOpenSettings() : id === variablesTabId ? onOpenVariables() : onOpen(id);
+  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : []), ...updates.tabs];
+  const openTab = (id: string) => {
+    if (updates.tabs.includes(id as ApplicationTab)) { updates.openTab(id as ApplicationTab); return; }
+    updates.leaveTab();
+    if (id === cookiesTabId) onOpenCookies();
+    else if (id === settingsTabId) onOpenSettings();
+    else if (id === variablesTabId) onOpenVariables();
+    else onOpen(id);
+  };
   const onTabKeyDown = (event: KeyboardEvent, id: string) => {
     if (event.altKey && event.shiftKey && workspace.ui.openDocumentIds.includes(id) && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
       event.preventDefault();
@@ -74,7 +84,7 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
   };
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive, workspace.ui.variablesTabActive]);
+  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive, workspace.ui.variablesTabActive, updates.activeTab]);
   useEffect(() => {
     dragState.current = null;
     dropPositions.current = null;
@@ -205,7 +215,7 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
           onContextMenu={(event) => { event.preventDefault(); setMenuId(id); }}>
           <button type="button" role="tab" aria-selected={active} aria-controls="active-document-panel" id={`document-tab-${id}`} title={name}
             className="ui-focus-ring flex h-control-sm max-w-ui-document-tab touch-none items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
-            onClick={() => { if (!drag?.moved) onOpen(id); }} onDoubleClick={() => onPin(id)} onKeyDown={(event) => onTabKeyDown(event, id)}
+            onClick={() => { if (!drag?.moved) openTab(id); }} onDoubleClick={() => onPin(id)} onKeyDown={(event) => onTabKeyDown(event, id)}
             onPointerDown={(event) => startTabDrag(event, id)} onPointerMove={moveTab} onPointerUp={finishTabDrag} onPointerCancel={cancelTabDrag}
             tabIndex={active ? 0 : -1}>
             <span className={cn("ui-document-method inline-flex h-full items-center font-code text-ui-2xs leading-none", getDocumentBadge(document).color)}>{getDocumentBadge(document).label}</span>
@@ -230,7 +240,7 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
       {workspace.ui.cookiesTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.cookiesTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
         <button type="button" role="tab" aria-selected={workspace.ui.cookiesTabActive} aria-controls="active-document-panel" id={`document-tab-${cookiesTabId}`}
           className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
-          onClick={onOpenCookies} onKeyDown={(event) => onTabKeyDown(event, cookiesTabId)} tabIndex={workspace.ui.cookiesTabActive ? 0 : -1}>
+          onClick={() => openTab(cookiesTabId)} onKeyDown={(event) => onTabKeyDown(event, cookiesTabId)} tabIndex={workspace.ui.cookiesTabActive ? 0 : -1}>
           <CookieIcon className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Cookies</span><span className="font-code text-ui-2xs text-action-brand">{cookieCount}</span>
         </button>
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close workspace cookies" onClick={onCloseCookies}><X className="size-ui-3" /></Button>
@@ -238,7 +248,7 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
       {workspace.ui.variablesTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.variablesTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
         <button type="button" role="tab" aria-selected={workspace.ui.variablesTabActive} aria-controls="active-document-panel" id={`document-tab-${variablesTabId}`}
           className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
-          onClick={onOpenVariables} onKeyDown={(event) => onTabKeyDown(event, variablesTabId)} tabIndex={workspace.ui.variablesTabActive ? 0 : -1}>
+          onClick={() => openTab(variablesTabId)} onKeyDown={(event) => onTabKeyDown(event, variablesTabId)} tabIndex={workspace.ui.variablesTabActive ? 0 : -1}>
           <Braces className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Variables</span>
         </button>
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close variables" onClick={onCloseVariables}><X className="size-ui-3" /></Button>
@@ -246,11 +256,19 @@ export function DocumentTabs({ workspace, cookieCount, extensionTypes = [], onOp
       {workspace.ui.settingsTabOpen ? <div className={cn("group flex shrink-0 items-center rounded-ui-md border transition-colors duration-ui-fast hover:bg-purr-elevated", workspace.ui.settingsTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
         <button type="button" role="tab" aria-selected={workspace.ui.settingsTabActive} aria-controls="active-document-panel" id={`document-tab-${settingsTabId}`}
           className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
-          onClick={onOpenSettings} onKeyDown={(event) => onTabKeyDown(event, settingsTabId)} tabIndex={workspace.ui.settingsTabActive ? 0 : -1}>
+          onClick={() => openTab(settingsTabId)} onKeyDown={(event) => onTabKeyDown(event, settingsTabId)} tabIndex={workspace.ui.settingsTabActive ? 0 : -1}>
           <Settings2 className="size-ui-3-5 text-action-brand" /><span className="inline-flex h-full items-center leading-none">Workspace settings</span>
         </button>
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close workspace settings" onClick={onCloseSettings}><X className="size-ui-3" /></Button>
       </div> : null}
+      {updates.tabs.map((tab) => <div key={tab} className={cn("group flex shrink-0 items-center rounded-ui-md border", updates.activeTab === tab ? "border-border bg-purr-elevated" : "border-transparent")}>
+        <button type="button" role="tab" id={`document-tab-${tab}`} aria-selected={updates.activeTab === tab} aria-controls="application-update-panel"
+          tabIndex={updates.activeTab === tab ? 0 : -1} onClick={() => openTab(tab)} onKeyDown={(event) => onTabKeyDown(event, tab)}
+          className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm text-content-secondary">
+          {tab === "about" ? "About Purr" : "Release notes"}
+        </button>
+        <Button variant="ghost" size="icon" aria-label={`Close ${tab === "about" ? "About Purr" : "Release notes"}`} onClick={() => updates.closeTab(tab)}><X className="size-ui-3" /></Button>
+      </div>)}
     </div>
     <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} />
     <div className="flex-1" />
