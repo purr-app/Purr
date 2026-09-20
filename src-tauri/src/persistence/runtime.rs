@@ -105,8 +105,8 @@ impl RuntimeStorage {
             .app_data_dir()
             .map_err(|_| "Cannot locate application storage")?;
         fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
-        let local =
-            LocalStateStore::open(&data.join("local-state.sqlite3"), &PlatformRootKeyStore)?;
+        let root_keys = PlatformRootKeyStore::new(&data);
+        let local = LocalStateStore::open(&data.join("local-state.sqlite3"), &root_keys)?;
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);

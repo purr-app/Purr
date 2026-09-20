@@ -57,7 +57,6 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
             </Button>)}
           </div>
           <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); updates.leaveTab(); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
-          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); updates.openTab("about"); }}><Settings2 className="size-ui-4" />About Purr</Button>
         </PopoverContent>
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />

@@ -67,7 +67,7 @@ The root package reserves the `@purr/core` identity and is not currently publish
 
 ## Architecture
 
-The application uses React and TypeScript for the UI and application layers. Tauri and Rust own native HTTP, filesystem persistence, encrypted local state, macOS Keychain access, OAuth callbacks, downloads, large response content, and tracing providers.
+The application uses React and TypeScript for the UI and application layers. Tauri and Rust own native HTTP, filesystem persistence, encrypted local state, legacy macOS Keychain migration, OAuth callbacks, downloads, large response content, and tracing providers.
 
 Start with [AGENTS.md](AGENTS.md) for repository conventions, then use the subsystem documentation:
 

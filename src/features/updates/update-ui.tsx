@@ -47,14 +47,14 @@ export function UpdateNotifications() {
 }
 export function ApplicationUpdatePanel() {
   const { activeTab, version, notes, date, controller, state, openTab } = useUpdates();
-  return <div className="h-full overflow-y-auto p-ui-6 text-ui-md text-content-secondary">
-    <div className="mx-auto max-w-ui-dialog space-y-ui-4">
+  return <div className="h-full overflow-y-auto bg-purr-base p-ui-2 text-ui-md text-content-secondary">
+    <div className="mx-auto max-w-ui-dialog space-y-ui-4 rounded-ui-xl border border-border-subtle bg-purr-surface p-ui-6 shadow-panel">
       <h1 className="text-ui-xl font-semibold text-content-primary">{activeTab === "about" ? "About Purr" : "What’s new"}</h1>
       <p className="font-code">Purr v{version}</p>
       {date && <time dateTime={date}>{date}</time>}
       {activeTab === "about" ? <>
         <p>A local-first client for HTTP and GraphQL APIs.</p>
-        <Button disabled={state.phase === "disabled" || busy(state.phase)} onClick={() => { void controller.check(); }}>Check for Updates…</Button>
+        <Button variant="brand" disabled={state.phase === "disabled" || busy(state.phase)} onClick={() => { void controller.check(); }}>Check for Updates…</Button>
         {state.phase === "disabled" ? <p>Automatic updates are not configured for this build.</p> : <p>Updates download only when you choose. Purr never restarts automatically.</p>}
         {state.version && <Button variant="secondary" disabled={busy(state.phase)} onClick={() => { void controller.activate(); }}>{actionLabel(state.phase)} v{state.version}</Button>}
         <div><Button variant="ghost" onClick={() => openTab("release-notes")}>Release notes</Button></div>

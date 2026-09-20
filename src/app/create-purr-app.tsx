@@ -11,6 +11,7 @@ import { ExtensionRegistryProvider } from "../extension-api/extension-context";
 import { createExtensionRegistry } from "../extension-api/registry";
 import type { PurrExtensionModule } from "../extension-api/contracts";
 import type { ApplicationServices } from "./composition/application-services";
+import { jaegerModule } from "../integrations/builtins/jaeger";
 import { createCoreServices } from "./composition/core-services";
 import {
   coreComposition,
@@ -31,7 +32,7 @@ export function createPurrApp(
 ): ComponentType {
   const updates = new UpdateController(options.updater);
   const services = options.services ?? createCoreServices();
-  const extensions = createExtensionRegistry(options.modules ?? [], services);
+  const extensions = createExtensionRegistry([jaegerModule, ...(options.modules ?? [])], services);
   const composition = extendAppComposition(options.composition ?? coreComposition, extensions.pages.map((page) => ({
     id: `${page.moduleId}.${page.id}`,
     path: page.fullPath,

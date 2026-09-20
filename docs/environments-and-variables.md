@@ -98,7 +98,7 @@ runtime Variable.value
 
 `SecretRef` has a validated `purr/<workspace>/<owner>/<field>` shape. Global variables use the `purr/global/...` namespace. Workspace/environment YAML contains the stable reference and metadata, never the value. The frontend resolves values only when needed and may hold them transiently in runtime state; UI masking alone must never be treated as persistence protection.
 
-On macOS, `NativeSecureStore` calls Rust `secure_*` commands. The Keychain stores one root encryption key (`purr/local-storage/master-key-v1`); individual secret values live in the separately keyed AES-GCM SQLite vault. Non-macOS native secure storage currently fails closed. Browser development uses its preview secure adapter and is not the desktop security contract.
+On macOS, `NativeSecureStore` calls Rust `secure_*` commands. A root encryption key with user-only file permissions lives in application storage; individual secret values live in the separately keyed AES-GCM SQLite vault. Legacy Keychain roots migrate once. Non-macOS native secure storage currently fails closed. Browser development uses its preview secure adapter and is not the desktop security contract.
 
 ## External secret providers
 
@@ -137,5 +137,5 @@ See [Persistence architecture](persistence-architecture.md) for the full ownersh
 - `src/application/project-projection.ts` — variable projection and sensitive cache protection.
 - `src/storage/secrets.ts` — stable refs, `SecureStore` helpers, and runtime secret envelopes.
 - `src/storage/native-backend.ts` — `NativeSecureStore` IPC adapter.
-- `src-tauri/src/secure_store.rs` — Keychain root and derived ciphers.
+- `src-tauri/src/security/mod.rs` — local root migration and derived ciphers.
 - `src-tauri/src/local_state.rs` — encrypted secret-values vault.

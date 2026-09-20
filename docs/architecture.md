@@ -13,7 +13,7 @@ runtime Workspace / RequestDraft / StoredHttpResponse
   ↓ ApplicationServices context
 TypeScript domain and application services → application ports
   ↓ platform/browser or platform/tauri adapters
-Rust HTTP · OAuth callback · project files · encrypted SQLite · Keychain
+Rust HTTP · OAuth callback · project files · encrypted SQLite · local root key
 
 React observability UI
   ↓ bounded ObservabilityPort DTOs
@@ -69,7 +69,7 @@ Rust modules provide narrow privileged boundaries:
 - `src-tauri/src/content/`: response-content chunks, lifecycle, direct save, allowlisted range-capable media protocol, bounded reads/segmented lines, cancellable search/format/query adapters, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
-- `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
+- `src-tauri/src/security/`: user-only local root key, legacy Keychain migration, and domain-separated database, credential, and response-content encryption keys.
 - `src-tauri/src/observability/`: provider-neutral trace/span models, immutable descriptor/capability/correlation/propagation registries, integration-scoped credential resolution, bounded memory cache, native hierarchy/search/pagination, cancellation and response-linked lookup. The public Jaeger adapter owns HTTP/OTLP parsing under `providers/`; two synthetic providers are available only with `observability-fixtures`. React calls bounded typed commands and owns presentation only. Propagation is independent of provider selection; the final headers are prepared in Rust before HTTP transport.
 - `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.

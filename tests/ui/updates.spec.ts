@@ -8,7 +8,12 @@ test("source build exposes version and About without contacting an updater", asy
   await expect(page.getByRole("button", { name: `v${version}`, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "About", exact: true }).click();
   await expect(page.getByRole("heading", { name: "About Purr" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Check for Updates…", exact: true })).toBeDisabled();
+  const check = page.getByRole("button", { name: "Check for Updates…", exact: true });
+  await expect(check).toBeDisabled();
+  await expect(check).toHaveClass(/bg-action-brand/);
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await expect(page.getByRole("button", { name: "About Purr", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Release notes", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Release notes", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "What’s new" })).toBeVisible();

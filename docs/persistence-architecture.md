@@ -14,7 +14,7 @@ Local data is machine/session/editor specific or potentially large: drafts, inac
 
 ### Secret store
 
-Credential-bearing values never belong in project files. Canonical definitions contain stable `SecretRef`s. On macOS one Keychain root key derives separate database and secret-vault AES-GCM keys; individual values live in SQLite `secret_values`.
+Credential-bearing values never belong in project files. Canonical definitions contain stable `SecretRef`s. On macOS one user-only application-storage root key derives separate database and secret-vault AES-GCM keys; individual values live in SQLite `secret_values`.
 
 `Secret ≠ masked`: asterisks in UI are not a persistence boundary.
 
@@ -170,7 +170,7 @@ Ordinary `read` returns only the newest execution per document. `history` querie
 
 `SecureStore` is a typed frontend contract. `NativeSecureStore` maps it to `secure_get/set/delete/exists`. `storeCredential` writes a value and returns either a plain credential (only when explicitly allowed) or a secret ref.
 
-On macOS `PlatformRootKeyStore` stores one 32-byte root in Keychain service `app.purr.credentials`. HKDF derives separate database, credential-vault, and response-content keys. Each native storage worker reads the root when it starts and retains only its derived cipher. If encrypted data exists and the Keychain item is missing, startup fails closed and does not generate a replacement key that would make old data unreadable.
+On macOS `PlatformRootKeyStore` stores one 32-byte root in the application data directory with user-only `0600` permissions. HKDF derives separate database, credential-vault, and response-content keys. The native storage worker reads the root when it starts and retains only its derived ciphers. Versions before 0.1.2 used Keychain service `app.purr.credentials`; if a file key is absent, Purr reads that legacy entry once and writes the user-only file. This migration can require one final macOS authorization for an existing unsigned installation. If encrypted data exists and neither key is available, startup fails closed and does not generate a replacement key that would make old data unreadable.
 
 Other native platforms currently fail closed because no root-key adapter is configured.
 
@@ -192,7 +192,7 @@ The last category is currently incomplete. Workspace auth runtime has an explici
 - Invalid canonical YAML/project data is rejected without modifying source files.
 - Missing attachment assets reject load rather than fabricate request data.
 - External/dirty conflicts preserve both sources and stop the merge.
-- Missing Keychain root with existing encrypted data fails closed.
+- Missing root key with existing encrypted data fails closed.
 - Failed secure writes may leave an unused secret ref/value, but code must never fall back to plaintext project/local storage.
 - Autosave/flush failures stay visible. A failed revision-checked final save does not block native window close and does not overwrite the external file.
 - Recovery must be explicit and minimal; do not silently discard drafts, cookies, history, or credentials.
@@ -223,7 +223,7 @@ The last category is currently incomplete. Workspace auth runtime has an explici
 - `src/storage/browser-backend.ts` — browser development persistence.
 - `src-tauri/src/project_files.rs` — safe project path/file operations.
 - `src-tauri/src/local_state.rs` — SQLite schema, encryption, history, cookie indexes, and vault.
-- `src-tauri/src/secure_store.rs` — Keychain root and cryptographic key derivation.
+- `src-tauri/src/security/mod.rs` — local root-key migration and cryptographic key derivation.
 - `src-tauri/src/persistence.rs` — registry, journals, Tauri commands, and watcher.
 
 Integration tracing settings and request `{ enabled, integrationId? }` bindings are

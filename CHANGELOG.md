@@ -1,5 +1,14 @@
 # @purr/core
 
+## 0.1.2
+
+### Fixes
+
+- Make Jaeger available as Purr’s first built-in integration in installed distribution builds.
+- Load the empty-workspace Purr icon from the packaged core instead of an unavailable root URL.
+- Remove About Purr from the workspace menu, use the blue brand action for update checks, and give About and release notes an opaque application surface.
+- Avoid a Keychain password prompt on every unsigned app update by keeping the local encryption key in user-only application storage. Existing Keychain-backed installations migrate once.
+
 ## 0.1.1
 
 ### Improvements
