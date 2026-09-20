@@ -205,3 +205,11 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - `src-tauri/src/composition.rs` — complete native command registration map and constrained external builder.
 - `src-tauri/src/native_extension_api.rs` — reviewed native provider contracts.
 - `src-tauri/src/lib.rs` — public core builder and OSS run exports.
+
+## Distribution updates
+
+`createPurrApp({ updater })` accepts the optional documented `AppUpdater` port exported by `@purr/core/app`. Public source builds omit it: no official endpoint, verification key, plugin registration, or update network request exists in public configuration. The distribution supplies its adapter and native updater/restart plugins through `core_builder().plugin(...)`. Core owns check/download/install state, one non-blocking startup check per app instance, About, the footer, progress/errors, and release notes. Download and installation are separate: only explicit Restart flushes workspace state, installs, and requests relaunch. No app data or credentials cross the update API.
+
+`Notification` is exported through `@purr/core/ui` for reuse. Notices slide in from the right; errors rise and fade, with reduced-motion support and dismiss controls. Release notes/About are app-level session tabs; they are not workspace documents and never enter canonical YAML. Only the last seen version is stored as local UI metadata (`purr.release-notes.seen-version`). Notes ship with the app as restricted Markdown, so viewing them needs no network request. `createPurrApp({ release })` accepts `AppRelease` metadata (product version, notes, optional date); a distribution supplies its own changelog independently of the public core version. Native app version remains authoritative, and the injected product version is the browser/offline fallback.
+
+`@purr/core/tauri-config` and `@purr/core/release-notes` expose generated package assets containing the base Tauri JSON and canonical changelog. Consumers merge configuration overrides after the base, using Tauri's RFC 7396 semantics. The public artifact excludes distribution update endpoints and keys. See [releases](releases.md) for note generation and downstream publication.

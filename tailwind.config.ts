@@ -129,6 +129,7 @@ export default {
         "ui-document-tab": "var(--document-tab-max-width)",
         "ui-dialog": "var(--dialog-width)",
         "ui-name-dialog": "var(--name-dialog-width)",
+        "ui-notification": "var(--notification-width)",
         "ui-variable-list": "var(--variable-list-max-height)",
         "ui-palette": "var(--palette-max-height)",
         "ui-diagnostics": "var(--diagnostics-max-height)",

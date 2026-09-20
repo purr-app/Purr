@@ -24,6 +24,16 @@ const tauriConfig = JSON.parse(tauriConfigSource);
 const cargoManifest = readFileSync(cargoManifestPath, "utf8");
 const cargoLock = readFileSync(cargoLockPath, "utf8");
 
+const changelog = readFileSync("CHANGELOG.md", "utf8");
+const notes = changelog.split(`## ${version}\n`)[1]?.split(/\n## /)[0]?.trim();
+if (!notes) throw new Error(`CHANGELOG.md must contain nonempty release notes for ${version}.`);
+const releaseMetadata = { version, notes };
+const releaseMetadataPath = "src/app/release-notes.json";
+if (mode === "--write") writeJson(releaseMetadataPath, releaseMetadata);
+else if (JSON.stringify(readJson(releaseMetadataPath)) !== JSON.stringify(releaseMetadata)) {
+  throw new Error("Bundled release notes are stale; run npm run release:version or node scripts/sync-release-version.mjs --write.");
+}
+
 const cargoManifestVersion = readCargoPackageVersion(cargoManifest, cargoManifestPath);
 const cargoLockVersion = readCargoLockPackageVersion(cargoLock);
 const versions = [

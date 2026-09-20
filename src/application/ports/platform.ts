@@ -50,6 +50,7 @@ export interface WorkspaceShellPort {
 
 export type CloseRequest = { preventDefault(): void };
 export interface ApplicationLifecyclePort {
+  version?(): Promise<string>;
   onCloseRequested(
     listener: (request: CloseRequest) => void | Promise<void>,
   ): Promise<() => void>;

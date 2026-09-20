@@ -60,3 +60,13 @@ purr_core = { package = "purr", version = "=N.N.N", git = "https://github.com/pu
 Update its `core-version.json`, run `npm install` and the appropriate Cargo command to refresh both lockfiles, then run the commercial compatibility suite. A merge to public `main` never changes the commercial build by itself; only this reviewed pin update does.
 
 `core-v0.1.0` is the historical dependency bootstrap tag. Keep existing consumers pinned until the manually created unified `v0.1.0` release is available, then use only the unified `vN.N.N` convention.
+
+## In-app release notes and distribution artifacts
+
+`CHANGELOG.md` is the canonical source for release notes. `sync-release-version.mjs --write` also generates `src/app/release-notes.json` for the active version; `--check` rejects missing or stale notes. This makes the current version's notes available offline and in Node-based composition tests. `build:core` publishes the same changelog and the public base Tauri config as the documented `@purr/core/release-notes` and `@purr/core/tauri-config` assets.
+
+The About tab contains Check for Updates and Release notes. The first launch records a version baseline; subsequent version changes open a closable Release notes tab once. A failed local UI-storage write never blocks startup. The updater notice includes the candidate version and that release's notes; download progress supports known and unknown content length. Errors preserve retryable state. Download does not install; explicit Restart flushes workspace persistence before installation/relaunch.
+
+A distribution can pass an `AppUpdater` to `createPurrApp`. The adapter has `check()` and `restart()`; an update has `version`, `notes`, `download(progress)`, `install()`, and `close()`. Core serializes operations, releases superseded update handles, and never chooses a URL or trust key. Public source builds omit the adapter and therefore show the version/About/notes without performing update checks. Native versions are obtained through the lifecycle adapter, with bundled version fallback for browser previews.
+
+Official macOS artifact upload, key configuration and `latest.json` generation belong exclusively to the private composition. Its CI extracts its own private product changelog, verifies signatures with the shipped key, and uploads immutable artifacts before updating the feed. Commercial product versions are independent: product 0.1.0 can use core 0.1.1. A distribution passes `release: { version, notes, date? }` to `createPurrApp`; source builds use core metadata by default. Upgrading a core dependency must not change the product version or copy the public core changelog into the product release. Apple code signing/notarization and updater signature verification are separate concerns.

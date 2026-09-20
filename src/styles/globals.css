@@ -202,6 +202,7 @@
     --document-tab-drag-threshold: 0.25rem;
     --dialog-width: 44rem;
     --name-dialog-width: 26rem;
+    --notification-width: 26rem;
   --variable-list-max-height: 20rem;
   --variables-navigation-width: 13rem;
   --variables-detail-width: 30rem;
@@ -497,4 +498,17 @@
   .ui-native-response-collapsed { width: 100%; }
   .ui-native-response-collapsed .ui-native-response-prefix { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .ui-native-response-gutter { width: calc(var(--code-line-number-width) + var(--control-height-xs)); padding-right: var(--space-2); }
+}
+
+@layer components {
+  .ui-notification-stack { width: min(var(--notification-width), calc(100vw - var(--space-8))); }
+  .ui-notification { animation: notification-slide var(--duration-layout) ease-out; }
+  .ui-notification-error { animation-name: notification-rise; }
+  .ui-release-markdown > * + * { margin-top: var(--space-3); }
+  .ui-release-markdown ul { list-style: disc; padding-left: var(--space-5); }
+  .ui-release-markdown ol { list-style: decimal; padding-left: var(--space-5); }
+  .ui-release-markdown h3 { color: var(--content-primary); font-weight: var(--font-weight-medium); }
+  @keyframes notification-slide { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  @keyframes notification-rise { from { transform: translateY(var(--space-4)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .ui-notification { animation: none; } }
 }

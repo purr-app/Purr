@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -520,6 +521,7 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
         invoke<void>("open_project_folder", { id }),
     },
     lifecycle: {
+      version: getVersion,
       onCloseRequested: (listener) =>
         Promise.resolve().then(() =>
           getCurrentWindow().onCloseRequested((event) => listener(event)),

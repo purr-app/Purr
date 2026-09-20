@@ -1,7 +1,7 @@
 {
   "name": "@purr/core",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first desktop client for HTTP and GraphQL APIs",
   "license": "MIT",
   "repository": {
@@ -37,7 +37,9 @@
       "types": "./dist-core/types/extension-api/test-kit.d.ts",
       "import": "./dist-core/test-kit.js"
     },
-    "./styles": "./dist-core/styles.css"
+    "./styles": "./dist-core/styles.css",
+    "./tauri-config": "./dist-core/tauri.conf.json",
+    "./release-notes": "./dist-core/CHANGELOG.md"
   },
   "scripts": {
     "prepare": "npm run build:core",

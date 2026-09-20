@@ -1,3 +1,7 @@
+import type { AppRelease } from "../application/ports/release";
+import { UpdateController, type AppUpdater } from "../features/updates/update-controller";
+import { UpdateProvider } from "../features/updates/update-context";
+import { UpdateNotifications } from "../features/updates/update-ui";
 import type { ComponentType } from "react";
 
 import { ThemeProvider } from "../shared/theme/theme-provider";
@@ -15,6 +19,8 @@ import {
 } from "./composition/routes";
 
 export type CreatePurrAppOptions = Readonly<{
+  release?: AppRelease;
+  updater?: AppUpdater;
   composition?: AppComposition;
   services?: ApplicationServices;
   modules?: readonly PurrExtensionModule[];
@@ -23,6 +29,7 @@ export type CreatePurrAppOptions = Readonly<{
 export function createPurrApp(
   options: CreatePurrAppOptions = {},
 ): ComponentType {
+  const updates = new UpdateController(options.updater);
   const services = options.services ?? createCoreServices();
   const extensions = createExtensionRegistry(options.modules ?? [], services);
   const composition = extendAppComposition(options.composition ?? coreComposition, extensions.pages.map((page) => ({
@@ -36,7 +43,10 @@ export function createPurrApp(
       <ApplicationServicesProvider services={services}>
         <ExtensionRegistryProvider registry={extensions}>
           <ThemeProvider>
-            <AppRouter composition={composition} />
+            <UpdateProvider controller={updates} release={options.release}>
+              <AppRouter composition={composition} />
+              <UpdateNotifications />
+            </UpdateProvider>
           </ThemeProvider>
         </ExtensionRegistryProvider>
       </ApplicationServicesProvider>
