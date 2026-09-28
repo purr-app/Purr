@@ -62,13 +62,13 @@ test("documents, workspace selection, environments and independent layouts survi
   const separator = page.getByRole("separator", { name: "Resize Request editor and Response viewer" });
   await separator.focus(); await page.keyboard.press("ArrowRight");
   await expect(separator).toHaveAttribute("aria-valuenow", "54");
-  await page.getByRole("button", { name: "Hide sidebar" }).click();
+  await page.getByRole("navigation", { name: "Workspace activities" }).getByRole("button", { name: "Documents", exact: true }).click();
   await saved(page);
   await page.reload();
   await expect(tabs(page)).toHaveCount(2);
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://example.com/draft");
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("Local");
-  await expect(page.getByRole("button", { name: "Show sidebar" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace activities" }).getByRole("button", { name: "Documents", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect(separator).toHaveAttribute("aria-valuenow", "54");
   await page.getByRole("button", { name: "Select workspace" }).click();
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
@@ -79,7 +79,7 @@ test("documents, workspace selection, environments and independent layouts survi
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("");
   await expect(page.getByRole("button", { name: "Canvas view" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("No environment");
-  await expect(page.getByRole("button", { name: "Hide sidebar" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace activities" }).getByRole("button", { name: "Documents", exact: true })).toHaveAttribute("aria-expanded", "true");
   await saved(page); await page.reload();
   await expect(page.getByRole("button", { name: "Select workspace" })).toContainText("Acme Backend");
   await page.getByRole("button", { name: "Select workspace" }).click();

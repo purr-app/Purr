@@ -60,6 +60,10 @@ Older `requests/` and `graphql/` roots are read for migration. New saves use the
 
 ## Folders and sidebar operations
 
+The activity rail remains visible when sidebar content is collapsed, with activities at the top. Documents opens or toggles the sidebar; Cmd+B toggles visibility without changing `ui.sidebarActivity` or the saved width. History icons in the rail and response summary are placeholders. On macOS the header reserves space for native window controls only outside fullscreen; the platform lifecycle adapter supplies that window state.
+
+For macOS shells with `trafficLightPosition` configured, `macos_window_controls` scales the existing native buttons to 12 logical pixels with a 20-pixel center-to-center pitch, retaining the configured left inset and native actions. The configured y offset locates the button centers relative to the top of the content view (20 pixels for the 40-pixel Purr header). The layout is reapplied on resize and display-scale changes; other platforms and shells using an uncustomized titlebar are unaffected.
+
 Folder canonical resources live in `Workspace.extraResources` at runtime and as `.purr-folder.yaml` on disk. Folders can nest. `validateProject` rejects missing parents and cycles.
 
 The sidebar supports:

@@ -114,6 +114,7 @@ export type Workspace = {
     variablesTabOpen: boolean;
     variablesTabActive: boolean;
     sidebarOpen: boolean;
+    sidebarActivity: SidebarActivity;
     sidebarWidth: number;
     /** Ordered tree items (documents and folders) for the sidebar only. */
     sidebarItemOrder: string[];
@@ -162,6 +163,17 @@ export function createExtensionDocument(extensionType: string, name: string, con
     configVersion, config: structuredClone(config), savedConfigVersion: null, savedConfig: null, ui: {} };
 }
 
+export type SidebarActivity = "documents";
+
+export function toggleWorkspaceSidebar(workspace: Workspace): Workspace {
+  return { ...workspace, ui: { ...workspace.ui, sidebarOpen: !workspace.ui.sidebarOpen } };
+}
+
+export function selectSidebarActivity(workspace: Workspace, activity: SidebarActivity): Workspace {
+  return { ...workspace, ui: { ...workspace.ui, sidebarActivity: activity,
+    sidebarOpen: workspace.ui.sidebarActivity !== activity || !workspace.ui.sidebarOpen } };
+}
+
 export function createWorkspace(name = "Personal", id: string = crypto.randomUUID()): Workspace {
   const document = createHttpDocument();
   return {
@@ -170,7 +182,7 @@ export function createWorkspace(name = "Personal", id: string = crypto.randomUUI
     ui: {
       openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false,
       settingsTabOpen: false, settingsTabActive: false, sidebarOpen: true,
-      sidebarWidth: 15,
+      sidebarWidth: 15, sidebarActivity: "documents",
       sidebarItemOrder: [],
       documentOrder: [],
       variablesTabOpen: false, variablesTabActive: false,
@@ -562,6 +574,7 @@ export function validateWorkspace(value: unknown): Workspace {
         && workspace.ui.cookiesTabActive !== true && workspace.ui.settingsTabActive !== true,
       view: ["canvas", "horizontal", "vertical"].includes(workspace.ui.view) ? workspace.ui.view : "canvas",
       sidebarOpen: workspace.ui.sidebarOpen !== false,
+      sidebarActivity: "documents",
       sidebarWidth: Math.max(12, Math.min(28, typeof workspace.ui.sidebarWidth === "number" ? workspace.ui.sidebarWidth : 15)),
       sidebarItemOrder: Array.isArray(workspace.ui.sidebarItemOrder)
         ? [...new Set(workspace.ui.sidebarItemOrder)].filter((id) => ids.has(id) || (workspace.extraResources ?? []).some((resource) => resource.kind === "folder" && resource.id === id))

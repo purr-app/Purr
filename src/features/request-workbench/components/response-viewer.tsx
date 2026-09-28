@@ -14,6 +14,7 @@ import {
   EyeOff,
   FileArchive,
   GitBranch,
+  History,
   Globe2,
   CircleAlert,
   Code2,
@@ -1352,6 +1353,9 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           <span>{response.durationMs} ms</span>
           <span aria-hidden="true">•</span>
           <span>{formatPayloadSize(response.size)}</span>
+          <span title="Request history — coming soon">
+            <Button variant="ghost" size="icon" disabled aria-label="Request history — coming soon"><History className="size-ui-3-5" /></Button>
+          </span>
         </div>
       </div>
       {findOpen && searchable ? <ResponseFindBar

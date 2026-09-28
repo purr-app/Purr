@@ -128,6 +128,8 @@ pub fn core_builder() -> PurrBuilder {
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(crate::macos_window_controls::init());
     PurrBuilder {
         builder,
         observability: observability::core_registry_builder(),

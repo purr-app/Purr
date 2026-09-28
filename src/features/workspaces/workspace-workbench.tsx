@@ -25,6 +25,7 @@ import { DynamicVariableResolutionError, resolveDynamicVariables } from "./servi
 import { NameDialog } from "./components/name-dialog";
 import { ImportWorkspaceDialog } from "./components/import-workspace-dialog";
 import { WorkspaceHeader } from "./components/workspace-header";
+import { WorkspaceActivityRail } from "./components/workspace-activity-rail";
 import { WorkspaceSidebar } from "./components/workspace-sidebar";
 import { WorkspaceSettings } from "./components/workspace-request-settings";
 import { EmptyWorkspace } from "./components/empty-workspace";
@@ -40,6 +41,8 @@ import type { ProjectResource } from "../../domain/project";
 import { useApplicationServices } from "../../app/application-services-context";
 import { useExtensionRegistry } from "../../extension-api/extension-context";
 import {
+  selectSidebarActivity,
+  toggleWorkspaceSidebar,
   cloneRequestDraft,
   closeDocument,
   discardAllDrafts,
@@ -450,7 +453,7 @@ export function WorkspaceWorkbench() {
     update((current) => ({ ...current, ui: { ...current.ui, view } }));
     if (view === "canvas") changeSession({ canvasFocus: session.response || session.error || session.sending ? "response" : "request" });
   };
-  const toggleSidebar = () => update((current) => ({ ...current, ui: { ...current.ui, sidebarOpen: !current.ui.sidebarOpen } }));
+  const toggleSidebar = () => update(toggleWorkspaceSidebar);
   const openCookies = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false } })); };
   const closeCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: false, cookiesTabActive: false } }));
   const openSettings = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false } })); };
@@ -600,8 +603,10 @@ export function WorkspaceWorkbench() {
       onImportWorkspace={() => setDialog("import-workspace")}
       onRequestSettings={openSettings}
       onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
-      onToggleSidebar={toggleSidebar} onPalette={() => setDialog("palette")} onView={selectView} />
+      onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
+      <WorkspaceActivityRail activity={workspace.ui.sidebarActivity} open={workspace.ui.sidebarOpen}
+        onSelect={(activity) => update((current) => selectSidebarActivity(current, activity))} />
       <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => { updates.leaveTab(); update((current) => previewDocument(current, id)); }} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
         void services.workspaceShell.openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));

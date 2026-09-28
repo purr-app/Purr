@@ -522,6 +522,23 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
     },
     lifecycle: {
       version: getVersion,
+      observeFullscreen: async (listener) => {
+        const window = getCurrentWindow();
+        let active = true;
+        let revision = 0;
+        const update = async () => {
+          const requested = ++revision;
+          const fullscreen = await window.isFullscreen();
+          if (active && requested === revision) listener(fullscreen);
+        };
+        const unlisten = await window.onResized(() => {
+          // Keep the last known state if the window closes during the query.
+          void update().catch(() => {});
+        });
+        try { await update(); }
+        catch (error) { active = false; unlisten(); throw error; }
+        return () => { active = false; unlisten(); };
+      },
       onCloseRequested: (listener) =>
         Promise.resolve().then(() =>
           getCurrentWindow().onCloseRequested((event) => listener(event)),
