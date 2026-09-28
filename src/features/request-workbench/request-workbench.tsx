@@ -1,3 +1,4 @@
+import { HistoryPopover } from "../history/history-panel";
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
 
 import { SplitPane } from "../../shared/components/ui/split-pane";
@@ -22,7 +23,7 @@ import type { HttpTransportProgress } from "../../application/ports/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
 import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest } from "../workspaces/services/dynamic-variable-resolver";
-import type { DynamicVariableCacheEntry, Variable } from "../workspaces/model/workspace";
+import { cloneRequestDraft, type DynamicVariableCacheEntry, type Variable } from "../workspaces/model/workspace";
 import { useApplicationServices } from "../../app/application-services-context";
 
 function ResponseArea({
@@ -35,7 +36,15 @@ function ResponseArea({
   onCreateVariable,
   onCancel,
   progress,
+  onOpenHistory,
+  historyEntryId,
+  historyStartedAt,
+  onReturnCurrent,
 }: {
+  historyEntryId?: string;
+  historyStartedAt?: number;
+  onReturnCurrent?: () => void;
+  onOpenHistory?: (id: string) => void;
   workspaceId: string;
   documentId: string;
   response: StoredHttpResponse | null;
@@ -47,8 +56,8 @@ function ResponseArea({
   progress: HttpTransportProgress | null;
 }) {
   if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} progress={progress} />;
-  if (error) return <ErrorResponse message={error} />;
-  if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} workspaceId={workspaceId} documentId={documentId} />;
+  if (error) return <ErrorResponse message={error} headerAction={onOpenHistory ? <HistoryPopover workspaceId={workspaceId} documentId={documentId} selectedId={historyEntryId} historicalStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} onOpen={onOpenHistory} /> : undefined} />;
+  if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />;
   return <EmptyResponse />;
 }
 
@@ -59,7 +68,7 @@ export type RequestSession = {
   canvasFocus: "request" | "response";
 };
 export const emptyRequestSession: RequestSession = { response: null, error: "", sending: false, canvasFocus: "request" };
-export type RequestActions = { send: () => void; focusUrl: () => void };
+export type RequestActions = { send: (operationName?: string) => void; focusUrl: () => void };
 export type DynamicSourceRequestDocument = {
   id: string;
   name: string;
@@ -67,7 +76,13 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+  onReplay?: (operationName?: string) => void;
+  historyEntryId?: string;
+  historyStartedAt?: number;
+  onReturnCurrent?: () => void;
+  onOpenHistory?: (id: string) => void;
+  onHistoryError?: (message: string) => void;
   workspaceId: string;
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
@@ -102,7 +117,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   onSessionChange: (patch: Partial<RequestSession>) => void;
   actionsRef: Ref<RequestActions>;
 }) {
-  const { httpTransport, responseContent, requestBodies } = useApplicationServices();
+  const { httpTransport, responseContent, requestBodies, persistence } = useApplicationServices();
   const workspaceAuthEntries = useMemo(() => getWorkspaceAuthProfiles(workspaceConfig, requestKind), [requestKind, workspaceConfig]);
   const workspaceProfiles = useMemo(() => workspaceAuthEntries.map((entry) => ({ id: entry.id, name: entry.name || workspaceName, auth: entry.value })), [workspaceAuthEntries, workspaceName]);
   const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, requestKind,
@@ -124,6 +139,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   const sendingRef = useRef(false);
   const executionRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const cancelHistoryRef = useRef<(() => void) | null>(null);
   const [progress, setProgress] = useState<HttpTransportProgress | null>(null);
   useEffect(() => setUrlInvalid(false), [documentId, draft.url]);
   const authRuntime = useAuthRuntime(
@@ -173,6 +189,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[aria-label="Request URL"]')?.focus());
       return;
     }
+    if (onReplay) { onReplay(graphqlOperationName); return; }
     const normalizedUrl = normalizeRequestUrlProtocol(effectiveDraft.url);
     if (normalizedUrl !== draft.url) {
       setDraft((current) => current.url === draft.url
@@ -193,6 +210,22 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     setSending(true);
     setProgress(null);
     setError("");
+    const startedAt = Date.now();
+    const editor = cloneRequestDraft(draft);
+    if (graphqlOperationName && editor.graphql) editor.graphql.operationName = graphqlOperationName;
+    const releaseAttachments = persistence.history?.retainAttachments(workspaceId);
+    let dispatched = false;
+    let recorded = false;
+    const record = (outcome: "response" | "error" | "cancelled", response: StoredHttpResponse | null, error = "") => {
+      if (recorded || !dispatched) return;
+      recorded = true;
+      const pending = persistence.history?.append(workspaceId, { documentId, name: documentName, kind: requestKind,
+        editor, response, error, outcome, startedAt, durationMs: Date.now() - startedAt });
+      if (pending) void pending.catch(() => onHistoryError?.("Could not save request history. The response is still available in this tab."))
+        .finally(() => releaseAttachments?.());
+      else releaseAttachments?.();
+    };
+    cancelHistoryRef.current = () => record("cancelled", null, "Request canceled.");
     try {
       const normalizedDraft: RequestDraft = {
         ...effectiveDraft,
@@ -215,15 +248,20 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
-      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress }, requestBodies);
+      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress, onDispatch: () => { dispatched = true; } }, requestBodies);
       if (execution !== executionRef.current) return;
       setResponse(result);
+      record("response", result);
     } catch (cause) {
       if (execution !== executionRef.current) return;
       if (cause instanceof DynamicVariableResolutionError) onDynamicVariableCacheChange(cause.cache);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(message);
+      record(abort.signal.aborted ? "cancelled" : "error", null, message);
     } finally {
+      if (!recorded) releaseAttachments?.();
       if (execution !== executionRef.current) return;
+      cancelHistoryRef.current = null;
       sendingRef.current = false;
       abortRef.current = null;
       setProgress(null);
@@ -232,6 +270,8 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   };
   const cancelSend = () => {
     if (!sendingRef.current && !sending) return;
+    cancelHistoryRef.current?.();
+    cancelHistoryRef.current = null;
     abortRef.current?.abort();
     abortRef.current = null;
     authRuntime.cancel();
@@ -243,7 +283,7 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
   };
 
   useImperativeHandle(actionsRef, () => ({
-    send: () => { void send(); },
+    send: (operationName) => { void send(operationName); },
     focusUrl: () => {
       document.querySelector<HTMLInputElement>('[aria-label="Request URL"]')?.focus();
     },
@@ -276,6 +316,8 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
       activeSection={requestSection}
       onSectionChange={onRequestSectionChange}
       onOpenCode={() => setCodeOpen(true)}
+      historical={Boolean(historyEntryId)}
+      historyStartedAt={historyStartedAt}
       urlInvalid={urlInvalid}
       detailsCollapsed={canvasCollapsed}
       onToggleDetails={
@@ -286,12 +328,12 @@ export function RequestWorkbench({ draft, setDraft, requestKind, workspaceConfig
     />
   );
   const responsePane = (
-    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} />
+    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />
   );
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base">
-      <main className="flex min-h-0 w-full flex-1 flex-col p-ui-2">
+      <main className="flex min-h-0 w-full flex-1 flex-col px-ui-2 pb-ui-2">
         <div
           className="min-h-0 flex-1"
           data-workbench-view={view}

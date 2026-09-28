@@ -28,6 +28,7 @@ import type { ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 import { getLocalAttachmentReference } from "../../storage/file-codec";
 import { tauriObservability } from "./observability";
+import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
   get(reference: SecretRef) {
@@ -48,6 +49,7 @@ class TauriSecureStore implements SecureStore {
 }
 
 class TauriPersistence implements PersistencePort {
+  readonly history = tauriHistory;
   private cache = new Map<string, Record<string, ProjectFile>>();
 
   async load() {
@@ -522,6 +524,23 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
     },
     lifecycle: {
       version: getVersion,
+      observeFullscreen: async (listener) => {
+        const window = getCurrentWindow();
+        let active = true;
+        let revision = 0;
+        const update = async () => {
+          const requested = ++revision;
+          const fullscreen = await window.isFullscreen();
+          if (active && requested === revision) listener(fullscreen);
+        };
+        const unlisten = await window.onResized(() => {
+          // Keep the last known state if the window closes during the query.
+          void update().catch(() => {});
+        });
+        try { await update(); }
+        catch (error) { active = false; unlisten(); throw error; }
+        return () => { active = false; unlisten(); };
+      },
       onCloseRequested: (listener) =>
         Promise.resolve().then(() =>
           getCurrentWindow().onCloseRequested((event) => listener(event)),

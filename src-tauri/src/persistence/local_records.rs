@@ -99,6 +99,7 @@ impl LocalStateStore {
             "response_bodies",
             "secret_values",
             "response_content_chunks",
+            "history_attachments",
         ]) {
             has_encrypted_data |= db
                 .query_row(
@@ -136,11 +137,13 @@ impl LocalStateStore {
             }
         }
         ciphers.legacy_database = None;
-        Ok(Self {
+        let store = Self {
             db,
             cipher: ciphers.database,
             secret_cipher: ciphers.secrets,
-        })
+        };
+        store.backfill_history_metadata()?;
+        Ok(store)
     }
     pub fn cipher(&self) -> &LocalCipher {
         &self.cipher
@@ -149,7 +152,7 @@ impl LocalStateStore {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(db_error)?;
-        if version > 4 {
+        if version > 5 {
             return Err("Local database was created by a newer Purr version".into());
         }
         if version == 0 {
@@ -225,6 +228,16 @@ impl LocalStateStore {
                 PRAGMA user_version=4;",
             )
             .map_err(db_error)?;
+            tx.commit().map_err(db_error)?;
+        }
+        if version < 5 {
+            let tx = db.transaction().map_err(db_error)?;
+            tx.execute_batch("ALTER TABLE request_executions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE request_executions ADD COLUMN summary BLOB;
+                CREATE INDEX execution_workspace_time ON request_executions(workspace_id,started_at DESC,id DESC);
+                CREATE TABLE history_attachments(workspace_id TEXT NOT NULL,id TEXT NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(workspace_id,id));
+                CREATE TABLE history_attachment_links(workspace_id TEXT NOT NULL,execution_id TEXT NOT NULL,attachment_id TEXT NOT NULL,PRIMARY KEY(workspace_id,execution_id,attachment_id));
+                INSERT INTO migrations(version) VALUES(5); PRAGMA user_version=5;").map_err(db_error)?;
             tx.commit().map_err(db_error)?;
         }
         Ok(())
@@ -425,6 +438,18 @@ impl LocalStateStore {
             )
             .map_err(db_error)?;
         }
+        for table in ["history_attachment_links", "history_attachments"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE workspace_id=?1"),
+                [workspace],
+            )
+            .map_err(db_error)?;
+        }
+        tx.execute(
+            "DELETE FROM app_state WHERE key=?1",
+            [format!("history-retention/{workspace}")],
+        )
+        .map_err(db_error)?;
         tx.execute(
             "DELETE FROM response_bodies WHERE workspace_id=?1",
             [workspace],
@@ -476,7 +501,7 @@ impl LocalStateStore {
         let mut records = Vec::new();
         for table in TABLES {
             let query = if *table == "request_executions" {
-                "SELECT id,payload FROM request_executions e WHERE workspace_id=?1 AND (document_id IS NULL OR id=(SELECT newest.id FROM request_executions newest WHERE newest.workspace_id=e.workspace_id AND newest.document_id=e.document_id ORDER BY started_at DESC LIMIT 1)) ORDER BY id".to_string()
+                "SELECT id,payload FROM request_executions e WHERE workspace_id=?1 AND status IS NOT NULL AND (document_id IS NULL OR id=(SELECT newest.id FROM request_executions newest WHERE newest.workspace_id=e.workspace_id AND newest.document_id=e.document_id AND newest.status IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1)) ORDER BY id".to_string()
             } else {
                 format!("SELECT id,payload FROM {table} WHERE workspace_id=?1 ORDER BY id")
             };
@@ -491,8 +516,14 @@ impl LocalStateStore {
                 let plain = self
                     .cipher
                     .decrypt(&bytes, &format!("{workspace}/{table}/{id}"))?;
-                let mut value: Value =
-                    serde_json::from_slice(&plain).map_err(|_| "Damaged local record")?;
+                let mut value: Value = match serde_json::from_slice(&plain) {
+                    Ok(value) => value,
+                    Err(_) if *table == "request_executions" => continue,
+                    Err(_) => return Err("Damaged local record".into()),
+                };
+                if *table == "request_executions" && !value.is_object() {
+                    continue;
+                }
                 if *table == "request_executions" {
                     self.restore_response_body(workspace, &id, &mut value)?;
                 } else if *table == "attachments" {
@@ -511,7 +542,7 @@ impl LocalStateStore {
         let payload: Vec<u8> = self
             .db
             .query_row(
-                "SELECT payload FROM attachments WHERE workspace_id=?1 AND id=?2",
+                "SELECT payload FROM attachments WHERE workspace_id=?1 AND id=?2 UNION ALL SELECT payload FROM history_attachments WHERE workspace_id=?1 AND id=?2 LIMIT 1",
                 params![workspace, id],
                 |row| row.get(0),
             )
@@ -566,8 +597,17 @@ impl LocalStateStore {
                     )
                     .map_err(db_error)?;
                     delete_execution_content(&tx, workspace, &record.id)?;
+                    tx.execute("DELETE FROM history_attachment_links WHERE workspace_id=?1 AND execution_id=?2", params![workspace,record.id]).map_err(db_error)?;
                 }
             } else {
+                if record.table == "attachments" && record.value["native"] == true {
+                    tx.execute("INSERT OR IGNORE INTO attachments(workspace_id,id,payload) SELECT workspace_id,id,payload FROM history_attachments WHERE workspace_id=?1 AND id=?2",params![workspace,record.id]).map_err(db_error)?;
+                    let available: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE workspace_id=?1 AND id=?2)",params![workspace,record.id],|row|row.get(0)).map_err(db_error)?;
+                    if !available {
+                        return Err("Local attachment is unavailable".into());
+                    }
+                    continue;
+                }
                 let context = format!("{workspace}/{}/{}", record.table, record.id);
                 let mut value = record.value.clone();
                 if record.table == "request_executions" {
@@ -616,6 +656,16 @@ impl LocalStateStore {
                         }
                     }
                 }
+                if record.table == "request_executions" {
+                    if let Some(files) = value.get_mut("files").and_then(Value::as_object_mut) {
+                        for file in files.values_mut() {
+                            if let Some(object) = file.as_object_mut() {
+                                object.remove("base64");
+                                object.insert("native".into(), Value::Bool(true));
+                            }
+                        }
+                    }
+                }
                 let plain = serde_json::to_vec(&value).map_err(|_| "Invalid local data")?;
                 let old: Option<Vec<u8>> = tx
                     .query_row(
@@ -640,7 +690,38 @@ impl LocalStateStore {
                     let status = response["status"]
                         .as_i64()
                         .or_else(|| response["response"]["status"].as_i64());
-                    tx.execute("UPDATE request_executions SET document_id=?3,started_at=?4,status=?5 WHERE workspace_id=?1 AND id=?2", params![workspace,record.id,value["documentId"].as_str(),response["timeline"]["startedAtMs"].as_i64(),status]).map_err(db_error)?;
+                    tx.execute("UPDATE request_executions SET document_id=?3,started_at=?4,status=?5 WHERE workspace_id=?1 AND id=?2", params![workspace,record.id,value["documentId"].as_str(),value["startedAt"].as_i64().or_else(|| response["timeline"]["startedAtMs"].as_i64()),status]).map_err(db_error)?;
+                }
+                if record.table == "request_executions" {
+                    let summary = super::history::summary(&record.id, &record.value, false);
+                    let payload = self.cipher.encrypt(
+                        &serde_json::to_vec(&summary).map_err(|_| "Invalid history metadata")?,
+                        &format!("{workspace}/history-summary/{}", record.id),
+                    )?;
+                    tx.execute(
+                        "UPDATE request_executions SET summary=?3 WHERE workspace_id=?1 AND id=?2",
+                        params![workspace, record.id, payload],
+                    )
+                    .map_err(db_error)?;
+                    if let Some(files) = record.value["files"].as_object() {
+                        for (id, value) in files {
+                            if value["native"] == true {
+                                tx.execute("INSERT OR IGNORE INTO history_attachments SELECT workspace_id,id,payload FROM attachments WHERE workspace_id=?1 AND id=?2", params![workspace,id]).map_err(db_error)?;
+                            } else {
+                                let payload = self.cipher.encrypt(
+                                    &serde_json::to_vec(value)
+                                        .map_err(|_| "Invalid history attachment")?,
+                                    &format!("{workspace}/attachments/{id}"),
+                                )?;
+                                tx.execute("INSERT OR IGNORE INTO history_attachments(workspace_id,id,payload) VALUES(?1,?2,?3)",params![workspace,id,payload]).map_err(db_error)?;
+                            }
+                            let available: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history_attachments WHERE workspace_id=?1 AND id=?2)",params![workspace,id],|row|row.get(0)).map_err(db_error)?;
+                            if !available {
+                                return Err("History attachment is unavailable".into());
+                            }
+                            tx.execute("INSERT OR IGNORE INTO history_attachment_links(workspace_id,execution_id,attachment_id) VALUES(?1,?2,?3)",params![workspace,record.id,id]).map_err(db_error)?;
+                        }
+                    }
                 }
                 if record.table == "cookie_jar" {
                     tx.execute("INSERT INTO cookie_metadata(workspace_id,id,name,domain,path,expires,secure,http_only,same_site,host_only,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(workspace_id,id) DO UPDATE SET name=excluded.name,domain=excluded.domain,path=excluded.path,expires=excluded.expires,secure=excluded.secure,http_only=excluded.http_only,same_site=excluded.same_site,host_only=excluded.host_only,enabled=excluded.enabled",
@@ -648,6 +729,7 @@ impl LocalStateStore {
                 }
             }
         }
+        tx.execute("DELETE FROM history_attachments WHERE workspace_id=?1 AND NOT EXISTS(SELECT 1 FROM history_attachment_links l WHERE l.workspace_id=history_attachments.workspace_id AND l.attachment_id=history_attachments.id)",[workspace]).map_err(db_error)?;
         tx.execute(
             "DELETE FROM pending_commits WHERE workspace_id=?1",
             [workspace],
@@ -655,7 +737,7 @@ impl LocalStateStore {
         .map_err(db_error)?;
         tx.commit().map_err(db_error)
     }
-    fn restore_response_body(
+    pub(super) fn restore_response_body(
         &self,
         workspace: &str,
         id: &str,
@@ -1162,7 +1244,7 @@ mod tests {
         let secure = MemoryRootKeyStore::default();
         let store = LocalStateStore::open(&path, &secure).unwrap();
         // Reconstruct the earlier local schema, then exercise the real migration.
-        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_document_time; ALTER TABLE request_executions DROP COLUMN document_id; ALTER TABLE request_executions DROP COLUMN started_at; ALTER TABLE request_executions DROP COLUMN status; DROP TABLE response_bodies; DROP TABLE cookie_metadata; DROP TABLE secret_values; DELETE FROM migrations WHERE version>1; PRAGMA user_version=1;").unwrap();
+        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_document_time; DROP INDEX execution_workspace_time; DROP TABLE history_attachments; DROP TABLE history_attachment_links; ALTER TABLE request_executions DROP COLUMN pinned; ALTER TABLE request_executions DROP COLUMN summary; ALTER TABLE request_executions DROP COLUMN document_id; ALTER TABLE request_executions DROP COLUMN started_at; ALTER TABLE request_executions DROP COLUMN status; DROP TABLE response_bodies; DROP TABLE cookie_metadata; DROP TABLE secret_values; DELETE FROM migrations WHERE version>1; PRAGMA user_version=1;").unwrap();
         let value = serde_json::json!({"text":"retained draft"});
         let payload = store
             .cipher
@@ -1201,7 +1283,7 @@ mod tests {
                 }],
             )
             .unwrap();
-        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DELETE FROM migrations WHERE version=4; PRAGMA user_version=3;").unwrap();
+        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_workspace_time; DROP TABLE history_attachments; DROP TABLE history_attachment_links; ALTER TABLE request_executions DROP COLUMN pinned; ALTER TABLE request_executions DROP COLUMN summary; DELETE FROM migrations WHERE version>=4; PRAGMA user_version=3;").unwrap();
         drop(store);
 
         let store = LocalStateStore::open(&path, &secure).unwrap();
@@ -1216,7 +1298,7 @@ mod tests {
                 .db
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
     }
 
@@ -1253,7 +1335,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM migrations", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
     }
 }

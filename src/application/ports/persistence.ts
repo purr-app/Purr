@@ -1,3 +1,5 @@
+import type { HistoryPort } from "./history";
+
 export type ProjectFile = { content: string; revision: string };
 export type FileChange = {
   path: string;
@@ -65,6 +67,7 @@ export interface LocalStateStore {
 export interface PersistencePort
   extends FilesystemWorkspaceStore,
     LocalStateStore {
+  history?: HistoryPort;
   load(): Promise<StorageSnapshot>;
   commit(
     id: string,

@@ -91,6 +91,7 @@ impl PurrBuilder {
                 commands::persistence::load_project,
                 commands::persistence::read_local_attachment,
                 commands::persistence::list_request_history,
+                commands::persistence::request_history,
                 commands::persistence::reload_project_file,
                 commands::persistence::commit_project,
                 commands::persistence::set_local_active_workspace,
@@ -128,6 +129,8 @@ pub fn core_builder() -> PurrBuilder {
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(crate::macos_window_controls::init());
     PurrBuilder {
         builder,
         observability: observability::core_registry_builder(),

@@ -187,8 +187,9 @@
     --workspace-sidebar-min-width: 12rem;
     --workspace-sidebar-max-width: 28rem;
     --workspace-titlebar-height: 2.5rem;
-    --workspace-traffic-lights-width: 4.25rem;
+    --workspace-traffic-lights-width: 4rem;
     --workspace-menu-width: 14rem;
+    --history-popover-width: 18rem;
     --context-menu-width: 12rem;
     --document-tab-max-width: 14rem;
     --schema-registry-width: 16.5rem;

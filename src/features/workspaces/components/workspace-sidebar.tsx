@@ -39,7 +39,7 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
   const [query, setQuery] = useState("");
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const folders = (workspace.extraResources ?? []).filter((resource): resource is FolderResource => resource.kind === "folder");
-  const matching = workspace.documents.filter((document) => `${getDocumentDisplayName(document)} ${getDocumentBadge(document).label} ${isRequestDocument(document) ? document.request.url : ""}`.toLowerCase().includes(query.toLowerCase()));
+  const matching = workspace.documents.filter((document) => !(isRequestDocument(document) && document.historical)).filter((document) => `${getDocumentDisplayName(document)} ${getDocumentBadge(document).label} ${isRequestDocument(document) ? document.request.url : ""}`.toLowerCase().includes(query.toLowerCase()));
   const savedDocuments = matching.filter((document) => document.saved && document.kind !== "schema");
   const schemas = matching.filter((document) => document.saved && document.kind === "schema");
   const drafts = matching.filter((document) => !document.saved && isMeaningfulDraft(document));
@@ -61,7 +61,7 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
   };
   const clearSelection = () => setSelectedDocumentIds([]);
 
-  return <aside aria-label="Workspace documents" className="flex h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max shrink-0 flex-col border-r border-border-subtle bg-purr-surface" style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>
+  return <aside id="workspace-sidebar" aria-label="Workspace documents" className="flex h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max shrink-0 flex-col border-r border-border-subtle bg-purr-surface" style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>
     <div className="flex shrink-0 items-center gap-ui-1 px-ui-2 py-ui-2">
       <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-ui-2 top-1/2 size-ui-3-5 -translate-y-1/2 text-content-tertiary" />
         <Input aria-label="Search documents" placeholder="Search documents…" className="ui-focus-ring h-control-md pl-ui-7 text-ui-md" value={query} onChange={(event) => setQuery(event.target.value)} />

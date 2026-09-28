@@ -1,12 +1,12 @@
 import { useUpdates, type ApplicationTab } from "../../updates/update-context";
-import { Braces, Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
+import { Braces, Clock, Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
 import { Popover, PopoverAnchor, PopoverContent } from "../../../shared/components/ui/popover";
 import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
 import { cn } from "../../../shared/lib/cn";
-import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, type CreatableDocumentKind, type Workspace } from "../model/workspace";
+import { getDocumentBadge, getDocumentDisplayName, isDocumentDirty, isMeaningfulDraft, isRequestDocument, type CreatableDocumentKind, type Workspace } from "../model/workspace";
 import { NewDocumentButton } from "./new-document-button";
 
 const cookiesTabId = "workspace-cookies-tab";
@@ -195,7 +195,7 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
     if (drag.targetIndex < drag.sourceIndex && index >= drag.targetIndex && index < drag.sourceIndex) return drag.shiftDistance;
     return 0;
   };
-  return <div className="flex h-control-lg min-w-0 shrink-0 items-center gap-ui-1 border-b border-border-subtle bg-purr-base px-ui-2">
+  return <div className="flex h-control-lg min-w-0 shrink-0 items-center gap-ui-1 bg-purr-base px-ui-2">
     <div ref={list} role="tablist" aria-label="Documents" className="flex min-w-0 items-center gap-ui-1 overflow-x-auto">
       {workspace.ui.openDocumentIds.map((id, index) => {
         const document = workspace.documents.find((item) => item.id === id)!;
@@ -213,11 +213,12 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
             settling && "ui-sortable-tab-settling")}
           style={{ "--document-tab-translate-x": `${translateX}px` } as CSSProperties}
           onContextMenu={(event) => { event.preventDefault(); setMenuId(id); }}>
-          <button type="button" role="tab" aria-selected={active} aria-controls="active-document-panel" id={`document-tab-${id}`} title={name}
+          <button type="button" role="tab" aria-selected={active} aria-controls="active-document-panel" id={`document-tab-${id}`} title={isRequestDocument(document) && document.historical ? `${name} · ${new Date(document.historical.startedAt).toLocaleString()}` : name}
             className="ui-focus-ring flex h-control-sm max-w-ui-document-tab touch-none items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm leading-none text-content-secondary hover:text-content-primary"
             onClick={() => { if (!drag?.moved) openTab(id); }} onDoubleClick={() => onPin(id)} onKeyDown={(event) => onTabKeyDown(event, id)}
             onPointerDown={(event) => startTabDrag(event, id)} onPointerMove={moveTab} onPointerUp={finishTabDrag} onPointerCancel={cancelTabDrag}
             tabIndex={active ? 0 : -1}>
+            {isRequestDocument(document) && document.historical && <Clock aria-label="Historical execution" className="size-ui-3-5 shrink-0 text-content-tertiary" />}
             <span className={cn("ui-document-method inline-flex h-full items-center font-code text-ui-2xs leading-none", getDocumentBadge(document).color)}>{getDocumentBadge(document).label}</span>
             <span className={cn("inline-flex h-full min-w-0 items-center truncate leading-none", preview && "italic")}>{name}</span>
             {!document.saved && !isMeaningfulDraft(document) ? <span className="sr-only">Blank request</span> : null}
