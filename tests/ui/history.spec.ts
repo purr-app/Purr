@@ -62,7 +62,13 @@ test("global and document history show executions and reuse immutable historical
   await documentHistory.getByRole("listitem").last().locator("button").first().click();
   await expect(historical(page)).toBeVisible();
   await expect(page.getByLabel("Historical response date", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Show response history", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const historicalBadge = page.getByRole("button", { name: "Show response history", exact: true });
+  await expect(historicalBadge).toHaveAttribute("aria-pressed", "true");
+  await expect(historicalBadge.locator("time")).toBeVisible();
+  const badge = await historicalBadge.boundingBox();
+  const date = await historicalBadge.locator("time").boundingBox();
+  expect(date!.x).toBeGreaterThan(badge!.x);
+  expect(date!.x + date!.width).toBeLessThanOrEqual(badge!.x + badge!.width);
   await expect(page.getByRole("tab", { name: "Trace", exact: true })).toBeDisabled();
   await expect(page.getByText("Historical execution", { exact: false })).toHaveCount(0);
   await expect(requestUrl(page)).toHaveValue("https://example.test/first");

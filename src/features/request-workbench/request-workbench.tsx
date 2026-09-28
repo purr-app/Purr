@@ -333,7 +333,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base">
-      <main className="flex min-h-0 w-full flex-1 flex-col p-ui-2">
+      <main className="flex min-h-0 w-full flex-1 flex-col px-ui-2 pb-ui-2">
         <div
           className="min-h-0 flex-1"
           data-workbench-view={view}

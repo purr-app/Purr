@@ -195,7 +195,7 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
     if (drag.targetIndex < drag.sourceIndex && index >= drag.targetIndex && index < drag.sourceIndex) return drag.shiftDistance;
     return 0;
   };
-  return <div className="flex h-control-lg min-w-0 shrink-0 items-center gap-ui-1 border-b border-border-subtle bg-purr-base px-ui-2">
+  return <div className="flex h-control-lg min-w-0 shrink-0 items-center gap-ui-1 bg-purr-base px-ui-2">
     <div ref={list} role="tablist" aria-label="Documents" className="flex min-w-0 items-center gap-ui-1 overflow-x-auto">
       {workspace.ui.openDocumentIds.map((id, index) => {
         const document = workspace.documents.find((item) => item.id === id)!;

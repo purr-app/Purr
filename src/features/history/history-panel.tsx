@@ -200,16 +200,14 @@ export function HistoryPopover({ historicalStartedAt, onReturnCurrent, ...props 
   const [open, setOpen] = useState(false);
   const historicalDate = historicalStartedAt !== undefined && Number.isFinite(historicalStartedAt) ? new Date(historicalStartedAt) : null;
   return <Popover open={open} onOpenChange={setOpen}>
-    <div className="flex shrink-0 items-center gap-ui-1">
-      {historicalDate && <time dateTime={historicalDate.toISOString()} title={historicalDate.toLocaleString()} aria-label="Historical response date" className="whitespace-nowrap font-code text-ui-2xs text-content-tertiary">
+    <PopoverTrigger asChild><Button variant="ghost" size="icon" aria-label="Show response history" aria-pressed={Boolean(props.selectedId)}
+      className={cn(historicalDate && "h-control-sm w-auto gap-ui-1 bg-action-brand-surface px-ui-2 text-action-brand")}
+      title={historicalDate ? `Historical response · ${historicalDate.toLocaleString()}` : "Show response history"}>
+      <History className="size-ui-3-5 shrink-0" />
+      {historicalDate && <time dateTime={historicalDate.toISOString()} aria-label="Historical response date" className="whitespace-nowrap font-code text-ui-2xs">
         {historicalDate.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
       </time>}
-    <PopoverTrigger asChild><Button variant="ghost" size="icon" aria-label="Show response history" aria-pressed={Boolean(props.selectedId)}
-      className={cn(props.selectedId && "bg-action-brand-surface text-action-brand")}
-      title={historicalDate ? `Historical response · ${historicalDate.toLocaleString()}` : "Show response history"}>
-      <History className="size-ui-3-5" />
     </Button></PopoverTrigger>
-    </div>
     <PopoverContent align="end" side="bottom" sideOffset={4} className="w-ui-history-popover overflow-hidden rounded-ui-lg border border-border bg-purr-surface shadow-popover">
       {onReturnCurrent && <div className="border-b border-border-subtle p-ui-1"><Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => { onReturnCurrent(); setOpen(false); }}>Return to current</Button></div>}
       <HistoryPanel {...props} compact onOpen={(id) => { props.onOpen(id); setOpen(false); }} />

@@ -3,6 +3,16 @@ import { installPersistenceMock } from "./persistence-mock";
 type PaneTransition = { heights: number[]; response: number; root: number; gutter: number; connected: boolean };
 test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
+test("document tabs meet the request surface without a divider or top gutter", async ({ page }) => {
+  await page.goto("/");
+  const tabs = page.getByRole("tablist", { name: "Documents", exact: true }).locator("..");
+  const composer = page.getByRole("region", { name: "Request composer", exact: true });
+  const tabBounds = await tabs.boundingBox();
+  const requestBounds = await composer.boundingBox();
+  expect(requestBounds!.y - (tabBounds!.y + tabBounds!.height)).toBeLessThanOrEqual(1);
+  await expect(tabs).toHaveCSS("border-bottom-width", "0px");
+});
+
 for (const initialFullscreen of [false, true]) test(`macOS toolbar follows native fullscreen state (initial ${initialFullscreen})`, async ({ page }) => {
   await page.addInitScript((initialFullscreen) => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
