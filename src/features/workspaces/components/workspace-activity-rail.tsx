@@ -3,7 +3,7 @@ import { Button } from "../../../shared/components/ui/button";
 import { cn } from "../../../shared/lib/cn";
 import type { SidebarActivity } from "../model/workspace";
 
-const activities = [{ id: "documents", label: "Documents", icon: Files }] as const;
+const activities = [{ id: "documents", label: "Documents", icon: Files }, { id: "history", label: "History", icon: History }] as const;
 
 export function WorkspaceActivityRail({ activity, open, onSelect }: {
   activity: SidebarActivity;
@@ -16,8 +16,6 @@ export function WorkspaceActivityRail({ activity, open, onSelect }: {
       className={cn("size-ui-8", activity === id && "bg-purr-highlight text-content-primary")} onClick={() => onSelect(id)}>
       <Icon className="size-ui-5" />
     </Button>)}
-    <span title="History — coming soon">
-      <Button variant="ghost" size="icon" className="size-ui-8" disabled aria-label="History — coming soon"><History className="size-ui-5" /></Button>
-    </span>
+
   </nav>;
 }

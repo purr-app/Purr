@@ -55,7 +55,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Request/response layout and split ratios | `Workspace.ui` | encrypted `workspace_local_state/state` | No | No | Local layout preference |
 | Active environment | `Workspace.activeEnvironmentId` | encrypted `workspace_local_state/state` | No | No | Machine/session choice |
 | Latest execution | `RequestDocument.lastResponse` | encrypted `request_executions` + adopted `response_contents` chunks; legacy `response_bodies` | No | Potentially | Restore latest response without polluting Git |
-| Older execution history | not hydrated in ordinary runtime | same native tables | No | Potentially | Local indexed history backend |
+| Older execution history | metadata lists; immutable snapshot hydrated on selection | same native tables plus retained history attachments | No | Potentially | Local indexed history UI |
 | Response headers | `InlineHttpResponse.headers` / `HttpExchange.response.headers` | encrypted execution payload | No | Potentially | Runtime evidence can contain tokens/cookies |
 | Response body | `HttpExchange.content` reference; transitional materialized viewer value | encrypted legacy `response_bodies`; native `response_contents` + encrypted chunks | No | Potentially | Large/sensitive execution data |
 | Cookie metadata | `SessionCookie` | local `cookie_metadata` index columns | No | Metadata only | Queryable local jar inventory |
@@ -152,7 +152,7 @@ The Rust watcher uses `RecursiveMode::Recursive` for each registered project roo
 - `recent_items`;
 - `attachments`.
 
-Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated legacy `response_bodies`, `cookie_metadata`, `secret_values`, and the Phase 5 `response_contents`/`response_content_chunks` store. SQLite runs with WAL, full synchronous behavior, foreign keys, and a busy timeout.
+Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated legacy `response_bodies`, `cookie_metadata`, `secret_values`, `history_attachments`, `history_attachment_links`, and the Phase 5 `response_contents`/`response_content_chunks` store. SQLite runs with WAL, full synchronous behavior, foreign keys, and a busy timeout.
 
 Native response content has an explicit `staging`, `ready`, or `adopted` state. Chunks are at most 256 KiB and independently encrypted with AAD bound to their content identity and position. The content worker groups up to 8 MiB of chunks per transaction and accepts at most two transport write batches in flight, allowing encryption/SQLite work to overlap network reads without unbounded buffering. It uses WAL `synchronous=NORMAL`: response bodies are reconstructible local runtime data, while canonical/local-record commits keep `synchronous=FULL`. The content worker removes expired unowned records. Persisting a v2 execution adopts matching ready content in the same SQLite transaction; deleting that execution or workspace deletes its metadata and cascading chunks. Legacy inline `response_bodies` remain readable and are not deleted by the schema migration.
 
@@ -164,7 +164,11 @@ General local-record payloads are AES-GCM encrypted with context/AAD bound to wo
 
 Draft and inactive-editor request files are stored once in an immutable, content-and-metadata-addressed `attachments` record. Draft/session JSON contains only `__purrFileRef`; unchanged attachment IDs bypass repeated large JSON comparisons and writes. The first encoding yields between bounded chunks so autosave does not monopolize the WebView event loop. Native workspace reads replace the encrypted record's base64 field with a small metadata descriptor, so workspace restoration creates a lazy `File` without sending or decoding its bytes in the WebView. Explicit canonical save may read those bytes through raw IPC; native request execution instead decrypts the attachment in Rust and stages it directly into a short-lived transport handle. Legacy inline `__purrFile` records remain readable. Canonical saved attachments still use the Git-portable `assets/` projection.
 
-Ordinary `read` returns only the newest execution per document. `history` queries indexed metadata with a before cursor and 1–100 limit. `WorkspacePersistence` retains older native execution rows even though the runtime projection contains only latest responses.
+Ordinary `read` prunes expired entries and returns only the latest successful execution per document. `RequestHistory` appends executions separately from document autosave; hosts with a `HistoryPort` never write or delete execution rows through normal workspace projection. This prevents rapid sends from being coalesced and deleted history from being resurrected by `lastResponse`.
+
+SQLite migration 5 adds a pin flag, an encrypted summary, a workspace/time/ID index, retained history attachments and execution-to-attachment links. The schema change is transactional. Native `request_history` provides immutable append, metadata search/cursor pagination, selected-entry reads, metadata-only existence checks, pinning, manual deletion, retention settings, pruning and attachment reads. History attachment payloads reuse the attachment encryption context and are deduplicated separately from live document ownership. Upload replay can stage a retained native attachment directly, without loading file bytes into React.
+
+Retention defaults to 30 days and is stored locally per workspace. Pinned executions are exempt from expiry. Manual deletion and expiry clean owned response content, unreferenced history attachments and execution credential namespaces. Deleting a document/draft does not delete its history; deleting its workspace does. Historical editor views are excluded from workspace projection. The browser preview uses an encrypted per-entry store and metadata index with equivalent retention and immutable append rules.
 
 ## Secure store
 

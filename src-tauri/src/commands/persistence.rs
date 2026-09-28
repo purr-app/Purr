@@ -143,3 +143,25 @@ pub fn attach_project_directory(
 ) -> Result<Value, String> {
     runtime::attach_project_directory(app, state, id, directory)
 }
+
+#[tauri::command]
+pub async fn request_history(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, PersistenceState>,
+    id: String,
+    action: Value,
+) -> Result<Value, String> {
+    let app_clone = app.clone();
+    // History decryption and SQLite work must not block the WebView's event loop.
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        runtime::request_history(
+            app_clone.clone(),
+            app_clone.state::<PersistenceState>(),
+            id,
+            action,
+        )
+    })
+    .await
+    .map_err(|_| "History task failed".to_string())?
+}

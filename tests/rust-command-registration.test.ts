@@ -36,6 +36,7 @@ const registeredCommands = [
   "load_project",
   "read_local_attachment",
   "list_request_history",
+  "request_history",
   "reload_project_file",
   "commit_project",
   "set_local_active_workspace",

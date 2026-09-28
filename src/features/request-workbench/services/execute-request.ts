@@ -209,7 +209,7 @@ export async function executeRequest(
   runtime: AuthRuntime,
   transport: HttpTransportPort,
   content?: ResponseContentPort,
-  execution?: HttpTransportOptions,
+  execution?: HttpTransportOptions & { onDispatch?: () => void },
   requestBodies?: RequestBodyPort,
 ) {
   let effective = resolveAuth(draft.auth, context);
@@ -234,6 +234,8 @@ export async function executeRequest(
     },
   );
   try {
+    if (execution?.signal?.aborted) throw new DOMException("Request canceled", "AbortError");
+    execution?.onDispatch?.();
     return await executeHttp(prepared.request, {
       transport,
       jar: draft.useCookieJar ? jar : undefined,

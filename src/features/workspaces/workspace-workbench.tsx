@@ -1,8 +1,12 @@
+import { ResponseViewer } from "../request-workbench/components/response-viewer";
+import { HistoryPanel } from "../history/history-panel";
+import { historyNeedsReplacement, historySource, historyWorkingCopy, openHistoricalTab, returnFromHistory } from "../history/model/history-working-copy";
+import { Modal } from "../../shared/components/ui/modal";
 import { useUpdates } from "../updates/update-context";
 import { VersionFooter, ApplicationUpdatePanel } from "../updates/update-ui";
 import { WorkspaceIntegrationsProvider } from "../../integrations/workspace-integrations";
 import { TabStateProvider, TabStateStore } from "../../shared/state/tab-state";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type SetStateAction } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { Columns2, Cookie as CookieIcon, Copy, FilePlus2, Globe2, Network, PanelLeft, RotateCcw, Rows2, Save, SendHorizontal, Settings2, Square, TextCursorInput, Trash2, Waypoints } from "lucide-react";
 import { SchemaExplorer } from "../graphql/components/schema-explorer";
@@ -75,6 +79,8 @@ import {
 
 type Dialog = "palette" | "new-workspace" | "import-workspace" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
 const actionErrorTimeoutMs = 15_000;
+const noHistorySubscription = () => () => {};
+const noHistoryRevision = () => 0;
 
 function curlSecretVariableName(headerName: string, used: Set<string>) {
   const stem = headerName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "secret";
@@ -126,10 +132,14 @@ export function WorkspaceWorkbench() {
   const services = useApplicationServices();
   const extensions = useExtensionRegistry();
   const { persistence } = services;
+  const historyRevision = useSyncExternalStore(persistence.history?.subscribe ?? noHistorySubscription, persistence.history?.getSnapshot ?? noHistoryRevision);
   const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave, flush } = useWorkspaces();
   useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [sessions, setSessions] = useState<Record<string, RequestSession>>({});
+  const [historyConflict, setHistoryConflict] = useState<{ workspaceId: string; historical: RequestDocument; change?: (request: RequestDraft) => RequestDraft; send?: { operationName?: string } } | null>(null);
+  const [replayTarget, setReplayTarget] = useState<{ workspaceId: string; documentId: string; operationName?: string } | null>(null);
+  const historyOpenGeneration = useRef(0);
   const [actionError, setActionError] = useState("");
   const [variableScope, setVariableScope] = useState<VariableScope>("effective");
   const [variableSelection, setVariableSelection] = useState<string | null>(null);
@@ -146,6 +156,30 @@ export function WorkspaceWorkbench() {
     return () => window.clearTimeout(timeout);
   }, [actionError]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  useEffect(() => {
+    if (!workspace || !persistence.history) return;
+    const history = persistence.history;
+    const prune = () => { void history.prune(workspace.id).catch(() => setActionError("Could not clean up expired request history.")); };
+    prune();
+    const timer = setInterval(prune, 60 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [workspace?.id, persistence]);
+  useEffect(() => {
+    if (!workspace || !persistence.history) return;
+    const ids = workspace.documents.flatMap((document) => isRequestDocument(document) && document.historical ? [document.historical.entryId] : []);
+    if (!ids.length) return;
+    let disposed = false;
+    void persistence.history.existing(workspace.id, ids).then((existing) => {
+      if (disposed) return;
+      const retained = new Set(existing);
+      const removed = new Set(ids.filter((id) => !retained.has(id)));
+      if (!removed.size) return;
+      updateWorkspace(workspace.id, (current) => current.documents.filter((document) => isRequestDocument(document) && document.historical && removed.has(document.historical.entryId))
+        .reduce((next, document) => closeDocument(next, document.id), current));
+      setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => ![...removed].some((id) => key === `${workspace.id}:history:${id}`))));
+    }).catch(() => setActionError("Could not refresh open history entries."));
+    return () => { disposed = true; };
+  }, [workspace?.id, historyRevision, persistence, updateWorkspace]);
   const requestConfig = useMemo(() => ({ ...(workspace?.requestConfig ?? { headers: [], auth: [] }),
     integrations: (workspace?.extraResources ?? []).filter((item) => item.kind === "integration").filter((item) => extensions.integration(item.provider)?.capabilities?.includes("traces")),
   }), [workspace?.requestConfig, workspace?.extraResources, extensions]);
@@ -161,7 +195,7 @@ export function WorkspaceWorkbench() {
   const activeDocument = workspace?.documents.find((item) => item.id === workspace.ui.activeDocumentId);
   const currentDocument = activeDocument && isRequestDocument(activeDocument) ? activeDocument : undefined;
   const sourceDocuments = useMemo(() => workspace?.documents
-    .filter((document): document is RequestDocument => isRequestDocument(document) && document.saved)
+    .filter((document): document is RequestDocument => isRequestDocument(document) && document.saved && !document.historical)
     .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
   const schemaSource = activeDocument?.kind === "schema" ? workspace?.documents.find((item): item is RequestDocument => isRequestDocument(item) && item.id === activeDocument.sourceRequestId) : undefined;
   const linkedSchema = workspace?.documents.find((item): item is SchemaDocument => item.kind === "schema" && (item.id === currentDocument?.request.graphql?.schemaId || item.sourceRequestId === currentDocument?.id));
@@ -172,8 +206,21 @@ export function WorkspaceWorkbench() {
   const sessionKey = `${workspace?.id}:${currentDocument?.id}`;
   const restoredSession: RequestSession = currentDocument?.lastResponse
     ? { ...emptyRequestSession, response: currentDocument.lastResponse, canvasFocus: "response" }
-    : emptyRequestSession;
+    : currentDocument?.historical?.error ? { ...emptyRequestSession, error: currentDocument.historical.error, canvasFocus: "response" } : emptyRequestSession;
   const session = sessions[sessionKey] ?? restoredSession;
+  useEffect(() => { historyOpenGeneration.current += 1; }, [workspace?.id, workspace?.ui.activeDocumentId, workspace?.ui.settingsTabActive, workspace?.ui.variablesTabActive, workspace?.ui.cookiesTabActive]);
+  useEffect(() => {
+    if (!store) return;
+    const liveHistoryTabs = new Set(store.workspaces.flatMap((item) => item.documents.flatMap((document) =>
+      isRequestDocument(document) && document.historical ? [`${item.id}:${document.id}`] : [])));
+    setSessions((current) => Object.keys(current).some((key) => key.includes(":history:") && !liveHistoryTabs.has(key))
+      ? Object.fromEntries(Object.entries(current).filter(([key]) => !key.includes(":history:") || liveHistoryTabs.has(key))) : current);
+  }, [store?.workspaces]);
+  useEffect(() => {
+    if (!replayTarget || replayTarget.workspaceId !== workspace?.id || replayTarget.documentId !== currentDocument?.id) return;
+    setReplayTarget(null);
+    requestActions.current?.send(replayTarget.operationName);
+  }, [replayTarget, workspace?.id, currentDocument?.id]);
   const cookieJar = useMemo(() => {
     if (!workspace) return null;
     const existing = jars.current.get(workspace.id);
@@ -198,7 +245,7 @@ export function WorkspaceWorkbench() {
   }, [cookieJar, updateWorkspace, workspace?.id]);
   const changeSession = (patch: Partial<RequestSession>) => {
     setSessions((current) => ({ ...current, [sessionKey]: { ...(current[sessionKey] ?? restoredSession), ...patch } }));
-    if (!workspace || !currentDocument || (!("response" in patch) && patch.sending !== true)) return;
+    if (!workspace || !currentDocument || currentDocument.historical || (!("response" in patch) && patch.sending !== true)) return;
     const workspaceId = workspace.id;
     const documentId = currentDocument.id;
     updateWorkspace(workspaceId, (current) => ({ ...current, documents: current.documents.map((document) => document.id === documentId && isRequestDocument(document)
@@ -245,7 +292,42 @@ export function WorkspaceWorkbench() {
     });
     return { ...current, documents, ui: pinPreview ? { ...current.ui, previewDocumentId: null } : current.ui };
   });
-  const setDraft = (change: SetStateAction<RequestDraft>) => setRequestDraft(currentDocument?.id, change);
+  const openHistory = async (id: string, inPlace = false) => {
+    if (!workspace || !persistence.history) return;
+    const workspaceId = workspace.id;
+    const generation = ++historyOpenGeneration.current;
+    try {
+      const entry = await persistence.history.read(workspaceId, id);
+      if (generation !== historyOpenGeneration.current) return;
+      if (!entry) { setActionError("This history entry has expired or was deleted."); return; }
+      const base = entry.kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
+      const editor = entry.editor ?? { ...base.request, url: entry.url };
+      const historical: RequestDocument = { ...base, id: inPlace ? `history:${id}:document:${entry.documentId}` : `history:${id}`,
+        name: inPlace ? (currentDocument ? historySource(workspace, currentDocument)?.name : undefined) || currentDocument?.name || entry.name || entry.url : entry.name || entry.url,
+        saved: true, request: editor, savedRequest: editor, lastResponse: entry.response,
+        historical: { entryId: id, documentId: entry.documentId, startedAt: entry.startedAt, error: entry.error, readOnly: !entry.editor, inPlace },
+        sentAt: new Date(entry.startedAt).toISOString() };
+      updates.leaveTab();
+      updateWorkspace(workspaceId, (current) => openHistoricalTab(current, historical, inPlace ? currentDocument?.id : undefined));
+    } catch (cause) { if (generation === historyOpenGeneration.current) setActionError(cause instanceof Error ? cause.message : "Could not open history."); }
+  };
+  const promoteHistory = (historical: RequestDocument, change?: (request: RequestDraft) => RequestDraft, send?: { operationName?: string }, mode?: "replace" | "draft", replaceTab = true) => {
+    if (!workspace) return;
+    if (historical.historical?.readOnly) { setActionError("This older execution does not contain an editable request snapshot."); return; }
+    if (!mode && historyNeedsReplacement(workspace, historical)) {
+      setHistoryConflict({ workspaceId: workspace.id, historical, change, send }); return;
+    }
+    const promoted = historyWorkingCopy(workspace, historical, change, mode, replaceTab);
+    updateWorkspace(workspace.id, () => promoted.workspace);
+    setSessions((current) => ({ ...current, [`${workspace.id}:${promoted.documentId}`]: {
+      ...emptyRequestSession, response: historical.lastResponse, error: historical.historical?.error ?? "", canvasFocus: "request",
+    } }));
+    if (send) setReplayTarget({ workspaceId: workspace.id, documentId: promoted.documentId, ...send });
+    setHistoryConflict(null);
+  };
+  const setDraft = (change: SetStateAction<RequestDraft>) => {
+    setRequestDraft(currentDocument?.id, change);
+  };
   const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http", folderId?: string) => {
     updates.leaveTab();
     if (kind === "schema") {
@@ -348,6 +430,7 @@ export function WorkspaceWorkbench() {
     }
     try {
       const imported = importCurl(command, currentDocument.request);
+      if (currentDocument.historical) { setDraft(imported.request); return; }
       const documentId = currentDocument.id;
       update((current) => {
         const secured = protectImportedCurlSecrets(imported, current, store?.globalVariables ?? []);
@@ -380,9 +463,13 @@ export function WorkspaceWorkbench() {
       emptyPasteTarget.current?.focus();
     }
   };
-  const duplicateById = (id: string) => update((current) => duplicateDocument(current, id));
+  const duplicateById = (id: string) => {
+    const source = workspace?.documents.find((document) => document.id === id);
+    if (source && isRequestDocument(source) && source.historical) { promoteHistory(source, undefined, undefined, "draft", false); return; }
+    update((current) => duplicateDocument(current, id));
+  };
   const openSchema = (selectedType?: string) => {
-    if (currentDocument?.kind !== "graphql") return;
+    if (currentDocument?.kind !== "graphql" || currentDocument.historical) return;
     update((current) => {
       const existing = current.documents.find((item): item is SchemaDocument => item.kind === "schema" && (
         item.id === currentDocument.request.graphql?.schemaId || item.sourceRequestId === currentDocument.id ||
@@ -490,7 +577,7 @@ export function WorkspaceWorkbench() {
         : document) }));
       return;
     }
-    if (!currentDocument) return;
+    if (!currentDocument || currentDocument.historical) return;
     if (!currentDocument.saved) { setDialog("save-document"); return; }
     if (!isDocumentDirty(currentDocument)) return;
     updateDocument((document) => ({ ...document, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() }));
@@ -509,7 +596,7 @@ export function WorkspaceWorkbench() {
         run: () => discardById(currentDocument.id),
       }] : []),
       { id: "duplicate", title: `Duplicate ${currentDocument.kind === "graphql" ? "GraphQL" : "HTTP"} request`, icon: <Copy className="size-ui-4" />, shortcut: keyboardShortcuts.duplicateDocument, run: () => duplicateById(currentDocument.id) },
-      ...(currentDocument.kind === "graphql" ? [{ id: "schema", title: "Open GraphQL schema", icon: <Network className="size-ui-4 text-action-graphql" />, run: openSchema }] : []),
+      ...(currentDocument.kind === "graphql" && !currentDocument.historical ? [{ id: "schema", title: "Open GraphQL schema", icon: <Network className="size-ui-4 text-action-graphql" />, run: openSchema }] : []),
       { id: "focus-url", title: "Focus request URL", icon: <TextCursorInput className="size-ui-4" />, shortcut: keyboardShortcuts.focusUrl, run: () => requestActions.current?.focusUrl() },
     ] : []),
     { id: "new", title: `New ${workspace?.ui.lastRequestKind === "graphql" ? "GraphQL" : "HTTP"} request`, icon: <FilePlus2 className="size-ui-4" />, shortcut: keyboardShortcuts.newDocument, run: () => addDocument() },
@@ -523,7 +610,7 @@ export function WorkspaceWorkbench() {
     { id: "horizontal", title: "Horizontal split view", icon: <Rows2 className="size-ui-4" />, shortcut: keyboardShortcuts.horizontalSplitView, run: () => selectView("horizontal") },
     { id: "vertical", title: "Vertical split view", icon: <Columns2 className="size-ui-4" />, shortcut: keyboardShortcuts.verticalSplitView, run: () => selectView("vertical") },
   ];
-  const shortcutOptions = { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true, enabled: Boolean(workspace) && !dialog && !updates.activeTab };
+  const shortcutOptions = { enableOnFormTags: true, enableOnContentEditable: true, preventDefault: true, enabled: Boolean(workspace) && !dialog && !historyConflict && !updates.activeTab };
   useHotkeys(actions.map((action) => action.shortcut?.hotkey).filter(Boolean).join(","), (_, handler) => {
     actions.find((action) => action.shortcut?.hotkey === handler.hotkey)?.run();
   }, shortcutOptions, [actions]);
@@ -607,10 +694,12 @@ export function WorkspaceWorkbench() {
     <div className="flex min-h-0 flex-1">
       <WorkspaceActivityRail activity={workspace.ui.sidebarActivity} open={workspace.ui.sidebarOpen}
         onSelect={(activity) => update((current) => selectSidebarActivity(current, activity))} />
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}><WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => { updates.leaveTab(); update((current) => previewDocument(current, id)); }} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>{workspace.ui.sidebarActivity === "history" ? <aside id="workspace-sidebar" aria-label="Workspace history" className="h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max border-r border-border-subtle bg-purr-surface">
+        <HistoryPanel workspaceId={workspace.id} selectedId={currentDocument?.historical?.entryId} onOpen={(id) => { void openHistory(id); }} />
+      </aside> : <WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => { updates.leaveTab(); update((current) => previewDocument(current, id)); }} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
         void services.workspaceShell.openWorkspaceFolder(workspace.id).catch((error) => setActionError(String(error)));
-      }} /></Collapsible>
+      }} />}</Collapsible>
       {workspace.ui.sidebarOpen && <div role="separator" tabIndex={0} aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin={12} aria-valuemax={28} aria-valuenow={Math.round(workspace.ui.sidebarWidth)} className="ui-focus-ring flex w-ui-1 shrink-0 touch-none cursor-col-resize" onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.preventDefault();
@@ -663,7 +752,7 @@ export function WorkspaceWorkbench() {
               };
               return { ...current, requestConfig,
                 documents: current.documents.map((document) => {
-                  if (!isRequestDocument(document)) return document;
+                  if (!isRequestDocument(document) || document.historical) return document;
                   const request = reconcile(!document.saved ? withWorkspaceAuthDefault(document.request, document.kind, requestConfig) : document.request, document.kind);
                   const savedRequest = document.savedRequest ? reconcile(document.savedRequest, document.kind) : document.savedRequest;
                   return { ...document, request, savedRequest };
@@ -748,9 +837,15 @@ export function WorkspaceWorkbench() {
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
-          : currentDocument ? <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
+          : currentDocument ? <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1">{currentDocument.historical?.readOnly && currentDocument.lastResponse ? <div className="h-full min-h-0 bg-purr-base p-ui-2"><ResponseViewer response={currentDocument.lastResponse} workspaceId={workspace.id} documentId={currentDocument.historical.documentId} onOpenHistory={(id) => { void openHistory(id, true); }} historyEntryId={currentDocument.historical.entryId} historyStartedAt={currentDocument.historical.startedAt}
+              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={requestConfig}
-            workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
+            workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.historical?.documentId ?? currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
+            historyEntryId={currentDocument.historical?.entryId} historyStartedAt={currentDocument.historical?.startedAt}
+            onReturnCurrent={currentDocument.historical && historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined}
+            onReplay={currentDocument.historical ? (operationName) => promoteHistory(currentDocument, undefined, { operationName }) : undefined}
+            onOpenHistory={(id) => { void openHistory(id, true); }} onHistoryError={setActionError}
             onOpenVariable={openVariableDefinition}
             onCreateMissingVariable={createMissingVariableDefinition}
             onWorkspaceAuthChange={updateWorkspaceAuth}
@@ -759,17 +854,17 @@ export function WorkspaceWorkbench() {
               const baseName = candidate.name.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^\d/, "_$&") || "response_value";
               let name = `${baseName}_var`; let suffix = 2;
               while (workspace.variables.some((variable) => variable.name === name)) name = `${baseName}_var_${suffix++}`;
-              if (candidate.dynamic && !currentDocument.saved) { setActionError("Save this request before using it as a dynamic variable source."); return; }
+              if (candidate.dynamic && (!currentDocument.saved || currentDocument.historical)) { setActionError("Use a saved current request as a dynamic variable source."); return; }
               const variable = candidate.dynamic ? createDynamicVariable(name, currentDocument.id, candidate.jsonPath)
                 : { id: crypto.randomUUID(), name, enabled: true, sensitive: false, kind: "static" as const, value: candidate.value };
               openVariables("workspace", null, variable);
             }}
-            schema={schema} onOpenSchema={() => openSchema()} onOpenGraphqlType={(name) => openSchema(name)}
+            schema={schema} onOpenSchema={currentDocument.historical ? undefined : () => openSchema()} onOpenGraphqlType={currentDocument.historical ? undefined : (name) => openSchema(name)}
             view={workspace.ui.view} splitRatios={workspace.ui.splitRatios} onSplitRatioChange={(orientation, ratio) => update((current) => ({ ...current, ui: { ...current.ui, splitRatios: { ...current.ui.splitRatios, [orientation]: ratio } } }))}
             requestSection={currentDocument.ui.requestSection} onRequestSectionChange={(requestSection) => updateDocument((document) => ({ ...document, ui: { ...document.ui, requestSection } }))}
             variables={variables} runtimeVariables={getEffectiveVariables(workspace, store.globalVariables)} environmentId={workspace.activeEnvironmentId} variablesForEnvironment={variablesForEnvironment}
             dynamicVariableCache={workspace.dynamicVariableCache} dynamicVariableSessionCache={dynamicVariableSessionCache} onDynamicVariableCacheChange={(dynamicVariableCache) => update((current) => JSON.stringify(current.dynamicVariableCache) === JSON.stringify(dynamicVariableCache) ? current : ({ ...current, dynamicVariableCache }))}
-            cookieJar={cookieJar!} session={session} onSessionChange={changeSession} actionsRef={requestActions} />
+            cookieJar={cookieJar!} session={session} onSessionChange={changeSession} actionsRef={requestActions} />}</div></div>
             : <EmptyWorkspace
               onNew={() => addDocument()}
               onPasteCurl={() => { void pasteCurl(); }}
@@ -786,6 +881,16 @@ export function WorkspaceWorkbench() {
       {saveError || actionError ? <><span role="alert" className="min-w-0 truncate text-accent-red" title={saveError || actionError}>{saveError ? `Could not save workspace: ${saveError}` : actionError}</span>{saveError ? <Button variant="ghost" size="xs" onClick={() => { void retrySave().catch(() => {}); }}>Reload and retry</Button> : null}</>
         : <span role="status">{saving ? "Saving…" : "Saved locally"}</span>}
     </footer>
+    {historyConflict && <Modal title="This document has unsaved changes" onClose={() => setHistoryConflict(null)}>
+      <div className="space-y-ui-4 p-ui-5">
+        <p className="text-ui-md text-content-secondary">Use the historical request as a working copy? Replacing current changes does not save the document. The historical execution stays unchanged.</p>
+        <div className="flex flex-wrap justify-end gap-ui-2">
+          <Button variant="ghost" onClick={() => setHistoryConflict(null)}>Cancel</Button>
+          <Button variant="secondary" onClick={() => promoteHistory(historyConflict.historical, historyConflict.change, historyConflict.send, "draft")}>Create new draft</Button>
+          <Button onClick={() => promoteHistory(historyConflict.historical, historyConflict.change, historyConflict.send, "replace")}>Replace current changes</Button>
+        </div>
+      </div>
+    </Modal>}
     {dialog === "palette" && <CommandPalette workspace={workspace} actions={actions} onOpenDocument={(id) => update((current) => previewDocument(current, id))} onClose={() => setDialog(null)} />}
     {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={(name) => {
       const created = createWorkspace(name);

@@ -91,6 +91,7 @@ impl PurrBuilder {
                 commands::persistence::load_project,
                 commands::persistence::read_local_attachment,
                 commands::persistence::list_request_history,
+                commands::persistence::request_history,
                 commands::persistence::reload_project_file,
                 commands::persistence::commit_project,
                 commands::persistence::set_local_active_workspace,

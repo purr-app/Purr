@@ -1,3 +1,4 @@
+import { HistoryPopover } from "../../history/history-panel";
 import { useWorkspaceIntegrations } from "../../../integrations/workspace-integrations";
 import { resolveRequestTracing } from "../model/request-tracing";
 import { useTabState } from "../../../shared/state/tab-state";
@@ -14,7 +15,6 @@ import {
   EyeOff,
   FileArchive,
   GitBranch,
-  History,
   Globe2,
   CircleAlert,
   Code2,
@@ -1202,14 +1202,14 @@ function ResponseFindBar({
   );
 }
 
-export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable, workspaceId, documentId }: { response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; workspaceId?: string; documentId?: string }) {
+export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable, workspaceId, documentId, onOpenHistory, historyEntryId, historyStartedAt, onReturnCurrent }: { historyEntryId?: string; historyStartedAt?: number; onReturnCurrent?: () => void; onOpenHistory?: (id: string) => void; response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; workspaceId?: string; documentId?: string }) {
   const integrations = useWorkspaceIntegrations();
   const tracing = integrations.request ? resolveRequestTracing(integrations.request, integrations.definitions, integrations.workspacePropagation) : undefined;
   const response = useMemo(() => responseDetails(storedResponse), [storedResponse]);
   const inlineResponse = isInlineHttpResponse(storedResponse) ? storedResponse : null;
   const referencedResponse = isInlineHttpResponse(storedResponse) ? null : storedResponse;
   const [storedTab, setTab] = useTabState<ResponseTab>("response.tab", "response");
-  const tab = storedTab === "trace" && !integrations.traces.length ? "response" : storedTab;
+  const tab = storedTab === "trace" && (!integrations.traces.length || Boolean(historyEntryId)) ? "response" : storedTab;
   const [findOpen, setFindOpen] = useTabState("response.findOpen", false);
   const [regularExpression, setRegularExpression] = useTabState("response.regularExpression", false);
   const [findQuery, setFindQuery] = useTabState("response.findQuery", "");
@@ -1296,7 +1296,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           role="tablist"
           aria-label="Response details"
         >
-          {tabs.filter((item) => item.value !== "trace" || integrations.traces.length > 0).map((option) => {
+          {tabs.filter((item) => item.value !== "trace" || integrations.traces.length > 0 || Boolean(historyEntryId)).map((option) => {
             const Icon = option.icon;
             const count =
               option.value === "headers"
@@ -1315,8 +1315,8 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
                 size="sm"
                 variant="ghost"
                 weight="normal"
-                disabled={option.disabled}
-                title={option.disabled ? "Coming soon" : undefined}
+                disabled={option.disabled || (option.value === "trace" && Boolean(historyEntryId))}
+                title={option.value === "trace" && historyEntryId ? "Tracing is unavailable for historical executions" : option.disabled ? "Coming soon" : undefined}
                 aria-selected={tab === option.value}
                 aria-controls="response-panel"
                 className={cn(
@@ -1353,9 +1353,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           <span>{response.durationMs} ms</span>
           <span aria-hidden="true">•</span>
           <span>{formatPayloadSize(response.size)}</span>
-          <span title="Request history — coming soon">
-            <Button variant="ghost" size="icon" disabled aria-label="Request history — coming soon"><History className="size-ui-3-5" /></Button>
-          </span>
+          {workspaceId && documentId && onOpenHistory && <HistoryPopover workspaceId={workspaceId} documentId={documentId} selectedId={historyEntryId} selectedStartedAt={storedResponse.timeline.startedAtMs} historicalStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} onOpen={onOpenHistory} />}
         </div>
       </div>
       {findOpen && searchable ? <ResponseFindBar

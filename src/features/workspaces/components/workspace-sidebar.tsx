@@ -39,7 +39,7 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
   const [query, setQuery] = useState("");
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const folders = (workspace.extraResources ?? []).filter((resource): resource is FolderResource => resource.kind === "folder");
-  const matching = workspace.documents.filter((document) => `${getDocumentDisplayName(document)} ${getDocumentBadge(document).label} ${isRequestDocument(document) ? document.request.url : ""}`.toLowerCase().includes(query.toLowerCase()));
+  const matching = workspace.documents.filter((document) => !(isRequestDocument(document) && document.historical)).filter((document) => `${getDocumentDisplayName(document)} ${getDocumentBadge(document).label} ${isRequestDocument(document) ? document.request.url : ""}`.toLowerCase().includes(query.toLowerCase()));
   const savedDocuments = matching.filter((document) => document.saved && document.kind !== "schema");
   const schemas = matching.filter((document) => document.saved && document.kind === "schema");
   const drafts = matching.filter((document) => !document.saved && isMeaningfulDraft(document));

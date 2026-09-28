@@ -48,7 +48,7 @@ test("activity rail stays visible while sidebar selection, shortcuts and resizin
   const separator = page.getByRole("separator", { name: "Resize sidebar" });
   const editor = page.getByRole("region", { name: "Request composer" });
   await expect(rail).toBeVisible();
-  await expect(rail.getByRole("button", { name: "History — coming soon" })).toBeDisabled();
+  await expect(rail.getByRole("button", { name: "History", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: /^(Hide|Show) sidebar$/ })).toHaveCount(0);
   await expect(documents).toHaveAttribute("aria-pressed", "true");
   await separator.focus();

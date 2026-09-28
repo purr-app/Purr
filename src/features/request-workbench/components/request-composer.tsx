@@ -29,6 +29,8 @@ import { ColorizedUrlInput } from "./colorized-url-input";
 import { isCurlCommand } from "../model/curl-import";
 
 type RequestComposerProps = {
+  historical?: boolean;
+  historyStartedAt?: number;
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -54,6 +56,8 @@ type RequestComposerProps = {
 };
 
 export function RequestComposer({
+  historical,
+  historyStartedAt,
   draft,
   onDraftChange,
   onSend,
@@ -180,6 +184,8 @@ export function RequestComposer({
           headerCount={getEnabledRequestHeaderCount(headers)}
           hasHeaderError={hasRequestHeaderValidationError(headers)}
           onOpenCode={onOpenCode}
+          historical={historical}
+          historyStartedAt={historyStartedAt}
           detailsCollapsed={detailsCollapsed}
           onToggleDetails={onToggleDetails}
         />

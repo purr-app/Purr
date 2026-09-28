@@ -28,6 +28,7 @@ import type { ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 import { getLocalAttachmentReference } from "../../storage/file-codec";
 import { tauriObservability } from "./observability";
+import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
   get(reference: SecretRef) {
@@ -48,6 +49,7 @@ class TauriSecureStore implements SecureStore {
 }
 
 class TauriPersistence implements PersistencePort {
+  readonly history = tauriHistory;
   private cache = new Map<string, Record<string, ProjectFile>>();
 
   async load() {
