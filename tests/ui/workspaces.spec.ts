@@ -881,3 +881,22 @@ test("damaged workspace data is reported without overwriting the original", asyn
   await expect(page.getByRole("button", { name: "Retry loading workspaces" })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("purr.workspaces.v1"))).toBe("broken-json");
 });
+
+test("switching workspaces clears variable details and unfinished definitions", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("only_personal");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "New workspace", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New empty", exact: true }).click();
+  await page.getByLabel("Workspace name", { exact: true }).fill("Other workspace");
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Personal", exact: true }).click();
+  await page.getByRole("tab", { name: "Variables", exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveCount(0);
+});

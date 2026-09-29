@@ -103,7 +103,7 @@ export const BodyCodeEditor = forwardRef<
         (view) => getBodyDiagnostics(language, view.state.doc.toString()),
         { delay: 250 },
       ),
-      tooltips({ position: "fixed" }),
+      tooltips({ parent: document.body, position: "fixed" }),
       EditorView.contentAttributes.of({
         "aria-label": language.toUpperCase() + " request body",
         "aria-multiline": "true",

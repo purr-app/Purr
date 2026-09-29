@@ -157,6 +157,11 @@ export function WorkspaceWorkbench() {
   }, [actionError]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
   useEffect(() => {
+    setVariableScope("effective");
+    setVariableSelection(null);
+    setVariableDraft(null);
+  }, [workspace?.id]);
+  useEffect(() => {
     if (!workspace || !persistence.history) return;
     const history = persistence.history;
     const prune = () => { void history.prune(workspace.id).catch(() => setActionError("Could not clean up expired request history.")); };
