@@ -1,9 +1,10 @@
+import type { DynamicRequestCodeContext } from "./model/dynamic-request-code";
 import { createDependencyAuthRuntime } from "./services/dependency-auth-runtime";
 import { DynamicExecutionBadge } from "../history/dynamic-execution-badge";
 import type { DynamicExecutionMetadata } from "../../application/ports/history";
 import { DynamicDependencyChain } from "../workspaces/components/dynamic-dependency-chain";
 import { HistoryPopover } from "../history/history-panel";
-import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
 
 import { SplitPane } from "../../shared/components/ui/split-pane";
 import { EmptyResponse } from "./components/empty-response";
@@ -180,7 +181,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     onWorkspaceAuthChange,
   );
 
-  const contextFor = (request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames): AuthContext => ({
+  const contextFor = useCallback((request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames): AuthContext => ({
     ...authContext,
     variables: resolvedVariables,
     sensitiveVariableNames: sensitiveNames,
@@ -192,7 +193,14 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
         ? { id: entry.id, name: entry.name || workspaceName, auth: entry.value }
         : undefined;
     })(),
-  });
+  }), [authContext, variables, sensitiveVariableNames, workspaceConfig, workspaceName]);
+  const dynamicCodeContext = useMemo<DynamicRequestCodeContext>(() => ({
+    rootId: documentId, environmentId, documents: sourceDocuments, variablesForEnvironment, workspaceConfig,
+    contextForDocument: async (document, sourceEnvironmentId) => {
+      const scoped = await variablesForEnvironment(sourceEnvironmentId);
+      return contextFor(document.request, document.kind, document.id, Object.fromEntries(scoped.filter((item) => item.kind === "static" && item.enabled).map((item) => [item.name, item.kind === "static" ? item.value : ""])), scoped.filter((item) => item.sensitive).map((item) => item.name));
+    },
+  }), [documentId, environmentId, sourceDocuments, variablesForEnvironment, workspaceConfig, contextFor]);
   const resolveFor = async (
     root: DynamicVariableRequest,
     rootEnvironmentId: string | null,
@@ -401,7 +409,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
           />
         </div>
       </main>
-      {codeOpen ? <RequestCodeDialog draft={effectiveDraft} context={authContext} cookieJar={cookieJar} onClose={() => setCodeOpen(false)} /> : null}
+      {codeOpen ? <RequestCodeDialog draft={effectiveDraft} context={authContext} cookieJar={cookieJar} dynamicContext={dynamicCodeContext} onClose={() => setCodeOpen(false)} /> : null}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { Modal } from "../../../shared/components/ui/modal";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
 import type { SessionCookieJar } from "../model/cookie-jar";
 import { formatRequestCode, type RequestCodeFormat } from "../model/request-code";
+import { DynamicRequestCodeError, prepareDynamicRequestCode, type DynamicRequestCodeContext } from "../model/dynamic-request-code";
 import type { RequestDraft } from "../model/request";
 import type { AuthContext } from "../model/request-auth";
 import { maskCookieHeader, mergeCookieHeader } from "../services/http-client";
@@ -23,12 +24,15 @@ function withCookies(request: HttpRequestSnapshot, jar: SessionCookieJar, enable
   };
 }
 
-export function RequestCodeDialog({ draft, context, cookieJar, onClose }: {
+export function RequestCodeDialog({ draft, context, cookieJar, dynamicContext, onClose }: {
   draft: RequestDraft;
   context: AuthContext;
   cookieJar: SessionCookieJar;
+  dynamicContext?: DynamicRequestCodeContext;
   onClose: () => void;
 }) {
+  const [hasDynamic, setHasDynamic] = useState(false);
+  const [chain, setChain] = useState<{ code: string; displayCode: string } | null>(null);
   const [format, setFormat] = useState<RequestCodeFormat>("curl");
   const [request, setRequest] = useState<HttpRequestSnapshot | null>(null);
   const [displayRequest, setDisplayRequest] = useState<HttpRequestSnapshot | null>(null);
@@ -37,22 +41,27 @@ export function RequestCodeDialog({ draft, context, cookieJar, onClose }: {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     let current = true;
-    void prepareWireRequest(draft, context, { fileMode: "summary" }).then((prepared) => {
+    setError(""); setRequest(null); setDisplayRequest(null); setChain(null); setHasDynamic(false);
+    void (async () => {
+      const dynamic = dynamicContext ? await prepareDynamicRequestCode(draft, context, { ...dynamicContext, cookieJar }) : null;
+      if (!current) return;
+      if (dynamic) { setHasDynamic(true); setChain(dynamic); setFormat("curl"); return; }
+      const prepared = await prepareWireRequest(draft, context, { fileMode: "summary" });
       if (current) {
         setRequest(withCookies(prepared.request, cookieJar, draft.useCookieJar));
         setDisplayRequest(withCookies(prepared.displayRequest, cookieJar, draft.useCookieJar, true));
       }
-    }).catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : String(cause)); });
+    })().catch((cause) => { if (current) { setError(cause instanceof Error ? cause.message : String(cause)); if (cause instanceof DynamicRequestCodeError) { setHasDynamic(true); setFormat("curl"); } } });
     return () => { current = false; };
-  }, [context, cookieJar, draft]);
+  }, [context, cookieJar, draft, dynamicContext]);
   const shownRequest = revealed ? request : displayRequest;
-  const code = useMemo(() => shownRequest ? formatRequestCode(shownRequest, format) : "", [format, shownRequest]);
+  const code = useMemo(() => chain ? (revealed ? chain.code : chain.displayCode) : shownRequest ? formatRequestCode(shownRequest, format) : "", [chain, revealed, format, shownRequest]);
   useEffect(() => setCopied(false), [format]);
   return <Modal title="Request code" onClose={onClose} className="w-ui-dialog">
     <div className="flex min-h-panel flex-col">
       <div className="flex items-center justify-between gap-ui-3 border-b border-border-subtle px-ui-4 py-ui-2">
         <SegmentedTabs id="request-code-format" panelId="request-code-panel" label="Request code format" value={format}
-          options={[{ value: "curl", label: "cURL" }, { value: "wget", label: "wget" }, { value: "http", label: "HTTP/1.1" }]} onValueChange={setFormat} />
+          options={[{ value: "curl", label: "cURL" }, { value: "wget", label: "wget", disabled: hasDynamic, title: hasDynamic ? "Dynamic dependencies require Bash + curl + jq" : undefined }, { value: "http", label: "HTTP/1.1", disabled: hasDynamic, title: hasDynamic ? "Dynamic dependencies require Bash + curl + jq" : undefined }]} onValueChange={setFormat} />
         <div className="flex items-center gap-ui-1"><Button type="button" variant="ghost" size="icon" aria-label={revealed ? "Hide request secrets" : "Reveal request secrets"} aria-pressed={revealed} title={revealed ? "Hide request secrets" : "Reveal request secrets"} onClick={() => setRevealed(!revealed)}>
           {revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}
         </Button><Button type="button" variant="secondary" size="sm" disabled={!code} onClick={async () => {
@@ -61,7 +70,7 @@ export function RequestCodeDialog({ draft, context, cookieJar, onClose }: {
       </div>
       <div id="request-code-panel" role="tabpanel" className="min-h-panel bg-purr-codefield">
         {error ? <p role="alert" className="m-ui-0 p-ui-4 font-code text-ui-sm text-accent-red">{error}</p>
-          : shownRequest ? <ResponseCodeViewer value={code} language="text" ariaLabel="Request code viewer" />
+          : shownRequest || chain ? <ResponseCodeViewer value={code} language="text" ariaLabel="Request code viewer" />
             : <p role="status" className="m-ui-0 p-ui-4 text-ui-sm text-content-tertiary">Preparing request…</p>}
       </div>
     </div>

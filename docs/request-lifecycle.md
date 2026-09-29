@@ -255,3 +255,28 @@ redirects remove injected context and disable further injection. Integration res
 header mappings identify W3C, B3 or plain trace IDs for native correlation, with
 response values taking precedence. These configuration rows are portable; generated
 IDs and response pages are local execution data.
+
+### Dynamic dependency cURL export
+
+Request code detects active dynamic references, including references reached through static
+variables, inherited auth and shared headers. Such requests export a Bash script requiring
+`curl` and `jq`; wget and raw HTTP/1.1 are disabled because they cannot represent the dependency
+execution. Opening the dialog only composes requests and never executes network calls.
+
+The script executes dependencies in order using the selected environment for each variable,
+extracts the configured Purr jq/JSONPath subset, then sends the consumer. It executes afresh
+instead of exporting cached values. HTTP error statuses still permit extraction; transport
+failure, invalid JSON, missing selectors or invalid operations stop the chain with a step label.
+A matched `null` or `false` is a valid value. The selector compiler shares the viewer's path
+parser and preserves wildcard aggregation and the supported `length`/`keys` operations.
+
+Extracted values remain data, never shell expressions. Private temporary files preserve body
+content and extracted trailing newlines; a trap removes them at exit. JSON string substitutions
+are escaped, query/form values encoded, and GraphQL whole-variable references retain their
+JSON type. File attachments require the explicit `PURR_FILE_<step>` path variables displayed
+in the script. Dependencies using the cookie jar share a temporary curl cookie jar. Existing
+matching cookies and literal credentials follow the normal request-code mask/Reveal controls.
+Runtime references in Bearer, Basic and API key credentials remain usable in the masked script;
+only literal credential segments are replaced with `********`. Source requests requiring masked
+credentials still need those values configured or explicitly revealed. Substitution scans each
+template once, so extracted text resembling an internal placeholder remains literal data.

@@ -12,7 +12,7 @@ export function SegmentedTabs<Value extends string>({
   panelId,
 }: {
   value: Value;
-  options: readonly { value: Value; label: string }[];
+  options: readonly { value: Value; label: string; disabled?: boolean; title?: string }[];
   onValueChange: (value: Value) => void;
   label: string;
   id: string;
@@ -38,6 +38,8 @@ export function SegmentedTabs<Value extends string>({
             if (node) refs.current.set(option.value, node);
             else refs.current.delete(option.value);
           }}
+          disabled={option.disabled}
+          title={option.title}
           aria-selected={value === option.value}
           aria-controls={panelId}
           tabIndex={value === option.value ? 0 : -1}
@@ -57,6 +59,10 @@ export function SegmentedTabs<Value extends string>({
             else if (event.key === "End") next = options.length - 1;
             else return;
             event.preventDefault();
+            const direction = event.key === "ArrowLeft" || event.key === "End" ? -1 : 1;
+            for (let attempts = 0; options[next].disabled && attempts < options.length; attempts++)
+              next = (next + direction + options.length) % options.length;
+            if (options[next].disabled) return;
             refs.current.get(options[next].value)?.focus();
             onValueChange(options[next].value);
           }}

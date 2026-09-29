@@ -96,6 +96,8 @@ test("failed extraction blocks root and opens the actual dependency response fro
   await expect(chain).toContainText("HTTP 401 · Failed");
   await expect(chain).toContainText("The query did not match any response value.");
   await expect(page.getByRole("region", { name: "HTTP response", exact: true })).toHaveCount(0);
+  await expect(chain.getByRole("button", { name: "Open execution of Dependency source", exact: true })).toBeInViewport();
+  await page.screenshot({ path: "test-results/dynamic-chain.png" });
   const before = await documentTabs(page).getByRole("tab").count();
   await chain.getByRole("button", { name: "Open execution of Dependency source", exact: true }).click();
   await expect(documentTabs(page).getByRole("tab")).toHaveCount(before + 1);
@@ -137,4 +139,20 @@ test("returning to an in-flight dependency then cancelling aborts its original e
   expect(record.dynamicExecution.variableName).toBe("dynamic_token");
   expect(record.dynamicExecution.extraction).toBeUndefined();
   expect(await page.evaluate(() => (window as any).__requests.map((request: any) => request.url))).toEqual([sourceUrl]);
+});
+
+test("dynamic request code exports a chain without execution and disables other formats", async ({ page }) => {
+  await configure(page, "$.error.meta");
+  await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
+  await urlField(page).fill("https://example.test/root/{{dynamic_token}}");
+  await page.getByRole("button", { name: "Open request code", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Request code", exact: true });
+  await expect(dialog.getByRole("tab", { name: "wget", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("tab", { name: "HTTP/1.1", exact: true })).toBeDisabled();
+  await expect(dialog.getByRole("tab", { name: "cURL", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(dialog.getByLabel("Request code viewer")).toContainText("#!/usr/bin/env bash");
+  await expect(dialog.getByLabel("Request code viewer")).toContainText("Dependency source");
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__requests)).toEqual([]);
+  expect(await entries(page)).toEqual([]);
 });
