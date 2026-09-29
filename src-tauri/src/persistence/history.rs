@@ -24,6 +24,11 @@ pub(super) fn summary(id: &str, value: &Value, pinned: bool) -> Value {
         ] {
             result[key] = value[key].clone();
         }
+        // Optional provenance extends v1 additively. Existing executions have
+        // no dynamic marker and keep their original representation.
+        if value["dynamicExecution"].is_object() {
+            result["dynamicExecution"] = value["dynamicExecution"].clone();
+        }
         return result;
     }
     let response = &value["response"];
@@ -377,6 +382,30 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_execution_metadata_survives_summary_read_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let keys = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&path, &keys).unwrap();
+        let metadata = json!({"groupId":"chain","rootDocumentId":"root","parentDocumentId":"parent","variableId":"token","variableName":"access_token","environmentId":null,"extraction":{"language":"jq","expression":".token","status":"error","error":"No matching value"}});
+        let mut dynamic = entry("dynamic", "source", now());
+        dynamic["dynamicExecution"] = metadata.clone();
+        append(&mut store, dynamic);
+        append(&mut store, entry("ordinary", "other", now()));
+        drop(store);
+        let mut store = LocalStateStore::open(&path, &keys).unwrap();
+        let page = run(
+            &mut store,
+            json!({"operation":"list","query":{"documentId":"source"}}),
+        );
+        assert_eq!(page["items"][0]["dynamicExecution"], metadata);
+        let opened = run(&mut store, json!({"operation":"read","id":"dynamic"}));
+        assert_eq!(opened["dynamicExecution"], metadata);
+        let ordinary = run(&mut store, json!({"operation":"read","id":"ordinary"}));
+        assert!(ordinary.get("dynamicExecution").is_none());
+    }
+
+    #[test]
     fn immutable_executions_workspace_scope_search_and_cursor() {
         let dir = tempfile::tempdir().unwrap();
         let mut store =
@@ -632,6 +661,7 @@ mod tests {
         store.db.execute("INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES('content',0,0,3,1,X'00',X'00')",[]).unwrap();
         let mut value = entry("body", "draft", now());
         value["outcome"] = json!("response");
+        value["dynamicExecution"] = json!({"groupId":"chain","variableId":"token","variableName":"token","environmentId":null,"extraction":{"language":"jq","expression":".token","status":"error","error":"No matching value"}});
         value["response"] = json!({"protocolVersion":2,"content":{"id":"content","byteLength":3,"complete":true},"response":{"status":200}});
         append(&mut store, value);
         let owner: String = store
@@ -643,6 +673,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(owner, "body");
+        let opened = run(&mut store, json!({"operation":"read","id":"body"}));
+        assert_eq!(opened["outcome"], "response");
+        assert_eq!(opened["response"]["content"]["id"], "content");
+        assert_eq!(opened["dynamicExecution"]["extraction"]["status"], "error");
         store
             .db
             .execute(

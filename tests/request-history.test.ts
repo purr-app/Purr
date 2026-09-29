@@ -5,7 +5,7 @@ import { BrowserHistory } from "../src/storage/browser-history";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { initialRequestDraft } from "../src/features/request-workbench/model/request";
 import { cloneRequestDraft, createWorkspace } from "../src/features/workspaces/model/workspace";
-import type { HistoryEntry } from "../src/application/ports/history";
+import type { DynamicExecutionMetadata, HistoryEntry } from "../src/application/ports/history";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 
@@ -23,6 +23,48 @@ function fixture() {
 }
 const execution = (startedAt = Date.now()) => ({ documentId: "document", name: "A request", kind: "http" as const,
   editor: cloneRequestDraft(initialRequestDraft), response: null, error: "Connection refused", outcome: "error" as const, startedAt, durationMs: 20 });
+
+test("dynamic execution provenance is immutable, workspace scoped, and optional for ordinary history", async () => {
+  const { service } = fixture();
+  const dynamicExecution: DynamicExecutionMetadata = {
+    groupId: "chain", rootDocumentId: "root", parentDocumentId: "parent",
+    variableId: "access-token", variableName: "access_token", environmentId: "development",
+    extraction: { language: "jsonpath", expression: "$.token", status: "error", error: "No matching value" },
+  };
+  const expected = structuredClone(dynamicExecution);
+  const pending = service.append("workspace", { ...execution(), dynamicExecution });
+  dynamicExecution.variableName = "changed";
+  dynamicExecution.extraction!.expression = "$.changed";
+  const id = await pending;
+  assert.equal((await service.list("workspace", { documentId: "document" })).items[0].id, id);
+  assert.deepEqual((await service.list("workspace")).items[0].dynamicExecution, expected);
+  assert.deepEqual((await service.read("workspace", id))?.dynamicExecution, expected);
+  assert.equal(await service.read("other", id), null);
+  const ordinary = await service.append("workspace", execution());
+  assert.equal((await service.read("workspace", ordinary))?.dynamicExecution, undefined);
+  await service.pin("workspace", id, true);
+  assert.deepEqual((await service.read("workspace", id))?.dynamicExecution, expected);
+});
+
+test("append returns the execution id only after response adoption and propagates storage failure", async () => {
+  const { service, port } = fixture();
+  const append = port.append.bind(port);
+  let allowAdoption!: () => void;
+  const adoption = new Promise<void>((resolve) => { allowAdoption = resolve; });
+  let adopted = false;
+  port.append = async (workspace, entry) => { await adoption; await append(workspace, entry); adopted = true; };
+  let completed = false;
+  const pending = service.append("workspace", execution()).then((id) => { completed = true; assert.equal(adopted, true); return id; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(completed, false);
+  assert.equal(service.getSnapshot(), 0);
+  allowAdoption();
+  const id = await pending;
+  assert.equal((await service.read("workspace", id))?.id, id);
+  port.append = async () => { throw new Error("Cannot adopt response content"); };
+  await assert.rejects(service.append("workspace", execution()), /Cannot adopt response content/);
+  assert.equal(service.getSnapshot(), 1);
+});
 
 test("history captures immutable editor snapshots independently of later edits and protects credentials", async () => {
   const { service, values } = fixture(); const sent = execution();
@@ -98,10 +140,14 @@ test("native response history retains the opaque content reference instead of ma
     request, followRedirects: true, usesCookieJar: true, timeoutMs: 30000 };
   const exchange = { protocolVersion: 2 as const, request, response: { url: request.url, status: 200, statusText: "OK", headers: [], byteLength: 1024 * 1024, durationMs: 9 },
     content: { id: "opaque-native-reference", byteLength: 1024 * 1024, complete: true }, timeline };
-  await service.append("workspace", { ...execution(), response: { url: request.url, status: 200, statusText: "OK", headers: [], bodyBase64: "eA==", text: "preview", size: exchange.content.byteLength, durationMs: 9, timeline, sourceExchange: exchange }, outcome: "response" });
+  await service.append("workspace", { ...execution(), response: { url: request.url, status: 200, statusText: "OK", headers: [], bodyBase64: "eA==", text: "preview", size: exchange.content.byteLength, durationMs: 9, timeline, sourceExchange: exchange }, outcome: "response",
+    dynamicExecution: { groupId: "chain", variableId: "token", variableName: "token", environmentId: null,
+      extraction: { language: "jq", expression: ".token", status: "error", error: "No matching value" } } });
   const item = (await service.list("workspace")).items[0];
   assert.equal(item.startedAt, startedAt); assert.equal(item.durationMs, 9);
   assert.equal(item.size, 1024 * 1024);
+  assert.equal(item.outcome, "response");
+  assert.equal(item.dynamicExecution?.extraction?.status, "error");
   assert.deepEqual(await service.existing("workspace", [item.id, "missing"]), [item.id]);
   const stored = [...values.values()].find((value) => (value as HistoryEntry)?.version === 1) as HistoryEntry;
   assert.deepEqual(stored.response, exchange);
