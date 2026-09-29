@@ -1,4 +1,4 @@
-import { Check, History, Pin, PinOff, Search, Settings2, Trash2 } from "lucide-react";
+import { Check, History, Pin, PinOff, Search, Settings2, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useApplicationServices } from "../../app/application-services-context";
 import type { HistoryPage, HistorySummary } from "../../application/ports/history";
@@ -9,6 +9,7 @@ import { cn } from "../../shared/lib/cn";
 import { getHttpMethodStyle, type HttpMethod } from "../../shared/model/http-method";
 import { formatPayloadSize } from "../request-workbench/model/request-body";
 import { groupHistoryByDay, historyStatus, historyStatusClass } from "./history-presentation";
+import { dynamicExecutionLabel } from "./dynamic-execution-badge";
 
 export type HistoryPanelProps = {
   workspaceId: string;
@@ -173,6 +174,10 @@ function HistoryPanelContent({ workspaceId, documentId, selectedId, selectedStar
                 <span className="min-w-0 flex-1 truncate text-content-primary">{item.url || item.name || "Untitled request"}</span>
                 <span className="sr-only">{historyStatus(item)}</span>
               </>}
+              {item.dynamicExecution && <span title={dynamicExecutionLabel(item.dynamicExecution)} className="shrink-0">
+                <Zap className={cn("size-ui-3", item.dynamicExecution.extraction?.status === "error" ? "text-accent-orange" : "text-content-tertiary")}
+                  aria-label={dynamicExecutionLabel(item.dynamicExecution)} />
+              </span>}
               {item.pinned && <Pin className="size-ui-3 shrink-0 text-action-brand" aria-label="Pinned execution" />}
               <time className="ml-auto w-ui-16 shrink-0 text-right text-ui-2xs tabular-nums text-content-tertiary group-hover:opacity-0 group-focus-within:opacity-0" dateTime={new Date(item.startedAt).toISOString()}>
                 {new Date(item.startedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}

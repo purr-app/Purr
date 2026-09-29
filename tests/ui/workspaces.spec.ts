@@ -809,7 +809,7 @@ test("environment templates reach native request URL, auth, headers and JSON whi
   await page.keyboard.press(`${mod}+Enter`);
   const error = page.getByRole("region", { name: "Request error" });
   await expect(error.getByRole("tab", { name: "Error", exact: true })).toBeVisible();
-  await expect(error.getByRole("alert")).toContainText('Environment variable “base” is not defined');
+  await expect(error.getByRole("alert")).toContainText('Variable “base” is not defined');
   await expect(error.getByRole("tab")).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).__requests.length)).toBe(0);
 });

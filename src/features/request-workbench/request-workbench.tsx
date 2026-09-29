@@ -1,3 +1,7 @@
+import { createDependencyAuthRuntime } from "./services/dependency-auth-runtime";
+import { DynamicExecutionBadge } from "../history/dynamic-execution-badge";
+import type { DynamicExecutionMetadata } from "../../application/ports/history";
+import { DynamicDependencyChain } from "../workspaces/components/dynamic-dependency-chain";
 import { HistoryPopover } from "../history/history-panel";
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
 
@@ -22,7 +26,7 @@ import type { StoredHttpResponse } from "../../domain/http";
 import type { HttpTransportProgress } from "../../application/ports/http";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
-import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest } from "../workspaces/services/dynamic-variable-resolver";
+import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest, type DynamicExecutionStep } from "../workspaces/services/dynamic-variable-resolver";
 import { cloneRequestDraft, type DynamicVariableCacheEntry, type Variable } from "../workspaces/model/workspace";
 import { useApplicationServices } from "../../app/application-services-context";
 
@@ -39,8 +43,15 @@ function ResponseArea({
   onOpenHistory,
   historyEntryId,
   historyStartedAt,
-  onReturnCurrent,
+  onReturnCurrent, dependencySteps, dependencyFailure, resolvingDependencies, onOpenDependency, onOpenVariable, documentName, dynamicExecution,
 }: {
+  dependencyFailure?: boolean;
+  resolvingDependencies?: boolean;
+  dependencySteps?: DynamicExecutionStep[];
+  onOpenDependency?: (id: string) => void;
+  onOpenVariable?: (id: string) => void;
+  documentName?: string;
+  dynamicExecution?: DynamicExecutionMetadata;
   historyEntryId?: string;
   historyStartedAt?: number;
   onReturnCurrent?: () => void;
@@ -55,13 +66,30 @@ function ResponseArea({
   onCancel: () => void;
   progress: HttpTransportProgress | null;
 }) {
+  useEffect(() => {
+    if (!sending || !resolvingDependencies || !dependencySteps?.length) return;
+    const cancel = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onCancel(); } };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [sending, resolvingDependencies, dependencySteps?.length, onCancel]);
+  if (dependencySteps?.length && (dependencyFailure || sending && resolvingDependencies)) return <section aria-label="Dynamic request execution" className="flex h-full min-h-0 flex-col overflow-auto rounded-ui-xl bg-purr-surface p-ui-3">
+    <div className="mb-ui-2 flex items-center justify-between"><span className="text-ui-sm text-content-secondary">{sending ? "Resolving dynamic variables…" : "Could not resolve dynamic variables"}</span>{sending ? <button type="button" className="ui-focus-ring rounded-ui-md px-ui-2 text-ui-sm text-content-secondary" onClick={onCancel}>Cancel</button> : null}</div>
+    <DynamicDependencyChain steps={dependencySteps} rootName={documentName} failed={Boolean(error)} onOpenHistory={onOpenDependency} onOpenVariable={onOpenVariable} />
+  </section>;
   if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} progress={progress} />;
-  if (error) return <ErrorResponse message={error} headerAction={onOpenHistory ? <HistoryPopover workspaceId={workspaceId} documentId={documentId} selectedId={historyEntryId} historicalStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} onOpen={onOpenHistory} /> : undefined} />;
-  if (response) return <ResponseViewer response={response} graphql={graphql} onCreateVariable={onCreateVariable} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />;
-  return <EmptyResponse />;
+  if (error) return <ErrorResponse message={error} headerAction={<div className="flex items-center gap-ui-2">{dynamicExecution ? <DynamicExecutionBadge dynamicExecution={dynamicExecution} /> : null}{onOpenHistory ? <HistoryPopover workspaceId={workspaceId} documentId={documentId} selectedId={historyEntryId} historicalStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} onOpen={onOpenHistory} /> : null}</div>} />;
+  if (response) return <ResponseViewer dynamicExecution={dynamicExecution} response={response} graphql={graphql} onCreateVariable={onCreateVariable} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />;
+  return <div className="relative h-full min-h-0">
+    {onOpenHistory ? <div className="absolute right-ui-2 top-ui-2 z-10"><HistoryPopover workspaceId={workspaceId} documentId={documentId} onOpen={onOpenHistory} /></div> : null}
+    <EmptyResponse />
+  </div>;
 }
 
 export type RequestSession = {
+  cancelExecution?: () => void;
+  dependencyFailure?: boolean;
+  resolvingDependencies?: boolean;
+  dependencySteps?: DynamicExecutionStep[];
   response: StoredHttpResponse | null;
   error: string;
   sending: boolean;
@@ -76,7 +104,9 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+  dynamicExecution?: DynamicExecutionMetadata;
+  onOpenDependency?: (id: string) => void;
   onReplay?: (operationName?: string) => void;
   historyEntryId?: string;
   historyStartedAt?: number;
@@ -169,16 +199,23 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
     execution?: { signal: AbortSignal; onProgress: (value: HttpTransportProgress) => void },
   ) => resolveDynamicVariables({
     root,
+    workspaceConfig,
+    signal: execution?.signal,
+    onSteps: (steps) => { if (!execution?.signal.aborted) onSessionChange({ dependencySteps: steps }); },
+    onExecuted: async (record) => persistence.history?.append(workspaceId, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: record.document.request }),
+    onHistoryError: () => onHistoryError?.("Could not save dependency history."),
     environmentId: rootEnvironmentId,
     documents: sourceDocuments,
     variablesForEnvironment,
     persistentCache: dynamicVariableCache,
     sessionCache: dynamicVariableSessionCache,
     responseContent,
-    execute: async (document, resolvedVariables, sourceEnvironmentId) => {
+    execute: async (document, resolvedVariables, sourceEnvironmentId, dispatch) => {
       const scoped = await variablesForEnvironment(sourceEnvironmentId);
       const sensitive = scoped.filter((variable) => variable.sensitive).map((variable) => variable.name);
-      return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig), contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive), cookieJar, authRuntime, httpTransport, responseContent, execution, requestBodies);
+      const sourceContext = contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive);
+      const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig);
+      return executeRequest(outgoing, sourceContext, cookieJar, createDependencyAuthRuntime(outgoing, sourceContext, httpTransport, responseContent, execution?.signal), httpTransport, responseContent, { ...execution, onDispatch: dispatch.onDispatch }, requestBodies);
     },
   });
   const send = async (graphqlOperationName?: string) => {
@@ -209,6 +246,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
     sendingRef.current = true;
     setSending(true);
     setProgress(null);
+    onSessionChange({ dependencySteps: [], dependencyFailure: false, resolvingDependencies: true });
     setError("");
     const startedAt = Date.now();
     const editor = cloneRequestDraft(draft);
@@ -226,6 +264,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
       else releaseAttachments?.();
     };
     cancelHistoryRef.current = () => record("cancelled", null, "Request canceled.");
+    onSessionChange({ cancelExecution: cancelSend });
     try {
       const normalizedDraft: RequestDraft = {
         ...effectiveDraft,
@@ -245,6 +284,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
         { signal: abort.signal, onProgress: reportProgress },
       );
       if (execution !== executionRef.current) return;
+      onSessionChange({ resolvingDependencies: false });
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
@@ -254,7 +294,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
       record("response", result);
     } catch (cause) {
       if (execution !== executionRef.current) return;
-      if (cause instanceof DynamicVariableResolutionError) onDynamicVariableCacheChange(cause.cache);
+      if (cause instanceof DynamicVariableResolutionError) { onDynamicVariableCacheChange(cause.cache); onSessionChange({ dependencyFailure: true, resolvingDependencies: false }); }
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(message);
       record(abort.signal.aborted ? "cancelled" : "error", null, message);
@@ -265,10 +305,11 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
       sendingRef.current = false;
       abortRef.current = null;
       setProgress(null);
-      setSending(false);
+      onSessionChange({ sending: false, cancelExecution: undefined });
     }
   };
   const cancelSend = () => {
+    if (!sendingRef.current && session.cancelExecution) { session.cancelExecution(); return; }
     if (!sendingRef.current && !sending) return;
     cancelHistoryRef.current?.();
     cancelHistoryRef.current = null;
@@ -277,7 +318,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
     authRuntime.cancel();
     executionRef.current += 1;
     sendingRef.current = false;
-    setSending(false);
+    onSessionChange({ sending: false, cancelExecution: undefined, resolvingDependencies: false });
     setProgress(null);
     if (!response) setCanvasFocus("request");
   };
@@ -316,6 +357,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
       activeSection={requestSection}
       onSectionChange={onRequestSectionChange}
       onOpenCode={() => setCodeOpen(true)}
+      historyAction={canvasCompose && onOpenHistory ? <HistoryPopover workspaceId={workspaceId} documentId={documentId} onOpen={onOpenHistory} /> : undefined}
       historical={Boolean(historyEntryId)}
       historyStartedAt={historyStartedAt}
       urlInvalid={urlInvalid}
@@ -328,7 +370,7 @@ export function RequestWorkbench({ historyEntryId, historyStartedAt, onReturnCur
     />
   );
   const responsePane = (
-    <ResponseArea response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />
+    <ResponseArea dynamicExecution={dynamicExecution} dependencySteps={session.dependencySteps} dependencyFailure={session.dependencyFailure} resolvingDependencies={session.resolvingDependencies} onOpenDependency={onOpenDependency} onOpenVariable={onOpenVariable} documentName={documentName} response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />
   );
 
   return (

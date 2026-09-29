@@ -139,3 +139,33 @@ See [Persistence architecture](persistence-architecture.md) for the full ownersh
 - `src/storage/native-backend.ts` — `NativeSecureStore` IPC adapter.
 - `src-tauri/src/security/mod.rs` — local root migration and derived ciphers.
 - `src-tauri/src/local_state.rs` — encrypted secret-values vault.
+
+### Dependency diagnostics and execution history
+
+The resolver publishes a structured, environment-aware dependency tree. Nested
+requests run before their parent. Each step identifies the source request, the
+variable it provides, its extraction expression, HTTP status, and resolution
+state. A repeated request/environment pair marks the cycle boundary. HTTP 4xx or
+5xx alone does not fail resolution: extracting `$.error.meta` is a valid use case.
+Transport errors, invalid JSON, and unmatched selectors stop dependent requests.
+
+Both Send and Variables → Execute record actual dependency HTTP executions in the
+same workspace history as ordinary requests, linked to the saved source document.
+An extraction failure keeps the HTTP response and records separate extraction
+metadata. History adopts native content before the resolver releases its handle.
+Cache hits and requests blocked before dispatch do not create execution entries.
+The diagnostics tree links completed steps to immutable historical tabs; global
+and source-document history identify them as dynamic-variable executions. A
+source document's history is also accessible before it has been manually sent.
+
+Dependencies acquire OAuth tokens using their own effective auth configuration,
+never the current editor's credentials. Interactive authorization must first be
+completed in the source request. Automatically fetched/refreshed dependency tokens
+are execution-local. Runtime cache completions merge by timestamp and are pruned
+against current definitions, so a late execution cannot resurrect a deleted or
+edited variable's cached value.
+
+Variables navigation resets to the Effective list when the workspace changes;
+selection and unfinished variable editor drafts do not cross that boundary.
+Template references include their braces in orange italic highlighting. Editor
+hover information uses a viewport-level tooltip to avoid panel clipping.

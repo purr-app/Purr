@@ -1,4 +1,6 @@
 import { HistoryPopover } from "../../history/history-panel";
+import { DynamicExecutionBadge } from "../../history/dynamic-execution-badge";
+import type { DynamicExecutionMetadata } from "../../../application/ports/history";
 import { useWorkspaceIntegrations } from "../../../integrations/workspace-integrations";
 import { resolveRequestTracing } from "../model/request-tracing";
 import { useTabState } from "../../../shared/state/tab-state";
@@ -1202,7 +1204,7 @@ function ResponseFindBar({
   );
 }
 
-export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable, workspaceId, documentId, onOpenHistory, historyEntryId, historyStartedAt, onReturnCurrent }: { historyEntryId?: string; historyStartedAt?: number; onReturnCurrent?: () => void; onOpenHistory?: (id: string) => void; response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; workspaceId?: string; documentId?: string }) {
+export function ResponseViewer({ response: storedResponse, graphql = false, onCreateVariable, workspaceId, documentId, onOpenHistory, historyEntryId, historyStartedAt, onReturnCurrent, dynamicExecution }: { dynamicExecution?: DynamicExecutionMetadata; historyEntryId?: string; historyStartedAt?: number; onReturnCurrent?: () => void; onOpenHistory?: (id: string) => void; response: StoredHttpResponse; graphql?: boolean; onCreateVariable?: (candidate: ResponseVariableCandidate) => void; workspaceId?: string; documentId?: string }) {
   const integrations = useWorkspaceIntegrations();
   const tracing = integrations.request ? resolveRequestTracing(integrations.request, integrations.definitions, integrations.workspacePropagation) : undefined;
   const response = useMemo(() => responseDetails(storedResponse), [storedResponse]);
@@ -1353,6 +1355,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
           <span>{response.durationMs} ms</span>
           <span aria-hidden="true">•</span>
           <span>{formatPayloadSize(response.size)}</span>
+          {dynamicExecution && <DynamicExecutionBadge dynamicExecution={dynamicExecution} />}
           {workspaceId && documentId && onOpenHistory && <HistoryPopover workspaceId={workspaceId} documentId={documentId} selectedId={historyEntryId} selectedStartedAt={storedResponse.timeline.startedAtMs} historicalStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} onOpen={onOpenHistory} />}
         </div>
       </div>
