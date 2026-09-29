@@ -27,6 +27,8 @@ test("exported chain can be pasted into Bash and interactive zsh without evaluat
   const token = "'\"$(`echo never`)&+ /\\\nline\n";
   const requests: string[] = [];
   const server = createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     requests.push(request.url!);
     if (request.url === "/source") { response.statusCode = 401; response.end(JSON.stringify({ value: token })); return; }
     let body = ""; for await (const chunk of request) body += chunk;
@@ -76,6 +78,8 @@ test("cycle detection and disabled references fail without transport; inactive f
 
 test("dependency scripts preserve Basic auth, raw JSON values, GraphQL typed values and complete URL references", async () => {
   const server = createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     const origin = `http://${request.headers.host}`;
     if (request.url === "/token") { response.end(JSON.stringify({ value: { id: 12 } })); return; }
     if (request.url === "/target") { response.end(JSON.stringify({ value: `${origin}/root` })); return; }
@@ -127,6 +131,8 @@ test("binary export requires a real file path and sends bytes without fake paylo
   const payload = Buffer.from([0, 1, 2, 255, 13, 10]);
   const requests: string[] = [];
   const server = createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     requests.push(request.url!);
     if (request.url === "/source") { response.end('{"value":"token"}'); return; }
     const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(chunk);
@@ -151,7 +157,12 @@ test("binary export requires a real file path and sends bytes without fake paylo
 
 test("an extraction failure stops the generated chain before the root request", async () => {
   const requests: string[] = [];
-  const server = createServer((request, response) => { requests.push(request.url!); response.end("not JSON"); });
+  const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "text/plain; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    requests.push(request.url!);
+    response.end("not JSON");
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const directory = await mkdtemp(join(tmpdir(), "purr-curl-"));
   try {
@@ -167,6 +178,8 @@ test("an extraction failure stops the generated chain before the root request", 
 test("URL export distinguishes literal templates from path parameters and merges full dynamic URL queries", async () => {
   let sourceValue = "a/b";
   const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     if (request.url === "/source") response.end(JSON.stringify({ value: sourceValue }));
     else response.end(JSON.stringify({ url: request.url }));
   });
@@ -197,6 +210,8 @@ test("URL export distinguishes literal templates from path parameters and merges
 test("masked scripts retain dynamic Bearer, Basic and API key bindings while hiding literal credential segments", async () => {
   const observedSources: string[] = [];
   const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     if (request.url === "/source") {
       observedSources.push(request.headers.authorization ?? "");
       response.end('{"value":"resolved-token"}');
@@ -233,6 +248,8 @@ test("masked scripts retain dynamic Bearer, Basic and API key bindings while hid
 
 test("extracted values that resemble internal markers are substituted only once", async () => {
   const server = createServer(async (request, response) => {
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("X-Content-Type-Options", "nosniff");
     if (request.url === "/source") { response.end('{"value":"purrdynamicvalue1end"}'); return; }
     if (request.url === "/second") { response.end('{"value":"second-value"}'); return; }
     let body = ""; for await (const chunk of request) body += chunk;
