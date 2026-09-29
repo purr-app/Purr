@@ -50,7 +50,7 @@ test("Bearer is masked, generates a locked header, and preserves separate auth d
   const prefix = page.getByRole("combobox", { name: "Token prefix" });
   expect(await prefix.evaluate((element) => element.getBoundingClientRect().height)).toBe(
     await token.evaluate(
-      (element) => element.parentElement!.getBoundingClientRect().height,
+      (element) => element.closest("[data-secret-input-control]")!.getBoundingClientRect().height,
     ),
   );
   await token.fill("Bearer demo-token");
@@ -129,7 +129,7 @@ test("API key placement, OAuth fields, cookies and compact responsive layout", a
     page
       .getByLabel("Key value", { exact: true })
       .evaluate(
-        (element) => element.parentElement!.getBoundingClientRect().height,
+        (element) => element.closest("[data-secret-input-control]")!.getBoundingClientRect().height,
       ),
     page
       .getByRole("combobox", { name: "Add API key to" })
@@ -398,4 +398,68 @@ test("PKCE authorization passes a challenge and exchanges the code with its veri
   await expect(
     page.getByText("Refresh token available", { exact: true }),
   ).toBeVisible();
+});
+
+
+test("auth templates remain readable while literal credentials stay masked", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select environment" }).click();
+  await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByLabel("Environment name", { exact: true }).fill("Development");
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("base_url");
+  await page.getByLabel("Variable value", { exact: true }).fill("https://example.com");
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await page.getByRole("tab", { name: "Variables", exact: true }).hover();
+  await page.getByRole("button", { name: "Close variables", exact: true }).click();
+  await page.getByRole("tab", { name: "Auth", exact: true }).click();
+  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  const token = page.getByLabel("Bearer token", { exact: true });
+  await token.fill("private-prefix-{{ access_token }}-suffix");
+  await token.press("Escape");
+  const overlay = token.locator("..").locator("[data-template-overlay]");
+  await expect(overlay).toHaveText("•••••••••••••••{{ access_token }}•••••••");
+  await expect(overlay.getByText("{{ access_token }}", { exact: true })).toHaveCSS("font-style", "italic");
+  await expect(token).toBeFocused();
+  expect(await token.evaluate((element) => getComputedStyle(element, "::selection").color)).toBe("rgba(0, 0, 0, 0)");
+  await page.getByRole("button", { name: "Reveal Bearer token", exact: true }).click();
+  await expect(overlay).toHaveText("private-prefix-{{ access_token }}-suffix");
+  await page.getByRole("button", { name: "Hide Bearer token", exact: true }).click();
+  await expect(overlay).not.toContainText("private-prefix");
+  await token.fill("literal-secret");
+  await expect(token).toHaveAttribute("type", "password");
+  await expect(token).toBeFocused();
+
+  await page.getByRole("tab", { name: "API Key", exact: true }).click();
+  const key = page.getByLabel("Key value", { exact: true });
+  await key.fill("{{base_url}}");
+  await key.press("Escape");
+  await expect(page.getByText("Use an encrypted variable for credentials.", { exact: false })).toBeVisible();
+  await expect(key.locator("..").locator("[data-template-overlay]")).toHaveText("{{base_url}}");
+  await page.getByRole("button", { name: "{{base_url}}", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Variables", exact: true })).toHaveAttribute("aria-selected", "true");
+});
+
+
+test("template highlighting covers the complete token in URL, headers and body", async ({ page }) => {
+  await page.goto("/");
+  const url = page.getByLabel("Request URL", { exact: true });
+  await url.fill("https://{{ base_url }}/users/{{id}}");
+  await url.press("Escape");
+  const urlTemplate = url.locator("..").getByText("{{ base_url }}", { exact: true });
+  await expect(urlTemplate).toHaveCSS("font-style", "italic");
+  const orange = await urlTemplate.evaluate((element) => getComputedStyle(element).color);
+  await page.getByRole("tab", { name: /^Headers/ }).click();
+  await page.getByPlaceholder("Header-name", { exact: true }).last().fill("X-Token");
+  const header = page.getByLabel("Value for X-Token", { exact: true });
+  await header.fill("{{ header_var }}");
+  await header.press("Escape");
+  await expect(header.locator("..").locator("[data-template-overlay]").getByText("{{ header_var }}", { exact: true })).toHaveCSS("color", orange);
+  await page.getByRole("tab", { name: "Body", exact: true }).click();
+  await page.getByRole("tab", { name: "JSON", exact: true }).click();
+  const body = page.getByRole("textbox", { name: "JSON request body" });
+  await body.fill('{"value":"{{ body_var }}"}');
+  const token = body.getByText("{{ body_var }}", { exact: true });
+  await expect(token).toHaveCSS("font-style", "italic");
+  await expect(token).toHaveCSS("color", orange);
 });

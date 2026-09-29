@@ -1,7 +1,8 @@
 import { Braces, Fingerprint } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../../../shared/components/ui/button";
-import { FormField } from "../../../shared/components/ui/form-field";
+import { AuthVariableField } from "./auth-variable-field";
+import type { TemplateVariableActions } from "./template-variable-popover";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { JsonCodePreview } from "../../../shared/components/ui/json-code-preview";
 import { SelectField } from "../../../shared/components/ui/select-field";
@@ -20,12 +21,14 @@ export function BearerAuthForm({
   context,
   now,
   secureStorageOnly = false,
+  variableActions,
 }: {
   auth: RequestAuth;
   onAuthChange: (auth: RequestAuth) => void;
   context: AuthContext;
   now: number;
   secureStorageOnly?: boolean;
+  variableActions?: TemplateVariableActions;
 }) {
   const [inspect, setInspect] = useState(false);
   let bearer = "";
@@ -67,17 +70,17 @@ export function BearerAuthForm({
             }
           />
         </div>
-        <div className="space-y-ui-2"><FormField
+        <div className="space-y-ui-2"><AuthVariableField variableActions={variableActions}
             label="Bearer token"
             secret
             placeholder="Paste your token"
             value={auth.bearer.token}
-            onChange={(event) =>
+            onChange={(value) =>
               onAuthChange({
                 ...auth,
                 bearer: {
                   ...auth.bearer,
-                  token: event.target.value.trim().replace(/^Bearer\s+/i, ""),
+                  token: value.trim().replace(/^Bearer\s+/i, ""),
                 },
               })
             }

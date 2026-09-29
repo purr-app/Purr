@@ -1,5 +1,5 @@
 import { CircleOff, GitBranch } from "lucide-react";
-import { FormField } from "../../../shared/components/ui/form-field";
+import { AuthVariableField } from "./auth-variable-field";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import {
@@ -85,31 +85,32 @@ export function AuthEditor({
             onAuthChange={onAuthChange}
             context={context}
             now={runtime.now}
+            variableActions={variableActions}
           />
         ) : null}
 
         {auth.type === "basic" ? (
           <div className="grid gap-ui-4 sm:grid-cols-2">
-              <FormField
+              <AuthVariableField variableActions={variableActions}
                 label="Username"
                 placeholder="Username"
                 value={auth.basic.username}
-                onChange={(event) =>
+                onChange={(value) =>
                   onAuthChange({
                     ...auth,
-                    basic: { ...auth.basic, username: event.target.value },
+                    basic: { ...auth.basic, username: value },
                   })
                 }
               />
-              <FormField
+              <AuthVariableField variableActions={variableActions}
                 label="Password"
                 secret
                 placeholder="Password"
                 value={auth.basic.password}
-                onChange={(event) =>
+                onChange={(value) =>
                   onAuthChange({
                     ...auth,
-                    basic: { ...auth.basic, password: event.target.value },
+                    basic: { ...auth.basic, password: value },
                   })
                 }
               />
@@ -118,28 +119,28 @@ export function AuthEditor({
 
         {auth.type === "api-key" ? (
           <div className="grid gap-ui-4 md:grid-cols-3">
-              <FormField
+              <AuthVariableField variableActions={variableActions}
                 label="Key name"
                 placeholder={
                   auth.apiKey.placement === "header" ? "X-API-Key" : "api_key"
                 }
                 value={auth.apiKey.name}
-                onChange={(event) =>
+                onChange={(value) =>
                   onAuthChange({
                     ...auth,
-                    apiKey: { ...auth.apiKey, name: event.target.value },
+                    apiKey: { ...auth.apiKey, name: value },
                   })
                 }
               />
-              <FormField
+              <AuthVariableField variableActions={variableActions}
                 label="Key value"
                 secret
                 placeholder="Enter API key"
                 value={auth.apiKey.value}
-                onChange={(event) =>
+                onChange={(value) =>
                   onAuthChange({
                     ...auth,
-                    apiKey: { ...auth.apiKey, value: event.target.value },
+                    apiKey: { ...auth.apiKey, value: value },
                   })
                 }
               />

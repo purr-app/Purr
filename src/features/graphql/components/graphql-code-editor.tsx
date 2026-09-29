@@ -13,7 +13,7 @@ import { getNamedType, isCompositeType, Kind, parse, type GraphQLSchema, type Op
 import { purrCodeTheme, purrCodeHighlighting } from "../../../shared/theme/code-editor-theme";
 import { purrFoldGutter } from "../../../shared/theme/code-fold-gutter";
 import { getBodyDiagnostics } from "../../request-workbench/model/request-body";
-import { templateVariableCompletion, templateVariableHover } from "../../request-workbench/components/template-variable-code-editor";
+import { templateVariableCompletion, templateVariableHover, templateVariableHighlighting } from "../../request-workbench/components/template-variable-code-editor";
 import type { TemplateVariableActions } from "../../request-workbench/components/template-variable-popover";
 
 export type GraphqlOperation = {
@@ -430,10 +430,10 @@ export function GraphqlCodeEditor({ value, onChange, schema, variables = false, 
     variables ? [json(), linter((view) => getBodyDiagnostics("json", view.state.doc.toString())), autocompletion({
       override: [...(templateVariableActions ? [templateVariableCompletion(templateVariableActions)] : []), jsonVariablesCompletion(variableHints)], activateOnTyping: true, activateOnTypingDelay: 50,
       interactionDelay: 0, icons: false, defaultKeymap: false,
-    }), ...(templateVariableActions ? [templateVariableHover(templateVariableActions)] : [])]
+    })]
       : readOnly ? graphqlLanguageSupport() : [graphql(schema, { onShowInDocs: (_field, type) => { const name = type?.match(/[A-Za-z_][A-Za-z0-9_]*/)?.[0]; if (name) openType.current?.(name); } }),
         ...(schema ? [graphqlHover(schema, (name) => openType.current?.(name))] : []),
-        autocompletion({ override: [graphqlCompletionSource(schema)], activateOnTyping: true, activateOnTypingDelay: 50,
+        autocompletion({ override: [...(templateVariableActions ? [templateVariableCompletion(templateVariableActions)] : []), graphqlCompletionSource(schema)], activateOnTyping: true, activateOnTypingDelay: 50,
           interactionDelay: 0, icons: false }),
         operationActions((operation) => runOperation.current?.(operation))],
     Prec.highest(keymap.of(variables ? [
@@ -445,7 +445,8 @@ export function GraphqlCodeEditor({ value, onChange, schema, variables = false, 
       { key: "Enter", run: acceptVisibleCompletion },
       { key: "Tab", run: acceptVisibleCompletion },
     ])),
-    purrCodeHighlighting, purrFoldGutter, EditorView.lineWrapping,
+    ...(templateVariableActions ? [templateVariableHover(templateVariableActions)] : []),
+    purrCodeHighlighting, templateVariableHighlighting, purrFoldGutter, EditorView.lineWrapping,
     EditorView.contentAttributes.of({ "aria-label": label, spellcheck: "false" }),
   ], [schema, variables, variableHints, templateVariableActions, readOnly, label]);
   useEffect(() => {

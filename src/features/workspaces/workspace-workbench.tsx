@@ -15,7 +15,7 @@ import { Button } from "../../shared/components/ui/button";
 import { keyboardShortcuts } from "../../shared/config/keyboard-shortcuts";
 import { RequestWorkbench, emptyRequestSession, type RequestActions, type RequestSession } from "../request-workbench/request-workbench";
 import { SessionCookieJar } from "../request-workbench/model/cookie-jar";
-import type { AuthRuntime } from "../request-workbench/hooks/use-auth-runtime";
+import { createDependencyAuthRuntime } from "../request-workbench/services/dependency-auth-runtime";
 import type { RequestAuth } from "../request-workbench/model/request-auth";
 import type { RequestDraft } from "../request-workbench/model/request";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
@@ -126,6 +126,14 @@ function pruneVariableCache(workspace: Workspace, globalVariables: readonly Vari
   }));
 }
 
+function mergeVariableCache(workspace: Workspace, incoming: Workspace["dynamicVariableCache"]) {
+  const cache = { ...workspace.dynamicVariableCache };
+  for (const [key, entry] of Object.entries(incoming)) {
+    if (!cache[key] || Date.parse(entry.resolvedAt) >= Date.parse(cache[key].resolvedAt)) cache[key] = entry;
+  }
+  return { ...workspace, dynamicVariableCache: pruneVariableCache({ ...workspace, dynamicVariableCache: cache }, []) };
+}
+
 export function WorkspaceWorkbench() {
   const updates = useUpdates();
   const [tabStates] = useState(() => new TabStateStore());
@@ -156,6 +164,11 @@ export function WorkspaceWorkbench() {
     return () => window.clearTimeout(timeout);
   }, [actionError]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  useEffect(() => {
+    setVariableScope("effective");
+    setVariableSelection(null);
+    setVariableDraft(null);
+  }, [workspace?.id]);
   useEffect(() => {
     if (!workspace || !persistence.history) return;
     const history = persistence.history;
@@ -305,7 +318,7 @@ export function WorkspaceWorkbench() {
       const historical: RequestDocument = { ...base, id: inPlace ? `history:${id}:document:${entry.documentId}` : `history:${id}`,
         name: inPlace ? (currentDocument ? historySource(workspace, currentDocument)?.name : undefined) || currentDocument?.name || entry.name || entry.url : entry.name || entry.url,
         saved: true, request: editor, savedRequest: editor, lastResponse: entry.response,
-        historical: { entryId: id, documentId: entry.documentId, startedAt: entry.startedAt, error: entry.error, readOnly: !entry.editor, inPlace },
+        historical: { entryId: id, documentId: entry.documentId, startedAt: entry.startedAt, error: entry.error, dynamicExecution: entry.dynamicExecution, readOnly: !entry.editor, inPlace },
         sentAt: new Date(entry.startedAt).toISOString() };
       updates.leaveTab();
       updateWorkspace(workspaceId, (current) => openHistoricalTab(current, historical, inPlace ? currentDocument?.id : undefined));
@@ -762,7 +775,7 @@ export function WorkspaceWorkbench() {
               await deleteWorkspace(workspace.id); jars.current.delete(workspace.id); dynamicSessionCaches.current.delete(workspace.id);
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
-          : workspace.ui.variablesTabActive ? <VariablesExplorer key={workspace.id} workspace={workspace} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments}
+          : workspace.ui.variablesTabActive ? <VariablesExplorer key={workspace.id} workspace={workspace} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
             onWorkspaceVariablesChange={(variables) => { removeUnusedVariableSecrets(workspace.variables, variables); update((current) => {
               const next = { ...current, variables }; return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) };
             }); }}
@@ -795,34 +808,38 @@ export function WorkspaceWorkbench() {
             onScopeChange={setVariableScope}
             onSelectionChange={setVariableSelection}
             onDraftChange={setVariableDraft}
-            onResolveVariable={async (variable) => {
+            onResolveVariable={async (variable, onSteps) => {
               if (variable.kind !== "dynamic-request") return;
-              const runtime: AuthRuntime = { busy: false, authorizing: false, error: "", now: Date.now(),
-                run: async () => { throw new Error("Authorize the source request before resolving this variable."); }, cancel: () => {}, clearError: () => {} };
               const root = { id: `variable-${variable.id}`, name: variable.name, kind: "http" as const,
                 request: { ...createHttpDocument().request, url: `http://purr.local/{{${variable.name}}}` } };
+              const releaseAttachments = persistence.history?.retainAttachments(workspace.id);
               try {
-                const resolution = await resolveDynamicVariables({ root, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
+                const resolution = await resolveDynamicVariables({ root, onSteps, workspaceConfig: requestConfig, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
+                  onExecuted: async (record) => persistence.history?.append(workspace.id, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: record.document.request }),
+                  onHistoryError: () => setActionError("Could not save dependency history."),
                   variablesForEnvironment, persistentCache: workspace.dynamicVariableCache, sessionCache: dynamicVariableSessionCache,
                   responseContent: services.responseContent,
                   forceVariableIds: new Set([variable.id]),
-                  execute: async (document, resolvedVariables, environmentId) => {
+                  execute: async (document, resolvedVariables, environmentId, dispatch) => {
                     const scoped = await variablesForEnvironment(environmentId);
                     const auth = getWorkspaceAuth(requestConfig, document.kind,
                       document.request.auth.type === "inherit" ? document.request.auth.inherit.profileId : undefined);
-                    return executeRequest(applyWorkspaceRequestConfig(document.request, document.kind, requestConfig), {
+                    const context = {
                       variables: resolvedVariables, sensitiveVariableNames: scoped.filter((item) => item.sensitive).map((item) => item.name),
                       requestDocumentId: document.id,
                       workspaceProfiles: getWorkspaceAuthProfiles(requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
-                    }, cookieJar!, runtime, services.httpTransport, services.responseContent, undefined, services.requestBodies);
+                    };
+                    const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, requestConfig);
+                    return executeRequest(outgoing, context, cookieJar!, createDependencyAuthRuntime(outgoing, context, services.httpTransport, services.responseContent), services.httpTransport, services.responseContent, { onDispatch: dispatch.onDispatch }, services.requestBodies);
                   } });
-                update((current) => ({ ...current, dynamicVariableCache: resolution.cache }));
+                update((current) => mergeVariableCache(current, resolution.cache));
+                return resolution.steps;
               } catch (cause) {
-                if (cause instanceof DynamicVariableResolutionError) update((current) => ({ ...current, dynamicVariableCache: cause.cache }));
+                if (cause instanceof DynamicVariableResolutionError) update((current) => mergeVariableCache(current, cause.cache));
                 throw cause;
-              }
+              } finally { releaseAttachments?.(); }
             }} />
           : workspace.ui.cookiesTabActive ? <section aria-label="Workspace cookies" className="h-full min-h-0 overflow-auto bg-purr-base p-ui-2">
             <div className="min-h-full rounded-ui-xl border border-border-subtle bg-purr-surface">
@@ -839,7 +856,7 @@ export function WorkspaceWorkbench() {
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1">{currentDocument.historical?.readOnly && currentDocument.lastResponse ? <div className="h-full min-h-0 bg-purr-base p-ui-2"><ResponseViewer response={currentDocument.lastResponse} workspaceId={workspace.id} documentId={currentDocument.historical.documentId} onOpenHistory={(id) => { void openHistory(id, true); }} historyEntryId={currentDocument.historical.entryId} historyStartedAt={currentDocument.historical.startedAt}
-              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
+              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.historical?.documentId ?? currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             historyEntryId={currentDocument.historical?.entryId} historyStartedAt={currentDocument.historical?.startedAt}
@@ -863,7 +880,7 @@ export function WorkspaceWorkbench() {
             view={workspace.ui.view} splitRatios={workspace.ui.splitRatios} onSplitRatioChange={(orientation, ratio) => update((current) => ({ ...current, ui: { ...current.ui, splitRatios: { ...current.ui.splitRatios, [orientation]: ratio } } }))}
             requestSection={currentDocument.ui.requestSection} onRequestSectionChange={(requestSection) => updateDocument((document) => ({ ...document, ui: { ...document.ui, requestSection } }))}
             variables={variables} runtimeVariables={getEffectiveVariables(workspace, store.globalVariables)} environmentId={workspace.activeEnvironmentId} variablesForEnvironment={variablesForEnvironment}
-            dynamicVariableCache={workspace.dynamicVariableCache} dynamicVariableSessionCache={dynamicVariableSessionCache} onDynamicVariableCacheChange={(dynamicVariableCache) => update((current) => JSON.stringify(current.dynamicVariableCache) === JSON.stringify(dynamicVariableCache) ? current : ({ ...current, dynamicVariableCache }))}
+            dynamicVariableCache={workspace.dynamicVariableCache} dynamicVariableSessionCache={dynamicVariableSessionCache} onDynamicVariableCacheChange={(dynamicVariableCache) => update((current) => mergeVariableCache(current, dynamicVariableCache))}
             cookieJar={cookieJar!} session={session} onSessionChange={changeSession} actionsRef={requestActions} />}</div></div>
             : <EmptyWorkspace
               onNew={() => addDocument()}

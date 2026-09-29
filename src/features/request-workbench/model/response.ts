@@ -226,7 +226,7 @@ function readBracket(expression: string, start: number) {
   throw new Error("Close the bracket in the query.");
 }
 
-function parseQueryPath(
+export function parseQueryPath(
   expression: string,
   language: ResponseQueryLanguage,
 ): QuerySegment[] {

@@ -1,3 +1,4 @@
+import type { DynamicExecutionMetadata } from "../../../application/ports/history";
 import { createRequestAuth, normalizeRequestAuth } from "../../request-workbench/model/request-auth";
 import { authTypeOptions } from "../../request-workbench/model/request-auth";
 import { createRequestBody } from "../../request-workbench/model/request-body";
@@ -49,7 +50,7 @@ export type CreatableDocumentKind = RequestDocumentKind | "schema";
 export type RequestDocument = DocumentBase & {
   kind: RequestDocumentKind;
   /** Ephemeral immutable execution tab; never projected to workspace files. */
-  historical?: { entryId: string; documentId: string; startedAt: number; error: string; readOnly?: boolean; inPlace?: boolean };
+  historical?: { dynamicExecution?: DynamicExecutionMetadata; entryId: string; documentId: string; startedAt: number; error: string; readOnly?: boolean; inPlace?: boolean };
   request: RequestDraft;
   savedRequest: RequestDraft | null;
   lastResponse: StoredHttpResponse | null;

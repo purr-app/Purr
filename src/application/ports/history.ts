@@ -1,6 +1,21 @@
 import type { StoredHttpResponse } from "../../domain/http";
 
 export type HistoryOutcome = "response" | "error" | "cancelled";
+/** Execution provenance only: never include resolved variable or credential values. */
+export type DynamicExecutionMetadata = {
+  groupId: string;
+  rootDocumentId?: string;
+  parentDocumentId?: string;
+  variableId: string;
+  variableName: string;
+  environmentId: string | null;
+  extraction?: {
+    language: "jq" | "jsonpath";
+    expression: string;
+    status: "success" | "error";
+    error?: string;
+  };
+};
 export type HistorySummary = {
   id: string;
   documentId: string;
@@ -14,6 +29,7 @@ export type HistorySummary = {
   status: number | null;
   size: number;
   pinned: boolean;
+  dynamicExecution?: DynamicExecutionMetadata;
 };
 export type HistoryEntry = HistorySummary & {
   version: 1;

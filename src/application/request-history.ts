@@ -1,4 +1,4 @@
-import type { HistoryEntry, HistoryOutcome, HistoryPort, HistoryQuery } from "./ports/history";
+import type { DynamicExecutionMetadata, HistoryEntry, HistoryOutcome, HistoryPort, HistoryQuery } from "./ports/history";
 import type { SecureStore } from "./ports/credentials";
 import { isInlineHttpResponse, responseForPersistence, type StoredHttpResponse } from "../domain/http";
 import type { RequestDraft } from "../features/request-workbench/model/request";
@@ -16,6 +16,7 @@ export type HistoryExecution = {
   outcome: HistoryOutcome;
   startedAt: number;
   durationMs: number;
+  dynamicExecution?: DynamicExecutionMetadata;
 };
 export type OpenHistoryEntry = Omit<HistoryEntry, "editor"> & { editor: RequestDraft | null };
 type Enqueue = <T>(work: () => Promise<T>) => Promise<T>;
@@ -42,13 +43,13 @@ export class RequestHistory {
   }
   hasPendingExecutions(workspaceId: string) { return this.attachmentLeases.has(workspaceId); }
   private changed() { this.revision += 1; this.listeners.forEach((listener) => listener()); }
-  append(workspaceId: string, execution: HistoryExecution): Promise<void> {
+  append(workspaceId: string, execution: HistoryExecution): Promise<string> {
     // Capture before joining the persistence queue: later keystrokes must not
     // change a completed execution. Files retain their immutable native handles.
     const editor = cloneRequestDraft(execution.editor);
     const response = execution.response ? structuredClone(responseForPersistence(execution.response)) : null;
     const id = crypto.randomUUID();
-    const entry = { ...execution, editor, response };
+    const entry = { ...execution, editor, response, dynamicExecution: execution.dynamicExecution ? structuredClone(execution.dynamicExecution) : undefined };
     return this.enqueue(async () => {
       const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();
       const protectedEditor = await protectRuntime(editor, this.secure, workspaceId, `history/${id}/editor`);
@@ -63,8 +64,11 @@ export class RequestHistory {
         size: response ? isInlineHttpResponse(response) ? response.size : response.content.byteLength : 0,
         pinned: false, editor: encodedEditor, response, error: entry.error,
         files: Object.fromEntries(attachments),
+        ...(entry.dynamicExecution ? { dynamicExecution: entry.dynamicExecution } : {}),
       });
       this.changed();
+      // Resolves only after the storage adapter has adopted response content.
+      return id;
     });
   }
   list(workspaceId: string, query: HistoryQuery = {}) {

@@ -92,6 +92,8 @@ Cross-site redirects request jar cookies with the restrictive `none` context use
 
 The JSON response context menu can create a sensitive static variable or a dynamic-request variable. It does not silently rewrite request auth. The user explicitly references the variable from bearer/API-key/OAuth fields, after which normal variable, secure-store, and redaction rules apply.
 
+Credential editors show `{{variable}}` references in orange italic text without revealing their resolved values. Bearer, Basic, API-key and OAuth configuration fields share autocomplete and Go to definition. Literal credential text remains masked, including literal portions mixed with templates, until Reveal is selected. Using a non-sensitive variable is allowed but displays a recommendation to use encrypted variable storage and a link to its definition. Acquired OAuth tokens are ordinary secrets, not editable template expressions.
+
 ## Invariants
 
 - Never equate masking with secure storage.

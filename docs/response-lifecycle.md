@@ -185,3 +185,14 @@ The Trace tab is hidden when the workspace has no integration with tracing capab
 when tracing is disabled for a request it explains how to enable it. Open-tab state
 retains response view, trace search, the loaded snapshot, collapsed spans and selection until
 the document tab closes. Background tab unmounts cancel pending lookups.
+
+Dynamic-variable source requests use ordinary immutable execution history. Their
+optional provenance metadata links the run, variable, source/parent request and
+environment; extraction success/failure is separate from the HTTP outcome. A 401
+response with successful extraction is therefore a successful dependency. Failed
+extraction preserves the full response for inspection, rather than replacing it
+with a synthetic transport error. Cached steps and undispatched root requests
+produce no history entry. Pinning and retention apply identically to dependencies.
+The response header has a compact Dynamic vars execution badge; extraction details
+open on click. Execution controllers remain associated with in-memory request
+sessions while navigating, so Escape after returning cancels the original run.
