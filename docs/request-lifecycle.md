@@ -259,23 +259,28 @@ IDs and response pages are local execution data.
 ### Dynamic dependency cURL export
 
 Request code detects active dynamic references, including references reached through static
-variables, inherited auth and shared headers. Such requests export a Bash script requiring
+variables, inherited auth and shared headers. Such requests export a command chain for Bash or zsh using
 `curl` and `jq`; wget and raw HTTP/1.1 are disabled because they cannot represent the dependency
 execution. Opening the dialog only composes requests and never executes network calls.
 
 The script executes dependencies in order using the selected environment for each variable,
-extracts the configured Purr jq/JSONPath subset, then sends the consumer. It executes afresh
-instead of exporting cached values. HTTP error statuses still permit extraction; transport
-failure, invalid JSON, missing selectors or invalid operations stop the chain with a step label.
-A matched `null` or `false` is a valid value. The selector compiler shares the viewer's path
-parser and preserves wildcard aggregation and the supported `length`/`keys` operations.
+extracts each configured value with `jq`, then sends the consumer. It executes afresh instead
+of exporting cached values. Each dependency is a `purr_<variable>=$(curl … | jq -c '…')`
+assignment, followed by the consuming cURL command. Names are sanitized and made unique.
+Commands are joined with `&&`; errors use the tools' own messages. There is no shebang, shell
+option change, tool check, comment block, temporary directory or cleanup code in the output.
+Static URL, header and body values appear directly in the cURL command.
 
-Extracted values remain data, never shell expressions. Private temporary files preserve body
-content and extracted trailing newlines; a trap removes them at exit. JSON string substitutions
-are escaped, query/form values encoded, and GraphQL whole-variable references retain their
-JSON type. File attachments require the explicit `PURR_FILE_<step>` path variables displayed
-in the script. Dependencies using the cookie jar share a temporary curl cookie jar. Existing
-matching cookies and literal credentials follow the normal request-code mask/Reveal controls.
+Simple JSONPath selectors become readable jq paths, e.g. `$.data.token` becomes `.data.token`.
+These use native jq semantics, including `null` for missing object properties. HTTP error
+statuses still permit extraction, and `null` and `false` remain valid values. Wildcard aggregation
+and the supported `length`/`keys` operations retain the viewer's behavior.
+
+Extracted values remain JSON in shell variables, preserving types and trailing newlines without
+files. `jq --argjson` safely inserts them into JSON bodies or encodes query/form values; only
+referenced variables are passed. File attachments use explicit `PURR_FILE_<step>` path variables.
+Existing matching cookies are included as headers, but the snippet does not maintain a shared
+cookie jar between commands. Cookies and literal credentials follow the normal mask/Reveal controls.
 Runtime references in Bearer, Basic and API key credentials remain usable in the masked script;
 only literal credential segments are replaced with `********`. Source requests requiring masked
 credentials still need those values configured or explicitly revealed. Substitution scans each

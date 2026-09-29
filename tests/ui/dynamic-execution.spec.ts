@@ -150,8 +150,9 @@ test("dynamic request code exports a chain without execution and disables other 
   await expect(dialog.getByRole("tab", { name: "wget", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("tab", { name: "HTTP/1.1", exact: true })).toBeDisabled();
   await expect(dialog.getByRole("tab", { name: "cURL", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(dialog.getByLabel("Request code viewer")).toContainText("#!/usr/bin/env bash");
-  await expect(dialog.getByLabel("Request code viewer")).toContainText("Dependency source");
+  await expect(dialog.getByLabel("Request code viewer")).toContainText("purr_dynamic_token=$(");
+  await expect(dialog.getByLabel("Request code viewer")).toContainText("jq -c '.error.meta'");
+  await expect(dialog.getByLabel("Request code viewer")).not.toContainText("#!/usr/bin/env");
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).__requests)).toEqual([]);
   expect(await entries(page)).toEqual([]);

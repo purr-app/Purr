@@ -25,8 +25,8 @@ export class DynamicRequestCodeError extends Error {
   readonly dynamicDependencies = true;
 }
 
-type Binding = { marker: string; file: string; encoding?: "url" | "path" };
-type Step = { document: DynamicVariableRequest; request: HttpRequestSnapshot; display: HttpRequestSnapshot; bindings: Binding[]; variable?: Extract<Variable, { kind: "dynamic-request" }>; file: string; rawJsonMarkers: Set<string>; typedJsonMarkers: Set<string>; displayDraft: RequestDraft; originalUrl: string };
+type Binding = { marker: string; name: string; encoding?: "url" | "path" };
+type Step = { document: DynamicVariableRequest; request: HttpRequestSnapshot; display: HttpRequestSnapshot; bindings: Binding[]; variable?: Extract<Variable, { kind: "dynamic-request" }>; name: string; rawJsonMarkers: Set<string>; typedJsonMarkers: Set<string>; displayDraft: RequestDraft; originalUrl: string };
 const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 /** Compile the same deliberately bounded selector language used by the response viewer. */
@@ -37,14 +37,110 @@ export function compileResponseQuery(expression: string, language: ResponseQuery
   return parts.map((part, index) => {
     if (index && part === "length") return '(if type == "string" then explode | map(if . > 65535 then 2 else 1 end) | add // 0 elif type == "array" or type == "object" then length else error("length requires a string, array, or object.") end)';
     if (index && part === "keys") return '(if type == "array" or type == "object" then keys else error("keys requires an array or object.") end)';
-    const selectors = parseQueryPath(part, language).map((segment) => {
+    const path = parseQueryPath(part, language);
+    if (path.every((segment) => segment.type === "property" || segment.type === "index")) {
+      const selector = path.map((segment) => segment.type === "index" ? `[${segment.index}]`
+        : /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(segment.key) ? `.${segment.key}` : `[${JSON.stringify(segment.key)}]`).join("");
+      return selector.startsWith("[") ? `.${selector}` : selector || ".";
+    }
+    const selectors = path.map((segment) => {
       if (segment.type === "property") return `select(type == "object") | select(has(${JSON.stringify(segment.key)})) | .[${JSON.stringify(segment.key)}]`;
       if (segment.type === "index") return `select(type == "array") | select(length > ${segment.index}) | .[${segment.index}]`;
       if (segment.type === "wildcard") return 'select(type == "array" or type == "object") | .[]';
       return `.. | select(type == "object") | select(has(${JSON.stringify(segment.key)})) | .[${JSON.stringify(segment.key)}]`;
     });
     return `[${selectors.length ? selectors.map((selector) => `(${selector})`).join(" | ") : "."}] | if length == 0 then error("The query did not match any response value.") elif length == 1 then .[0] else . end`;
-  }).map((part) => `(${part})`).join(" | ");
+  }).join(" | ");
+}
+
+function renderScript(steps: Step[], masked: boolean) {
+  return steps.map((step, index) => {
+    const snapshot = masked ? step.display : step.request;
+    const used = (value: string) => step.bindings.filter((binding) => value.includes(binding.marker));
+    const jq = (filter: string, bindings: Binding[], json = false) => {
+      const names = [...new Set(bindings.map((binding) => binding.name))];
+      const args = names.map((name) => `--argjson ${name} "$${name}"`);
+      return `"$(jq -${json ? "cn" : "nr"} ${[...args, quote(filter)].join(" ")})"`;
+    };
+    const textExpression = (value: string, mode: "raw" | "url" | "form" = "raw") => {
+      const parts: string[] = [];
+      let cursor = 0;
+      while (cursor < value.length) {
+        const next = step.bindings.map((binding) => ({ ...binding, index: value.indexOf(binding.marker, cursor) }))
+          .filter((binding) => binding.index >= 0).sort((a, b) => a.index - b.index)[0];
+        if (!next) { parts.push(JSON.stringify(value.slice(cursor))); break; }
+        if (next.index > cursor) parts.push(JSON.stringify(value.slice(cursor, next.index)));
+        let transform = "tostring";
+        if (mode === "form" || (mode === "url" && next.encoding !== "url")) transform += " | @uri";
+        parts.push(`($${next.name} | ${transform})`);
+        cursor = next.index + next.marker.length;
+      }
+      return parts.join(" + ") || '""';
+    };
+    const argument = (value: string, mode: "raw" | "url" | "form" = "raw") => {
+      const bindings = used(value);
+      return bindings.length ? jq(textExpression(value, mode), bindings) : quote(value);
+    };
+    const jsonExpression = (value: unknown): string => {
+      if (typeof value === "string") {
+        const binding = step.bindings.find((candidate) => candidate.marker === value);
+        if (binding && step.rawJsonMarkers.has(value)) return `($${binding.name} | if type == "string" then fromjson else . end)`;
+        if (binding && step.typedJsonMarkers.has(value)) return `($${binding.name} | if type == "string" then try fromjson catch . else . end)`;
+        return textExpression(value);
+      }
+      if (Array.isArray(value)) return `[${value.map(jsonExpression).join(", ")}]`;
+      if (value && typeof value === "object") return `{${Object.entries(value).map(([key, child]) => `${used(key).length ? `(${textExpression(key)})` : JSON.stringify(key)}: ${jsonExpression(child)}`).join(", ")}}`;
+      return JSON.stringify(value);
+    };
+
+    let url = snapshot.url;
+    const urlRoot = step.bindings.find((binding) => binding.encoding === "url" && step.originalUrl.startsWith(binding.marker));
+    let urlArgument: string;
+    if (urlRoot) {
+      const suffix = snapshot.url.replace(`https://${urlRoot.marker}`, "");
+      const path = suffix.split(/[?#]/, 1)[0];
+      url = `${urlRoot.marker}${path === "/" && !step.originalUrl.startsWith(`${urlRoot.marker}/`) ? "" : path}`;
+      const extra = new URL(snapshot.url).search.slice(1);
+      if (extra) {
+        // Only whole-URL variables need query merging; ordinary URLs stay inline.
+        const filter = `${textExpression(url)} | split("#") as $hash | $hash[0] | split("?") as $url | (${textExpression(extra, "form")} | split("&")) as $extra | ($extra | map(split("=")[0])) as $keys | (($url[1:] | join("?") | split("&") | map(select(length > 0) | select((split("=")[0] as $key | $keys | index($key)) == null))) + $extra) as $query | $url[0] + "?" + ($query | join("&")) + (if ($hash | length) > 1 then "#" + ($hash[1:] | join("#")) else "" end)`;
+        urlArgument = jq(filter, used(url + extra));
+      } else urlArgument = argument(url);
+    } else urlArgument = argument(url, "url");
+
+    const args = ["curl --silent --show-error --location", `  --request ${quote(snapshot.method)}`];
+    snapshot.headers.forEach(([name, value]) => {
+      if (snapshot.bodySummary?.kind === "multipart" && name.toLowerCase() === "content-type") return;
+      if (value.startsWith("Basic ") && /^[A-Za-z0-9+/=]+$/.test(value.slice(6))) {
+        const decoded = new TextDecoder().decode(Uint8Array.from(atob(value.slice(6)), (char) => char.charCodeAt(0)));
+        if (used(decoded).length) {
+          args.push(`  --user ${argument(decoded)}`);
+          return;
+        }
+      }
+      args.push(`  --header ${argument(`${name}: ${value}`)}`);
+    });
+    if (snapshot.bodySummary?.kind === "file") {
+      args.push(`  --data-binary "@$PURR_FILE_${index + 1}"`);
+    } else if (snapshot.bodySummary?.kind === "multipart") {
+      (masked ? step.displayDraft : step.document.request).body.formData.filter((field) => field.enabled).forEach((field, fileIndex) => {
+        if (field.fieldType === "file" && field.attachment) {
+          args.push(`  --form ${argument(`${field.key}=`)}"@$(printf '%s' \"$PURR_FILE_${index + 1}_${fileIndex + 1}\" | jq -Rs .)"`);
+        } else args.push(`  --form-string ${argument(`${field.key}=${field.value}`)}`);
+      });
+    } else if (snapshot.bodyBase64) {
+      const body = new TextDecoder().decode(Uint8Array.from(atob(snapshot.bodyBase64), (char) => char.charCodeAt(0)));
+      const bindings = used(body);
+      const json = snapshot.headers.some(([name, value]) => name.toLowerCase() === "content-type" && value.includes("application/json"));
+      const bodyArgument = json && bindings.length ? jq(jsonExpression(JSON.parse(body)), bindings, true)
+        : argument(body, step.document.request.body.type === "url-encoded" ? "form" : "raw");
+      args.push(`  --data-binary ${bodyArgument}`);
+    }
+    args.push(`  ${urlArgument}`);
+    const command = args.join(" \\\n");
+    if (!step.variable) return command;
+    return `${step.name}=$(\n${command.split("\n").map((line) => `  ${line}`).join("\n")} |\n  jq -c ${quote(compileResponseQuery(step.variable.expression, step.variable.language))}\n)`;
+  }).join(" &&\n\n");
 }
 
 function insideJsonString(source: string, end: number) {
@@ -62,6 +158,7 @@ export async function prepareDynamicRequestCode(draft: RequestDraft, rootContext
   const completed = new Map<string, Binding>();
   let sequence = 0;
   let foundDynamic = false;
+  const names = new Set<string>();
   const visit = async (document: DynamicVariableRequest, environmentId: string | null, path: string[], variable?: Step["variable"]): Promise<Step> => {
     const identity = `${document.id}:${environmentId ?? "none"}`;
     if (path.includes(identity)) throw new Error(`Dynamic variable dependency cycle: ${[...path, identity].join(" → ")}`);
@@ -91,7 +188,7 @@ export async function prepareDynamicRequestCode(draft: RequestDraft, rootContext
         const source = options.documents.find((candidate) => candidate.id === definition.documentId);
         if (!source) throw new Error(`Dynamic variable "${definition.name}" refers to a missing saved request.`);
         const dependency = await visit(source, sourceEnvironment, [...path, identity], definition);
-        binding = { marker: `purrdynamicvalue${sequence++}end`, file: dependency.file };
+        binding = { marker: `purrdynamicvalue${sequence++}end`, name: dependency.name };
         completed.set(cacheKey, binding);
       }
       bindings.push(binding);
@@ -191,7 +288,11 @@ export async function prepareDynamicRequestCode(draft: RequestDraft, rootContext
       }
     }
     const displayValues = Object.fromEntries(Object.entries(values).map(([name, value]) => [name, sensitiveNames.includes(name) ? "********" : value]));
-    const step: Step = { document: { ...document, request: resolveRequestEnvironment(requestDraft, values) }, displayDraft: resolveRequestEnvironment(requestDraft, displayValues), originalUrl: requestDraft.url, request: prepared.request, display: prepared.displayRequest, bindings, variable, file: `value-${steps.length}`, rawJsonMarkers, typedJsonMarkers };
+    const baseName = `purr_${(variable?.name.trim() || "request").replace(/[^a-zA-Z0-9_]/g, "_")}`;
+    let name = baseName;
+    for (let suffix = 2; names.has(name); suffix++) name = `${baseName}_${suffix}`;
+    names.add(name);
+    const step: Step = { document: { ...document, request: resolveRequestEnvironment(requestDraft, values) }, displayDraft: resolveRequestEnvironment(requestDraft, displayValues), originalUrl: requestDraft.url, request: prepared.request, display: prepared.displayRequest, bindings, variable, name, rawJsonMarkers, typedJsonMarkers };
     steps.push(step);
     return step;
   };
@@ -204,108 +305,4 @@ export async function prepareDynamicRequestCode(draft: RequestDraft, rootContext
   if (!foundDynamic) return null;
   try { return { code: renderScript(steps, false), displayCode: renderScript(steps, true) }; }
   catch (cause) { throw new DynamicRequestCodeError(cause instanceof Error ? cause.message : String(cause)); }
-}
-
-function renderScript(steps: Step[], masked: boolean) {
-  const lines = ["#!/usr/bin/env bash", "set -euo pipefail", "", "# Requires Bash, curl and jq. Dependencies execute afresh; no Purr cache is exported.",
-    'command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }',
-    'command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }',
-    'purr_tmp=$(mktemp -d)', 'trap \'rm -rf "$purr_tmp"\' EXIT', "umask 077", ""];
-  steps.forEach((step, index) => {
-    const snapshot = masked ? step.display : step.request;
-    lines.push(`# Step ${index + 1}: ${step.document.name.replace(/[\r\n]/g, " ")}${step.variable ? ` → {{${step.variable.name.replace(/[\r\n]/g, " ")}}}` : ""}`);
-    const expression = (value: string, mode: "raw" | "url" | "json" | "form" | "header" = "raw") => {
-      const args = step.bindings.map((binding, i) => `--rawfile v${i} "$purr_tmp/${binding.file}"`).join(" ");
-      const replacements: { token: string; expression: string }[] = [];
-      step.bindings.forEach((binding, i) => {
-        let replacement = `$v${i}`;
-        if (mode === "form") replacement = `($v${i} | @uri | gsub("%20"; "+"))`;
-        if (mode === "json") {
-          // Replace full JSON literals first for raw values. String placeholders use JSON escaping.
-          if (step.typedJsonMarkers.has(binding.marker)) { replacements.push({ token: JSON.stringify(binding.marker), expression: `($v${i} | (try fromjson catch $v${i}) | tojson)` }); return; }
-          if (step.rawJsonMarkers.has(binding.marker)) { replacements.push({ token: JSON.stringify(binding.marker), expression: `($v${i} | fromjson | tojson)` }); return; }
-          replacement = `($v${i} | tojson | .[1:-1])`;
-        }
-        if (mode === "url") {
-          if (binding.encoding === "path") replacement = `($v${i} | @uri)`;
-          else if (binding.encoding === "url") {
-            // WHATWG URL keeps URI delimiters and already escaped bytes in literal URL templates.
-            // Explicit path parameters are separately encoded above.
-            const reserved = [";", "/", "?", ":", "@", "&", "=", "+", "$", ",", "#", "%"];
-            replacement = `($v${i} | @uri${reserved.map((char) => ` | gsub(${JSON.stringify(encodeURIComponent(char))}; ${JSON.stringify(char)})`).join("")})`;
-          } else replacement = `($v${i} | @uri | gsub("%20"; "+"))`;
-        }
-        replacements.push({ token: binding.marker, expression: replacement });
-      });
-      const segments: string[] = [];
-      let cursor = 0;
-      while (cursor < value.length) {
-        const next = replacements.map((replacement) => ({ ...replacement, index: value.indexOf(replacement.token, cursor) }))
-          .filter((replacement) => replacement.index >= 0).sort((a, b) => a.index - b.index || b.token.length - a.token.length)[0];
-        if (!next) { segments.push(JSON.stringify(value.slice(cursor))); break; }
-        if (next.index > cursor) segments.push(JSON.stringify(value.slice(cursor, next.index)));
-        segments.push(next.expression); cursor = next.index + next.token.length;
-      }
-      // Only the original template is scanned. Extracted text is never interpreted as another marker.
-      let filter = `[${segments.join(", ")}] | join("")`;
-      if (mode === "header") filter += ' | if test("[\\r\\n]") then error("Header values cannot contain line breaks") else . end';
-      return `jq -nrj ${args} ${quote(filter)}`;
-    };
-    let url = snapshot.url;
-    const urlRoot = step.bindings.find((binding) => binding.encoding === "url" && step.originalUrl.startsWith(binding.marker));
-    if (urlRoot) {
-      // A whole URL is supplied at runtime. Keep its original query, then apply explicit rows.
-      const preparedSuffix = snapshot.url.replace(`https://${urlRoot.marker}`, "");
-      const path = preparedSuffix.split(/[?#]/, 1)[0];
-      const extra = new URL(snapshot.url).search.slice(1);
-      url = `${urlRoot.marker}${path === "/" && !step.originalUrl.startsWith(`${urlRoot.marker}/`) ? "" : path}`;
-      lines.push(`purr_url=$(${expression(url, "url")})`);
-      if (extra) {
-        lines.push(`purr_query=$(${expression(extra, "form")})`);
-        lines.push(`purr_url=$(jq -nrj --arg url "$purr_url" --arg extra "$purr_query" ${quote('$url | split("#") as $hash | $hash[0] | split("?") as $parts | ($extra | split("&") | map(split("=")[0])) as $keys | (($parts[1:] | join("?") | split("&") | map(select(length > 0) | select((split("=")[0] as $key | $keys | index($key)) == null))) + ($extra | split("&"))) as $query | $parts[0] + "?" + ($query | join("&")) + (if ($hash | length) > 1 then "#" + ($hash[1:] | join("#")) else "" end)')})`);
-      }
-    } else lines.push(`purr_url=$(${expression(url, "url")})`);
-    lines.push('case "$purr_url" in https:*) purr_redirect="=https" ;; *) purr_redirect="=http,https" ;; esac');
-    const args = ["curl --silent --show-error --location --max-redirs 10 --max-time 60 --proto =http,https", '  --proto-redir "$purr_redirect"', `  --request ${quote(snapshot.method)}`];
-    snapshot.headers.forEach(([name, value], headerIndex) => {
-      if (snapshot.bodySummary?.kind === "multipart" && name.toLowerCase() === "content-type") return;
-      if (value.startsWith("Basic ") && /^[A-Za-z0-9+/=]+$/.test(value.slice(6))) {
-        const decoded = new TextDecoder().decode(Uint8Array.from(atob(value.slice(6)), (char) => char.charCodeAt(0)));
-        if (step.bindings.some((binding) => decoded.includes(binding.marker))) {
-          lines.push(`purr_basic=$(${expression(decoded)} | jq -Rrsj '@base64')`);
-          args.push(`  --header "Authorization: Basic $purr_basic"`); return;
-        }
-      }
-      lines.push(`purr_header_${headerIndex}=$(${expression(`${name}: ${value}`, "header")})`);
-      args.push(`  --header "$purr_header_${headerIndex}"`);
-    });
-    if (snapshot.bodySummary?.kind === "file") {
-      const name = `PURR_FILE_${index + 1}`;
-      lines.push(`: "\${${name}:?Set ${name} to the local path of ${snapshot.bodySummary.fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}}"`);
-      args.push(`  --data-binary "@$${name}"`);
-    } else if (snapshot.bodySummary?.kind === "multipart") {
-      (masked ? step.displayDraft : step.document.request).body.formData.filter((field) => field.enabled).forEach((field, fileIndex) => {
-        if (field.fieldType === "file" && field.attachment) {
-          const name = `PURR_FILE_${index + 1}_${fileIndex + 1}`;
-          lines.push(`: "\${${name}:?Set ${name} to the local path of ${field.attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_")}}"`);
-          args.push(`  --form "$(${expression(field.key)})=@$(printf '%s' \"$${name}\" | jq -Rs .)"`);
-        } else args.push(`  --form-string "$(${expression(`${field.key}=${field.value}`)})"`);
-      });
-    } else if (snapshot.bodyBase64) {
-      const body = new TextDecoder().decode(Uint8Array.from(atob(snapshot.bodyBase64), (char) => char.charCodeAt(0)));
-      const mode = snapshot.headers.some(([name, value]) => name.toLowerCase() === "content-type" && value.includes("application/json")) ? "json"
-        : step.document.request.body.type === "url-encoded" ? "form" : "raw";
-      lines.push(`${expression(body, mode)} > "$purr_tmp/body-${index}"`);
-      args.push(`  --data-binary "@$purr_tmp/body-${index}"`);
-    }
-    if (step.document.request.useCookieJar) args.push('  --cookie "$purr_tmp/cookies" --cookie-jar "$purr_tmp/cookies"');
-    args.push(`  --output "$purr_tmp/response-${index}"`, '  "$purr_url"');
-    lines.push(`${args.join(" \\\n")} || { echo ${quote(`Request failed at step ${index + 1}`)} >&2; exit 1; }`);
-    if (step.variable) {
-      const filter = `${compileResponseQuery(step.variable.expression, step.variable.language)} | if type == "string" then . else tojson end`;
-      lines.push(`jq -rj ${quote(filter)} "$purr_tmp/response-${index}" > "$purr_tmp/${step.file}" || { echo ${quote(`Extraction failed at step ${index + 1}: {{${step.variable.name}}}`)} >&2; exit 1; }`);
-    } else lines.push(`cat "$purr_tmp/response-${index}"`);
-    lines.push("");
-  });
-  return lines.join("\n");
 }

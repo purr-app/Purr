@@ -23,7 +23,7 @@ function setup(base: string) {
   return { root, options };
 }
 
-test("exported Bash chain sends dependencies then JSON-safe body and encoded query, without evaluating data", async () => {
+test("exported chain can be pasted into Bash and interactive zsh without evaluating response data", async () => {
   const token = "'\"$(`echo never`)&+ /\\\nline\n";
   const requests: string[] = [];
   const server = createServer(async (request, response) => {
@@ -40,11 +40,14 @@ test("exported Bash chain sends dependencies then JSON-safe body and encoded que
     const code = await prepareDynamicRequestCode(root, {}, options); assert(code);
     assert.equal(requests.length, 0, "generation cannot execute requests");
     const file = join(directory, "chain.sh"); await writeFile(file, code.code);
-    const result = await run("bash", [file]);
-    const actual = JSON.parse(result.stdout);
-    assert.equal(new URL(actual.url, "http://localhost").searchParams.get("q"), token);
-    assert.equal(actual.body.token, token);
-    assert.equal(requests.length, 2);
+    assert.doesNotMatch(code.code, /#!|mktemp|purr_tmp|trap |command -v|--rawfile|--cookie-jar|^#/m);
+    for (const [shell, args] of [["bash", [file]], ["zsh", ["-f", "-i", "-c", code.code]]] as const) {
+      const result = await run(shell, [...args]);
+      const actual = JSON.parse(result.stdout);
+      assert.equal(new URL(actual.url, "http://localhost").searchParams.get("q"), token);
+      assert.equal(actual.body.token, token);
+    }
+    assert.equal(requests.length, 4);
   } finally { server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -57,7 +60,9 @@ test("query compiler matches Purr results including null, false, objects, wildca
     const result = await run("jq", ["-nc", `(${JSON.stringify(value)}) | ${filter}`]);
     assert.deepEqual(JSON.parse(result.stdout), queryResponseJson(value, expression, language), expression);
   }
-  await assert.rejects(run("jq", ["-n", `{} | ${compileResponseQuery("$.missing", "jsonpath")}`]), /did not match/);
+  assert.equal(compileResponseQuery("$.data.body", "jsonpath"), ".data.body");
+  // Simple selectors use native jq semantics: a missing property yields null.
+  assert.equal((await run("jq", ["-n", `{} | ${compileResponseQuery("$.missing", "jsonpath")}`])).stdout.trim(), "null");
 });
 
 test("cycle detection and disabled references fail without transport; inactive fields do not create dependencies", async () => {
@@ -146,7 +151,7 @@ test("binary export requires a real file path and sends bytes without fake paylo
 
 test("an extraction failure stops the generated chain before the root request", async () => {
   const requests: string[] = [];
-  const server = createServer((request, response) => { requests.push(request.url!); response.end("{}"); });
+  const server = createServer((request, response) => { requests.push(request.url!); response.end("not JSON"); });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const directory = await mkdtemp(join(tmpdir(), "purr-curl-"));
   try {
@@ -154,7 +159,7 @@ test("an extraction failure stops the generated chain before the root request", 
     const { root, options } = setup(`http://127.0.0.1:${address.port}`);
     const generated = await prepareDynamicRequestCode(root, {}, options); assert(generated);
     const file = join(directory, "script.sh"); await writeFile(file, generated.code);
-    await assert.rejects(run("bash", [file]), /Extraction failed at step 1/);
+    await assert.rejects(run("bash", [file]), /parse error/);
     assert.deepEqual(requests, ["/source"]);
   } finally { server.close(); await rm(directory, { recursive: true, force: true }); }
 });
