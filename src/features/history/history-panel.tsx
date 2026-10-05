@@ -156,7 +156,7 @@ function HistoryPanelContent({ workspaceId, documentId, selectedId, selectedStar
     {error && <div role="alert" className="px-ui-3 py-ui-2 text-ui-sm text-status-server-error">
       {error}<Button variant="ghost" size="xs" onClick={() => setRefresh((value) => value + 1)}>Retry</Button>
     </div>}
-    <div className="min-h-0 flex-1 overflow-y-auto px-ui-2 pb-ui-2" aria-busy={loading}>
+    <div className="ui-subtle-scrollbar min-h-0 flex-1 overflow-y-auto px-ui-2 pb-ui-2" aria-busy={loading}>
       {!history ? <p className="p-ui-3 text-ui-sm text-content-tertiary">History is unavailable in this host.</p>
         : items.length === 0 && !loading && !error ? <p className="p-ui-3 text-ui-sm text-content-tertiary">{search ? "No matching requests." : "No requests yet. Sent requests appear here."}</p> : null}
       {groupHistoryByDay(items).map((group) => <section key={group.key} aria-label={group.label}>

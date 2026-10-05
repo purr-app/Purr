@@ -276,7 +276,13 @@
   html,
   body,
   #root {
-    @apply min-h-screen;
+    height: 100%;
+    overflow: clip;
+  }
+
+  #root {
+    position: fixed;
+    inset: 0;
   }
 
   body {
@@ -292,6 +298,28 @@
 }
 
 @layer components {
+  .ui-subtle-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--purr-muted) transparent;
+  }
+
+  .ui-subtle-scrollbar::-webkit-scrollbar {
+    width: var(--space-1-5);
+  }
+
+  .ui-subtle-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .ui-subtle-scrollbar::-webkit-scrollbar-thumb {
+    background: var(--purr-muted);
+    border-radius: var(--radius-lg);
+  }
+
+  .ui-subtle-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: var(--content-quaternary);
+  }
+
   .ui-auth-bearer-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr);

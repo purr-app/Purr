@@ -68,7 +68,7 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
       </div>
       <NewDocumentButton onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} onNewFolder={onNewFolder} />
     </div>
-    <div className="min-h-0 flex-1 overflow-y-auto px-ui-2 pb-ui-2 pt-ui-1">
+    <div className="ui-subtle-scrollbar min-h-0 flex-1 overflow-y-auto px-ui-2 pb-ui-2 pt-ui-1">
       <div aria-label="Documents">
         {rootItems.map((item) => item.kind === "folder" ? <FolderRow key={item.id} folder={item} folders={folders} documentsIn={documentsIn} children={children} ordered={ordered} depth={0} activeId={activeId}
           onOpen={onOpen} onPin={onPin} onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} onNewFolder={onNewFolder} onDuplicate={onDuplicate} onDelete={onDelete} onRename={onRename}
