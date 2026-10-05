@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { cn } from "../../../shared/lib/cn";
 import { Button } from "../../../shared/components/ui/button";
 import {
@@ -13,9 +13,12 @@ import {
 } from "../model/request-editor-section";
 import { bodyTypeOptions, type RequestBodyType } from "../model/request-body";
 import { authTypeOptions, type AuthType } from "../model/request-auth";
-import { ChevronDown, Code2 } from "lucide-react";
+import { ChevronDown, Code2, History } from "lucide-react";
 
 type RequestSectionTabsProps = {
+  historyAction?: ReactNode;
+  historical?: boolean;
+  historyStartedAt?: number;
   graphql?: boolean;
   activeSection: RequestEditorSection;
   onSectionChange: (section: RequestEditorSection) => void;
@@ -60,6 +63,8 @@ function BodyTypeIndicator({ bodyType }: { bodyType: RequestBodyType }) {
 }
 
 export function RequestSectionTabs({
+  historyAction, historical = false,
+  historyStartedAt,
   activeSection,
   onSectionChange,
   bodyType,
@@ -139,6 +144,10 @@ export function RequestSectionTabs({
           })}
       </div>
       <div className="flex shrink-0 items-center gap-ui-1">
+        {historyAction}
+        {historical && <span aria-label="Historical request" title={historyStartedAt === undefined ? "Historical request" : `Historical request · ${new Date(historyStartedAt).toLocaleString()}`} className="mr-ui-1 inline-flex items-center gap-ui-1 text-ui-xs text-content-tertiary">
+          <History className="size-ui-3-5" aria-hidden="true" /><span className="hidden lg:inline">Historical request</span>
+        </span>}
         <Button type="button" variant="ghost" size="icon" className="shrink-0 text-content-tertiary" aria-label="Open request code" title="Request code" onClick={onOpenCode}>
           <Code2 className="size-ui-4" aria-hidden="true" />
         </Button>

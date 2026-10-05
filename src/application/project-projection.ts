@@ -193,6 +193,20 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
 }
 
 export async function projectWorkspace(workspace: Workspace, secure: SecureStore): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string> }> {
+  // Historical tabs are views of local executions, never saved documents or drafts.
+  const historicalIds = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.historical).map((document) => document.id));
+  const currentTabId = (id: string | null): string | null => {
+    if (!id || !historicalIds.has(id)) return id;
+    const document = workspace.documents.find((item) => item.id === id);
+    if (!document || !isRequestDocument(document) || !document.historical?.inPlace) return null;
+    const sourceId = document.historical.documentId;
+    return workspace.documents.some((item) => item.id === sourceId && !historicalIds.has(item.id)) ? sourceId : null;
+  };
+  workspace = { ...workspace, documents: workspace.documents.filter((document) => !historicalIds.has(document.id)), ui: { ...workspace.ui,
+    openDocumentIds: [...new Set(workspace.ui.openDocumentIds.flatMap((id) => { const current = currentTabId(id); return current ? [current] : []; }))],
+    activeDocumentId: currentTabId(workspace.ui.activeDocumentId),
+    previewDocumentId: historicalIds.has(workspace.ui.previewDocumentId ?? "") ? null : workspace.ui.previewDocumentId,
+  } };
   const resources: ProjectResource[] = [...(workspace.extraResources ?? [])];
   const assets: Record<string, string> = {};
   const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();

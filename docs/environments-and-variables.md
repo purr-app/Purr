@@ -98,7 +98,7 @@ runtime Variable.value
 
 `SecretRef` has a validated `purr/<workspace>/<owner>/<field>` shape. Global variables use the `purr/global/...` namespace. Workspace/environment YAML contains the stable reference and metadata, never the value. The frontend resolves values only when needed and may hold them transiently in runtime state; UI masking alone must never be treated as persistence protection.
 
-On macOS, `NativeSecureStore` calls Rust `secure_*` commands. The Keychain stores one root encryption key (`purr/local-storage/master-key-v1`); individual secret values live in the separately keyed AES-GCM SQLite vault. Non-macOS native secure storage currently fails closed. Browser development uses its preview secure adapter and is not the desktop security contract.
+On macOS, `NativeSecureStore` calls Rust `secure_*` commands. A root encryption key with user-only file permissions lives in application storage; individual secret values live in the separately keyed AES-GCM SQLite vault. Legacy Keychain roots migrate once. Non-macOS native secure storage currently fails closed. Browser development uses its preview secure adapter and is not the desktop security contract.
 
 ## External secret providers
 
@@ -137,5 +137,35 @@ See [Persistence architecture](persistence-architecture.md) for the full ownersh
 - `src/application/project-projection.ts` — variable projection and sensitive cache protection.
 - `src/storage/secrets.ts` — stable refs, `SecureStore` helpers, and runtime secret envelopes.
 - `src/storage/native-backend.ts` — `NativeSecureStore` IPC adapter.
-- `src-tauri/src/secure_store.rs` — Keychain root and derived ciphers.
+- `src-tauri/src/security/mod.rs` — local root migration and derived ciphers.
 - `src-tauri/src/local_state.rs` — encrypted secret-values vault.
+
+### Dependency diagnostics and execution history
+
+The resolver publishes a structured, environment-aware dependency tree. Nested
+requests run before their parent. Each step identifies the source request, the
+variable it provides, its extraction expression, HTTP status, and resolution
+state. A repeated request/environment pair marks the cycle boundary. HTTP 4xx or
+5xx alone does not fail resolution: extracting `$.error.meta` is a valid use case.
+Transport errors, invalid JSON, and unmatched selectors stop dependent requests.
+
+Both Send and Variables → Execute record actual dependency HTTP executions in the
+same workspace history as ordinary requests, linked to the saved source document.
+An extraction failure keeps the HTTP response and records separate extraction
+metadata. History adopts native content before the resolver releases its handle.
+Cache hits and requests blocked before dispatch do not create execution entries.
+The diagnostics tree links completed steps to immutable historical tabs; global
+and source-document history identify them as dynamic-variable executions. A
+source document's history is also accessible before it has been manually sent.
+
+Dependencies acquire OAuth tokens using their own effective auth configuration,
+never the current editor's credentials. Interactive authorization must first be
+completed in the source request. Automatically fetched/refreshed dependency tokens
+are execution-local. Runtime cache completions merge by timestamp and are pruned
+against current definitions, so a late execution cannot resurrect a deleted or
+edited variable's cached value.
+
+Variables navigation resets to the Effective list when the workspace changes;
+selection and unfinished variable editor drafts do not cross that boundary.
+Template references include their braces in orange italic highlighting. Editor
+hover information uses a viewport-level tooltip to avoid panel clipping.

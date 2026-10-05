@@ -64,7 +64,7 @@ export function GraphqlQueryEditor({ value, onChange, schema, onOpenType, onRunO
     </div>}
     <div className="ui-graphql-editor-pane group relative min-h-0 flex-1">
       <Button variant="ghost" size="sm" className="absolute right-ui-3 top-ui-2 z-10 opacity-ui-hidden shadow-button group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" onClick={format}><WandSparkles className="size-ui-3-5" />Format</Button>
-      <GraphqlCodeEditor value={value.query} schema={schema} label="GraphQL query" onOpenType={onOpenType} onRunOperation={runOperation}
+      <GraphqlCodeEditor templateVariableActions={templateVariableActions} value={value.query} schema={schema} label="GraphQL query" onOpenType={onOpenType} onRunOperation={runOperation}
         onCursorOperationChange={(operation) => selectOperation(operation.name)} focusOperation={focusOperation}
         onChange={(query) => { setFormatError(""); onChange({ ...value, query }); }} />
     </div>

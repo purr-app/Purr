@@ -1,3 +1,4 @@
+pub(crate) mod history;
 pub mod legacy;
 pub mod local_records;
 pub(crate) mod observability;

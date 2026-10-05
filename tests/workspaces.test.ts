@@ -6,6 +6,24 @@ import { resolveRequestEnvironment } from "../src/features/workspaces/model/envi
 import { applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParamsFromUrl } from "../src/features/request-workbench/model/request";
 import { serializeRequestBody } from "../src/features/request-workbench/model/request-body";
 import { createRequestAuth } from "../src/features/request-workbench/model/request-auth";
+import { selectSidebarActivity, toggleWorkspaceSidebar } from "../src/features/workspaces/model/workspace";
+
+test("sidebar activity and width survive toggles and older workspace restoration", () => {
+  const workspace = createWorkspace();
+  workspace.ui.sidebarWidth = 21;
+  const collapsed = selectSidebarActivity(workspace, "documents");
+  assert.equal(collapsed.ui.sidebarOpen, false);
+  assert.equal(collapsed.ui.sidebarActivity, "documents");
+  const opened = selectSidebarActivity(collapsed, "documents");
+  assert.equal(opened.ui.sidebarOpen, true);
+  assert.equal(opened.ui.sidebarWidth, 21);
+  assert.equal(toggleWorkspaceSidebar(opened).ui.sidebarActivity, "documents");
+  const { sidebarActivity: _activity, ...legacyUi } = collapsed.ui;
+  const restored = validateWorkspace({ ...collapsed, ui: legacyUi });
+  assert.equal(restored.ui.sidebarActivity, "documents");
+  assert.equal(restored.ui.sidebarOpen, false);
+  assert.equal(restored.ui.sidebarWidth, 21);
+});
 
 test("new workspaces have independent blank documents and layout state", () => {
   const first = createWorkspace(); const second = createWorkspace("Team");

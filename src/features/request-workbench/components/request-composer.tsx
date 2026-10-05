@@ -1,6 +1,6 @@
 import { Network, SendHorizontal } from "lucide-react";
 import type { GraphQLSchema } from "graphql";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { HttpMethodPicker } from "../../../shared/components/http/http-method-picker";
@@ -29,6 +29,9 @@ import { ColorizedUrlInput } from "./colorized-url-input";
 import { isCurlCommand } from "../model/curl-import";
 
 type RequestComposerProps = {
+  historyAction?: ReactNode;
+  historical?: boolean;
+  historyStartedAt?: number;
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -54,6 +57,8 @@ type RequestComposerProps = {
 };
 
 export function RequestComposer({
+  historyAction, historical,
+  historyStartedAt,
   draft,
   onDraftChange,
   onSend,
@@ -179,7 +184,10 @@ export function RequestComposer({
           ) + getEnabledRequestPathParamCount(getRequestPathParams(draft))}
           headerCount={getEnabledRequestHeaderCount(headers)}
           hasHeaderError={hasRequestHeaderValidationError(headers)}
+          historyAction={historyAction}
           onOpenCode={onOpenCode}
+          historical={historical}
+          historyStartedAt={historyStartedAt}
           detailsCollapsed={detailsCollapsed}
           onToggleDetails={onToggleDetails}
         />

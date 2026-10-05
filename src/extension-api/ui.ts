@@ -5,3 +5,5 @@ export { Input } from "../shared/components/ui/input";
 export { SelectField } from "../shared/components/ui/select-field";
 export { SegmentedTabs } from "../shared/components/ui/segmented-tabs";
 export { IntegrationConnectionSettings } from "../integrations/connection-settings";
+
+export { Notification } from "../shared/components/ui/notification";

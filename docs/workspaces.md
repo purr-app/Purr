@@ -58,7 +58,19 @@ workspace/
 
 Older `requests/` and `graphql/` roots are read for migration. New saves use the unified `documents/` tree.
 
+## Historical execution tabs
+
+History entries are immutable, local executions, not saved document versions. Global history opens each execution in a reusable separate tab. The response History popover replaces the current tab’s view, preserving its current working copy separately; browsing other executions or returning to current adds no tab. A compact historical-request marker and active response History control with a timestamp distinguish the historical view. Return to current in the History popover opens the source without changing it. Historical views are ephemeral and excluded from canonical projection. Separate historical tabs are excluded from persisted tab state; an in-place historical view persists the underlying current document tab so reopening the workspace restores its current buffer.
+
+Editing updates only the ephemeral tab’s editor without switching tabs or modifying the immutable stored execution. Send converts that tab in place into the saved source’s working copy if it is clean. Dirty saved sources and existing unsaved drafts require an explicit Replace current changes / Create new draft / Cancel choice at Send; cancelling preserves the edited historical tab. Replace reuses an existing saved document or draft; Create new draft and deleted sources produce new drafts in the same tab position. The source’s saved snapshot is never changed by this operation. Send executes with the current context. History is recorded only for requests, not keystrokes.
+
+Deleting a document, deleting a draft, closing a tab, or discarding working changes does not delete history. The workspace history list has pin, individual deletion, clear-all and retention controls (30 days by default). The response popover filters the same records by document; it is not a separate history store. Workspace deletion still deletes all local data for that workspace.
+
 ## Folders and sidebar operations
+
+The activity rail remains visible when sidebar content is collapsed, with activities at the top. Documents opens or toggles the sidebar; Cmd+B toggles visibility without changing `ui.sidebarActivity` or the saved width. History switches the sidebar to the current workspace’s execution list. The response history icon opens a popover filtered to that source document, including its draft executions. Selecting either activity while collapsed reopens it; selecting the active activity toggles visibility. On macOS the header reserves space for native window controls only outside fullscreen; the platform lifecycle adapter supplies that window state.
+
+For macOS shells with `trafficLightPosition` configured, `macos_window_controls` scales the existing native buttons to 12 logical pixels with a 20-pixel center-to-center pitch, retaining the configured left inset and native actions. The configured y offset locates the button centers relative to the top of the content view (20 pixels for the 40-pixel Purr header). The layout is reapplied on resize and display-scale changes; other platforms and shells using an uncustomized titlebar are unaffected.
 
 Folder canonical resources live in `Workspace.extraResources` at runtime and as `.purr-folder.yaml` on disk. Folders can nest. `validateProject` rejects missing parents and cycles.
 

@@ -13,7 +13,7 @@ runtime Workspace / RequestDraft / StoredHttpResponse
   ↓ ApplicationServices context
 TypeScript domain and application services → application ports
   ↓ platform/browser or platform/tauri adapters
-Rust HTTP · OAuth callback · project files · encrypted SQLite · Keychain
+Rust HTTP · OAuth callback · project files · encrypted SQLite · local root key
 
 React observability UI
   ↓ bounded ObservabilityPort DTOs
@@ -69,7 +69,7 @@ Rust modules provide narrow privileged boundaries:
 - `src-tauri/src/content/`: response-content chunks, lifecycle, direct save, allowlisted range-capable media protocol, bounded reads/segmented lines, cancellable search/format/query adapters, and a dedicated encryption/SQLite worker; encrypted is the only enabled protection mode.
 - `src-tauri/src/importing/`: source loading, format detection, `$ref` resolution, OpenAPI normalization, and the native import-adapter registry.
 - `src-tauri/src/persistence/`: encrypted local records, execution metadata/history, response-content adoption, project files, legacy migration, workspace registry, commit journal, and watchers.
-- `src-tauri/src/security/`: Keychain root key and domain-separated database, credential, and response-content encryption keys.
+- `src-tauri/src/security/`: user-only local root key, legacy Keychain migration, and domain-separated database, credential, and response-content encryption keys.
 - `src-tauri/src/observability/`: provider-neutral trace/span models, immutable descriptor/capability/correlation/propagation registries, integration-scoped credential resolution, bounded memory cache, native hierarchy/search/pagination, cancellation and response-linked lookup. The public Jaeger adapter owns HTTP/OTLP parsing under `providers/`; two synthetic providers are available only with `observability-fixtures`. React calls bounded typed commands and owns presentation only. Propagation is independent of provider selection; the final headers are prepared in Rust before HTTP transport.
 - `src-tauri/src/commands/`: thin Tauri adapters for app, HTTP, response content, import, and persistence operations.
 - `src-tauri/src/oauth.rs`: loopback callback for OAuth Authorization Code.
@@ -167,7 +167,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Direct handle download and range-capable image/audio/video preview avoid body IPC; full-body clipboard copy remains unavailable for opaque large content.
 - GraphQL introspection responses may cross the inline boundary: schema installation reads a native content reference in bounded windows, releases it, and normalizes the complete source in a cancellable Web Worker. The UI still builds one `GraphQLSchema` from normalized SDL for CodeMirror and `graphql-language-service`; current measurements do not justify a second Rust schema model.
 - Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
-- Execution history has an indexed native pagination API, but no history-browser UI.
+- Execution history has workspace/document browsers, immutable historical tabs, current-context replay, pinning and configurable retention; metadata lists do not hydrate response bodies.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
 - Attached external project directories have application/native support but no current UI.
 - Registry schema sources, external secret providers, non-OpenAPI collection adapters, non-Jaeger tracing adapters, logs, benchmarks, and subscriptions are not implemented end-to-end. Trace lookup uses the exact persisted execution metadata, tolerates save debounce for one second, and reports a retryable missing-save state without delaying ordinary HTTP response display. Its cache is bounded and memory-only. Phase 14 adds optional propagation preferences to existing request/workspace YAML; no new persisted trace table or file format is introduced.
@@ -205,3 +205,11 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 - `src-tauri/src/composition.rs` — complete native command registration map and constrained external builder.
 - `src-tauri/src/native_extension_api.rs` — reviewed native provider contracts.
 - `src-tauri/src/lib.rs` — public core builder and OSS run exports.
+
+## Distribution updates
+
+`createPurrApp({ updater })` accepts the optional documented `AppUpdater` port exported by `@purr/core/app`. Public source builds omit it: no official endpoint, verification key, plugin registration, or update network request exists in public configuration. The distribution supplies its adapter and native updater/restart plugins through `core_builder().plugin(...)`. Core owns check/download/install state, one non-blocking startup check per app instance, About, the footer, progress/errors, and release notes. Download and installation are separate: only explicit Restart flushes workspace state, installs, and requests relaunch. No app data or credentials cross the update API.
+
+`Notification` is exported through `@purr/core/ui` for reuse. Notices slide in from the right; errors rise and fade, with reduced-motion support and dismiss controls. Release notes/About are app-level session tabs; they are not workspace documents and never enter canonical YAML. Only the last seen version is stored as local UI metadata (`purr.release-notes.seen-version`). Notes ship with the app as restricted Markdown, so viewing them needs no network request. `createPurrApp({ release })` accepts `AppRelease` metadata (product version, notes, optional date); a distribution supplies its own changelog independently of the public core version. Native app version remains authoritative, and the injected product version is the browser/offline fallback.
+
+`@purr/core/tauri-config` and `@purr/core/release-notes` expose generated package assets containing the base Tauri JSON and canonical changelog. Consumers merge configuration overrides after the base, using Tauri's RFC 7396 semantics. The public artifact excludes distribution update endpoints and keys. See [releases](releases.md) for note generation and downstream publication.

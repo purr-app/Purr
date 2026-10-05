@@ -32,7 +32,11 @@ impl PendingContentWrite {
 
 impl ResponseContentHandle {
     fn start(path: PathBuf) -> Result<Self, String> {
-        Self::start_store(ResponseContentStore::open(&path, &PlatformRootKeyStore)?)
+        let data_directory = path
+            .parent()
+            .ok_or_else(|| "Cannot locate application storage".to_string())?;
+        let root_keys = PlatformRootKeyStore::new(data_directory);
+        Self::start_store(ResponseContentStore::open(&path, &root_keys)?)
     }
 
     fn start_store(mut store: ResponseContentStore) -> Result<Self, String> {
