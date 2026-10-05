@@ -394,9 +394,15 @@ export function getEnvironmentVariables(workspace: Workspace): Record<string, st
   return getEffectiveVariableValues(workspace, [], workspace.activeEnvironmentId);
 }
 
+// One selected workspace/environment definition per name, retaining disabled-only names so execution
+// can still explain a disabled variable instead of reporting it as missing.
 export function getVariableNamespace(workspace: Workspace, globalVariables: readonly Variable[], environmentId = workspace.activeEnvironmentId): Variable[] {
-  return [...globalVariables, ...workspace.variables, ...(workspace.environments.find((environment) => environment.id === environmentId)?.variables ?? [])]
-    .filter((variable) => variable.name.trim());
+  const namespace = new Map<string, Variable>();
+  for (const variable of [...workspace.variables, ...(workspace.environments.find((environment) => environment.id === environmentId)?.variables ?? [])]) {
+    const name = variable.name.trim();
+    if (name && (variable.enabled || !namespace.get(name)?.enabled)) namespace.set(name, variable);
+  }
+  return [...globalVariables.filter((variable) => variable.name.trim()), ...namespace.values()];
 }
 
 export function getEffectiveVariables(workspace: Workspace, globalVariables: readonly Variable[], environmentId = workspace.activeEnvironmentId): Variable[] {
@@ -528,9 +534,6 @@ export function validateWorkspace(value: unknown): Workspace {
     throw new Error("Variable names must be unique inside their scope.");
   if (workspace.environments.some((environment) => environment.variables.some((variable) => variable.kind !== "static")))
     throw new Error("Environment variables must be static.");
-  const workspaceNames = new Set(workspace.variables.map((variable) => variable.name.trim()).filter(Boolean));
-  if (workspace.environments.some((environment) => environment.variables.some((variable) => workspaceNames.has(variable.name.trim()))))
-    throw new Error("Workspace and environment variable names must not overlap.");
   const variableIds = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)].map((variable) => variable.id);
   if (new Set(variableIds).size !== variableIds.length) throw new Error("Variable identifiers must be unique inside a workspace.");
   const openDocumentIds = [...new Set(workspace.ui.openDocumentIds)].filter((id) => ids.has(id));

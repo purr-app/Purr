@@ -2,7 +2,7 @@ import { DynamicDependencyChain } from "./dynamic-dependency-chain";
 import { DynamicVariableResolutionError, type DynamicExecutionStep } from "../services/dynamic-variable-resolver";
 import type { WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { useEffect, useId, useRef, useState } from "react";
-import { Braces, Check, ChevronDown, Cloud, Copy, Eye, EyeOff, FileText, Globe2, LockKeyhole, Plus, RefreshCw, Save, Trash2, X, Zap } from "lucide-react";
+import { Braces, Check, ChevronDown, Cloud, Copy, Eye, EyeOff, FileInput, FileText, Globe2, LockKeyhole, Plus, RefreshCw, Save, Trash2, X, Zap } from "lucide-react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
@@ -61,8 +61,9 @@ function usedBy(variable: Variable, documents: readonly DynamicVariableRequest[]
   return documents.filter((document) => JSON.stringify(document.request).includes(`{{${variable.name}}}`));
 }
 
-export function VariablesExplorer({ requestConfig, onOpenHistory, workspace, globalVariables, scope, selectedId, draft, documents,
+export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHistory, workspace, globalVariables, scope, selectedId, draft, documents,
   onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
+  onImportEnvironment?: () => void;
   requestConfig?: WorkspaceRequestConfig;
   onOpenHistory?: (id: string) => void;
   workspace: Workspace;
@@ -154,11 +155,13 @@ export function VariablesExplorer({ requestConfig, onOpenHistory, workspace, glo
 
   return <section aria-label="Variables" className="h-full min-h-0 bg-purr-base p-ui-2">
     <div className={cn("grid h-full min-h-0 overflow-hidden rounded-ui-xl border border-border-subtle bg-purr-surface shadow-panel", showDetails ? "grid-cols-ui-variables" : "grid-cols-ui-variables-compact")}>
-      <aside className="min-h-0 overflow-auto border-r border-border-subtle p-ui-3">
+      <aside className="ui-subtle-scrollbar min-h-0 overflow-auto border-r border-border-subtle p-ui-3">
         <h1 className="mb-ui-3 mt-ui-0 flex items-center gap-ui-2 text-ui-lg font-medium"><Braces className="size-ui-4 text-action-brand" />Variables</h1>
         <nav aria-label="Variable scopes" className="space-y-ui-1">
           {(["effective", "workspace"] as const).map((value) => <Button key={value} variant="ghost" className={cn("w-full justify-start", scope === value && "bg-purr-highlight text-content-primary")} onClick={() => selectScope(value)}>{value === "effective" ? <RefreshCw className="size-ui-4" /> : <Braces className="size-ui-4" />}{scopeLabel(value, workspace)}</Button>)}
-          <div className="pt-ui-2 text-ui-xs font-medium text-content-tertiary">Environments</div>
+          <div className="flex items-center justify-between gap-ui-1 pt-ui-2 text-ui-xs font-medium text-content-tertiary">Environments
+            {onImportEnvironment && <Button variant="ghost" size="xs" disabled={dirty} aria-label="Import environment" onClick={onImportEnvironment}><FileInput className="size-ui-3" />Import</Button>}
+          </div>
           {workspace.environments.map((environment) => <Button key={environment.id} variant="ghost" className={cn("w-full justify-start", scope === `environment:${environment.id}` && "bg-purr-highlight text-content-primary")} onClick={() => selectScope(`environment:${environment.id}`)}><Globe2 className="size-ui-4" /><span className="truncate">{environment.name}</span></Button>)}
           <div className="border-t border-border-subtle pt-ui-2"><Button variant="ghost" className={cn("w-full justify-start", scope === "global" && "bg-purr-highlight text-content-primary")} onClick={() => selectScope("global")}><Globe2 className="size-ui-4" />Global</Button></div>
         </nav>
@@ -177,7 +180,7 @@ export function VariablesExplorer({ requestConfig, onOpenHistory, workspace, glo
             ...(scope === "workspace" || scope === "effective" ? [{ value: "dynamic-request" as const, label: "Dynamic Request" }] : [])]}
             onValueChange={setType} size="lg" className="w-method-popover" />
         </div>
-        <div className="min-h-0 flex-1 overflow-auto p-ui-2" onClick={(event) => { if (event.target === event.currentTarget && showDetails) cancelDraft(); }}>
+        <div role="region" aria-label="Variable list" className="ui-subtle-scrollbar min-h-0 flex-1 overflow-auto p-ui-2" onClick={(event) => { if (event.target === event.currentTarget && showDetails) cancelDraft(); }}>
           {scope === "effective" ? <EffectiveTable variables={filtered} workspace={workspace} globalVariables={globalVariables} selectedId={selectedId}
               onSelect={(variable) => { onSelectionChange(variable.id); onDraftChange(null); }} onDefinition={(variable) => selectScope(definitionScope(variable, workspace, globalVariables), variable.id)} />
             : <ScopeTable variables={filtered} scope={scope} workspace={workspace} globalVariables={globalVariables}
@@ -211,12 +214,10 @@ function validateVariableName(variable: Variable, scope: VariableScope, workspac
   const same = scope === "workspace" ? workspace.variables : scope === "global" ? globals
     : workspace.environments.find((environment) => scope === `environment:${environment.id}`)?.variables ?? [];
   if (same.some((candidate) => candidate.id !== variable.id && candidate.name.trim() === name)) return `Variable “${name}” already exists.`;
-  if (scope === "workspace" && (globals.some((candidate) => candidate.name.trim() === name)
-    || workspace.environments.some((environment) => environment.variables.some((candidate) => candidate.name.trim() === name)))) return `Variable “${name}” already exists in an effective namespace.`;
+  if (scope === "workspace" && globals.some((candidate) => candidate.name.trim() === name)) return `Variable “${name}” already exists in an effective namespace.`;
   if (scope === "global" && (workspace.variables.some((candidate) => candidate.name.trim() === name)
     || workspace.environments.some((environment) => environment.variables.some((candidate) => candidate.name.trim() === name)))) return `Variable “${name}” already exists in this workspace.`;
-  if (scope.startsWith("environment:") && (globals.some((candidate) => candidate.name.trim() === name)
-    || workspace.variables.some((candidate) => candidate.name.trim() === name))) return `Variable “${name}” already exists in the effective namespace.`;
+  if (scope.startsWith("environment:") && globals.some((candidate) => candidate.name.trim() === name)) return `Variable “${name}” already exists in the effective namespace.`;
   return "";
 }
 
@@ -339,7 +340,7 @@ function EffectiveDetails({ variable, workspace, globalVariables, documents, onD
   if (!variable) return <div className="flex h-full items-center justify-center p-ui-6 text-center text-ui-sm text-content-tertiary">Select a definition from the table.</div>;
   const usages = usedBy(variable, documents);
   const definition = scopeLabel(definitionScope(variable, workspace, globalVariables), workspace);
-  return <div className="min-h-0 flex-1 overflow-auto p-ui-5">
+  return <div className="ui-subtle-scrollbar min-h-0 flex-1 overflow-auto p-ui-5">
     <div className="rounded-ui-xl border border-border-subtle bg-purr-surface p-ui-4 shadow-panel">
       <div className="flex items-start justify-between gap-ui-3"><div><p className="m-ui-0 text-ui-xs text-content-tertiary">Effective variable</p><h2 className="mb-ui-0 mt-ui-1 break-all font-code text-ui-xl text-syntax-property">{`{{${variable.name}}}`}</h2></div><span className="flex items-center gap-ui-1 rounded-ui-md bg-purr-highlight px-ui-2 py-ui-1 text-ui-xs text-content-secondary"><VariableIcon variable={variable} />{variable.sensitive ? <LockKeyhole className="size-ui-3 text-accent-orange" /> : null}{kindLabels[variable.kind]}</span></div>
       <div className="mt-ui-4 rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-3"><p className="m-ui-0 text-ui-xs text-content-tertiary">Resolved value / source</p><p className="mb-ui-0 mt-ui-2 break-all font-code text-ui-sm text-content-primary">{variableSummary(variable, workspace)}</p></div>
@@ -359,7 +360,7 @@ function VariableDetails({ requestConfig, onOpenHistory, onOpenVariable, variabl
   const changeKind = (kind: "static" | "dynamic-request") => onChange(kind === "static" ? { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: variable.sensitive, kind: "static", value: "" } : { ...createDynamicVariable(variable.name), id: variable.id, enabled: variable.enabled, sensitive: variable.sensitive });
   const source = variable.kind === "dynamic-request" ? documents.find((document) => document.id === variable.documentId) : undefined;
   return <div className="flex h-full min-h-0 flex-col">
-    <div className="min-h-0 flex-1 space-y-ui-5 overflow-auto p-ui-5">
+    <div className="ui-subtle-scrollbar min-h-0 flex-1 space-y-ui-5 overflow-auto p-ui-5">
       <h2 className="m-ui-0 text-ui-lg font-medium">Variable definition</h2>
       <div className="space-y-ui-2"><div className="flex items-center justify-between gap-ui-3"><label htmlFor={`variable-name-${variable.id}`} className="text-ui-sm font-medium text-content-primary">Name</label><span className="flex items-center gap-ui-2 text-ui-sm text-content-secondary">Enabled<Switch label="Enable variable" checked={variable.enabled} onCheckedChange={onToggle} /></span></div><Input id={`variable-name-${variable.id}`} autoFocus={!persisted} aria-label="Variable name" aria-invalid={Boolean(nameError)} className="font-code" value={variable.name} placeholder="variable_name" onChange={(event) => onChange({ ...variable, name: event.target.value })} /><p role={nameError ? "alert" : undefined} className={cn("m-ui-0 text-ui-xs", nameError ? "text-accent-red" : "text-content-tertiary")}>{nameError || `Referenced in requests as {{${variable.name || "variable_name"}}}`}</p></div>
       <VariableKindPicker value={variable.kind === "dynamic-request" ? "dynamic-request" : "static"} allowDynamic={scope === "workspace"} onChange={changeKind} />
@@ -411,7 +412,7 @@ function RequestSelect({ value, documents, onChange }: { value: string; document
       </button>
     </PopoverTrigger>
     <PopoverContent className="ui-popover-match-anchor z-50 overflow-hidden rounded-ui-md border border-border-default bg-purr-overlay p-ui-1 shadow-popover" side="bottom" align="start" sideOffset={4}>
-      <div id={listboxId} role="listbox" aria-label="Dynamic variable source request" className="max-h-variable-list overflow-auto">
+      <div id={listboxId} role="listbox" aria-label="Dynamic variable source request" className="ui-subtle-scrollbar max-h-variable-list overflow-auto">
         <button type="button" role="option" aria-label="Select saved request" aria-selected={!value}
           className={cn("ui-focus-ring flex h-control-sm w-full items-center justify-between rounded-ui-sm px-ui-2 text-ui-sm text-content-tertiary hover:bg-purr-highlight hover:text-content-primary", !value && "bg-purr-highlight text-content-primary")}
           onClick={() => { onChange(""); setOpen(false); }}><span>Select saved request…</span>{!value ? <Check className="size-ui-3 text-action-brand" aria-hidden="true" /> : null}</button>

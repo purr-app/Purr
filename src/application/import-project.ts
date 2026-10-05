@@ -1,14 +1,16 @@
+import type { Workspace } from "../features/workspaces/model/workspace";
 import { secretRefSchema, validateProject } from "../domain/project";
 import type { NormalizedImportResult } from "../importing/contracts";
 import type { WorkspacePersistence } from "./workspace-persistence";
 
-export async function persistImport(result: NormalizedImportResult, persistence: WorkspacePersistence) {
+export async function persistImport(result: NormalizedImportResult, persistence: WorkspacePersistence, initialize?: (workspace: Workspace) => Workspace) {
   if (result.diagnostics.some((item) => item.severity === "error")) throw new Error("Resolve import errors before saving the project.");
   const project = persistence.prepareImport(validateProject({ workspace: result.workspace, resources: result.resources }));
   const refs = new Set<string>();
   for (const secret of result.secrets) {
     if (!secretRefSchema.safeParse(secret.ref).success || !secret.ref.startsWith(`purr/${project.workspace.id}/`) || refs.has(secret.ref))
       throw new Error("Import credentials must have unique references scoped to the destination workspace.");
+    if (await persistence.secure.exists(secret.ref)) throw new Error("Import credentials must not overwrite existing secrets.");
     refs.add(secret.ref);
   }
   const writtenSecrets: typeof result.secrets = [];
@@ -18,6 +20,7 @@ export async function persistImport(result: NormalizedImportResult, persistence:
       writtenSecrets.push(secret);
     }
     return await persistence.saveProject(project, (workspace) => {
+      if (initialize) return initialize(workspace);
       if (result.activeEnvironmentId && workspace.environments.some((environment) => environment.id === result.activeEnvironmentId))
         workspace.activeEnvironmentId = result.activeEnvironmentId;
       const firstDocument = workspace.documents.find((document) => document.saved);

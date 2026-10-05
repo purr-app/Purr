@@ -1,0 +1,1516 @@
+{
+  "info": {
+    "name": "01 · HTTP toolbox",
+    "description": "Start here. HTTP methods, query/header metadata, all portable HTTP body modes, redirects, cookies and response formats. MANUAL file requests need a file selected locally. Docs: https://learning.postman.com/docs/developer/echo-api and https://httpbin.org/",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 · Methods & query parameters",
+      "item": [
+        {
+          "name": "GET · Unicode, repeated and disabled query",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{echo_url}}/get?tag=api&tag=import&q=Kyiv%20%26%20Lviv&empty=",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "get"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "api"
+                },
+                {
+                  "key": "tag",
+                  "value": "import"
+                },
+                {
+                  "key": "q",
+                  "value": "Kyiv%20%26%20Lviv"
+                },
+                {
+                  "key": "empty",
+                  "value": ""
+                },
+                {
+                  "key": "debug",
+                  "value": "true",
+                  "description": "Must stay disabled after import",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "GET · Unicode, repeated and disabled query. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "POST · echo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Вітаю, Postman 🐾\",\n  \"requestId\": \"{{request_id}}\",\n  \"enabled\": true,\n  \"items\": [\n    1,\n    2,\n    null\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "POST · echo. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT · echo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Вітаю, Postman 🐾\",\n  \"requestId\": \"{{request_id}}\",\n  \"enabled\": true,\n  \"items\": [\n    1,\n    2,\n    null\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/put",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "put"
+              ]
+            },
+            "description": "PUT · echo. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH · echo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Вітаю, Postman 🐾\",\n  \"requestId\": \"{{request_id}}\",\n  \"enabled\": true,\n  \"items\": [\n    1,\n    2,\n    null\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/patch",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "patch"
+              ]
+            },
+            "description": "PATCH · echo. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE · echo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{echo_url}}/delete",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "delete"
+              ]
+            },
+            "description": "DELETE · echo. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "HEAD · headers without body",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "HEAD",
+            "header": [],
+            "url": {
+              "raw": "{{echo_url}}/get",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "get"
+              ]
+            },
+            "description": "HEAD · headers without body. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "OPTIONS · discover methods",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "OPTIONS",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/anything",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "anything"
+              ]
+            },
+            "description": "OPTIONS · discover methods. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "GET · path variable",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/anything/:resource",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "anything",
+                ":resource"
+              ],
+              "variable": [
+                {
+                  "key": "resource",
+                  "value": "cats",
+                  "description": "Editable URL path parameter"
+                }
+              ]
+            },
+            "description": "GET · path variable. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        }
+      ],
+      "description": "01 · Methods & query parameters"
+    },
+    {
+      "name": "02 · Body formats",
+      "item": [
+        {
+          "name": "JSON · nested arrays, null and booleans",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"{{case_title}}\",\n  \"nested\": {\n    \"zero\": 0,\n    \"empty\": \"\",\n    \"null\": null,\n    \"active\": false\n  },\n  \"tags\": [\n    \"rest\",\n    \"🐈\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "JSON · nested arrays, null and booleans. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Text · multiline",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "Line one\nУкраїнський текст\n{{request_id}}",
+              "options": {
+                "raw": {
+                  "language": "text"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "Text · multiline. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "XML · namespaced payload",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/xml"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<p:case xmlns:p=\"urn:purr\"><p:title>Import &amp; test</p:title></p:case>",
+              "options": {
+                "raw": {
+                  "language": "xml"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "XML · namespaced payload. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "HTML · markup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/html"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<article><h1>Purr import</h1><p>🐾</p></article>",
+              "options": {
+                "raw": {
+                  "language": "html"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "HTML · markup. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "URL-encoded · repeated and disabled fields",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "name",
+                  "value": "Purr Demo",
+                  "type": "text",
+                  "description": "Synthetic test input"
+                },
+                {
+                  "key": "email",
+                  "value": "qa@example.test",
+                  "type": "text",
+                  "description": "Synthetic test input"
+                },
+                {
+                  "key": "enabled",
+                  "value": "true",
+                  "type": "text",
+                  "description": "Synthetic test input"
+                },
+                {
+                  "key": "name",
+                  "value": "Second value",
+                  "type": "text"
+                },
+                {
+                  "key": "ignore",
+                  "value": "not sent",
+                  "type": "text",
+                  "disabled": true
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "URL-encoded · repeated and disabled fields. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Multipart · text fields",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "title",
+                  "value": "Upload metadata",
+                  "type": "text",
+                  "description": "Synthetic test input"
+                },
+                {
+                  "key": "metadata",
+                  "value": "{\"source\":\"purr\"}",
+                  "type": "text",
+                  "description": "Synthetic test input"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "Multipart · text fields. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Multipart · file attachment [MANUAL]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "label",
+                  "value": "sample",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "value": null
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "MANUAL: select fixtures/upload.txt after import. File bytes are not carried by Postman collection exports."
+          },
+          "response": []
+        },
+        {
+          "name": "Binary · file body [MANUAL]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "file",
+              "file": {}
+            },
+            "url": {
+              "raw": "{{echo_url}}/post",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "post"
+              ]
+            },
+            "description": "MANUAL: select fixtures/upload.txt. Binary upload requires a local file."
+          },
+          "response": []
+        }
+      ],
+      "description": "02 · Body formats"
+    },
+    {
+      "name": "03 · Headers, cookies & redirects",
+      "item": [
+        {
+          "name": "Headers · enabled and disabled",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}",
+                "description": "Generated per request"
+              },
+              {
+                "key": "X-Disabled",
+                "value": "never sent",
+                "disabled": true
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{echo_url}}/headers",
+              "host": [
+                "{{echo_url}}"
+              ],
+              "path": [
+                "headers"
+              ]
+            },
+            "description": "Headers · enabled and disabled. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Cookies · set synthetic session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/cookies/set?lab_session=purr-demo",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "cookies",
+                "set"
+              ],
+              "query": [
+                {
+                  "key": "lab_session",
+                  "value": "purr-demo"
+                }
+              ]
+            },
+            "description": "Cookies · set synthetic session. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Cookies · inspect jar",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/cookies",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "cookies"
+              ]
+            },
+            "description": "Cookies · inspect jar. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Cookies · clear synthetic session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/cookies/delete?lab_session=",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "cookies",
+                "delete"
+              ],
+              "query": [
+                {
+                  "key": "lab_session",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "Cookies · clear synthetic session. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Redirect · follow two hops",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/redirect/2",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "redirect",
+                "2"
+              ]
+            },
+            "description": "Redirect · follow two hops. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Redirect · inspect 302",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 302\", () => pm.response.to.have.status(302));"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/redirect/1",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "redirect",
+                "1"
+              ]
+            },
+            "description": "Redirect · inspect 302. Expected HTTP 302. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        }
+      ],
+      "description": "03 · Headers, cookies & redirects"
+    },
+    {
+      "name": "04 · Response formats & transport",
+      "item": [
+        {
+          "name": "JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/json",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "json"
+              ]
+            },
+            "description": "JSON. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "XML",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/xml",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "xml"
+              ]
+            },
+            "description": "XML. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "HTML",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/html",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "html"
+              ]
+            },
+            "description": "HTML. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "PNG image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/image/png",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "image",
+                "png"
+              ]
+            },
+            "description": "PNG image. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Gzip response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/gzip",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "gzip"
+              ]
+            },
+            "description": "Gzip response. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "NDJSON stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/stream/3",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "stream",
+                "3"
+              ]
+            },
+            "description": "NDJSON stream. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Bytes · 256 bytes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/bytes/256",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "bytes",
+                "256"
+              ]
+            },
+            "description": "Bytes · 256 bytes. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Delay · 1 second",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/delay/1",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "delay",
+                "1"
+              ]
+            },
+            "description": "Delay · 1 second. Expected HTTP 200. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "ETag · conditional 304",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 304\", () => pm.response.to.have.status(304));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "If-None-Match",
+                "value": "\"purr-import\""
+              }
+            ],
+            "url": {
+              "raw": "{{httpbin_url}}/etag/purr-import",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "etag",
+                "purr-import"
+              ]
+            },
+            "description": "ETag · conditional 304. Expected HTTP 304. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        }
+      ],
+      "description": "04 · Response formats & transport"
+    },
+    {
+      "name": "05 · Expected error responses",
+      "item": [
+        {
+          "name": "Expected HTTP 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/204",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "204"
+              ]
+            },
+            "description": "Expected HTTP 204. Expected HTTP 204. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/400",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "400"
+              ]
+            },
+            "description": "Expected HTTP 400. Expected HTTP 400. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/401",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "401"
+              ]
+            },
+            "description": "Expected HTTP 401. Expected HTTP 401. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/403",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "403"
+              ]
+            },
+            "description": "Expected HTTP 403. Expected HTTP 403. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/404",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "404"
+              ]
+            },
+            "description": "Expected HTTP 404. Expected HTTP 404. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 418",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 418\", () => pm.response.to.have.status(418));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/418",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "418"
+              ]
+            },
+            "description": "Expected HTTP 418. Expected HTTP 418. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/422",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "422"
+              ]
+            },
+            "description": "Expected HTTP 422. Expected HTTP 422. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 429\", () => pm.response.to.have.status(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/429",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "429"
+              ]
+            },
+            "description": "Expected HTTP 429. Expected HTTP 429. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 500",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 500\", () => pm.response.to.have.status(500));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/500",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "500"
+              ]
+            },
+            "description": "Expected HTTP 500. Expected HTTP 500. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        },
+        {
+          "name": "Expected HTTP 503",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 503\", () => pm.response.to.have.status(503));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{httpbin_url}}/status/503",
+              "host": [
+                "{{httpbin_url}}"
+              ],
+              "path": [
+                "status",
+                "503"
+              ]
+            },
+            "description": "Expected HTTP 503. Expected HTTP 503. Synthetic data only; public services can be temporarily unavailable."
+          },
+          "response": []
+        }
+      ],
+      "description": "These are passing negative tests: status assertions intentionally expect errors."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.variables.set(\"request_id\", pm.variables.replaceIn(\"{{$guid}}\"));"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test(\"Response is within 30 seconds\", () => pm.expect(pm.response.responseTime).to.be.below(30000));"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "echo_url",
+      "value": "https://postman-echo.com"
+    },
+    {
+      "key": "httpbin_url",
+      "value": "https://httpbin.org"
+    },
+    {
+      "key": "case_title",
+      "value": "Purr synthetic case"
+    }
+  ]
+}
