@@ -1,4 +1,3 @@
-use aes_gcm::aead::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -134,7 +133,7 @@ impl RequestFileStore {
                 media_type
             };
         let mut random = [0_u8; 16];
-        OsRng.fill_bytes(&mut random);
+        getrandom::fill(&mut random).map_err(|_| "Cannot generate request file ID")?;
         let id = format!(
             "request-file-{}",
             random

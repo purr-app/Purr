@@ -10,7 +10,6 @@ use crate::{
     persistence::local_records::LocalStateStore,
     security::{LocalCipher, RootCiphers, RootKeyStore},
 };
-use aes_gcm::aead::rand_core::{OsRng, RngCore};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use regex::bytes::RegexBuilder;
 use regex_syntax::Parser as RegexParser;
@@ -123,7 +122,7 @@ impl ResponseContentStore {
     ) -> Result<ResponseContentRef, String> {
         self.cleanup_expired(now_seconds())?;
         let mut random = [0_u8; 16];
-        OsRng.fill_bytes(&mut random);
+        getrandom::fill(&mut random).map_err(|_| "Cannot generate response content ID")?;
         let id = format!(
             "content-{}",
             random
