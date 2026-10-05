@@ -273,7 +273,7 @@ impl ObservabilityService {
             return Ok(empty_page());
         };
         digest.update(trace_id.as_bytes());
-        let key = format!("{:x}", digest.finalize());
+        let key = hex_encode(&digest.finalize());
         let cached_trace = self
             .cache
             .lock()
@@ -334,22 +334,16 @@ impl ObservabilityService {
             }
         };
         // Cursor belongs to this exact workspace/provider/config/credential/query.
-        let snapshot = format!(
-            "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&trace).map_err(|_| ObservabilityError::ProviderFailed)?
+        let snapshot = hex_encode(&Sha256::digest(
+            serde_json::to_vec(&trace).map_err(|_| ObservabilityError::ProviderFailed)?,
+        ));
+        let cursor_key = hex_encode(&Sha256::digest(
+            format!(
+                "{key}:{snapshot}:{}:{}:{}",
+                query.document_id, query.started_at_ms, query.search
             )
-        );
-        let cursor_key = format!(
-            "{:x}",
-            Sha256::digest(
-                format!(
-                    "{key}:{snapshot}:{}:{}:{}",
-                    query.document_id, query.started_at_ms, query.search
-                )
-                .as_bytes()
-            )
-        );
+            .as_bytes(),
+        ));
         let offset = match query.cursor {
             None => 0,
             Some(cursor) => {
@@ -405,6 +399,10 @@ impl ObservabilityService {
         })
     }
 }
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn empty_page() -> TracePage {
     TracePage {
         timing: None,

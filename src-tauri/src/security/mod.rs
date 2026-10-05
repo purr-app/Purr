@@ -351,6 +351,20 @@ pub mod tests {
     }
 
     #[test]
+    fn derived_database_key_matches_existing_sha256_hkdf_format() {
+        let root: [u8; 32] = std::array::from_fn(|index| index as u8);
+        let key = derive_key(&root, DATABASE_KEY_INFO).unwrap();
+        let encoded = key
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            encoded,
+            "d69330ea806cdc19613eb56efbbfc17d8efe819d64f8ea533662ae264c70de91"
+        );
+    }
+
+    #[test]
     fn platform_adapter_is_root_key_only() {
         fn accepts_root_store(_: &dyn RootKeyStore) {}
         let directory = tempfile::tempdir().unwrap();
