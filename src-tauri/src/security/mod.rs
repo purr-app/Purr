@@ -4,7 +4,7 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2_hkdf::Sha256;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
@@ -348,6 +348,20 @@ pub mod tests {
         assert_ne!(&*database, &*secrets);
         assert_ne!(&*database, &*response_content);
         assert_ne!(&*secrets, &*response_content);
+    }
+
+    #[test]
+    fn derived_database_key_matches_existing_sha256_hkdf_format() {
+        let root: [u8; 32] = std::array::from_fn(|index| index as u8);
+        let key = derive_key(&root, DATABASE_KEY_INFO).unwrap();
+        let encoded = key
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            encoded,
+            "d69330ea806cdc19613eb56efbbfc17d8efe819d64f8ea533662ae264c70de91"
+        );
     }
 
     #[test]
