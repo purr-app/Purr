@@ -1,4 +1,3 @@
-use aes_gcm::aead::{rand_core::RngCore, OsRng};
 use serde::{Deserialize, Deserializer};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -205,7 +204,9 @@ pub fn inject(
         return vec![];
     }
     let mut bytes = [0u8; 24];
-    OsRng.fill_bytes(&mut bytes);
+    if getrandom::fill(&mut bytes).is_err() {
+        return vec![];
+    }
     // Ensure IDs are non-zero even in the astronomically unlikely zero draw.
     if bytes[..16].iter().all(|v| *v == 0) {
         bytes[0] = 1;
