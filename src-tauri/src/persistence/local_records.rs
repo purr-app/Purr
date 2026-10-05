@@ -783,7 +783,7 @@ impl LocalStateStore {
     ) -> Result<Option<Value>, String> {
         let row = self.db.query_row(
             "SELECT id,CASE WHEN length(payload)<=1048576 THEN payload ELSE NULL END FROM request_executions WHERE workspace_id=?1 AND document_id=?2 AND started_at=?3 LIMIT 1",
-            params![workspace, document, started_at], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            params![workspace, document, i64::try_from(started_at).map_err(|_| "Execution timestamp exceeds SQLite integer range")?], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
         ).optional().map_err(db_error)?;
         row.map(|(id, payload)| {
             let payload = payload.ok_or("Execution metadata exceeds trace lookup limit")?;

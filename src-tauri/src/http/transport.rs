@@ -1040,7 +1040,7 @@ mod tests {
         cancel.send(true).unwrap();
         assert_eq!(task.await.unwrap().unwrap_err(), "Request cancelled.");
         let database = rusqlite::Connection::open(path).unwrap();
-        let rows: u64 = database
+        let rows: i64 = database
             .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {
                 row.get(0)
             })
@@ -1121,7 +1121,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "Response exceeds the 128 MiB capture limit.");
         let database = rusqlite::Connection::open(path).unwrap();
-        let rows: u64 = database
+        let rows: i64 = database
             .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {
                 row.get(0)
             })

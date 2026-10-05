@@ -14,7 +14,7 @@ use aes_gcm::aead::rand_core::{OsRng, RngCore};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use regex::bytes::RegexBuilder;
 use regex_syntax::Parser as RegexParser;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::{
     io::Write,
     path::Path,
@@ -152,7 +152,7 @@ impl ResponseContentStore {
             .query_row(
                 "SELECT state,byte_length FROM response_contents WHERE id=?1",
                 [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, nonnegative_u64(row, 1)?)),
             )
             .optional()
             .map_err(|_| "Cannot inspect response content")?
@@ -172,7 +172,7 @@ impl ResponseContentStore {
                 .query_row(
                     "SELECT COALESCE(SUM(byte_length),0) FROM response_contents",
                     [],
-                    |row| row.get(0),
+                    |row| nonnegative_u64(row, 0),
                 )
                 .map_err(|_| "Cannot inspect response quota")?;
             if retained
@@ -182,7 +182,7 @@ impl ResponseContentStore {
                 return Err("Response storage quota is exceeded".into());
             }
         }
-        let first_index: u64 = self.db.query_row("SELECT COALESCE(MAX(chunk_index)+1,0) FROM response_content_chunks WHERE content_id=?1", [id], |row| row.get(0)).map_err(|_| "Cannot inspect response content")?;
+        let first_index: u64 = self.db.query_row("SELECT COALESCE(MAX(chunk_index)+1,0) FROM response_content_chunks WHERE content_id=?1", [id], |row| nonnegative_u64(row, 0)).map_err(|_| "Cannot inspect response content")?;
         let transaction = self
             .db
             .transaction()
@@ -195,14 +195,14 @@ impl ResponseContentStore {
             encryption += encryption_started.elapsed();
             transaction.execute(
                 "INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![id, index, offset, chunk.len() as u64, sealed.version, sealed.nonce.as_slice(), sealed.ciphertext],
+                params![id, sqlite_i64(index)?, sqlite_i64(offset)?, chunk.len() as i64, sealed.version, sealed.nonce.as_slice(), sealed.ciphertext],
             ).map_err(|_| "Cannot write response content")?;
             offset += chunk.len() as u64;
         }
         transaction
             .execute(
                 "UPDATE response_contents SET byte_length=?2 WHERE id=?1 AND state='staging'",
-                params![id, offset],
+                params![id, sqlite_i64(offset)?],
             )
             .map_err(|_| "Cannot update response content")?;
         transaction
@@ -366,11 +366,11 @@ impl ResponseContentStore {
             "SELECT chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext FROM response_content_chunks WHERE content_id=?1 AND plain_offset < ?3 AND plain_offset + plain_length > ?2 ORDER BY chunk_index",
         ).map_err(|_| "Cannot read response content")?;
         let chunks = statement
-            .query_map(params![id, offset, end], |row| {
+            .query_map(params![id, sqlite_i64(offset)?, sqlite_i64(end)?], |row| {
                 Ok((
-                    row.get::<_, u64>(0)?,
-                    row.get::<_, u64>(1)?,
-                    row.get::<_, u64>(2)?,
+                    nonnegative_u64(row, 0)?,
+                    nonnegative_u64(row, 1)?,
+                    nonnegative_u64(row, 2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, Vec<u8>>(4)?,
                     row.get::<_, Vec<u8>>(5)?,
@@ -872,7 +872,7 @@ impl ResponseContentStore {
                     let state: String = row.get(3)?;
                     Ok(ResponseContentRef {
                         id: id.into(),
-                        byte_length: row.get(0)?,
+                        byte_length: nonnegative_u64(row, 0)?,
                         media_type: row.get(1)?,
                         charset: row.get(2)?,
                         line_count: None,
@@ -885,6 +885,15 @@ impl ResponseContentStore {
             .map_err(|_| "Cannot inspect response content")?
             .ok_or_else(|| "Response content does not exist".into())
     }
+}
+
+fn nonnegative_u64(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+}
+
+fn sqlite_i64(value: u64) -> Result<i64, String> {
+    i64::try_from(value).map_err(|_| "Response content exceeds SQLite integer range".into())
 }
 
 fn now_seconds() -> i64 {
