@@ -4,7 +4,7 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
-use sha2_hkdf::Sha256;
+use sha2::Sha256;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
