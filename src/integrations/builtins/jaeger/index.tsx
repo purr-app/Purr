@@ -1,6 +1,6 @@
 import { defineExtensionModule, type IntegrationSettingsProps } from "../../../extension-api";
 import { IntegrationConnectionSettings } from "../../../extension-api/ui";
-import icon from "./jaeger-logo.svg";
+const icon = new URL("./jaeger-logo.svg", import.meta.url).href;
 
 function JaegerSettings(props: IntegrationSettingsProps) {
   return <IntegrationConnectionSettings {...props} />;

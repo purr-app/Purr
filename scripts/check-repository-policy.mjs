@@ -26,6 +26,10 @@ if (Object.hasOwn(tauriConfig.bundle?.macOS ?? {}, "signingIdentity")) {
   failures.push("Public Tauri configuration must not contain bundle.macOS.signingIdentity.");
 }
 
+if (tauriConfig.plugins?.updater || tauriConfig.bundle?.createUpdaterArtifacts) {
+  failures.push("Public builds must not configure a distribution updater or require signing keys.");
+}
+
 for (const entry of Object.values(packageLock.packages ?? {})) {
   if (!entry?.resolved) continue;
   const resolved = new URL(entry.resolved);

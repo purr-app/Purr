@@ -62,13 +62,13 @@ test("documents, workspace selection, environments and independent layouts survi
   const separator = page.getByRole("separator", { name: "Resize Request editor and Response viewer" });
   await separator.focus(); await page.keyboard.press("ArrowRight");
   await expect(separator).toHaveAttribute("aria-valuenow", "54");
-  await page.getByRole("button", { name: "Hide sidebar" }).click();
+  await page.getByRole("navigation", { name: "Workspace activities" }).getByRole("button", { name: "Documents", exact: true }).click();
   await saved(page);
   await page.reload();
   await expect(tabs(page)).toHaveCount(2);
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://example.com/draft");
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("Local");
-  await expect(page.getByRole("button", { name: "Show sidebar" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace activities" }).getByRole("button", { name: "Documents", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect(separator).toHaveAttribute("aria-valuenow", "54");
   await page.getByRole("button", { name: "Select workspace" }).click();
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
@@ -79,7 +79,7 @@ test("documents, workspace selection, environments and independent layouts survi
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("");
   await expect(page.getByRole("button", { name: "Canvas view" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("No environment");
-  await expect(page.getByRole("button", { name: "Hide sidebar" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace activities" }).getByRole("button", { name: "Documents", exact: true })).toHaveAttribute("aria-expanded", "true");
   await saved(page); await page.reload();
   await expect(page.getByRole("button", { name: "Select workspace" })).toContainText("Acme Backend");
   await page.getByRole("button", { name: "Select workspace" }).click();
@@ -809,7 +809,7 @@ test("environment templates reach native request URL, auth, headers and JSON whi
   await page.keyboard.press(`${mod}+Enter`);
   const error = page.getByRole("region", { name: "Request error" });
   await expect(error.getByRole("tab", { name: "Error", exact: true })).toBeVisible();
-  await expect(error.getByRole("alert")).toContainText('Environment variable “base” is not defined');
+  await expect(error.getByRole("alert")).toContainText('Variable “base” is not defined');
   await expect(error.getByRole("tab")).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).__requests.length)).toBe(0);
 });
@@ -880,4 +880,23 @@ test("damaged workspace data is reported without overwriting the original", asyn
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Retry loading workspaces" })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("purr.workspaces.v1"))).toBe("broken-json");
+});
+
+test("switching workspaces clears variable details and unfinished definitions", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("only_personal");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "New workspace", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New empty", exact: true }).click();
+  await page.getByLabel("Workspace name", { exact: true }).fill("Other workspace");
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Personal", exact: true }).click();
+  await page.getByRole("tab", { name: "Variables", exact: true }).click();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveCount(0);
 });

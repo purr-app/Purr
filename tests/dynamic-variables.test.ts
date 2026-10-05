@@ -122,3 +122,80 @@ test("refresh policies distinguish every-time, session and expiring cache", asyn
   cachedFirst.cache["cache:local"].resolvedAt = new Date(0).toISOString(); await run(cached, cachedFirst.cache); assert.equal(calls, 2);
 
 });
+
+test("dependency diagnostics retain HTTP errors when extraction succeeds and do not record cache hits", async () => {
+  const root = document("root", "Root", "https://example.test/{{value}}"), source = document("source", "Error source", "https://example.test/source");
+  const records: import("../src/features/workspaces/services/dynamic-variable-resolver").DynamicExecutionRecord[] = [];
+  const variable = dynamic("v", "value", source.id, "$.error.meta", "session");
+  const sessionCache = new Map();
+  const options = { root, environmentId: null, documents: [source], variablesForEnvironment: async () => [variable], persistentCache: {}, sessionCache,
+    execute: async () => ({ ...result(source, { error: { meta: false } }), status: 401 }),
+    onExecuted: async (record: typeof records[number]) => { records.push(record); return "history-1"; } };
+  const first = await resolveDynamicVariables(options);
+  assert.equal(first.values.value, "false");
+  assert.equal(first.steps[0].status, 401);
+  assert.equal(first.steps[0].state, "resolved");
+  assert.equal(first.steps[0].historyEntryId, "history-1");
+  assert.equal(records[0].outcome, "response");
+  assert.equal(records[0].dynamicExecution.extraction?.status, "success");
+  const cached = await resolveDynamicVariables(options);
+  assert.equal(cached.steps[0].state, "cached");
+  assert.equal(records.length, 1);
+});
+
+test("failed extraction records its response before releasing native content", async () => {
+  const root = document("root", "Root", "https://example.test/{{value}}"), source = document("source", "Source", "https://example.test/source");
+  const events: string[] = [];
+  const inline = result(source, {});
+  const response: HttpExchange = { protocolVersion: 2, request: inline.timeline.request, response: { url: source.request.url, status: 403, statusText: "Forbidden", headers: [], byteLength: 2, durationMs: 1 },
+    content: { id: "body", byteLength: 2, mediaType: "application/json", charset: "utf-8", complete: true }, timeline: inline.timeline };
+  await assert.rejects(resolveDynamicVariables({ root, environmentId: null, documents: [source], variablesForEnvironment: async () => [dynamic("v", "value", source.id)], persistentCache: {}, sessionCache: new Map(),
+    execute: async () => response,
+    responseContent: { query: async () => { throw new Error("The query did not match any response value."); }, release: async () => { events.push("release"); } } as unknown as ResponseContentPort,
+    onExecuted: async (record) => { events.push("adopt"); assert.equal(record.response, response); assert.equal(record.outcome, "response"); assert.equal(record.dynamicExecution.extraction?.status, "error"); return "history-failed"; },
+  }), (error: unknown) => {
+    const failure = error as import("../src/features/workspaces/services/dynamic-variable-resolver").DynamicVariableResolutionError;
+    assert.equal(failure.steps[0].historyEntryId, "history-failed");
+    assert.equal(failure.steps[0].state, "failed");
+    assert.equal(failure.steps[0].status, 403);
+    return true;
+  });
+  assert.deepEqual(events, ["adopt", "release"]);
+});
+
+test("only dispatched transport failures are recorded; history failures do not change resolution", async () => {
+  const root = document("root", "Root", "https://example.test/{{value}}"), source = document("source", "Source", "https://example.test/source");
+  let records = 0;
+  const options = { root, environmentId: null, documents: [source], variablesForEnvironment: async () => [dynamic("v", "value", source.id)], persistentCache: {}, sessionCache: new Map(), onExecuted: async () => { records++; return "failure"; } };
+  await assert.rejects(resolveDynamicVariables({ ...options, execute: async () => { throw new Error("Invalid auth"); } }), /Invalid auth/);
+  assert.equal(records, 0);
+  await assert.rejects(resolveDynamicVariables({ ...options, execute: async (_doc, _values, _env, execution) => { execution.onDispatch(); throw new Error("Offline"); } }), /Offline/);
+  assert.equal(records, 1);
+  let historyErrors = 0;
+  const resolved = await resolveDynamicVariables({ ...options, execute: async () => result(source, { value: "ok" }), onExecuted: async () => { throw new Error("Disk full"); }, onHistoryError: () => { historyErrors++; } });
+  assert.equal(resolved.values.value, "ok");
+  assert.equal(historyErrors, 1);
+});
+
+test("the same document in another environment is not a dependency cycle", async () => {
+  const root = document("request", "Cross environment", "https://example.test/{{value}}");
+  const fromProduction = { ...dynamic("v", "value", root.id), environment: { type: "specific" as const, environmentId: "production" } };
+  const staticValue: Variable = { id: "static", name: "value", enabled: true, sensitive: false, kind: "static", value: "production-value" };
+  const variablesForEnvironment = async (id: string | null) => id === "production" ? [staticValue] : [fromProduction];
+  const resolved = await resolveDynamicVariables({ root, environmentId: "dev", documents: [root], variablesForEnvironment, persistentCache: {}, sessionCache: new Map(), execute: async (_document, values, environment) => {
+    assert.equal(environment, "production"); assert.equal(values.value, "production-value"); return result(root, { value: "resolved" });
+  } });
+  assert.equal(resolved.values.value, "resolved");
+  assert.equal(resolved.steps.length, 1);
+});
+
+test("cancelling a dependency records only its dispatched attempt", async () => {
+  const root = document("root", "Root", "https://example.test/{{value}}"), source = document("source", "Source", "https://example.test/source");
+  const abort = new AbortController();
+  const records: string[] = [];
+  await assert.rejects(resolveDynamicVariables({ root, environmentId: null, documents: [source], variablesForEnvironment: async () => [dynamic("v", "value", source.id)], persistentCache: {}, sessionCache: new Map(), signal: abort.signal,
+    execute: async (_doc, _values, _env, execution) => { execution.onDispatch(); abort.abort(); throw new Error("Request canceled."); },
+    onExecuted: async (record) => { records.push(record.outcome); return "cancelled"; },
+  }), /canceled/);
+  assert.deepEqual(records, ["cancelled"]);
+});

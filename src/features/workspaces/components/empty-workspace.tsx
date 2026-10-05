@@ -4,6 +4,7 @@ import type { RefObject } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
 import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
+const purrLogo = new URL("../../../assets/purr.svg", import.meta.url).href;
 
 export function EmptyWorkspace({ onNew, onPasteCurl, onPasteCommand, pasteTargetRef }: {
   onNew: () => void;
@@ -25,7 +26,7 @@ export function EmptyWorkspace({ onNew, onPasteCurl, onPasteCommand, pasteTarget
         onPasteCommand(command);
       }}
     />
-    <img src="/purr.svg" alt="Purr" className="size-ui-16 rounded-ui-xl shadow-panel" />
+    <img src={purrLogo} alt="Purr" className="size-ui-16 rounded-ui-xl shadow-panel" />
     <h1 className="mb-ui-0 mt-ui-5 text-ui-xl font-semibold text-content-primary">Nothing is open</h1>
     <p className="mb-ui-0 mt-ui-1 text-ui-md text-content-tertiary">Open a document from the sidebar or start a new request.</p>
     <div className="mt-ui-5 flex flex-wrap items-center justify-center gap-ui-2">

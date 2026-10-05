@@ -16,6 +16,7 @@ import {
   type Ref,
 } from "react";
 
+import { TemplateInput } from "../../../shared/components/ui/template-input";
 import { cn } from "../../../shared/lib/cn";
 import {
   Popover,
@@ -497,6 +498,7 @@ function KeyValueRow({
         </span>
       ) : null}
       <EntryKeyField
+        variableActions={variableActions}
         readOnly={entry.readOnly || entry.keyReadOnly}
         value={entry.key}
         muted={!entry.enabled}
@@ -673,6 +675,7 @@ function EntryKeyField({
   onSelect,
   onCommit,
   readOnly,
+  variableActions,
 }: {
   value: string;
   muted: boolean;
@@ -686,6 +689,7 @@ function EntryKeyField({
   onSelect: (value: string) => void;
   onCommit: () => void;
   readOnly?: boolean;
+  variableActions?: TemplateVariableActions;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -698,7 +702,7 @@ function EntryKeyField({
       .slice(0, 8);
   }, [suggestions, value]);
   const showSuggestions =
-    !readOnly &&
+    !readOnly && !value.includes("{{") &&
     isOpen &&
     !invalid &&
     value.trim().length > 0 &&
@@ -717,6 +721,7 @@ function EntryKeyField({
       <PopoverAnchor asChild>
         <div className="min-w-0 flex-1">
           <KeyValueField
+            variableActions={variableActions}
             readOnly={readOnly}
             label={placeholder}
             className={cn("w-full", value && textClassName)}
@@ -839,6 +844,29 @@ function KeyValueField({
   variableActions,
 }: KeyValueFieldProps) {
   const [revealed, setRevealed] = useState(false);
+  const secretInput = (bindings?: Parameters<Parameters<typeof TemplateVariablePopover>[0]["children"]>[0]) => <TemplateInput
+          className={cn(
+            "h-full min-w-0 flex-1 bg-transparent px-ui-1 text-ui-md font-normal text-content-secondary outline-none disabled:cursor-not-allowed disabled:opacity-ui-visible",
+            font === "code" ? "font-code" : "font-ui",
+          )}
+          type={revealed ? "text" : "password"}
+          maskLiterals={!revealed}
+          disabled={readOnly}
+          aria-readonly={readOnly || undefined}
+          aria-label={label}
+          ref={bindings?.ref ?? inputRef}
+          value={value}
+          placeholder={placeholder}
+          spellCheck="false"
+          aria-invalid={invalid || undefined}
+          title={invalid ? validationMessage : undefined}
+          onChange={bindings?.onChange ?? ((event) => onChange(event.target.value))}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          onClick={bindings?.onClick}
+          onKeyUp={bindings?.onKeyUp}
+          onKeyDown={(event) => { bindings?.onKeyDown(event); if (!event.defaultPrevented) onKeyDown?.(event); }}
+        />;
   if (secret)
     return (
       <div
@@ -849,26 +877,7 @@ function KeyValueField({
           invalid && "border-method-delete",
         )}
       >
-        <input
-          className={cn(
-            "h-full min-w-0 flex-1 bg-transparent px-ui-1 text-ui-md font-normal text-content-secondary outline-none disabled:cursor-not-allowed disabled:opacity-ui-visible",
-            font === "code" ? "font-code" : "font-ui",
-          )}
-          type={revealed ? "text" : "password"}
-          disabled={readOnly}
-          aria-readonly={readOnly || undefined}
-          aria-label={label}
-          ref={inputRef}
-          value={value}
-          placeholder={placeholder}
-          spellCheck="false"
-          aria-invalid={invalid || undefined}
-          title={invalid ? validationMessage : undefined}
-          onChange={(event) => onChange(event.target.value)}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          onKeyDown={onKeyDown}
-        />
+        {variableActions ? <TemplateVariablePopover value={value} onValueChange={onChange} actions={variableActions} inputRef={inputRef}>{secretInput}</TemplateVariablePopover> : secretInput()}
         <button
           className="ui-focus-ring flex size-control-xs shrink-0 items-center justify-center rounded-ui-md text-content-tertiary hover:bg-purr-highlight hover:text-content-primary"
           type="button"
@@ -885,7 +894,7 @@ function KeyValueField({
       </div>
     );
 
-  const input = (bindings?: Parameters<Parameters<typeof TemplateVariablePopover>[0]["children"]>[0]) => <input
+  const input = (bindings?: Parameters<Parameters<typeof TemplateVariablePopover>[0]["children"]>[0]) => <TemplateInput
       className={cn(
         "h-control-md min-w-0 rounded-ui-md border border-transparent bg-transparent px-ui-2 text-ui-md font-normal text-content-primary outline-none transition-colors duration-ui-fast placeholder:text-content-tertiary focus:border-action-brand focus:bg-purr-surface disabled:cursor-not-allowed disabled:border-transparent disabled:bg-purr-surface disabled:text-content-secondary disabled:opacity-ui-visible",
         font === "code" ? "font-code" : "font-ui",

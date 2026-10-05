@@ -8,18 +8,21 @@ import type { HttpTransportProgress } from "../../../application/ports/http";
 
 const responseLabels = ["Response", "Headers", "Cookie", "Timeline", "Trace", "Request"] as const;
 
-function ResponseStateShell({ label, children, pending = false }: { label: string; children: ReactNode; pending?: boolean }) {
+function ResponseStateShell({ label, children, pending = false, headerAction }: { label: string; children: ReactNode; pending?: boolean; headerAction?: ReactNode }) {
   return <section aria-label={label} className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel">
-    <div className="flex min-h-control-lg shrink-0 items-center gap-ui-1 bg-purr-elevated p-ui-2" role="tablist" aria-label="Response details">
+    <div className="flex min-h-control-lg shrink-0 items-center justify-between gap-ui-2 bg-purr-elevated p-ui-2">
+      <div className="flex min-w-0 items-center gap-ui-1" role="tablist" aria-label="Response details">
       {pending ? responseLabels.map((item) => <Button key={item} type="button" role="tab" size="sm" variant="ghost" weight="normal" disabled aria-selected="false">{item}</Button>)
         : <Button type="button" role="tab" size="sm" variant="ghost" weight="normal" className="bg-purr-highlight text-accent-red" aria-selected="true">Error</Button>}
+      </div>
+      {headerAction}
     </div>
     <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
   </section>;
 }
 
-export function ErrorResponse({ message }: { message: string }) {
-  return <ResponseStateShell label="Request error">
+export function ErrorResponse({ message, headerAction }: { message: string; headerAction?: ReactNode }) {
+  return <ResponseStateShell label="Request error" headerAction={headerAction}>
     <div role="tabpanel" className="flex h-full min-h-0 items-start bg-purr-codefield p-ui-4">
       <div role="alert" className="flex min-w-0 items-start gap-ui-2 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-3">
         <CircleAlert className="mt-ui-1 size-ui-4 shrink-0 text-accent-red" aria-hidden="true" />

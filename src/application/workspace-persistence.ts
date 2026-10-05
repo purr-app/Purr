@@ -7,6 +7,8 @@ import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, ser
 import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, restoreGlobalVariables, restoreWorkspace } from "./project-projection";
 import { CachedSecureStore } from "../storage/secrets";
 import type { Variable } from "../features/workspaces/model/workspace";
+import { RequestHistory } from "./request-history";
+import { legacyHistoryEntry } from "./history-legacy";
 
 // Requests and request-adjacent documents share one canonical directory. The
 // previous requests/ and graphql/ locations remain readable so existing
@@ -41,7 +43,13 @@ export class WorkspacePersistence {
   private deleted = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
-  constructor(readonly backend: PersistencePort, secure: SecureStore) { this.secure = new CachedSecureStore(secure); }
+  readonly history: RequestHistory | null;
+  constructor(readonly backend: PersistencePort, secure: SecureStore) {
+    this.secure = new CachedSecureStore(secure);
+    this.history = backend.history ? new RequestHistory(backend.history, this.secure, (work) => {
+      const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+    }) : null;
+  }
   private attachmentLoader(id: string) {
     return this.backend.readAttachment
       ? (attachmentId: string) => this.backend.readAttachment!(id, attachmentId)
@@ -125,7 +133,11 @@ export class WorkspacePersistence {
   async load(): Promise<WorkspaceStore> {
     this.secure.clear();
     const stored = await this.backend.load(); const workspaces: Workspace[] = [];
-    for (const snapshot of stored.workspaces) {
+    for (const originalSnapshot of stored.workspaces) {
+      // Retention runs before restoring last responses, so an expired body does
+      // not return through the workspace session after a restart.
+      if (this.backend.history) await this.backend.history.prune(originalSnapshot.id);
+      const snapshot = this.backend.history ? { ...originalSnapshot, local: await this.backend.readLocal(originalSnapshot.id) } : originalSnapshot;
       if (!snapshot.files["purr.yaml"] && !Object.keys(snapshot.files).length && !snapshot.local.length) continue;
       const project = this.readProject(snapshot);
       const local = migrateWorkspaceAuthRuntime(snapshot.local, snapshot.id);
@@ -181,8 +193,17 @@ export class WorkspacePersistence {
   }
   private async persist(workspace: Workspace, legacySource?: string) {
     if (this.deleted.has(workspace.id)) return;
-    const { project, local, assets } = await projectWorkspace(workspace, this.secure); validateProject(project);
-    if (legacySource) local.push({ table: "workspace_local_state", id: "legacy-source", value: legacySource });
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, this.secure); validateProject(project);
+    const local = this.backend.history ? projectedLocal.filter((record) => record.table !== "request_executions") : projectedLocal;
+    if (legacySource) {
+      // Preserve executions from the one-time monolithic workspace migration.
+      // No historical editor snapshot existed in that storage format.
+      if (this.backend.history) for (const record of projectedLocal) if (record.table === "request_executions") {
+        const entry = legacyHistoryEntry(record.id, record.value);
+        if (entry) await this.backend.history.append(workspace.id, entry);
+      }
+      local.push({ table: "workspace_local_state", id: "legacy-source", value: legacySource });
+    }
     const snapshot = this.snapshots.get(workspace.id) ?? { id: workspace.id, files: {}, local: [] };
     const previousProject = this.projects.get(workspace.id); const paths = new Map(this.paths.get(workspace.id) ?? []);
     const sdlPaths = this.sdlPaths.get(workspace.id) ?? new Map<string, string>();
@@ -229,8 +250,15 @@ export class WorkspacePersistence {
     }
     const oldLocal = new Map(snapshot.local.map((record) => [key(record), record])); const nextLocal = new Map(local.map((record) => [key(record), record]));
     for (const record of snapshot.local) if ((record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source") && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
+    // An in-flight request can outlive its source document. Its lazy native
+    // upload files must survive until the completed history entry adopts them.
+    if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local)
+      if (record.table === "attachments" && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
     const localChanges: LocalChange[] = [];
     for (const id of new Set([...oldLocal.keys(), ...nextLocal.keys()])) {
+      // Execution writes/deletes belong exclusively to the append-only history
+      // service. A stale lastResponse must never resurrect an expired entry.
+      if (this.backend.history && id.startsWith("request_executions/")) continue;
       const next = nextLocal.get(id); const previous = oldLocal.get(id);
       if (next?.table === "attachments" || previous?.table === "attachments") {
         if (!next || !previous) localChanges.push(next ?? { ...previous!, value: null });

@@ -105,8 +105,8 @@ impl RuntimeStorage {
             .app_data_dir()
             .map_err(|_| "Cannot locate application storage")?;
         fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
-        let local =
-            LocalStateStore::open(&data.join("local-state.sqlite3"), &PlatformRootKeyStore)?;
+        let root_keys = PlatformRootKeyStore::new(&data);
+        let local = LocalStateStore::open(&data.join("local-state.sqlite3"), &root_keys)?;
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);
@@ -206,7 +206,8 @@ impl RuntimeStorage {
                 .unwrap_or_else(|| self.projects.join(id)),
         })
     }
-    fn workspace(&self, id: &str) -> Result<Value, String> {
+    fn workspace(&mut self, id: &str) -> Result<Value, String> {
+        self.local.prune_history(id)?;
         Ok(json!({ "id": id, "files": self.files(id)?.load()?, "local": self.local.read(id)? }))
     }
 }
@@ -515,6 +516,18 @@ pub fn attach_project_directory(
         // Registration follows successful frontend validation via a separate commit.
         storage.watch(&id, path)?;
         storage.workspace(&id)
+    })
+}
+
+pub fn request_history(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    id: String,
+    action: Value,
+) -> Result<Value, String> {
+    valid_id(&id)?;
+    access(&app, &state, |storage| {
+        storage.local.request_history(&id, action)
     })
 }
 

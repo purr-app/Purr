@@ -1,3 +1,6 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
 @font-face {
   font-family: "Space Grotesk";
   src: url("../assets/fonts/space-grotesk-400.ttf") format("truetype");
@@ -53,10 +56,6 @@
   font-style: normal;
   font-display: swap;
 }
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
 
 @layer base {
 
@@ -187,8 +186,9 @@
     --workspace-sidebar-min-width: 12rem;
     --workspace-sidebar-max-width: 28rem;
     --workspace-titlebar-height: 2.5rem;
-    --workspace-traffic-lights-width: 4.25rem;
+    --workspace-traffic-lights-width: 4rem;
     --workspace-menu-width: 14rem;
+    --history-popover-width: 18rem;
     --context-menu-width: 12rem;
     --document-tab-max-width: 14rem;
     --schema-registry-width: 16.5rem;
@@ -202,6 +202,7 @@
     --document-tab-drag-threshold: 0.25rem;
     --dialog-width: 44rem;
     --name-dialog-width: 26rem;
+    --notification-width: 26rem;
   --variable-list-max-height: 20rem;
   --variables-navigation-width: 13rem;
   --variables-detail-width: 30rem;
@@ -365,11 +366,6 @@
     min-height: 100%;
   }
 
-  .ui-response-context-lines .cm-line:hover {
-    background-color: var(--purr-highlight);
-    border-radius: var(--radius-md);
-  }
-
   .ui-drop-indicator {
     box-shadow: inset 0 calc(var(--border-width-emphasis) * -1) 0
       var(--action-emerald);
@@ -491,10 +487,29 @@
   }
 }
 
+/* CodeMirror's unlayered line styles need an unlayered hover override. */
+.ui-response-context-lines .cm-line:hover {
+  background-color: var(--purr-highlight);
+  border-radius: var(--radius-md);
+}
+
 @layer components {
   .ui-native-response { font-size: var(--font-size-code); line-height: var(--line-height-code); }
   .ui-native-response-line { height: var(--line-height-code); }
   .ui-native-response-collapsed { width: 100%; }
   .ui-native-response-collapsed .ui-native-response-prefix { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .ui-native-response-gutter { width: calc(var(--code-line-number-width) + var(--control-height-xs)); padding-right: var(--space-2); }
+}
+
+@layer components {
+  .ui-notification-stack { width: min(var(--notification-width), calc(100vw - var(--space-8))); }
+  .ui-notification { animation: notification-slide var(--duration-layout) ease-out; }
+  .ui-notification-error { animation-name: notification-rise; }
+  .ui-release-markdown > * + * { margin-top: var(--space-3); }
+  .ui-release-markdown ul { list-style: disc; padding-left: var(--space-5); }
+  .ui-release-markdown ol { list-style: decimal; padding-left: var(--space-5); }
+  .ui-release-markdown h3 { color: var(--content-primary); font-weight: var(--font-weight-medium); }
+  @keyframes notification-slide { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  @keyframes notification-rise { from { transform: translateY(var(--space-4)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .ui-notification { animation: none; } }
 }

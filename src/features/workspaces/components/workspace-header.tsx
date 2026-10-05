@@ -1,5 +1,6 @@
-import { useState, useSyncExternalStore } from "react";
-import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, FileInput, FilePlus2, Globe2, Layers, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings2 } from "lucide-react";
+import { useUpdates } from "../../updates/update-context";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, FileInput, FilePlus2, Globe2, Layers, Plus, Search, Settings2 } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
 import { keyboardShortcuts } from "../../../shared/config/keyboard-shortcuts";
@@ -13,7 +14,7 @@ import { useApplicationServices } from "../../../app/application-services-contex
 const menuClass = "mt-ui-2 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
 const rowClass = "w-full justify-start font-normal";
 
-export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, settingsActive, variablesActive, onCookies, onVariables, onWorkspace, onNewWorkspace, onImportWorkspace, onRequestSettings, onEnvironment, onEditEnvironment, onNewEnvironment, onToggleSidebar, onPalette, onView }: {
+export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, settingsActive, variablesActive, onCookies, onVariables, onWorkspace, onNewWorkspace, onImportWorkspace, onRequestSettings, onEnvironment, onEditEnvironment, onNewEnvironment, onPalette, onView }: {
   store: WorkspaceStore; workspace: Workspace;
   cookieJar: SessionCookieJar;
   cookiesActive: boolean;
@@ -23,9 +24,11 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   onVariables: () => void;
   onWorkspace: (id: string) => void; onNewWorkspace: () => void; onImportWorkspace: () => void; onRequestSettings: () => void;
   onEnvironment: (id: string | null) => void; onEditEnvironment: () => void; onNewEnvironment: () => void;
-  onToggleSidebar: () => void; onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
+  onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
 }) {
-  const { runtime } = useApplicationServices();
+  const updates = useUpdates();
+  const { runtime, lifecycle } = useApplicationServices();
+  const [fullscreen, setFullscreen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [newWorkspaceOptionsOpen, setNewWorkspaceOptionsOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
@@ -34,11 +37,18 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   const environment = workspace.environments.find((item) => item.id === workspace.activeEnvironmentId);
   const document = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
   const nativeMac = runtime.kind === "desktop" && runtime.os === "macos";
+  useEffect(() => {
+    if (!nativeMac || !lifecycle.observeFullscreen) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void lifecycle.observeFullscreen((value) => { if (!disposed) setFullscreen(value); }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => { /* Keep space for native controls if the window state is unavailable. */ });
+    return () => { disposed = true; unlisten?.(); };
+  }, [lifecycle, nativeMac]);
   return <header data-tauri-drag-region className="ui-workspace-header grid h-ui-titlebar shrink-0 items-center gap-ui-2 border-b border-border-subtle bg-purr-surface px-ui-2">
-    <div className={cn("flex min-w-0 items-center gap-ui-1", nativeMac && "pl-ui-traffic-lights")}>
-      <Button variant="ghost" size="icon" aria-label={workspace.ui.sidebarOpen ? "Hide sidebar" : "Show sidebar"} title="Toggle sidebar · Mod+B" onClick={onToggleSidebar}>
-        {workspace.ui.sidebarOpen ? <PanelLeftClose className="size-ui-3-5" /> : <PanelLeftOpen className="size-ui-3-5" />}
-      </Button>
+    <div className={cn("flex min-w-0 items-center gap-ui-1", nativeMac && !fullscreen && "pl-ui-traffic-lights")}>
       <Popover open={workspaceOpen} onOpenChange={(open) => { setWorkspaceOpen(open); if (!open) setNewWorkspaceOptionsOpen(false); }}>
         <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 shrink" aria-label="Select workspace"><Layers className="size-ui-3-5 shrink-0 text-action-brand" /><span className="truncate">{workspace.name}</span><ChevronDown className="size-ui-3 shrink-0" /></Button></PopoverTrigger>
         <PopoverContent align="start" className={menuClass} aria-label="Workspaces" onOpenAutoFocus={(event) => event.preventDefault()}>
@@ -54,7 +64,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
               <Check className={cn("size-ui-4 text-action-brand", item.id !== workspace.id && "invisible")} /><span className="max-w-ui-document-tab truncate">{item.name}</span>
             </Button>)}
           </div>
-          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
+          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); updates.leaveTab(); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
         </PopoverContent>
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />

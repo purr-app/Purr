@@ -15,7 +15,7 @@ for (const dependency of ["react", "react-dom"]) {
   if (packageJson.dependencies?.[dependency]) fail(`${dependency} must not be a runtime dependency`);
 }
 
-const supportedExports = new Set(["./app", "./extension-api", "./ui", "./test-kit", "./styles"]);
+const supportedExports = new Set(["./app", "./extension-api", "./ui", "./test-kit", "./styles", "./tauri-config", "./release-notes"]);
 for (const [name, target] of Object.entries(packageJson.exports ?? {})) {
   if (!supportedExports.has(name)) fail(`unexpected public export ${name}`);
   const paths = typeof target === "string" ? [target] : Object.values(target);

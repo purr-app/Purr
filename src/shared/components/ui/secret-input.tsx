@@ -2,26 +2,29 @@ import { Check, Copy, Eye, EyeOff, KeyRound } from "lucide-react";
 import { forwardRef, useEffect, useRef, useState } from "react";
 import { Button } from "./button";
 import { Input, type InputProps } from "./input";
+import { TemplateInput } from "./template-input";
 import { cn } from "../../lib/cn";
 
-export const SecretInput = forwardRef<HTMLInputElement, Omit<InputProps, "type">>(function SecretInput({ className, ...props }, ref) {
+export const SecretInput = forwardRef<HTMLInputElement, Omit<InputProps, "type"> & { templateVariables?: boolean }>(function SecretInput({ className, templateVariables = false, ...props }, ref) {
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
+  const Control = templateVariables ? TemplateInput : Input;
   const label = String(props["aria-label"] ?? "secret");
   return (
     <div className={cn("min-w-0", className)}>
-      <div className="flex h-control-lg min-w-0 items-center gap-ui-2 overflow-hidden rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-2 focus-within:border-action-brand">
+      <div data-secret-input-control className="flex h-control-lg min-w-0 items-center gap-ui-2 overflow-hidden rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-2 focus-within:border-action-brand">
         <KeyRound
           className="size-ui-3-5 shrink-0 text-content-tertiary"
           aria-hidden="true"
         />
-        <Input
+        <Control
           {...props}
           ref={ref}
           type={visible ? "text" : "password"}
+          {...(templateVariables ? { maskLiterals: !visible } : {})}
           autoComplete="off"
           spellCheck={false}
           autoCapitalize="none"

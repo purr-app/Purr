@@ -38,7 +38,7 @@ Workspace shared auth entries have `all`, `http`, or `graphql` scope. Multiple e
 - `{kind: "secret", ref: SecretRef}` by default;
 - bearer tokens may explicitly use `{kind: "plain", value}` when configured or when a templated value must remain shareable as a template.
 
-Passwords, API keys, OAuth client secrets, acquired access/refresh tokens, and ordinary literal bearer tokens use the secure path. Project YAML contains refs/definitions, not their values. The macOS Keychain owns one root key; encrypted SQLite `secret_values` owns individual ref values. See [Persistence architecture](persistence-architecture.md).
+Passwords, API keys, OAuth client secrets, acquired access/refresh tokens, and ordinary literal bearer tokens use the secure path. Project YAML contains refs/definitions, not their values. User-only application storage owns one root key; encrypted SQLite `secret_values` owns individual ref values. See [Persistence architecture](persistence-architecture.md).
 
 `prepareWireRequest` builds a real and a masked display request. Response → Request, Timeline, and Request Code default to the masked version. Copy can expose credentials only after an explicit Reveal action. Native error strings are sanitized and OAuth token response bodies are never included in user-facing errors.
 
@@ -92,6 +92,8 @@ Cross-site redirects request jar cookies with the restrictive `none` context use
 
 The JSON response context menu can create a sensitive static variable or a dynamic-request variable. It does not silently rewrite request auth. The user explicitly references the variable from bearer/API-key/OAuth fields, after which normal variable, secure-store, and redaction rules apply.
 
+Credential editors show `{{variable}}` references in orange italic text without revealing their resolved values. Bearer, Basic, API-key and OAuth configuration fields share autocomplete and Go to definition. Literal credential text remains masked, including literal portions mixed with templates, until Reveal is selected. Using a non-sensitive variable is allowed but displays a recommendation to use encrypted variable storage and a link to its definition. Acquired OAuth tokens are ordinary secrets, not editable template expressions.
+
 ## Invariants
 
 - Never equate masking with secure storage.
@@ -115,5 +117,5 @@ The JSON response context menu can create a sensitive static variable or a dynam
 - `src/storage/cookie-jar-store.ts` — cookie-specific local adapter.
 - `src/storage/secrets.ts` — credentials and protected runtime envelopes.
 - `src-tauri/src/oauth.rs` — native browser callback boundary.
-- `src-tauri/src/secure_store.rs` — Keychain root-key boundary.
+- `src-tauri/src/security/mod.rs` — local root-key and encryption boundary.
 - `src-tauri/src/local_state.rs` — encrypted local records and secret vault.

@@ -6,11 +6,8 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { useId } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
-import { FormField } from "../../../shared/components/ui/form-field";
-import { Input } from "../../../shared/components/ui/input";
 import { SecretInput } from "../../../shared/components/ui/secret-input";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import { cn } from "../../../shared/lib/cn";
@@ -20,35 +17,8 @@ import {
   type RequestAuth,
 } from "../model/request-auth";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
-import { TemplateVariablePopover, type TemplateVariableActions } from "./template-variable-popover";
-
-function OAuthVariableField({ label, value, placeholder, secret = false, secretVariablesOnly = false, variableActions, onChange }: {
-  label: string;
-  value: string;
-  placeholder?: string;
-  secret?: boolean;
-  secretVariablesOnly?: boolean;
-  variableActions?: TemplateVariableActions;
-  onChange: (value: string) => void;
-}) {
-  const id = useId();
-  if (!variableActions) return <FormField label={label} value={value} placeholder={placeholder} secret={secret} onChange={(event) => onChange(event.target.value)} />;
-  const actions = secretVariablesOnly
-    ? {
-        ...variableActions,
-        definitions: variableActions.definitions.filter((variable) => variable.sensitive),
-        onCreateMissingVariable: (name: string, kind: "static" | "dynamic-request") =>
-          variableActions.onCreateMissingVariable(name, kind, true),
-      }
-    : variableActions;
-  return <div className="min-w-0 space-y-ui-2">
-    <label htmlFor={id} className="block text-ui-xs font-medium text-content-secondary">{label}</label>
-    <TemplateVariablePopover value={value} onValueChange={onChange} actions={actions}>{(bindings) => secret
-      ? <SecretInput {...bindings} id={id} aria-label={label} value={value} placeholder={placeholder} className="font-code" />
-      : <Input {...bindings} id={id} aria-label={label} value={value} placeholder={placeholder} className="ui-focus-ring bg-purr-elevated font-code" autoComplete="off" spellCheck={false} />}
-    </TemplateVariablePopover>
-  </div>;
-}
+import type { TemplateVariableActions } from "./template-variable-popover";
+import { AuthVariableField as OAuthVariableField } from "./auth-variable-field";
 
 export function OAuthAuthForm({
   auth,

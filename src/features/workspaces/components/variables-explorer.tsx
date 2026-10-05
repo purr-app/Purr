@@ -1,3 +1,6 @@
+import { DynamicDependencyChain } from "./dynamic-dependency-chain";
+import { DynamicVariableResolutionError, type DynamicExecutionStep } from "../services/dynamic-variable-resolver";
+import type { WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { useEffect, useId, useRef, useState } from "react";
 import { Braces, Check, ChevronDown, Cloud, Copy, Eye, EyeOff, FileText, Globe2, LockKeyhole, Plus, RefreshCw, Save, Trash2, X, Zap } from "lucide-react";
 
@@ -58,8 +61,10 @@ function usedBy(variable: Variable, documents: readonly DynamicVariableRequest[]
   return documents.filter((document) => JSON.stringify(document.request).includes(`{{${variable.name}}}`));
 }
 
-export function VariablesExplorer({ workspace, globalVariables, scope, selectedId, draft, documents,
+export function VariablesExplorer({ requestConfig, onOpenHistory, workspace, globalVariables, scope, selectedId, draft, documents,
   onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
+  requestConfig?: WorkspaceRequestConfig;
+  onOpenHistory?: (id: string) => void;
   workspace: Workspace;
   globalVariables: Variable[];
   scope: VariableScope;
@@ -71,7 +76,7 @@ export function VariablesExplorer({ workspace, globalVariables, scope, selectedI
   onEnvironmentChange: (environment: Environment) => void;
   onDeleteEnvironment: (id: string) => void;
   onOpenRequest: (id: string) => void;
-  onResolveVariable: (variable: Variable) => Promise<void>;
+  onResolveVariable: (variable: Variable, onSteps?: (steps: DynamicExecutionStep[]) => void) => Promise<DynamicExecutionStep[] | undefined>;
   onScopeChange: (scope: VariableScope) => void;
   onSelectionChange: (id: string | null) => void;
   onDraftChange: (draft: Variable | null) => void;
@@ -189,7 +194,7 @@ export function VariablesExplorer({ workspace, globalVariables, scope, selectedI
 
       {showDetails ? <aside className="flex min-h-0 flex-col overflow-hidden border-l border-border-subtle bg-purr-base">
         {scope === "effective" ? <EffectiveDetails variable={selected} workspace={workspace} globalVariables={globalVariables} documents={documents} onDefinition={(variable) => selectScope(definitionScope(variable, workspace, globalVariables), variable.id)} onOpenRequest={onOpenRequest} />
-          : activeDraft ? <VariableDetails variable={activeDraft} persisted={persisted} scope={scope} workspace={workspace} globalVariables={globalVariables}
+          : activeDraft ? <VariableDetails key={activeDraft.id} requestConfig={requestConfig} onOpenHistory={onOpenHistory} onOpenVariable={(id) => selectScope("workspace", id)} variable={activeDraft} persisted={persisted} scope={scope} workspace={workspace} globalVariables={globalVariables}
             documents={documents} cached={cacheFor(activeDraft)} onChange={(variable) => onDraftChange(variable)} onToggle={(enabled) => persisted ? toggle(persisted, enabled) : onDraftChange({ ...activeDraft, enabled })}
             onSave={saveDraft} onCancel={cancelDraft} canSave={canSave} dirty={dirty} nameError={nameError} onDelete={() => persisted && (confirmDeleteId === persisted.id ? remove(persisted) : setConfirmDeleteId(persisted.id))}
             deletePending={confirmDeleteId === activeDraft.id} onOpenRequest={onOpenRequest} onResolve={onResolveVariable} />
@@ -344,12 +349,13 @@ function EffectiveDetails({ variable, workspace, globalVariables, documents, onD
   </div>;
 }
 
-function VariableDetails({ variable, persisted, scope, workspace, globalVariables, documents, cached, onChange, onToggle, onSave, onCancel, canSave, dirty, nameError, onDelete, deletePending, onOpenRequest, onResolve }: { variable: Variable; persisted?: Variable; scope: VariableScope; workspace: Workspace; globalVariables: readonly Variable[]; documents: readonly DynamicVariableRequest[]; cached?: Workspace["dynamicVariableCache"][string]; onChange: (variable: Variable) => void; onToggle: (enabled: boolean) => void; onSave: () => void; onCancel: () => void; canSave: boolean; dirty: boolean; nameError: string; onDelete: () => void; deletePending: boolean; onOpenRequest: (id: string) => void; onResolve: (variable: Variable) => Promise<void> }) {
+function VariableDetails({ requestConfig, onOpenHistory, onOpenVariable, variable, persisted, scope, workspace, globalVariables, documents, cached, onChange, onToggle, onSave, onCancel, canSave, dirty, nameError, onDelete, deletePending, onOpenRequest, onResolve }: { requestConfig?: WorkspaceRequestConfig; onOpenHistory?: (id: string) => void; onOpenVariable: (id: string) => void; variable: Variable; persisted?: Variable; scope: VariableScope; workspace: Workspace; globalVariables: readonly Variable[]; documents: readonly DynamicVariableRequest[]; cached?: Workspace["dynamicVariableCache"][string]; onChange: (variable: Variable) => void; onToggle: (enabled: boolean) => void; onSave: () => void; onCancel: () => void; canSave: boolean; dirty: boolean; nameError: string; onDelete: () => void; deletePending: boolean; onOpenRequest: (id: string) => void; onResolve: (variable: Variable, onSteps?: (steps: DynamicExecutionStep[]) => void) => Promise<DynamicExecutionStep[] | undefined> }) {
   const [revealed, setRevealed] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState("");
+  const [executionSteps, setExecutionSteps] = useState<DynamicExecutionStep[]>([]);
   const usages = usedBy(variable, documents);
-  const graph = variable.kind === "dynamic-request" ? inspectDynamicVariableGraph(variable, getEffectiveVariables(workspace, globalVariables), documents) : undefined;
+  const graph = variable.kind === "dynamic-request" ? inspectDynamicVariableGraph(variable, getEffectiveVariables(workspace, globalVariables), documents, requestConfig, workspace.activeEnvironmentId, (id) => getEffectiveVariables({ ...workspace, activeEnvironmentId: id }, globalVariables)) : undefined;
   const changeKind = (kind: "static" | "dynamic-request") => onChange(kind === "static" ? { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: variable.sensitive, kind: "static", value: "" } : { ...createDynamicVariable(variable.name), id: variable.id, enabled: variable.enabled, sensitive: variable.sensitive });
   const source = variable.kind === "dynamic-request" ? documents.find((document) => document.id === variable.documentId) : undefined;
   return <div className="flex h-full min-h-0 flex-col">
@@ -364,8 +370,8 @@ function VariableDetails({ variable, persisted, scope, workspace, globalVariable
         <section className="space-y-ui-2"><h3 className="m-ui-0 text-ui-sm font-medium">Source environment</h3><SelectField label="Dynamic variable source environment" size="lg" className="w-full" value={variable.environment.type === "current" ? "current" : variable.environment.environmentId} options={[{ value: "current", label: "Current environment" }, ...workspace.environments.map((environment) => ({ value: environment.id, label: environment.name }))]} onValueChange={(value) => onChange({ ...variable, environment: value === "current" ? { type: "current" } : { type: "specific", environmentId: value } })} /></section>
         <section aria-label="Invalidation strategy" className="space-y-ui-2"><h3 className="m-ui-0 text-ui-sm font-medium">Invalidation strategy</h3><SelectField label="Invalidation strategy" size="lg" className="w-full" value={variable.refresh} options={[{ value: "every-time", label: "Every time" }, { value: "session", label: "Once per session" }, { value: "cache", label: "Cache for…" }]} onValueChange={(refresh) => onChange({ ...variable, refresh, ...(refresh === "cache" ? { cacheTtlSeconds: variable.cacheTtlSeconds ?? 300 } : {}) })} />{variable.refresh === "cache" ? <FormField label="Cache duration (seconds)" type="number" min="1" value={String(variable.cacheTtlSeconds ?? 300)} onChange={(event) => onChange({ ...variable, cacheTtlSeconds: Math.max(1, Number(event.target.value) || 1) })} /> : null}</section>
         <SensitiveToggle checked={variable.sensitive} title="Treat as sensitive value" description="Mask the resolved value and store its cache in the encrypted local secret vault." onChange={(sensitive) => onChange({ ...variable, sensitive })} />
-        <ResolutionCard variable={variable} cached={cached} usages={usages} revealed={revealed} resolving={resolving} resolveError={resolveError} dirty={dirty} persisted={Boolean(persisted)} onReveal={() => setRevealed(!revealed)} onExecute={async () => { setResolving(true); setResolveError(""); try { await onResolve(variable); } catch (cause) { setResolveError(cause instanceof Error ? cause.message : String(cause)); } finally { setResolving(false); } }} />
-        <div className="rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-3"><p className="m-ui-0 text-ui-xs text-content-tertiary">Dependencies</p>{graph?.edges.length ? graph.edges.map((edge) => <p key={edge} className="mb-ui-0 mt-ui-1 break-words font-code text-ui-sm text-content-secondary">{edge}</p>) : <p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">No dependencies.</p>}{graph?.cycle ? <p role="alert" className="mb-ui-0 mt-ui-2 break-words font-code text-ui-xs text-accent-red">Cycle: {graph.cycle}</p> : null}</div>
+        <ResolutionCard variable={variable} cached={cached} usages={usages} revealed={revealed} resolving={resolving} resolveError={resolveError} dirty={dirty} persisted={Boolean(persisted)} onReveal={() => setRevealed(!revealed)} onExecute={async () => { setResolving(true); setResolveError(""); setExecutionSteps([]); try { setExecutionSteps(await onResolve(variable, setExecutionSteps) ?? []); } catch (cause) { if (cause instanceof DynamicVariableResolutionError) setExecutionSteps(cause.steps); setResolveError(cause instanceof Error ? cause.message : String(cause)); } finally { setResolving(false); } }} />
+        <DynamicDependencyChain steps={executionSteps.length && !dirty ? executionSteps : graph?.steps ?? []} onOpenHistory={onOpenHistory} onOpenRequest={onOpenRequest} onOpenVariable={onOpenVariable} />
         {usages.length ? <div><p className="text-ui-xs text-content-tertiary">Used by</p>{usages.map((document) => <Button key={document.id} variant="ghost" size="sm" className="w-full justify-start font-code" onClick={() => onOpenRequest(document.id)}>{document.name}</Button>)}</div> : null}
       </> : null}
     </div>
@@ -428,7 +434,7 @@ function ResolutionCard({ variable, cached, usages, revealed, resolving, resolve
   const value = cached?.status === "success" ? cached.value ?? "" : ""; const masked = variable.sensitive && !revealed;
   return <section className="rounded-ui-xl border border-border bg-purr-codefield p-ui-4"><div className="flex items-center justify-between gap-ui-3"><span className={cn("flex items-center gap-ui-2 font-code text-ui-sm", cached?.status === "error" ? "text-accent-red" : cached ? "text-status-success" : "text-content-tertiary")}><span className={cn("size-ui-2 rounded-full", cached?.status === "error" ? "bg-accent-red" : cached ? "bg-status-success" : "bg-content-quaternary")} />{cached ? `${cached.status === "success" ? "Resolved" : "Failed"} · ${relativeResolutionTime(cached.resolvedAt)}` : "Not resolved yet"}</span><Button variant="secondary" size="sm" disabled={resolving || dirty || !persisted} onClick={() => void onExecute()}><RefreshCw className={cn("size-ui-3", resolving && "animate-spin")} />{resolving ? "Executing…" : "Execute"}</Button></div>
     {cached?.status === "success" ? <div className="mt-ui-3 rounded-ui-lg bg-purr-elevated p-ui-3"><div className="flex items-center justify-between gap-ui-2"><p className="m-ui-0 font-code text-ui-xs text-content-tertiary">Resolved value ({new TextEncoder().encode(value).length} bytes)</p><div className="flex items-center gap-ui-1">{variable.sensitive ? <Button variant="ghost" size="icon" aria-label={revealed ? "Hide resolved value" : "Reveal resolved value"} onClick={onReveal}>{revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}</Button> : null}<Button variant="ghost" size="sm" disabled={masked} onClick={() => void navigator.clipboard.writeText(value)}><Copy className="size-ui-3" />Copy</Button></div></div><p className="mb-ui-0 mt-ui-2 break-all font-code text-ui-sm text-syntax-string">{masked ? "********" : value}</p><p className="mb-ui-0 mt-ui-1 font-code text-ui-xs text-content-tertiary">{Math.round(cached.durationMs)} ms · {cached.environmentId ?? "current environment"}</p></div> : null}
-    {cached?.status === "error" ? <p role="alert" className="mb-ui-0 mt-ui-3 break-words font-code text-ui-xs text-accent-red">{cached.error}</p> : null}{resolveError ? <p role="alert" className="mb-ui-0 mt-ui-3 text-ui-xs text-accent-red">{resolveError}</p> : null}
+    {cached?.status === "error" ? <p role="alert" className="mb-ui-0 mt-ui-3 break-words font-code text-ui-xs text-accent-red">{cached.error?.startsWith("Dynamic variable dependency cycle:") ? "Circular dependency. See the chain below." : cached.error}</p> : null}{resolveError ? <p role="alert" className="mb-ui-0 mt-ui-3 text-ui-xs text-accent-red">{resolveError.startsWith("Dynamic variable dependency cycle:") ? "Circular dependency. See the chain below." : resolveError}</p> : null}
     <div className="mt-ui-3 flex items-center justify-between border-t border-border-subtle pt-ui-3 text-ui-xs text-content-tertiary"><span>Referenced in {usages.length} active request{usages.length === 1 ? "" : "s"}</span><span className={cached?.status === "success" ? "text-status-success" : undefined}>{cached?.status === "success" ? "Ready" : "Awaiting execution"}</span></div>
   </section>;
 }

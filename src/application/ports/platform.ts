@@ -50,6 +50,9 @@ export interface WorkspaceShellPort {
 
 export type CloseRequest = { preventDefault(): void };
 export interface ApplicationLifecyclePort {
+  version?(): Promise<string>;
+  /** Reports the initial native fullscreen state and subsequent window changes. */
+  observeFullscreen?(listener: (fullscreen: boolean) => void): Promise<() => void>;
   onCloseRequested(
     listener: (request: CloseRequest) => void | Promise<void>,
   ): Promise<() => void>;

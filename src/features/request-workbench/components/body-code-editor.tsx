@@ -19,7 +19,7 @@ import {
   prettifyBodyCode,
   type CodeBodyLanguage,
 } from "../model/request-body";
-import { templateVariableCompletion, templateVariableHover } from "./template-variable-code-editor";
+import { templateVariableCompletion, templateVariableHover, templateVariableHighlighting } from "./template-variable-code-editor";
 import type { TemplateVariableActions } from "./template-variable-popover";
 
 type BodyCodeEditorProps = {
@@ -93,6 +93,7 @@ export const BodyCodeEditor = forwardRef<
           ? xml()
           : [],
       purrCodeHighlighting,
+      templateVariableHighlighting,
       purrFoldGutter,
       EditorView.lineWrapping,
       autocompletion(variableActions
@@ -103,7 +104,7 @@ export const BodyCodeEditor = forwardRef<
         (view) => getBodyDiagnostics(language, view.state.doc.toString()),
         { delay: 250 },
       ),
-      tooltips({ position: "fixed" }),
+      tooltips({ parent: document.body, position: "fixed" }),
       EditorView.contentAttributes.of({
         "aria-label": language.toUpperCase() + " request body",
         "aria-multiline": "true",

@@ -1,6 +1,7 @@
 import type { SecureStore } from "../application/ports/credentials";
 import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, StorageSnapshot, StoredWorkspace } from "../application/ports/persistence";
 import type { SecretRef } from "../domain/project";
+import { BrowserHistory } from "./browser-history";
 
 // Browser preview only; desktop always uses SQLite + the native secure store.
 const database = () => new Promise<IDBDatabase>((resolve, reject) => {
@@ -52,6 +53,25 @@ export class BrowserSecureStore implements SecureStore {
   async exists(ref: SecretRef) { return (await this.get(ref)) !== null; }
 }
 export class BrowserPersistenceBackend implements PersistencePort {
+  readonly history = new BrowserHistory({
+    read: async <T>(key: string) => {
+      const data = await read<Awaited<ReturnType<typeof seal>>>("app", key);
+      return data ? unseal<T>(data, key) : undefined;
+    },
+    write: async (changes) => writeMany(await Promise.all(changes.map(async ({ key, value }) => ({
+      store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
+    })))),
+    legacy: (id) => this.readRawLocal(id),
+    finishLegacy: async (id) => {
+      const local = await this.readRawLocal(id);
+      if (local.some((record) => record.table === "request_executions")) await writeMany([{ store: "local", key: id,
+        value: await seal(local.filter((record) => record.table !== "request_executions"), id) }]);
+    },
+    deleteSecrets: async (prefix) => {
+      const refs = (await keys("secrets")).filter((reference) => reference.startsWith(prefix));
+      if (refs.length) await writeMany(refs.map((key) => ({ store: "secrets", key })));
+    },
+  });
   async load(): Promise<StorageSnapshot> {
     const ids = await read<string[]>("app", "workspaces") ?? [];
     const raw = localStorage.getItem("purr.workspaces.v1"); let legacy: unknown;
@@ -61,9 +81,13 @@ export class BrowserPersistenceBackend implements PersistencePort {
     return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces: await Promise.all(ids.map((id) => this.loadWorkspace(id))), global: await this.readLocal("__global__"), legacy };
   }
   async loadWorkspace(id: string): Promise<StoredWorkspace> { return { id, files: await read<Record<string, ProjectFile>>("projects", id) ?? {}, local: await this.readLocal(id) }; }
-  async readLocal(id: string): Promise<LocalRecord[]> { const data = await read<Awaited<ReturnType<typeof seal>>>("local", id); return data ? unseal(data, id) : []; }
+  private async readRawLocal(id: string): Promise<LocalRecord[]> { const data = await read<Awaited<ReturnType<typeof seal>>>("local", id); return data ? unseal(data, id) : []; }
+  async readLocal(id: string): Promise<LocalRecord[]> {
+    const local = await this.readRawLocal(id);
+    return id === "__global__" ? local : [...local.filter((record) => record.table !== "request_executions"), ...await this.history.latestExecutions(id)];
+  }
   async commit(id: string, changes: FileChange[], local: LocalChange[]) {
-    const existing = await this.loadWorkspace(id); const files = { ...existing.files };
+    const existing = { files: await read<Record<string, ProjectFile>>("projects", id) ?? {}, local: await this.readRawLocal(id) }; const files = { ...existing.files };
     for (const change of changes) if ((files[change.path]?.revision ?? null) !== change.expectedRevision) throw new Error("Project changed externally. Reload before saving.");
     for (const change of changes) { if (change.content === null) delete files[change.path]; else files[change.path] = { content: change.content, revision: await contentRevision(change.content) }; }
     const records = new Map(existing.local.map((record) => [`${record.table}/${record.id}`, record]));
@@ -83,6 +107,7 @@ export class BrowserPersistenceBackend implements PersistencePort {
   async setActiveWorkspace(id: string) { await writeMany([{ store: "app", key: "active", value: id }]); }
   async writeGlobal(local: LocalChange[]) { await this.writeLocal("__global__", local); }
   async deleteWorkspace(id: string) {
+    await this.history.deleteWorkspace(id);
     const ids = (await read<string[]>("app", "workspaces") ?? []).filter((candidate) => candidate !== id);
     const prefix = `purr/${id}/`;
     const secrets = (await keys("secrets")).filter((reference) => reference.startsWith(prefix));

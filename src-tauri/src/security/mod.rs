@@ -5,6 +5,13 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
 use sha2::Sha256;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::{
+    fs::{self, OpenOptions},
+    io::{ErrorKind, Write},
+    path::{Path, PathBuf},
+};
 use zeroize::Zeroizing;
 
 const KEYCHAIN_SERVICE: &str = "app.purr.credentials";
@@ -13,8 +20,8 @@ const DATABASE_KEY_INFO: &[u8] = b"purr:database:v1";
 const SECRETS_KEY_INFO: &[u8] = b"purr:secrets:v1";
 const RESPONSE_CONTENT_KEY_INFO: &[u8] = b"purr:response-content:v1";
 
-// The OS store owns one root key only. SecretRef values are handled by the
-// encrypted SQLite vault and never become individual Keychain items.
+// Application storage owns one root key only. SecretRef values are handled by
+// the encrypted SQLite vault and never become individual files or Keychain items.
 pub trait RootKeyStore: Send + Sync {
     fn get_root_key(&self) -> Result<Option<String>, String>;
     fn set_root_key(&self, value: &str) -> Result<(), String>;
@@ -39,23 +46,75 @@ pub fn validate_secret_ref(reference: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub struct PlatformRootKeyStore;
+const ROOT_KEY_FILE: &str = "root-key-v1";
+
+pub struct PlatformRootKeyStore {
+    path: PathBuf,
+}
+
+impl PlatformRootKeyStore {
+    pub fn new(data_directory: &Path) -> Self {
+        Self {
+            path: data_directory.join(ROOT_KEY_FILE),
+        }
+    }
+}
+
+fn read_root_key_file(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(value) => {
+            #[cfg(unix)]
+            if fs::metadata(path)
+                .map_err(|_| "Cannot inspect the local encryption key")?
+                .permissions()
+                .mode()
+                & 0o077
+                != 0
+            {
+                return Err("The local encryption key has unsafe file permissions".into());
+            }
+            Ok(Some(value.trim().into()))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Cannot read the local encryption key".into()),
+    }
+}
+
+fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .map_err(|_| "Cannot create the local encryption key")?;
+    file.write_all(value.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Cannot save the local encryption key".into())
+}
+
 #[cfg(target_os = "macos")]
 impl RootKeyStore for PlatformRootKeyStore {
     fn get_root_key(&self) -> Result<Option<String>, String> {
+        if let Some(value) = read_root_key_file(&self.path)? {
+            return Ok(Some(value));
+        }
+        // Versions before 0.1.2 stored this root in Keychain. Read it only
+        // when no file key exists, then migrate so unsigned updates no longer
+        // cause macOS to authorize each changed application binary.
         let entry = keyring::Entry::new(KEYCHAIN_SERVICE, ROOT_KEY_REF)
             .map_err(|_| "Secure store is unavailable")?;
         match entry.get_password() {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => {
+                write_root_key_file(&self.path, &value)?;
+                Ok(Some(value))
+            }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err("Cannot read from secure store".into()),
         }
     }
     fn set_root_key(&self, value: &str) -> Result<(), String> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, ROOT_KEY_REF)
-            .map_err(|_| "Secure store is unavailable")?
-            .set_password(value)
-            .map_err(|_| "Cannot write to secure store".into())
+        write_root_key_file(&self.path, value)
     }
 }
 // Other platforms deliberately fail closed until their native adapters are added.
@@ -91,8 +150,7 @@ impl RootCiphers {
         existing_encrypted_data: bool,
         needs_legacy_database_key: bool,
     ) -> Result<Self, String> {
-        // This is the only Keychain read in the backend lifetime. RuntimeStorage
-        // owns the derived ciphers until process exit.
+        // RuntimeStorage owns the derived ciphers until process exit.
         let root = match store.get_root_key()? {
             Some(value) => {
                 let encoded = Zeroizing::new(value);
@@ -102,7 +160,7 @@ impl RootCiphers {
                         .map_err(|_| "Invalid local encryption key")?,
                 )
             }
-            None if existing_encrypted_data => return Err("The local encryption key is missing. Restore the Keychain item before opening this database; no replacement key was created.".into()),
+            None if existing_encrypted_data => return Err("The local encryption key is missing. Restore the key before opening this database; no replacement key was created.".into()),
             None => {
                 let mut key = Zeroizing::new([0_u8; 32]);
                 OsRng.fill_bytes(&mut *key);
@@ -295,6 +353,23 @@ pub mod tests {
     #[test]
     fn platform_adapter_is_root_key_only() {
         fn accepts_root_store(_: &dyn RootKeyStore) {}
-        accepts_root_store(&PlatformRootKeyStore);
+        let directory = tempfile::tempdir().unwrap();
+        accepts_root_store(&PlatformRootKeyStore::new(directory.path()));
+    }
+
+    #[test]
+    fn local_root_key_file_is_private_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(ROOT_KEY_FILE);
+        write_root_key_file(&path, "private-root").unwrap();
+        assert_eq!(
+            read_root_key_file(&path).unwrap().as_deref(),
+            Some("private-root")
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

@@ -3,6 +3,114 @@ import { installPersistenceMock } from "./persistence-mock";
 type PaneTransition = { heights: number[]; response: number; root: number; gutter: number; connected: boolean };
 test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
+test("document tabs meet the request surface without a divider or top gutter", async ({ page }) => {
+  await page.goto("/");
+  const tabs = page.getByRole("tablist", { name: "Documents", exact: true }).locator("..");
+  const composer = page.getByRole("region", { name: "Request composer", exact: true });
+  const tabBounds = await tabs.boundingBox();
+  const requestBounds = await composer.boundingBox();
+  expect(requestBounds!.y - (tabBounds!.y + tabBounds!.height)).toBeLessThanOrEqual(1);
+  await expect(tabs).toHaveCSS("border-bottom-width", "0px");
+});
+
+for (const initialFullscreen of [false, true]) test(`macOS toolbar follows native fullscreen state (initial ${initialFullscreen})`, async ({ page }) => {
+  await page.addInitScript((initialFullscreen) => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+    const callbacks = new Map<number, (event: unknown) => void>();
+    let nextId = 0;
+    let fullscreen = initialFullscreen;
+    let resizeHandler: number | undefined;
+    const host = window as any;
+    host.isTauri = true;
+    host.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    host.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" } },
+      transformCallback: (callback: (event: unknown) => void) => { callbacks.set(++nextId, callback); return nextId; },
+      invoke: async (command: string) => {
+        if (command === "plugin:window|is_fullscreen") return fullscreen;
+      },
+    };
+    const invoke = host.__TAURI_INTERNALS__.invoke;
+    host.__TAURI_INTERNALS__.invoke = (command: string, args: any) => {
+      if (command === "plugin:event|listen" && args.event === "tauri://resize") resizeHandler = args.handler;
+      return invoke(command, args);
+    };
+    host.__setFullscreen = (value: boolean) => {
+      fullscreen = value;
+      if (resizeHandler !== undefined) callbacks.get(resizeHandler)?.({ event: "tauri://resize", payload: { width: 1280, height: 900 } });
+    };
+  }, initialFullscreen);
+  await page.goto("/");
+  const workspaceControls = page.locator("header > div").first();
+  await expect(page.getByRole("button", { name: "Select workspace" })).toBeVisible();
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "64px");
+  await page.evaluate((value) => (window as any).__setFullscreen(value), !initialFullscreen);
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "64px" : "0px");
+  await page.evaluate((value) => (window as any).__setFullscreen(value), initialFullscreen);
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "64px");
+});
+
+test("activity rail stays visible while sidebar selection, shortcuts and resizing preserve the layout", async ({ page }) => {
+  await page.goto("/");
+  const rail = page.getByRole("navigation", { name: "Workspace activities" });
+  const documents = rail.getByRole("button", { name: "Documents", exact: true });
+  const sidebar = page.getByRole("complementary", { name: "Workspace documents" });
+  const separator = page.getByRole("separator", { name: "Resize sidebar" });
+  const editor = page.getByRole("region", { name: "Request composer" });
+  await expect(rail).toBeVisible();
+  await expect(rail.getByRole("button", { name: "History", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /^(Hide|Show) sidebar$/ })).toHaveCount(0);
+  await expect(documents).toHaveAttribute("aria-pressed", "true");
+  await separator.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(separator).toHaveAttribute("aria-valuenow", "16");
+  const handle = (await separator.boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + 65, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => Number(await separator.getAttribute("aria-valuenow"))).toBeGreaterThan(16);
+  const sidebarWidth = (await sidebar.boundingBox())!.width;
+  const expandedEditorWidth = (await editor.boundingBox())!.width;
+  const activeStyle = await documents.evaluate((element) => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }));
+  const railBox = (await rail.boundingBox())!;
+  expect(railBox.width).toBe(64);
+  const documentsBox = (await documents.boundingBox())!;
+  expect(documentsBox.y - railBox.y).toBeLessThan(20);
+
+  await documents.click();
+  await expect(documents).toHaveAttribute("aria-expanded", "false");
+  await expect.poll(() => documents.evaluate((element) => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }))).toEqual(activeStyle);
+  await expect(sidebar).toHaveCount(0);
+  await expect(separator).toHaveCount(0);
+  await expect(rail).toBeVisible();
+  await expect.poll(async () => (await editor.boundingBox())!.width - expandedEditorWidth).toBeGreaterThanOrEqual(sidebarWidth);
+  expect((await rail.boundingBox())!.width).toBe(railBox.width);
+  await page.screenshot({ path: "test-results/activity-rail-collapsed.png" });
+
+  await documents.click();
+  await expect(sidebar).toBeVisible();
+  await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(sidebarWidth);
+  await documents.click();
+  const mod = process.platform === "darwin" ? "Meta" : "Control";
+  await page.getByLabel("Request URL", { exact: true }).focus();
+  await page.keyboard.press(`${mod}+b`);
+  await expect(documents).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press(`${mod}+b`);
+  await expect(documents).toHaveAttribute("aria-expanded", "false");
+  await expect(documents).toHaveAttribute("aria-pressed", "true");
+  await expect(rail).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await page.reload();
+  await expect(rail).toBeVisible();
+  await expect(documents).toHaveAttribute("aria-pressed", "true");
+  await expect(documents).toHaveAttribute("aria-expanded", "false");
+  await documents.click();
+  await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(sidebarWidth);
+  await expect.poll(async () => (await page.locator('.ui-collapsible[data-orientation="horizontal"]').boundingBox())!.width).toBe(sidebarWidth);
+  await page.screenshot({ path: "test-results/activity-rail-expanded.png" });
+});
+
 async function mockSuccessfulRequest(page: Page, delayMs = 0) {
   await page.addInitScript((delayMs) => {
     (window as any).isTauri = true;
@@ -38,7 +146,6 @@ test("canvas collapses to the request tabs and reopens request details beside a 
   expect(new Set(controlHeights).size).toBe(1);
 
   const headerCenters = await Promise.all([
-    page.getByRole("button", { name: "Hide sidebar", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
     page.getByRole("button", { name: "Select workspace", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
     page.getByRole("button", { name: "Open command palette", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),
     page.getByRole("button", { name: "Canvas view", exact: true }).evaluate((element) => { const box = element.getBoundingClientRect(); return box.y + box.height / 2; }),

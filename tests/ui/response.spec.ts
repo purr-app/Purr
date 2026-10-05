@@ -50,6 +50,9 @@ test("response tabs expose formatted body, query tools, cookies and timeline", a
 
   const response = page.getByRole("region", { name: "HTTP response" });
   await expect(response).toBeVisible();
+  const history = response.getByLabel("Response summary").getByRole("button", { name: "Show response history" });
+  await expect(history).toBeVisible();
+  await expect(history).toBeEnabled();
   await expect(response.getByLabel("Response summary")).toContainText(
     "200 OKHTTP/2•84 ms•",
   );

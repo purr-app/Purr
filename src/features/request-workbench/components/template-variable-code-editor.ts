@@ -1,7 +1,19 @@
 import type { Completion, CompletionSource } from "@codemirror/autocomplete";
-import { hoverTooltip } from "@codemirror/view";
+import { Decoration, EditorView, MatchDecorator, ViewPlugin, hoverTooltip } from "@codemirror/view";
 
 import type { TemplateVariableActions } from "./template-variable-popover";
+
+const templateMarks = new MatchDecorator({
+  regexp: /{{\s*[^{}]+?\s*}}/g,
+  decoration: Decoration.mark({ class: "cm-template-variable" }),
+});
+export const templateVariableHighlighting = [EditorView.theme({
+  ".cm-template-variable, .cm-template-variable *": { color: "var(--accent-orange)", fontStyle: "italic" },
+}), ViewPlugin.fromClass(class {
+  decorations;
+  constructor(view: import("@codemirror/view").EditorView) { this.decorations = templateMarks.createDeco(view); }
+  update(update: import("@codemirror/view").ViewUpdate) { this.decorations = templateMarks.updateDeco(update, this.decorations); }
+}, { decorations: (plugin) => plugin.decorations })];
 
 function typeLabel(type: string) {
   return type === "dynamic-request" ? "Dynamic Request" : type === "external-secret" ? "External Secret" : "Static";
@@ -42,7 +54,7 @@ export function templateVariableHover(actions: TemplateVariableActions) {
     const variable = actions.definitions.find((candidate) => candidate.name === name);
     return { pos: match.index!, end: match.index! + match[0].length, above: true, create: () => {
       const dom = document.createElement("div"); dom.className = "rounded-ui-md border border-border bg-purr-overlay p-ui-2 font-ui text-ui-sm text-content-secondary shadow-popover";
-      const title = document.createElement("div"); title.className = variable ? "font-code text-syntax-property" : "font-code text-accent-orange";
+      const title = document.createElement("div"); title.className = "font-code text-accent-orange italic";
       title.textContent = `{{${name}}}`; dom.append(title);
       const description = document.createElement("p"); description.className = "mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary";
       description.textContent = variable ? `${typeLabel(variable.kind)} variable` : "Undefined variable"; dom.append(description);
