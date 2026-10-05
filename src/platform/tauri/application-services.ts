@@ -459,8 +459,8 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
       cancel: (sessionId) => invoke<void>("cancel_oauth", { sessionId }),
     },
     imports: {
-      normalize: (source, workspaceId) =>
-        invoke("import_collection", { source, workspaceId }),
+      normalize: (source, workspaceId, target = "workspace") =>
+        invoke("import_collection", { source, workspaceId, target, importId: crypto.randomUUID() }),
     },
     downloads: {
       saveInlineResponse: (bodyBase64, suggestedName) => {

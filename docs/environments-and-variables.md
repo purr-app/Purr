@@ -20,10 +20,10 @@ Environments are canonical `EnvironmentDefinition` resources containing static v
 global → workspace → selected environment
 ```
 
-`getEffectiveVariables` uses name-keyed replacement, so a later enabled definition would win defensively. Normal product state avoids relying on that precedence:
+`getEffectiveVariables` uses name-keyed replacement: enabled environment definitions override workspace definitions with the same name. Disabled environment rows leave the workspace fallback available. `getVariableNamespace` applies the same precedence for request execution while retaining disabled-only definitions for actionable resolver errors. Validation enforces:
 
 - names must be unique inside each scope;
-- workspace names cannot overlap environment names;
+- workspace and environment names may overlap; each scope retains its own value;
 - the Variables UI also prevents global names from overlapping any workspace/environment effective namespace;
 - dynamic resolution rejects any ambiguous duplicate name, enabled or disabled.
 
@@ -169,3 +169,7 @@ Variables navigation resets to the Effective list when the workspace changes;
 selection and unfinished variable editor drafts do not cross that boundary.
 Template references include their braces in orange italic highlighting. Editor
 hover information uses a viewport-level tooltip to avoid panel clipping.
+
+### Postman environment import
+
+The Import button beside Environments opens the shared native import dialog, even when no environments exist. It adds one environment, renames duplicate environment names with numeric suffixes, and opens the imported scope without changing the active execution environment. Import is disabled while the variable editor has an unsaved draft. Enabled flags and secret references survive save/reload; secret values never enter YAML or diagnostics. See [Postman import](imports-and-integrations.md#postman-mapping-and-environment-import) for supported mappings and warnings.

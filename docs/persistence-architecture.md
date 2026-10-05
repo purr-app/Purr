@@ -240,3 +240,7 @@ The shared integration AuthEditor keeps its full configuration and OAuth token i
 a declared `auth` SecureStore slot, referenced by canonical integration credentials;
 legacy `apiToken` slots remain readable. Open-tab UI state is an in-memory scope
 released on tab close and does not add project fields or local database records.
+
+## Postman import ownership
+
+Postman adapters normalize natively into existing canonical resources. The source JSON, scripts, and response examples are not stored. Collection import creates a workspace; environment import adds a resource to an existing workspace through the same validation and revision-checked commit, preserving current document drafts and UI/session state. Per-import IDs prevent collisions on repeated imports. Secret values are transient import payloads passed to SecureStore, while project variables/auth retain only SecretRefs; new vault entries are rolled back on failed import writes/commit. Workspace/environment name overlap is now valid and uses environment precedence; this relaxes validation without changing the YAML shape or requiring a format migration.

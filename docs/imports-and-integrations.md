@@ -1,6 +1,6 @@
 # Imports, exports, and integrations
 
-This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow, a native OpenAPI 3.x workspace importer, and a native Jaeger trace lookup adapter. Postman, Insomnia, Bruno, Yaak, and other integration providers remain extension points.
+This document distinguishes working import/export behavior from architectural extension points. Current code has a complete cURL request paste/copy workflow, native OpenAPI 3.x and Postman workspace/environment importers, and a native Jaeger trace lookup adapter. Insomnia, Bruno, Yaak, and other import providers remain extension points.
 
 ## Current feature status
 
@@ -14,7 +14,8 @@ This document distinguishes working import/export behavior from architectural ex
 | Validate and persist a `NormalizedImportResult` | Implemented application path |
 | New-workspace import UI | Working for file, folder, URL, and pasted text |
 | OpenAPI 3.0/3.1 adapter | Working first version |
-| Postman/Insomnia/Bruno/Yaak adapters | Not implemented |
+| Postman Collection v2.0/v2.1 and environment JSON adapters | Working; scripts and saved response examples are reported as unsupported |
+| Insomnia/Bruno/Yaak adapters | Not implemented |
 | Generic project export package | Not implemented; canonical directory is the portable artifact |
 | Canonical integration envelope and unavailable-provider management | Working |
 | Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
@@ -50,15 +51,15 @@ ImportWorkspaceDialog
   → Rust ImportSource loader (file/directory/URL/text)
   → JSON/YAML parse on a blocking worker
   → metadata-based adapter detection
-  → local/remote $ref document loading and resolution
-  → OpenApi3Adapter → Rust ImportModel
+  → local/remote $ref document loading and resolution (OpenAPI only)
+  → selected ImportAdapter → canonical normalized resources
   → normalized canonical result (the foreign AST never reaches React)
   → validateProject() / persistImport()
   → WorkspacePersistence canonical commit + SecureStore
-  → add and activate runtime Workspace
+  → add and activate runtime Workspace → import report
 ```
 
-The project becomes visible and active only after the normal revision-checked persistence route succeeds. Parsing and normalization do not run on the WebView/UI thread. The root plus all referenced source documents share a cumulative 64 MiB and 256-document budget; remote bodies are read incrementally so a missing `Content-Length` cannot bypass the limit. URL imports accept HTTP(S), follow at most ten redirects, and remote `$ref` documents must also use HTTP(S). File imports recursively load referenced JSON/YAML files, including relative files outside the root file's immediate directory. An unresolved reference fails the import instead of producing a partial request. Directory detection requires exactly one document whose top-level `openapi` value starts with `3.`.
+The project becomes visible and active only after the normal revision-checked persistence route succeeds. Parsing and normalization do not run on the WebView/UI thread. For OpenAPI, the root plus all referenced source documents share a cumulative 64 MiB and 256-document budget; remote bodies are read incrementally so a missing `Content-Length` cannot bypass the limit. URL imports accept HTTP(S), follow at most ten redirects, and remote `$ref` documents must also use HTTP(S). File imports recursively load referenced JSON/YAML files, including relative files outside the root file's immediate directory. An unresolved reference fails the import instead of producing a partial request. Directory detection requires exactly one document whose top-level `openapi` value starts with `3.`.
 
 ## OpenAPI 3.x mapping
 
@@ -77,6 +78,20 @@ Every supported Bearer, Basic, header/query/cookie API-key, or OAuth 2.0 authori
 
 Schema-driven body completion is not implemented yet. The imported example body and `origin` link preserve enough canonical information for a future completion service without storing the OpenAPI AST inside each request. The first version maps root-level `servers`; path-item and operation-level server overrides are not yet projected. External reference documents participate in normalization, while the canonical `api-schema` resource currently retains the selected root source rather than a bundled copy of every dependency.
 
+## Postman mapping and environment import
+
+New workspace → Import accepts Postman Collection v2.0/v2.1 JSON, detected from `info.schema`, through the file/path, URL or dropped-text loader. Folder selection remains OpenAPI root discovery. Variables → Environments → Import accepts a single Postman environment export (`values`, `name`, and, when present, environment scope). A collection/schema supplied to environment import, or an environment supplied to workspace import, is rejected with destination guidance. Browser builds still require desktop import; no JavaScript parser or alternate persistence path is introduced.
+
+Collection import preserves nested folders, request order, descriptions, methods, URL templates, path/query parameters, and duplicate/disabled header and parameter rows. Structured URL query rows take precedence over the query embedded in `raw`, avoiding duplication. Raw JSON/XML/text bodies retain their text; URL-encoded and text multipart fields retain order and enabled state. GraphQL bodies become GraphQL documents. Binary bodies have no attached file, and multipart file fields are omitted with diagnostics: an export cannot grant access to local files.
+
+Collection variables become workspace variables. Environment import adds one environment to the current workspace; name collisions use ` (2)`, ` (3)` and so on, without merging or replacing existing values. The imported scope opens in Variables, but the active execution environment does not change. A pending variable draft disables Import. Existing requests, saved/working copies, tabs, and local session state are retained through the normal persistence path. Global-name conflicts and duplicate variable names within a scope fail before commit.
+
+Workspace/environment names may overlap: enabled environment values override workspace values, while disabled environment rows leave the workspace fallback available. Secret-typed variables (including empty values) retain secret references. Credential-like variable names and literal sensitive headers/query/form parameters are also protected; values reach SecureStore only through import persistence. Exact credential templates remain templates. The raw Postman export is never persisted as a project resource.
+
+Bearer, Basic, header/query API key, and compatible OAuth2 authorization-code/client-credentials configurations become shared auth profiles with explicit request bindings. Collection/folder inheritance and `noauth` are preserved. Existing OAuth tokens, unsupported auth configurations, scripts at all levels, saved response examples, folder variables, Postman dynamic templates, and transport overrides are reported with source paths. Scripts are never executed. Unsupported dynamic templates remain editable but are not generated by Purr. The report may require manual configuration before a request behaves like it did in Postman.
+
+Each import has fresh resource and secret identities. The application validates the result before writing, rejects pre-existing transient secret refs, and rolls back newly written secrets if a subsequent vault write or project commit fails. Empty secret values follow the normal Purr vault convention: the canonical ref remains even when no nonempty vault value is stored.
+
 ## Generic normalized boundary
 
 `src/importing/contracts.ts` defines the IPC/application shapes:
@@ -85,14 +100,16 @@ Schema-driven body completion is not implemented yet. The imported example body 
 - `ImportDiagnostic`: stable warning/error codes with source/resource context;
 - `ImportPreview`: adapter ID, resource counts, diagnostics, and optional environment candidates;
 - `ImportOptions`: destination workspace, secret inclusion, and duplicate policy;
-- `NormalizedImportResult`: the canonical handoff from native normalization to application persistence.
+- `NormalizedImportResult`: adapter identity, canonical handoff, diagnostics and transient secrets.
+- `ImportTarget`: workspace creation or environment addition; IPC also carries a fresh import ID to namespace Postman resource/secret IDs.
+- `ImportReport`: counts derived from normalized resources and diagnostics, returned to the UI only after commit.
 
-The concrete `ImportAdapter` trait and registry live in `src-tauri/src/importing.rs`, so future large collection parsers normalize to the same Rust `ImportModel` before producing Purr canonical resources.
+The concrete `ImportAdapter` trait and registry live in `src-tauri/src/importing/mod.rs`. Adapters produce `NormalizedImportResult`; the existing `OpenApiModel` is private to the OpenAPI adapter. Postman adapters live in `importing/postman.rs` and never fabricate OpenAPI schema resources.
 
 ```text
 ImportSource
   → native adapter.can_import()
-  → adapter.normalize() → ImportModel
+  → adapter.normalize_project() → canonical resources
   → NormalizedImportResult
   → validateProject()
   → persistImport()
@@ -112,11 +129,11 @@ Adapters must normalize into the existing canonical model. They do not get to wr
 - secret values are written directly to `SecureStore`, never diagnostics/preview/YAML, and are removed again if any later secret write or the canonical project commit fails;
 - the normal persistence path performs canonical/local projection and commit.
 
-The TypeScript contract still exposes duplicate policy and preview/environment-candidate shapes for a future preview step; the current new-workspace flow imports directly after validation.
+The TypeScript contract still exposes duplicate policy and preview/environment-candidate shapes for a future preview step. Current imports commit directly after validation, then show a report with resource/variable/secret counts and grouped warnings with expandable source paths. Failed imports stay in the source dialog; repeated submission and closing are blocked while committing.
 
 ## Requirements for future collection adapters
 
-Postman, Insomnia, Bruno, Yaak, and similar formats are roadmap items, not working features. When another adapter is implemented, this document and its tests must state:
+Insomnia, Bruno, Yaak, and similar formats are roadmap items, not working features. When another adapter is implemented, this document and its tests must state:
 
 - source versions/media types and detection;
 - mapping for folders, HTTP/GraphQL requests, params, duplicate/disabled rows, bodies, and attachments;
@@ -198,7 +215,7 @@ Execution history currently has encrypted native storage and metadata pagination
 - `src/application/import-workspace.ts` — native IPC call and persistence handoff.
 - `src/application/import-project.ts` — validation, secret writes, and import commit.
 - `src/features/workspaces/components/import-workspace-dialog.tsx` — source selection, progress, and modal error state.
-- `src-tauri/src/importing.rs` — native loaders, OpenAPI adapter, `$ref` resolver, intermediate model, and canonical normalization.
+- `src-tauri/src/importing/mod.rs` — native loaders, OpenAPI adapter, `$ref` resolver, intermediate model, and canonical normalization.
 - `src/application/workspace-persistence.ts` — additive collision handling and normal persistence path.
 - `src/domain/project.ts` — canonical import targets and the provider-neutral integration envelope.
 - `src/features/observability/trace-panel.tsx` — bounded Trace UI through the observability port.

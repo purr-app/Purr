@@ -40,7 +40,9 @@ import { useWorkspaces } from "./hooks/use-workspaces";
 import { secretRef } from "../../storage/secrets";
 import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
 import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
-import type { ImportSource } from "../../importing/contracts";
+import { ImportReportDialog } from "./components/import-report-dialog";
+import { importEnvironment as importEnvironmentSource } from "../../application/import-environment";
+import type { ImportSource, ImportReport } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
 import { useApplicationServices } from "../../app/application-services-context";
 import { useExtensionRegistry } from "../../extension-api/extension-context";
@@ -77,7 +79,7 @@ import {
   type Workspace,
 } from "./model/workspace";
 
-type Dialog = "palette" | "new-workspace" | "import-workspace" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
+type Dialog = "palette" | "new-workspace" | "import-workspace" | "import-environment" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
 const actionErrorTimeoutMs = 15_000;
 const noHistorySubscription = () => () => {};
 const noHistoryRevision = () => 0;
@@ -149,6 +151,7 @@ export function WorkspaceWorkbench() {
   const [replayTarget, setReplayTarget] = useState<{ workspaceId: string; documentId: string; operationName?: string } | null>(null);
   const historyOpenGeneration = useRef(0);
   const [actionError, setActionError] = useState("");
+  const [importResult, setImportResult] = useState<ImportReport | null>(null);
   const [variableScope, setVariableScope] = useState<VariableScope>("effective");
   const [variableSelection, setVariableSelection] = useState<string | null>(null);
   const [variableDraft, setVariableDraft] = useState<Variable | null>(null);
@@ -691,10 +694,19 @@ export function WorkspaceWorkbench() {
     }
   };
   const importWorkspace = async (source: ImportSource) => {
-    const imported = await importWorkspaceSource(source, persistence, services.imports);
+    const { workspace: imported, report } = await importWorkspaceSource(source, persistence, services.imports, store.globalVariables);
     setStore((current) => current ? { ...current, activeWorkspaceId: imported.id,
       workspaces: [...current.workspaces.filter((candidate) => candidate.id !== imported.id), imported] } : current);
     setDialog(null);
+    setImportResult(report);
+  };
+  const importEnvironment = async (source: ImportSource) => {
+    await flush();
+    const imported = await importEnvironmentSource(source, workspace, store.globalVariables, persistence, services.imports);
+    setStore((current) => current ? { ...current, workspaces: current.workspaces.map((candidate) => candidate.id === imported.workspace.id
+      ? { ...candidate, environments: [...candidate.environments, ...imported.workspace.environments.filter((item) => item.id === imported.environmentId)] } : candidate) } : current);
+    setVariableScope(`environment:${imported.environmentId}`); setVariableSelection(null); setVariableDraft(null);
+    setDialog(null); setImportResult(imported.report);
   };
   return <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
@@ -775,7 +787,7 @@ export function WorkspaceWorkbench() {
               await deleteWorkspace(workspace.id); jars.current.delete(workspace.id); dynamicSessionCaches.current.delete(workspace.id);
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
-          : workspace.ui.variablesTabActive ? <VariablesExplorer key={workspace.id} workspace={workspace} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
+          : workspace.ui.variablesTabActive ? <VariablesExplorer onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
             onWorkspaceVariablesChange={(variables) => { removeUnusedVariableSecrets(workspace.variables, variables); update((current) => {
               const next = { ...current, variables }; return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) };
             }); }}
@@ -914,6 +926,8 @@ export function WorkspaceWorkbench() {
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
+    {importResult && <ImportReportDialog report={importResult} onClose={() => setImportResult(null)} />}
+    {dialog === "import-environment" && <ImportWorkspaceDialog target="environment" onClose={() => setDialog(null)} onImport={importEnvironment} />}
     {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} />}
     {dialog === "save-document" && currentDocument && <NameDialog title="Save document" label="Document name" initial={getDocumentDisplayName(currentDocument)} onClose={() => setDialog(null)} onSave={(name) => {
       updateDocument((document) => ({ ...document, name, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() })); setDialog(null);

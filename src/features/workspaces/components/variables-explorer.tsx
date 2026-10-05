@@ -2,7 +2,7 @@ import { DynamicDependencyChain } from "./dynamic-dependency-chain";
 import { DynamicVariableResolutionError, type DynamicExecutionStep } from "../services/dynamic-variable-resolver";
 import type { WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import { useEffect, useId, useRef, useState } from "react";
-import { Braces, Check, ChevronDown, Cloud, Copy, Eye, EyeOff, FileText, Globe2, LockKeyhole, Plus, RefreshCw, Save, Trash2, X, Zap } from "lucide-react";
+import { Braces, Check, ChevronDown, Cloud, Copy, Eye, EyeOff, FileInput, FileText, Globe2, LockKeyhole, Plus, RefreshCw, Save, Trash2, X, Zap } from "lucide-react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
@@ -61,8 +61,9 @@ function usedBy(variable: Variable, documents: readonly DynamicVariableRequest[]
   return documents.filter((document) => JSON.stringify(document.request).includes(`{{${variable.name}}}`));
 }
 
-export function VariablesExplorer({ requestConfig, onOpenHistory, workspace, globalVariables, scope, selectedId, draft, documents,
+export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHistory, workspace, globalVariables, scope, selectedId, draft, documents,
   onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
+  onImportEnvironment?: () => void;
   requestConfig?: WorkspaceRequestConfig;
   onOpenHistory?: (id: string) => void;
   workspace: Workspace;
@@ -158,7 +159,9 @@ export function VariablesExplorer({ requestConfig, onOpenHistory, workspace, glo
         <h1 className="mb-ui-3 mt-ui-0 flex items-center gap-ui-2 text-ui-lg font-medium"><Braces className="size-ui-4 text-action-brand" />Variables</h1>
         <nav aria-label="Variable scopes" className="space-y-ui-1">
           {(["effective", "workspace"] as const).map((value) => <Button key={value} variant="ghost" className={cn("w-full justify-start", scope === value && "bg-purr-highlight text-content-primary")} onClick={() => selectScope(value)}>{value === "effective" ? <RefreshCw className="size-ui-4" /> : <Braces className="size-ui-4" />}{scopeLabel(value, workspace)}</Button>)}
-          <div className="pt-ui-2 text-ui-xs font-medium text-content-tertiary">Environments</div>
+          <div className="flex items-center justify-between gap-ui-1 pt-ui-2 text-ui-xs font-medium text-content-tertiary">Environments
+            {onImportEnvironment && <Button variant="ghost" size="xs" disabled={dirty} aria-label="Import environment" onClick={onImportEnvironment}><FileInput className="size-ui-3" />Import</Button>}
+          </div>
           {workspace.environments.map((environment) => <Button key={environment.id} variant="ghost" className={cn("w-full justify-start", scope === `environment:${environment.id}` && "bg-purr-highlight text-content-primary")} onClick={() => selectScope(`environment:${environment.id}`)}><Globe2 className="size-ui-4" /><span className="truncate">{environment.name}</span></Button>)}
           <div className="border-t border-border-subtle pt-ui-2"><Button variant="ghost" className={cn("w-full justify-start", scope === "global" && "bg-purr-highlight text-content-primary")} onClick={() => selectScope("global")}><Globe2 className="size-ui-4" />Global</Button></div>
         </nav>
@@ -211,12 +214,10 @@ function validateVariableName(variable: Variable, scope: VariableScope, workspac
   const same = scope === "workspace" ? workspace.variables : scope === "global" ? globals
     : workspace.environments.find((environment) => scope === `environment:${environment.id}`)?.variables ?? [];
   if (same.some((candidate) => candidate.id !== variable.id && candidate.name.trim() === name)) return `Variable “${name}” already exists.`;
-  if (scope === "workspace" && (globals.some((candidate) => candidate.name.trim() === name)
-    || workspace.environments.some((environment) => environment.variables.some((candidate) => candidate.name.trim() === name)))) return `Variable “${name}” already exists in an effective namespace.`;
+  if (scope === "workspace" && globals.some((candidate) => candidate.name.trim() === name)) return `Variable “${name}” already exists in an effective namespace.`;
   if (scope === "global" && (workspace.variables.some((candidate) => candidate.name.trim() === name)
     || workspace.environments.some((environment) => environment.variables.some((candidate) => candidate.name.trim() === name)))) return `Variable “${name}” already exists in this workspace.`;
-  if (scope.startsWith("environment:") && (globals.some((candidate) => candidate.name.trim() === name)
-    || workspace.variables.some((candidate) => candidate.name.trim() === name))) return `Variable “${name}” already exists in the effective namespace.`;
+  if (scope.startsWith("environment:") && globals.some((candidate) => candidate.name.trim() === name)) return `Variable “${name}” already exists in the effective namespace.`;
   return "";
 }
 

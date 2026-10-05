@@ -1,5 +1,6 @@
 import type {
   ImportSource,
+  ImportTarget,
   NormalizedImportResult,
 } from "../../importing/contracts";
 import type { SecureStore } from "./credentials";
@@ -23,6 +24,7 @@ export interface ImportPort {
   normalize(
     source: ImportSource,
     workspaceId: string,
+    target?: ImportTarget,
   ): Promise<NormalizedImportResult>;
 }
 

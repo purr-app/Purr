@@ -162,7 +162,6 @@ export function validateProject(project: Project): Project {
   if (new Set(variableIds).size !== variableIds.length) throw new Error("Duplicate variable identifiers.");
   const environmentNames = resources.filter((resource) => resource.kind === "environment").map((environment) => environment.name.trim()).filter(Boolean);
   if (new Set(environmentNames).size !== environmentNames.length) throw new Error("Duplicate environment names.");
-  const workspaceVariableNames = new Set(workspace.variables.map((variable) => variable.name.trim()));
   const validateDynamicVariable = (variable: VariableDefinition) => {
     if (variable.kind === "static") {
       if (variable.sensitive && (!variable.secretRef || variable.value !== undefined))
@@ -195,8 +194,6 @@ export function validateProject(project: Project): Project {
       throw new Error("An imported request refers to a missing API schema.");
     if (resource.kind === "environment" && new Set(resource.variables.map((variable) => variable.name.trim()).filter(Boolean)).size !== resource.variables.filter((variable) => variable.name.trim()).length)
       throw new Error("Duplicate environment variable names.");
-    if (resource.kind === "environment" && resource.variables.some((variable) => workspaceVariableNames.has(variable.name.trim())))
-      throw new Error("Workspace and environment variable names must not overlap.");
     if (resource.kind === "environment" && resource.variables.some((variable) => variable.kind !== "static"))
       throw new Error("Environment variables must be static.");
     if (resource.kind === "environment") resource.variables.forEach(validateDynamicVariable);

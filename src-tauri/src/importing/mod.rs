@@ -1,3 +1,5 @@
+mod postman;
+
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -101,7 +103,7 @@ struct ImportAuth {
     name: String,
     config: Value,
 }
-struct ImportModel {
+struct OpenApiModel {
     title: String,
     description: Option<String>,
     source_kind: String,
@@ -117,6 +119,7 @@ struct ImportModel {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NormalizedImportResult {
+    adapter: String,
     workspace: Value,
     resources: Vec<Value>,
     diagnostics: Vec<ImportDiagnostic>,
@@ -127,7 +130,15 @@ pub struct NormalizedImportResult {
 
 trait ImportAdapter {
     fn can_import(&self, source: &LoadedSource) -> bool;
-    fn normalize(&self, source: &LoadedSource) -> Result<ImportModel, String>;
+    fn normalize_project(
+        &self,
+        source: &LoadedSource,
+        workspace_id: &str,
+        import_id: &str,
+    ) -> Result<NormalizedImportResult, String>;
+    fn is_environment(&self) -> bool {
+        false
+    }
 }
 struct OpenApi3Adapter;
 
@@ -415,7 +426,11 @@ async fn load_url(source: ImportSource) -> Result<LoadedSource, String> {
     let mut total = raw.len();
     let mut documents = HashMap::from([(root_url.to_string(), root_value)]);
     let mut fetched = HashSet::from([root_url.to_string()]);
-    loop {
+    while documents
+        .get(root_url.as_str())
+        .and_then(openapi_version)
+        .is_some()
+    {
         let mut pending = Vec::new();
         for (base, value) in &documents {
             let mut references = Vec::new();
@@ -837,7 +852,18 @@ impl ImportAdapter for OpenApi3Adapter {
             .and_then(openapi_version)
             .is_some_and(|version| version.starts_with("3."))
     }
-    fn normalize(&self, source: &LoadedSource) -> Result<ImportModel, String> {
+    fn normalize_project(
+        &self,
+        source: &LoadedSource,
+        workspace_id: &str,
+        _import_id: &str,
+    ) -> Result<NormalizedImportResult, String> {
+        validate_references(source)?;
+        Ok(build_project(self.normalize(source)?, workspace_id))
+    }
+}
+impl OpenApi3Adapter {
+    fn normalize(&self, source: &LoadedSource) -> Result<OpenApiModel, String> {
         let root = source
             .documents
             .get(&source.root)
@@ -1160,7 +1186,7 @@ impl ImportAdapter for OpenApi3Adapter {
             return Err("The OpenAPI document does not contain importable HTTP operations.".into());
         }
         let (source_kind, source_location) = source.source.metadata();
-        Ok(ImportModel {
+        Ok(OpenApiModel {
             title,
             description,
             source_kind: source_kind.into(),
@@ -1340,7 +1366,7 @@ fn auth_definition(
     }
     config
 }
-fn build_project(mut model: ImportModel, workspace_id: &str) -> NormalizedImportResult {
+fn build_project(mut model: OpenApiModel, workspace_id: &str) -> NormalizedImportResult {
     let schema_id = stable_id("api-schema", workspace_id, "openapi-root");
     let mut resources = Vec::new();
     let mut secrets = Vec::new();
@@ -1467,6 +1493,7 @@ fn build_project(mut model: ImportModel, workspace_id: &str) -> NormalizedImport
             .insert("description".into(), json!(description));
     }
     NormalizedImportResult {
+        adapter: "openapi-3".into(),
         workspace,
         resources,
         diagnostics: std::mem::take(&mut model.diagnostics),
@@ -1475,9 +1502,19 @@ fn build_project(mut model: ImportModel, workspace_id: &str) -> NormalizedImport
     }
 }
 
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImportTarget {
+    #[default]
+    Workspace,
+    Environment,
+}
+
 pub async fn import(
     source: ImportSource,
     workspace_id: String,
+    target: ImportTarget,
+    import_id: String,
 ) -> Result<NormalizedImportResult, String> {
     if workspace_id.is_empty()
         || workspace_id.len() > 128
@@ -1487,27 +1524,47 @@ pub async fn import(
     {
         return Err("Invalid destination workspace identifier.".into());
     }
+    if import_id.is_empty()
+        || import_id.len() > 128
+        || !import_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+    {
+        return Err("Invalid import identifier.".into());
+    }
     let loaded = load_source(source).await?;
-    let adapters: Vec<Box<dyn ImportAdapter + Send>> = vec![Box::new(OpenApi3Adapter)];
+    let adapters: Vec<Box<dyn ImportAdapter + Send>> = vec![
+        Box::new(OpenApi3Adapter),
+        Box::new(postman::CollectionAdapter),
+        Box::new(postman::EnvironmentAdapter),
+    ];
     let matches: Vec<_> = adapters
         .into_iter()
         .filter(|adapter| adapter.can_import(&loaded))
         .collect();
     if matches.is_empty() {
         return Err(
-            "This file format is not supported. Purr currently imports OpenAPI 3.x documents."
+            "Unsupported format. Select OpenAPI 3.x, Postman Collection v2.0/v2.1, or a Postman environment export."
                 .into(),
         );
     }
     if matches.len() > 1 {
         return Err("The import source matches more than one format.".into());
     }
-    validate_references(&loaded)?;
-    let model =
-        tokio::task::spawn_blocking(move || matches.into_iter().next().unwrap().normalize(&loaded))
-            .await
-            .map_err(|_| "The import worker stopped unexpectedly.".to_string())??;
-    Ok(build_project(model, &workspace_id))
+    let adapter = matches.into_iter().next().unwrap();
+    if adapter.is_environment() != matches!(target, ImportTarget::Environment) {
+        return Err(if adapter.is_environment() {
+            "Import this file from Variables → Environments → Import."
+        } else {
+            "Select a Postman environment export, not a collection or API schema."
+        }
+        .into());
+    }
+    tokio::task::spawn_blocking(move || {
+        adapter.normalize_project(&loaded, &workspace_id, &import_id)
+    })
+    .await
+    .map_err(|_| "The import worker stopped unexpectedly.".to_string())?
 }
 
 #[cfg(test)]
