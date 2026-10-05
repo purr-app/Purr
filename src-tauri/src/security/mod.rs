@@ -331,6 +331,23 @@ pub mod tests {
     }
 
     #[test]
+    fn opens_existing_aes256_gcm_ciphertext() {
+        // AES-256-GCM, zero key/nonce, empty plaintext and AAD (NIST vector).
+        let cipher = LocalCipher::from_key(&[0_u8; 32]).unwrap();
+        let tag = [
+            0x53, 0x0f, 0x8a, 0xfb, 0xc7, 0x45, 0x36, 0xb9, 0xa9, 0x63, 0xb4, 0xf1, 0xc4, 0xcb,
+            0x73, 0x8b,
+        ];
+        assert_eq!(
+            cipher
+                .open_sealed(1, &[0_u8; 12], &tag, "")
+                .unwrap()
+                .as_slice(),
+            b""
+        );
+    }
+
+    #[test]
     fn encrypted_data_never_creates_a_replacement_for_a_missing_master_key() {
         let store = MemoryRootKeyStore::default();
         let error = RootCiphers::open(&store, true, false).err().unwrap();
