@@ -1,5 +1,5 @@
 use aes_gcm::{
-    aead::{rand_core::RngCore, Aead, AeadCore, KeyInit, OsRng, Payload},
+    aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -163,7 +163,7 @@ impl RootCiphers {
             None if existing_encrypted_data => return Err("The local encryption key is missing. Restore the key before opening this database; no replacement key was created.".into()),
             None => {
                 let mut key = Zeroizing::new([0_u8; 32]);
-                OsRng.fill_bytes(&mut *key);
+                getrandom::fill(&mut *key).map_err(|_| "Cannot generate local encryption key")?;
                 let encoded = Zeroizing::new(STANDARD.encode(key.as_slice()));
                 store.set_root_key(&encoded)?;
                 Zeroizing::new(key.to_vec())
@@ -199,11 +199,12 @@ impl LocalCipher {
         ))
     }
     pub fn seal(&self, bytes: &[u8], aad: &str) -> Result<SealedValue, String> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut nonce = [0_u8; 12];
+        getrandom::fill(&mut nonce).map_err(|_| "Cannot generate local encryption nonce")?;
         let ciphertext = self
             .0
             .encrypt(
-                &nonce,
+                &nonce.into(),
                 Payload {
                     msg: bytes,
                     aad: aad.as_bytes(),
@@ -212,7 +213,7 @@ impl LocalCipher {
             .map_err(|_| "Local encryption failed")?;
         Ok(SealedValue {
             version: 1,
-            nonce: nonce.into(),
+            nonce,
             ciphertext,
         })
     }
@@ -228,7 +229,7 @@ impl LocalCipher {
         }
         self.0
             .decrypt(
-                Nonce::from_slice(nonce),
+                &Nonce::try_from(nonce).map_err(|_| "Invalid encrypted local data")?,
                 Payload {
                     msg: ciphertext,
                     aad: aad.as_bytes(),
@@ -330,6 +331,23 @@ pub mod tests {
     }
 
     #[test]
+    fn opens_existing_aes256_gcm_ciphertext() {
+        // AES-256-GCM, zero key/nonce, empty plaintext and AAD (NIST vector).
+        let cipher = LocalCipher::from_key(&[0_u8; 32]).unwrap();
+        let tag = [
+            0x53, 0x0f, 0x8a, 0xfb, 0xc7, 0x45, 0x36, 0xb9, 0xa9, 0x63, 0xb4, 0xf1, 0xc4, 0xcb,
+            0x73, 0x8b,
+        ];
+        assert_eq!(
+            cipher
+                .open_sealed(1, &[0_u8; 12], &tag, "")
+                .unwrap()
+                .as_slice(),
+            b""
+        );
+    }
+
+    #[test]
     fn encrypted_data_never_creates_a_replacement_for_a_missing_master_key() {
         let store = MemoryRootKeyStore::default();
         let error = RootCiphers::open(&store, true, false).err().unwrap();
@@ -348,6 +366,20 @@ pub mod tests {
         assert_ne!(&*database, &*secrets);
         assert_ne!(&*database, &*response_content);
         assert_ne!(&*secrets, &*response_content);
+    }
+
+    #[test]
+    fn derived_database_key_matches_existing_sha256_hkdf_format() {
+        let root: [u8; 32] = std::array::from_fn(|index| index as u8);
+        let key = derive_key(&root, DATABASE_KEY_INFO).unwrap();
+        let encoded = key
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            encoded,
+            "d69330ea806cdc19613eb56efbbfc17d8efe819d64f8ea533662ae264c70de91"
+        );
     }
 
     #[test]
