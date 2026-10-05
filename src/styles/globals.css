@@ -1,3 +1,6 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
 @font-face {
   font-family: "Space Grotesk";
   src: url("../assets/fonts/space-grotesk-400.ttf") format("truetype");
@@ -53,10 +56,6 @@
   font-style: normal;
   font-display: swap;
 }
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
 
 @layer base {
 
@@ -395,11 +394,6 @@
     min-height: 100%;
   }
 
-  .ui-response-context-lines .cm-line:hover {
-    background-color: var(--purr-highlight);
-    border-radius: var(--radius-md);
-  }
-
   .ui-drop-indicator {
     box-shadow: inset 0 calc(var(--border-width-emphasis) * -1) 0
       var(--action-emerald);
@@ -519,6 +513,12 @@
     border-color: var(--border-focus);
     outline-offset: calc(var(--focus-ring-width) * -1);
   }
+}
+
+/* CodeMirror's unlayered line styles need an unlayered hover override. */
+.ui-response-context-lines .cm-line:hover {
+  background-color: var(--purr-highlight);
+  border-radius: var(--radius-md);
 }
 
 @layer components {
