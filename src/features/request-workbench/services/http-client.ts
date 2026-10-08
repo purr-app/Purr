@@ -1,4 +1,5 @@
 import { getPublicSuffix } from "tough-cookie";
+import { defaultRequestSettings, requestSettingsSchema, type RequestSettings } from "../../../domain/request-settings";
 import {
   createInlineHttpResponse,
   type HttpExchange,
@@ -122,12 +123,16 @@ export async function executeHttp(
     sensitiveQueryParams?: string[];
     displayRequest?: WireRequest;
     followRedirects?: boolean;
+    settings?: Partial<RequestSettings>;
+    sendCookies?: boolean;
     content?: ResponseContentPort;
     signal?: AbortSignal;
     onProgress?: (progress: HttpTransportProgress) => void;
     responseStorage?: ResponseStoragePolicy;
   } = {},
 ): Promise<StoredHttpResponse> {
+  const settings = requestSettingsSchema.parse({ ...defaultRequestSettings, ...options.settings,
+    ...(options.followRedirects !== undefined ? { followRedirects: options.followRedirects } : {}) });
   const current = { ...request, headers: [...request.headers] };
   const initial = requireHttpUrl(current.url);
   const started = Date.now();
@@ -139,11 +144,11 @@ export async function executeHttp(
   let downloadMs = 0;
   let processing: HttpPipelineTimings | undefined;
   const generatedHeaders: [string, string][] = [];
-  for (let hop = 0; hop <= 10; hop++) {
+  for (let hop = 0; hop <= settings.maxRedirects; hop++) {
     throwIfAborted(options.signal);
     const url = requireHttpUrl(current.url);
     let headers = current.headers;
-    if (options.jar) {
+    if (options.jar && options.sendCookies !== false) {
       const manual = headers
         .filter(([name]) => name.toLowerCase() === "cookie")
         .map(([, value]) => value)
@@ -159,10 +164,13 @@ export async function executeHttp(
       throw new Error(
         "Send requests and authorize OAuth in the Purr desktop app (npm run tauri dev).",
       );
+    const remainingMs = settings.timeoutMs - Math.floor(performance.now() - displayStarted);
+    if (remainingMs <= 0) throw new Error("Request timed out.");
     const response = await options.transport(
       {
         ...current,
         headers,
+        transportSettings: { timeoutMs: remainingMs, validateTlsCertificates: settings.validateTlsCertificates, httpVersion: settings.httpVersion },
       },
       {
         signal: options.signal,
@@ -211,12 +219,12 @@ export async function executeHttp(
         ipcMs: (previous?.ipcMs ?? 0) + (response.pipelineTimings.ipcMs ?? 0),
       };
     }
-    options.jar?.receive(url.toString(), response.headers);
+    if (settings.storeCookies) options.jar?.receive(url.toString(), response.headers);
     const location = response.headers.find(
       ([name]) => name.toLowerCase() === "location",
     )?.[1];
     if (
-      options.followRedirects !== false &&
+      settings.followRedirects &&
       location &&
       [301, 302, 303, 307, 308].includes(response.status)
     ) {
@@ -225,7 +233,7 @@ export async function executeHttp(
           throw new Error("Response content service is unavailable.");
         await options.content.release(response.content);
       }
-      if (hop === 10) throw new Error("Too many redirects (maximum 10).");
+      if (hop === settings.maxRedirects) throw new Error(`Too many redirects (maximum ${settings.maxRedirects}).`);
       const next = requireHttpUrl(new URL(location, url).toString());
       if (url.protocol === "https:" && next.protocol !== "https:")
         throw new Error("Blocked redirect from HTTPS to HTTP.");
@@ -304,9 +312,9 @@ export async function executeHttp(
           ...(current.bodySummary ? { bodySummary: current.bodySummary } : {}),
         },
         displayRequest,
-        followRedirects: options.followRedirects !== false,
-        usesCookieJar: Boolean(options.jar),
-        timeoutMs: 60_000,
+        followRedirects: settings.followRedirects,
+        usesCookieJar: Boolean(options.jar && (options.sendCookies !== false || settings.storeCookies)),
+        timeoutMs: settings.timeoutMs,
         processing: processing ? {
           ...processing,
           displayReadyMs: performance.now() - displayStarted,

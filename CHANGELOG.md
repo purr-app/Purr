@@ -1,5 +1,13 @@
 # @purr/core
 
+## Unreleased
+
+### Improvements
+
+- Configure redirects, their maximum count, a total request timeout, TLS certificate validation, and HTTP version separately for each request.
+- Control whether a request automatically sends and stores workspace cookies with independent switches.
+- Find these controls in clearly separated Settings sections, with Tracing first. Saved settings travel with the project; unsaved edits stay local.
+
 ## 0.1.2
 
 ### Fixes

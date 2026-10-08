@@ -1,0 +1,1 @@
+Self-signed localhost certificate and matching PKCS#8 key used only by native transport tests. The key is public test data and must never be used outside fixtures. Tests verify that this untrusted certificate is rejected by default and accepted only by an explicit per-request TLS override.
