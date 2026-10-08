@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyWorkspaceRequestConfig, cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, duplicateDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
+import { applyWorkspaceRequestConfig, cloneRequestDraft, closeDocument, closeWorkspaceTab, createHttpDocument, createWorkspace, discardAllDrafts, discardDocument, duplicateDocument, getDocumentDisplayName, getEnvironmentVariables, isDocumentDirty, isMeaningfulDraft, openDocument, pinDocument, previewDocument, reorderOpenDocuments, validateEnvironment, validateWorkspace } from "../src/features/workspaces/model/workspace";
 import { resolveEnvironmentValue } from "../src/shared/lib/resolve-variables";
 import { resolveRequestEnvironment } from "../src/features/workspaces/model/environment";
 import { applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParamsFromUrl } from "../src/features/request-workbench/model/request";
@@ -268,4 +268,57 @@ test("environment resolution reaches form fields and authentication", async () =
   const resolved = resolveRequestEnvironment(draft, variables);
   assert.equal(await serializeRequestBody(resolved.body)!.text(), "name=a+%26+b");
   assert.equal(getRequestHeaders(resolved, { variables }).find((header) => header.name === "Authorization")?.value, "Bearer abc");
+});
+
+test("closing the final document selects an open workspace tab and closing it selects the next one", () => {
+  let workspace = createWorkspace();
+  workspace.ui.variablesTabOpen = true;
+  workspace.ui.settingsTabOpen = true;
+  workspace = closeDocument(workspace, workspace.ui.activeDocumentId!);
+  assert.equal(workspace.ui.activeDocumentId, null);
+  assert.equal(workspace.ui.variablesTabActive, true);
+  assert.equal(workspace.ui.settingsTabActive, false);
+  workspace = closeWorkspaceTab(workspace, "variables");
+  assert.equal(workspace.ui.variablesTabOpen, false);
+  assert.equal(workspace.ui.settingsTabActive, true);
+  workspace = closeWorkspaceTab(workspace, "settings");
+  assert.equal(workspace.ui.settingsTabActive, false);
+  assert.equal(workspace.ui.openDocumentIds.length, 0);
+});
+
+test("closing a background document preserves the active workspace tab", () => {
+  let workspace = createWorkspace();
+  workspace.ui.settingsTabOpen = true;
+  workspace.ui.settingsTabActive = true;
+  workspace.ui.variablesTabOpen = true;
+  workspace = closeDocument(workspace, workspace.ui.activeDocumentId!);
+  assert.equal(workspace.ui.settingsTabActive, true);
+  assert.equal(workspace.ui.variablesTabActive, false);
+});
+
+test("closing workspace tabs returns to a remaining document and respects strip order", () => {
+  let workspace = createWorkspace();
+  const id = workspace.ui.activeDocumentId;
+  workspace.ui.variablesTabOpen = true;
+  workspace.ui.variablesTabActive = true;
+  workspace.ui.settingsTabOpen = true;
+  workspace = closeWorkspaceTab(workspace, "variables");
+  assert.equal(workspace.ui.activeDocumentId, id);
+  assert.equal(workspace.ui.settingsTabActive, false);
+  workspace.ui.cookiesTabOpen = true;
+  workspace = closeDocument(workspace, id!);
+  assert.equal(workspace.ui.cookiesTabActive, true);
+  workspace = closeWorkspaceTab(workspace, "cookies");
+  assert.equal(workspace.ui.settingsTabActive, true);
+});
+
+test("restoring an empty document strip repairs unselected open workspace tabs", () => {
+  const workspace = createWorkspace();
+  workspace.ui.openDocumentIds = [];
+  workspace.ui.activeDocumentId = null;
+  workspace.ui.variablesTabOpen = true;
+  workspace.ui.settingsTabOpen = true;
+  const restored = validateWorkspace(workspace);
+  assert.equal(restored.ui.variablesTabActive, true);
+  assert.equal(restored.ui.settingsTabActive, false);
 });

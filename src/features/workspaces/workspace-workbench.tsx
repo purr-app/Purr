@@ -54,6 +54,7 @@ import {
   toggleWorkspaceSidebar,
   cloneRequestDraft,
   closeDocument,
+  closeWorkspaceTab,
   discardAllDrafts,
   createHttpDocument,
   bindGraphqlSchema, detachGraphqlSchema, defaultGraphqlSchema,
@@ -581,9 +582,9 @@ export function WorkspaceWorkbench() {
   };
   const toggleSidebar = () => update(toggleWorkspaceSidebar);
   const openCookies = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false } })); };
-  const closeCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: false, cookiesTabActive: false } }));
+  const closeCookies = () => update((current) => closeWorkspaceTab(current, "cookies"));
   const openSettings = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false } })); };
-  const closeSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: false, settingsTabActive: false } }));
+  const closeSettings = () => update((current) => closeWorkspaceTab(current, "settings"));
   const openVariables = (scope: VariableScope = variableScope, selectedId?: string | null, draft?: Variable | null) => {
     updates.leaveTab();
     setVariableScope(scope);
@@ -591,7 +592,7 @@ export function WorkspaceWorkbench() {
     if (draft !== undefined) setVariableDraft(draft);
     update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: true, variablesTabActive: true, cookiesTabActive: false, settingsTabActive: false } }));
   };
-  const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: false, variablesTabActive: false } })); };
+  const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => closeWorkspaceTab(current, "variables")); };
   const showEnvironment = async (create = false) => {
     const existing = workspace?.environments.find((item) => item.id === workspace.activeEnvironmentId);
     try {

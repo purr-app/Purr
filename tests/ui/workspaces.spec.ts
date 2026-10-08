@@ -900,3 +900,27 @@ test("switching workspaces clears variable details and unfinished definitions", 
   await page.getByRole("tab", { name: "Variables", exact: true }).click();
   await expect(page.getByLabel("Variable name", { exact: true })).toHaveCount(0);
 });
+
+for (const method of ["shortcut", "close button"] as const) {
+  test(`closing the last document via ${method} selects Variables then Workspace settings`, async ({ page }) => {
+    await page.goto("/");
+    const request = tabs(page).filter({ hasText: "Untitled Request" });
+    await page.getByRole("button", { name: "Open variables", exact: true }).click();
+    await page.getByRole("button", { name: "Select workspace", exact: true }).click();
+    await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+    await request.click();
+    const close = async (name: string) => {
+      if (method === "shortcut") await page.keyboard.press(`${mod}+w`);
+      else await page.getByRole("button", { name, exact: true }).click();
+    };
+    await close("Close Untitled Request");
+    await expect(page.getByRole("tab", { name: "Variables", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("region", { name: "Variables", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Nothing is open" })).toHaveCount(0);
+    await close("Close variables");
+    await expect(page.getByRole("tab", { name: "Workspace settings", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByLabel("Workspace name", { exact: true })).toBeVisible();
+    await close("Close workspace settings");
+    await expect(page.getByRole("heading", { name: "Nothing is open" })).toBeVisible();
+  });
+}

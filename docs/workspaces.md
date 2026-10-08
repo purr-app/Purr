@@ -107,7 +107,7 @@ Three persistent workspace-level tabs share the tab strip but are not documents:
 - Request settings;
 - Variables.
 
-Their open/active flags are stored in `Workspace.ui` and cannot be placed in folders.
+Their open/active flags are stored in `Workspace.ui` and cannot be placed in folders. Closing the last document activates the first remaining workspace-level tab in strip order (Cookies, Variables, Workspace settings). Closing a workspace-level tab returns to the selected document, or another open workspace-level tab when no documents remain. Previously saved local state with open workspace tabs and no selection is repaired on restoration. The empty state appears only when no workspace tabs remain.
 
 ## Request/response layout
 
