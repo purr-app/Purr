@@ -1,6 +1,6 @@
 import { Network, SendHorizontal } from "lucide-react";
 import type { GraphQLSchema } from "graphql";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useRef, type ReactNode } from "react";
 
 import { Button } from "../../../shared/components/ui/button";
 import { HttpMethodPicker } from "../../../shared/components/http/http-method-picker";
@@ -41,6 +41,7 @@ type RequestComposerProps = {
   onDraftChange: (draft: RequestDraft) => void;
   onSend: () => void;
   sending: boolean;
+  elapsed: number;
   authContext: AuthContext;
   authRuntime: AuthRuntime;
   detailsCollapsed?: boolean;
@@ -64,6 +65,7 @@ export function RequestComposer({
   onDraftChange,
   onSend,
   sending,
+  elapsed,
   authContext,
   authRuntime,
   detailsCollapsed = false,
@@ -86,16 +88,6 @@ export function RequestComposer({
   const effectiveDraft = applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig);
   const connection = workspaceConfig.schemaConnections?.find((item) => item.id === draft.graphql?.schemaId);
   const headers = getRequestHeaders(effectiveDraft, authContext);
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    if (!sending) {
-      setElapsed(0);
-      return;
-    }
-    const started = performance.now();
-    const timer = window.setInterval(() => setElapsed(performance.now() - started), 50);
-    return () => window.clearInterval(timer);
-  }, [sending]);
 
   const selectSection = onSectionChange;
   const variableActionsRef = useRef<TemplateVariableActions>({ definitions: variableDefinitions, onOpenVariable, onCreateMissingVariable });

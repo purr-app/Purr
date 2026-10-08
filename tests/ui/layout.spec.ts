@@ -466,3 +466,46 @@ test("response cookies empty state fills the response surface", async ({ page })
   }).toBeLessThan(2);
   await page.screenshot({ path: "test-results/layout-cookies-empty.png", fullPage: true });
 });
+
+test("request and response clocks stay synchronized across rerenders and tab navigation", async ({ page }) => {
+  await page.clock.install();
+  await page.addInitScript(() => {
+    (window as any).isTauri = true;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string) => {
+      if (command === "start_http") return new Promise(() => {});
+    } };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/delay");
+  const requestTab = page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab").first();
+  const requestTabId = await requestTab.getAttribute("id");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const pending = page.getByRole("region", { name: "Response pending", exact: true });
+  await expect(pending).toBeVisible();
+  const responseElapsed = () => pending.locator("[data-response-elapsed]").evaluate((element) => Number.parseFloat(element.textContent!));
+  const assertClocks = async (minimum: number) => {
+    const elapsed = await responseElapsed();
+    expect(elapsed).toBeGreaterThanOrEqual(minimum);
+    const running = await page.getByRole("button", { name: /Request running/ }).getAttribute("aria-label");
+    expect(Math.abs(Number(running!.match(/running, (\d+)/)![1]) - elapsed)).toBeLessThanOrEqual(1);
+  };
+  await page.clock.runFor(2600);
+  await assertClocks(2500);
+  await page.getByRole("button", { name: "Vertical split view", exact: true }).click();
+  await page.clock.runFor(1400);
+  await assertClocks(3900);
+  await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
+  await expect(pending).toHaveCount(0);
+  await page.clock.runFor(1500);
+  await page.locator(`[id="${requestTabId}"]`).click();
+  await expect(pending).toBeVisible();
+  await assertClocks(5400);
+  await page.keyboard.press("Escape");
+  await expect(pending).toHaveCount(0);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(pending).toBeVisible();
+  expect(await responseElapsed()).toBeLessThan(100);
+  await page.clock.runFor(1200);
+  await assertClocks(1100);
+  await page.keyboard.press("Escape");
+});

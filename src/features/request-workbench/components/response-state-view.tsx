@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { CircleAlert } from "lucide-react";
 
 import { Button } from "../../../shared/components/ui/button";
@@ -45,11 +45,8 @@ function progressLabel(progress: HttpTransportProgress | null) {
   return `Downloading ${received} / ${(totalBytes / 1024 / 1024).toFixed(1)} MiB…`;
 }
 
-export function PendingResponse({ graphql, onCancel, progress }: { graphql: boolean; onCancel: () => void; progress: HttpTransportProgress | null }) {
-  const [elapsed, setElapsed] = useState(0);
+export function PendingResponse({ graphql, onCancel, progress, elapsed }: { graphql: boolean; onCancel: () => void; progress: HttpTransportProgress | null; elapsed: number }) {
   useEffect(() => {
-    const started = performance.now();
-    const timer = window.setInterval(() => setElapsed(performance.now() - started), 50);
     const cancel = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -57,7 +54,6 @@ export function PendingResponse({ graphql, onCancel, progress }: { graphql: bool
     };
     window.addEventListener("keydown", cancel);
     return () => {
-      window.clearInterval(timer);
       window.removeEventListener("keydown", cancel);
     };
   }, [onCancel]);

@@ -37,6 +37,7 @@ function ResponseArea({
   response,
   error,
   sending,
+  elapsed,
   graphql,
   onCreateVariable,
   onCancel,
@@ -62,6 +63,7 @@ function ResponseArea({
   response: StoredHttpResponse | null;
   error: string;
   sending: boolean;
+  elapsed: number;
   graphql: boolean;
   onCreateVariable?: (candidate: ResponseVariableCandidate) => void;
   onCancel: () => void;
@@ -77,7 +79,7 @@ function ResponseArea({
     <div className="mb-ui-2 flex items-center justify-between"><span className="text-ui-sm text-content-secondary">{sending ? "Resolving dynamic variables…" : "Could not resolve dynamic variables"}</span>{sending ? <button type="button" className="ui-focus-ring rounded-ui-md px-ui-2 text-ui-sm text-content-secondary" onClick={onCancel}>Cancel</button> : null}</div>
     <DynamicDependencyChain steps={dependencySteps} rootName={documentName} failed={Boolean(error)} onOpenHistory={onOpenDependency} onOpenVariable={onOpenVariable} />
   </section>;
-  if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} progress={progress} />;
+  if (sending) return <PendingResponse graphql={graphql} onCancel={onCancel} progress={progress} elapsed={elapsed} />;
   if (error) return <ErrorResponse message={error} headerAction={<div className="flex items-center gap-ui-2">{dynamicExecution ? <DynamicExecutionBadge dynamicExecution={dynamicExecution} /> : null}{onOpenHistory ? <HistoryPopover workspaceId={workspaceId} documentId={documentId} selectedId={historyEntryId} historicalStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} onOpen={onOpenHistory} /> : null}</div>} />;
   if (response) return <ResponseViewer dynamicExecution={dynamicExecution} response={response} graphql={graphql} onCreateVariable={onCreateVariable} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />;
   return <div className="relative h-full min-h-0">
@@ -87,6 +89,8 @@ function ResponseArea({
 }
 
 export type RequestSession = {
+  /** Monotonic start shared by request/response UI; local to the current app session. */
+  executionStartedAt?: number;
   cancelExecution?: () => void;
   dependencyFailure?: boolean;
   resolvingDependencies?: boolean;
@@ -164,7 +168,15 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
   const [urlInvalid, setUrlInvalid] = useState(false);
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
   const { sending, response, error, canvasFocus } = session;
-  const setSending = (sending: boolean) => onSessionChange({ sending });
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!sending) { setElapsed(0); return; }
+    const started = session.executionStartedAt ?? performance.now();
+    const tick = () => setElapsed(Math.max(0, performance.now() - started));
+    tick();
+    const timer = window.setInterval(tick, 50);
+    return () => window.clearInterval(timer);
+  }, [sending, session.executionStartedAt]);
   const setResponse = (response: StoredHttpResponse | null) => onSessionChange({ response });
   const setError = (error: string) => onSessionChange({ error });
   const setCanvasFocus = (canvasFocus: RequestSession["canvasFocus"]) => onSessionChange({ canvasFocus });
@@ -253,7 +265,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     const abort = new AbortController();
     abortRef.current = abort;
     sendingRef.current = true;
-    setSending(true);
+    onSessionChange({ sending: true, executionStartedAt: performance.now() });
     setProgress(null);
     onSessionChange({ dependencySteps: [], dependencyFailure: false, resolvingDependencies: true });
     setError("");
@@ -314,7 +326,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
       sendingRef.current = false;
       abortRef.current = null;
       setProgress(null);
-      onSessionChange({ sending: false, cancelExecution: undefined });
+      onSessionChange({ sending: false, executionStartedAt: undefined, cancelExecution: undefined });
     }
   };
   const cancelSend = () => {
@@ -327,7 +339,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     authRuntime.cancel();
     executionRef.current += 1;
     sendingRef.current = false;
-    onSessionChange({ sending: false, cancelExecution: undefined, resolvingDependencies: false });
+    onSessionChange({ sending: false, executionStartedAt: undefined, cancelExecution: undefined, resolvingDependencies: false });
     setProgress(null);
     if (!response) setCanvasFocus("request");
   };
@@ -362,6 +374,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
       }}
       sending={sending}
       schemaSelector={schemaSelector}
+      elapsed={elapsed}
       authContext={authContext}
       authRuntime={authRuntime}
       activeSection={requestSection}
@@ -380,7 +393,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     />
   );
   const responsePane = (
-    <ResponseArea dynamicExecution={dynamicExecution} dependencySteps={session.dependencySteps} dependencyFailure={session.dependencyFailure} resolvingDependencies={session.resolvingDependencies} onOpenDependency={onOpenDependency} onOpenVariable={onOpenVariable} documentName={documentName} response={response} error={error} sending={sending} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />
+    <ResponseArea dynamicExecution={dynamicExecution} dependencySteps={session.dependencySteps} dependencyFailure={session.dependencyFailure} resolvingDependencies={session.resolvingDependencies} onOpenDependency={onOpenDependency} onOpenVariable={onOpenVariable} documentName={documentName} response={response} error={error} sending={sending} elapsed={elapsed} graphql={Boolean(draft.graphql)} onCreateVariable={onCreateVariable} onCancel={cancelSend} progress={progress} workspaceId={workspaceId} documentId={documentId} onOpenHistory={onOpenHistory} historyEntryId={historyEntryId} historyStartedAt={historyStartedAt} onReturnCurrent={onReturnCurrent} />
   );
 
   return (
