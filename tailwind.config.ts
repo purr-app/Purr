@@ -128,6 +128,7 @@ export default {
         "ui-history-popover": "var(--history-popover-width)",
         "ui-context-menu": "var(--context-menu-width)",
         "ui-document-tab": "var(--document-tab-max-width)",
+        "ui-settings-dialog": "var(--settings-dialog-height)",
         "ui-dialog": "var(--dialog-width)",
         "ui-name-dialog": "var(--name-dialog-width)",
         "ui-notification": "var(--notification-width)",

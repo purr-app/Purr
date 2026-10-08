@@ -13,6 +13,7 @@ const buttonVariants = cva(
         brand: "bg-action-brand text-content-primary shadow-button hover:bg-action-brand-hover",
         graphql: "bg-action-graphql text-purr-base shadow-button hover:bg-action-graphql-hover",
         secondary: "border border-border-subtle bg-purr-elevated text-content-secondary hover:bg-purr-highlight hover:text-content-primary",
+        toolbar: "border border-border-default bg-purr-highlight text-content-primary hover:bg-purr-muted",
         ghost: "text-content-secondary hover:bg-purr-highlight hover:text-content-primary",
       },
       size: {

@@ -25,7 +25,7 @@ import { SessionCookieJar } from "./model/cookie-jar";
 import { useAuthRuntime } from "./hooks/use-auth-runtime";
 import type { StoredHttpResponse } from "../../domain/http";
 import type { HttpTransportProgress } from "../../application/ports/http";
-import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
+import { snapshotSchemaRequest, withSchemaAuthContext, applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, type RequestKind, type WorkspaceRequestConfig } from "./model/request-workspace-config";
 import { RequestCodeDialog } from "./components/request-code-dialog";
 import { DynamicVariableResolutionError, resolveDynamicVariables, type DynamicVariableRequest, type DynamicExecutionStep } from "../workspaces/services/dynamic-variable-resolver";
 import { cloneRequestDraft, type DynamicVariableCacheEntry, type Variable } from "../workspaces/model/workspace";
@@ -105,7 +105,7 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schemaSelector, schema, onOpenSchema, onOpenGraphqlType }: {
   dynamicExecution?: DynamicExecutionMetadata;
   onOpenDependency?: (id: string) => void;
   onReplay?: (operationName?: string) => void;
@@ -115,6 +115,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
   onOpenHistory?: (id: string) => void;
   onHistoryError?: (message: string) => void;
   workspaceId: string;
+  schemaSelector?: import("react").ReactNode;
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -157,8 +158,8 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || workspaceName, auth: workspaceAuthEntry.value } : undefined,
   [draft.workspace.authEnabled, workspaceAuthEntry, workspaceName]);
   const sensitiveVariableNames = useMemo(() => runtimeVariables.filter((variable) => variable.sensitive).map((variable) => variable.name), [runtimeVariables]);
-  const [authContext, setAuthContext] = useState<AuthContext>({ variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId });
-  useEffect(() => setAuthContext((previous) => ({ ...previous, variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId })), [variables, sensitiveVariableNames, workspaceAuth, workspaceProfiles, documentId]);
+  const [authContext, setAuthContext] = useState<AuthContext>(withSchemaAuthContext(draft, workspaceConfig, { variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId }));
+  useEffect(() => setAuthContext((previous) => withSchemaAuthContext(draft, workspaceConfig, { ...previous, variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId })), [variables, sensitiveVariableNames, workspaceAuth, workspaceProfiles, documentId, draft.graphql?.schemaId, workspaceConfig]);
   const [codeOpen, setCodeOpen] = useState(false);
   const [urlInvalid, setUrlInvalid] = useState(false);
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
@@ -181,7 +182,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     onWorkspaceAuthChange,
   );
 
-  const contextFor = useCallback((request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames): AuthContext => ({
+  const contextFor = useCallback((request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames): AuthContext => withSchemaAuthContext(request, workspaceConfig, {
     ...authContext,
     variables: resolvedVariables,
     sensitiveVariableNames: sensitiveNames,
@@ -210,7 +211,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     workspaceConfig,
     signal: execution?.signal,
     onSteps: (steps) => { if (!execution?.signal.aborted) onSessionChange({ dependencySteps: steps }); },
-    onExecuted: async (record) => persistence.history?.append(workspaceId, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: record.document.request }),
+    onExecuted: async (record) => persistence.history?.append(workspaceId, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: snapshotSchemaRequest(record.document.request, workspaceConfig, contextFor(record.document.request, record.document.kind, record.document.id)) }),
     onHistoryError: () => onHistoryError?.("Could not save dependency history."),
     environmentId: rootEnvironmentId,
     documents: sourceDocuments,
@@ -257,7 +258,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     onSessionChange({ dependencySteps: [], dependencyFailure: false, resolvingDependencies: true });
     setError("");
     const startedAt = Date.now();
-    const editor = cloneRequestDraft(draft);
+    const editor = cloneRequestDraft(snapshotSchemaRequest(draft, workspaceConfig, authContext));
     if (graphqlOperationName && editor.graphql) editor.graphql.operationName = graphqlOperationName;
     const releaseAttachments = persistence.history?.retainAttachments(workspaceId);
     let dispatched = false;
@@ -360,6 +361,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
         void send();
       }}
       sending={sending}
+      schemaSelector={schemaSelector}
       authContext={authContext}
       authRuntime={authRuntime}
       activeSection={requestSection}

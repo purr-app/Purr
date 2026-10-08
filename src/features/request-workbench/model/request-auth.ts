@@ -44,10 +44,11 @@ export type RequestAuth = {
     placement: "header" | "query" | "cookie";
   };
   oauth2: OAuthConfig;
-  inherit: { source: "auto" | "workspace" | "environment"; profileId?: string };
+  inherit: { source: "auto" | "workspace" | "environment" | "schema"; profileId?: string };
 };
 export type AuthProfile = { id: string; name: string; auth: RequestAuth };
 export type AuthContext = {
+  schema?: AuthProfile;
   workspace?: AuthProfile;
   workspaceProfiles?: AuthProfile[];
   environment?: AuthProfile;
@@ -117,7 +118,9 @@ export function resolveAuth(
       ? context.workspaceProfiles?.find((profile) => profile.id === current.inherit.profileId)
       : context.workspace ?? context.workspaceProfiles?.[0];
     source =
-      current.inherit.source === "workspace"
+      current.inherit.source === "schema"
+        ? context.schema
+        : current.inherit.source === "workspace"
         ? workspace
         : current.inherit.source === "environment"
           ? context.environment

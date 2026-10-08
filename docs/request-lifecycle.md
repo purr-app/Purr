@@ -285,3 +285,9 @@ Runtime references in Bearer, Basic and API key credentials remain usable in the
 only literal credential segments are replaced with `********`. Source requests requiring masked
 credentials still need those values configured or explicitly revealed. Substitution scans each
 template once, so extracted text resembling an internal placeholder remains literal data.
+
+## GraphQL connection context
+
+`applyWorkspaceRequestConfig` also resolves a bound GraphQL connection endpoint before variable resolution, auth/body preparation, cookies and native transport. Request-level query/path rows cannot override the bound endpoint; their editor values remain available when the request is independent. `withSchemaAuthContext` supplies connection auth to the common resolver without copying it into each request. Introspection-only headers do not flow into operations.
+
+Send, dynamic-variable discovery/execution and code export use the same connection projection. New bound requests inherit connection auth; explicit request overrides, including None, take precedence. Request execution snapshots materialize connection settings so subsequent edits to the connection do not retarget historical records.

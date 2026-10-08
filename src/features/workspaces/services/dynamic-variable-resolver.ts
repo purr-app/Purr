@@ -1,4 +1,5 @@
-import { applyWorkspaceRequestConfig, getWorkspaceAuth, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
+import { resolveAuth } from "../../request-workbench/model/request-auth";
+import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withSchemaAuthContext, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import type { DynamicExecutionMetadata } from "../../../application/ports/history";
 import type { RequestDraft } from "../../request-workbench/model/request";
 import type { ResponseContentPort } from "../../../application/ports/response-content";
@@ -46,9 +47,13 @@ export type DynamicExecutionRecord = {
 export function effectiveDynamicRequest(document: DynamicVariableRequest, config?: WorkspaceRequestConfig): RequestDraft {
   if (!config) return document.request;
   const request = applyWorkspaceRequestConfig(document.request, document.kind, config);
-  if (request.auth.type !== "inherit" || !request.workspace.authEnabled) return request;
-  const auth = getWorkspaceAuth(config, document.kind, request.auth.inherit.profileId);
-  return auth ? { ...request, auth: auth.value } : request;
+  const profile = getWorkspaceAuth(config, document.kind);
+  const context = withSchemaAuthContext(request, config, {
+    workspace: profile ? { id: profile.id, name: profile.name, auth: profile.value } : undefined,
+    workspaceProfiles: getWorkspaceAuthProfiles(config, document.kind).map((entry) => ({ id: entry.id, name: entry.name, auth: entry.value })),
+  });
+  const resolved = resolveAuth(request.auth, context);
+  return resolved.error ? request : { ...request, auth: resolved.auth };
 }
 
 export type DynamicVariableResolution = {

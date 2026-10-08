@@ -32,7 +32,7 @@ export function Modal({ title, children, onClose, className, initialFocus = "fir
       } }}
       className={cn("ui-modal m-auto w-ui-dialog max-w-full overflow-visible rounded-ui-xl border border-border bg-purr-overlay p-ui-0 font-ui text-content-primary shadow-popover outline-none", className)}>
       <PopoverPortalProvider container={portalContainer}>
-        <div className="flex items-center justify-between border-b border-border px-ui-5 py-ui-3">
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-ui-5 py-ui-3">
           <h2 className="text-ui-lg font-medium">{title}</h2>
           <Button variant="ghost" size="icon" aria-label="Close dialog" onClick={onClose}><X className="size-ui-4" /></Button>
         </div>

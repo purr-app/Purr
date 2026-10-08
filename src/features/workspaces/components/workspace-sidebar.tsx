@@ -77,7 +77,7 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
           : <DocumentRow key={item.id} document={item} active={item.id === activeId} selected={selectedDocumentIds.includes(item.id)} selectedDocumentIds={selectedDocumentIds} draft={false} folders={folders}
             onOpen={onOpen} onPin={onPin} onDuplicate={onDuplicate} onDiscard={onDiscard} onDelete={onDelete} onRename={onRename} onMove={onMoveDocument} onReorder={onReorderDocument} onSelect={selectDocument} />)}
       </div>
-      <AutoGroup label="Schemas" documents={schemas} activeId={activeId} folders={folders} onOpen={onOpen} onPin={onPin} onDuplicate={onDuplicate} onDiscard={onDiscard} onDelete={onDelete} onRename={onRename} onMove={onMoveDocument} />
+      <AutoGroup label="Schema Connections" documents={schemas} activeId={activeId} folders={folders} onOpen={onOpen} onPin={onPin} onDuplicate={onDuplicate} onDiscard={onDiscard} onDelete={onDelete} onRename={onRename} onMove={onMoveDocument} />
       <AutoGroup label="Drafts" documents={drafts} activeId={activeId} folders={folders} onOpen={onOpen} onPin={onPin} onDuplicate={onDuplicate} onDiscard={onDiscard} onDelete={onDelete} onRename={onRename} onMove={onMoveDocument}
         onDiscardAll={onDiscardAll} showDiscardAll={hasDrafts} />
       {!hasContent && <p className="px-ui-2 py-ui-3 text-ui-sm text-content-tertiary">{query ? "No matching documents." : "Create a request or folder to get started."}</p>}
@@ -176,7 +176,7 @@ function parseDraggedDocumentIds(value: string, fallback: string): string[] {
 }
 
 function AutoGroup({ label, documents, activeId, folders, onOpen, onPin, onDuplicate, onDiscard, onDiscardAll, showDiscardAll = false, onDelete, onRename, onMove }: {
-  label: "Schemas" | "Drafts";
+  label: "Schema Connections" | "Drafts";
   documents: WorkspaceDocument[];
   activeId: string | null;
   folders: FolderResource[];

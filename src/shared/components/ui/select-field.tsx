@@ -1,6 +1,6 @@
 import { useTabState } from "../../state/tab-state";
 import { Check, ChevronDown } from "lucide-react";
-import { useId, useRef } from "react";
+import { useId, useRef, type ReactNode } from "react";
 
 import { cn } from "../../lib/cn";
 import { Popover, PopoverContent, PopoverTrigger } from "./popover";
@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./popover";
 export type SelectFieldOption<Value extends string> = {
   value: Value;
   label: string;
+  icon?: ReactNode;
 };
 
 type SelectFieldProps<Value extends string> = {
@@ -72,7 +73,7 @@ export function SelectField<Value extends string>({
             }
           }}
         >
-          <span className="truncate">{selected.label}</span>
+          <span className="flex min-w-0 items-center gap-ui-2">{selected.icon}<span className="truncate">{selected.label}</span></span>
           <ChevronDown
             className={cn(
               "size-ui-3 shrink-0 transition-transform duration-ui-fast",
@@ -134,7 +135,7 @@ export function SelectField<Value extends string>({
                 }
               }}
             >
-              <span>{option.label}</span>
+              <span className="flex items-center gap-ui-2">{option.icon}{option.label}</span>
               {option.value === value ? (
                 <Check
                   className="size-ui-3 shrink-0 text-action-brand"

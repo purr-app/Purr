@@ -54,6 +54,7 @@ pub async fn save_response_body(
     body_base64: String,
     suggested_name: String,
     extension: String,
+    dialog_title: Option<String>,
 ) -> Result<Option<String>, String> {
     let bytes = STANDARD
         .decode(body_base64)
@@ -67,10 +68,10 @@ pub async fn save_response_body(
     let mut dialog = app
         .dialog()
         .file()
-        .set_title("Save response")
+        .set_title(dialog_title.as_deref().unwrap_or("Save response"))
         .set_file_name(file_name);
     if !extension.is_empty() {
-        dialog = dialog.add_filter("Response file", &[extension.as_str()]);
+        dialog = dialog.add_filter("File", &[extension.as_str()]);
     }
     let Some(file) = dialog.blocking_save_file() else {
         return Ok(None);

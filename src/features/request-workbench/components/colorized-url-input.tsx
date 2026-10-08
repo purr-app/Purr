@@ -64,8 +64,8 @@ export const ColorizedUrlInput = forwardRef<HTMLInputElement, ColorizedUrlInputP
     if (colorized.current) colorized.current.scrollLeft = event.currentTarget.scrollLeft;
     onScroll?.(event);
   };
-  return <div className="relative h-control-md min-w-0 flex-1 overflow-hidden rounded-ui-lg">
-    {value ? <div ref={colorized} aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center overflow-hidden px-ui-3 font-code text-ui-sm sm:text-ui-md">
+  return <div className={cn("relative h-control-md min-w-0 flex-1 overflow-hidden rounded-ui-lg", props.readOnly && "bg-purr-elevated")}>
+    {value ? <div ref={colorized} aria-hidden="true" className={cn("pointer-events-none absolute inset-0 flex items-center overflow-hidden px-ui-3 font-code text-ui-sm sm:text-ui-md", props.readOnly && "opacity-ui-disabled")}>
       <span className="whitespace-pre">
         {splitUrl(value).map((part, index) => <span key={`${part.kind}-${index}`} data-url-part={part.kind} className={partClass(part.kind)}>{colorizedPart(part)}</span>)}
       </span>
@@ -76,7 +76,7 @@ export const ColorizedUrlInput = forwardRef<HTMLInputElement, ColorizedUrlInputP
       value={value}
       variant="transparent"
       onScroll={handleScroll}
-      className={cn("relative h-control-md min-w-0 flex-1 font-code text-transparent caret-content-primary text-ui-sm sm:text-ui-md", className)}
+      className={cn("relative h-control-md min-w-0 flex-1 font-code text-transparent caret-content-primary text-ui-sm sm:text-ui-md", props.readOnly && "cursor-default border-border-subtle", className)}
     />
   </div>;
 });

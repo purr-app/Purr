@@ -32,6 +32,7 @@ type RequestComposerProps = {
   historyAction?: ReactNode;
   historical?: boolean;
   historyStartedAt?: number;
+  schemaSelector?: ReactNode;
   schema?: GraphQLSchema;
   onOpenSchema?: () => void;
   onOpenGraphqlType?: (name: string) => void;
@@ -69,7 +70,7 @@ export function RequestComposer({
   onToggleDetails,
   activeSection,
   onSectionChange,
-  schema,
+  schemaSelector, schema,
   onOpenSchema,
   onOpenGraphqlType,
   onRunGraphqlOperation,
@@ -83,6 +84,7 @@ export function RequestComposer({
   onImportCurl,
 }: RequestComposerProps) {
   const effectiveDraft = applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig);
+  const connection = workspaceConfig.schemaConnections?.find((item) => item.id === draft.graphql?.schemaId);
   const headers = getRequestHeaders(effectiveDraft, authContext);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -125,7 +127,7 @@ export function RequestComposer({
               value={draft.method}
               onValueChange={(method) => onDraftChange({ ...draft, method })}
             />}
-            <div className="min-w-0 flex-1"><TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params), pathParams: getRequestPathParamsFromUrl(url, draft.pathParams) })}>{(bindings) => <ColorizedUrlInput
+            <div className="min-w-0 flex-1">{connection ? <ColorizedUrlInput value={connection.endpoint} readOnly aria-label="Request URL" title="Endpoint is managed by the Schema Connection" placeholder="Set an endpoint in Schema Connection settings" /> : <TemplateVariablePopover value={draft.url} actions={variableActions} onValueChange={(url) => onDraftChange({ ...draft, url, params: getRequestQueryParamsFromUrl(url, draft.params), pathParams: getRequestPathParamsFromUrl(url, draft.pathParams) })}>{(bindings) => <ColorizedUrlInput
               className={cn(urlInvalid && "border-accent-red")}
               value={draft.url}
               {...bindings}
@@ -139,10 +141,13 @@ export function RequestComposer({
                 event.preventDefault();
                 onImportCurl(command);
               }}
-            />}</TemplateVariablePopover></div>
-            {draft.graphql && <Button type="button" variant="ghost" size="sm" aria-label="Open GraphQL schema" title="Schema explorer · introspection or import" onClick={onOpenSchema}>
-              <Network className="size-ui-4 text-action-graphql" /><span className="hidden lg:inline">Schema</span>
-            </Button>}
+            />}</TemplateVariablePopover>}</div>
+            {draft.graphql && <div className="flex shrink-0 items-center gap-ui-1">
+              <Button type="button" variant="ghost" size="icon" aria-label="Open GraphQL schema" title="Open Schema Connection" onClick={onOpenSchema}>
+                <Network className="size-ui-4 text-action-graphql" />
+              </Button>
+              {schemaSelector}
+            </div>}
             <Button
               variant={sending ? "secondary" : draft.graphql ? "graphql" : "default"}
               className={cn(
@@ -208,7 +213,7 @@ export function RequestComposer({
               onRunGraphqlOperation={onRunGraphqlOperation}
               activeSection={activeSection}
               draft={draft}
-              onDraftChange={onDraftChange}
+              onDraftChange={(next) => onDraftChange(connection ? { ...next, url: draft.url, params: draft.params, pathParams: draft.pathParams } : next)}
               authContext={authContext}
               authRuntime={authRuntime}
               effectiveDraft={effectiveDraft}

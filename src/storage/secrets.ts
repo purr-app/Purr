@@ -38,6 +38,9 @@ export async function protectRuntime(value: unknown, store: SecureStore, workspa
   if (Array.isArray(value)) return Promise.all(value.map((item, i) => protectRuntime(item, store, workspace, `${owner}/${i}`)));
   if (!value || typeof value !== "object" || value instanceof File) return value;
   const object = value as Record<string, unknown>;
+  if (object.secret === true && typeof object.value === "string" && typeof object.name === "string") {
+    return { ...object, value: { __purrSecret: await storeCredential(store, secretRef(workspace, owner, "value"), object.value) } };
+  }
   const auth = "bearer" in object && "oauth2" in object && "inherit" in object;
   if (auth) {
     const copy = structuredClone(object) as Record<string, Record<string, unknown>>;

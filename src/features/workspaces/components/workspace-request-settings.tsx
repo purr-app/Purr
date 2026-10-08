@@ -26,7 +26,7 @@ import type { IntegrationSummary } from "../../../domain/observability";
 import { useExtensionRegistry } from "../../../extension-api/extension-context";
 import { useApplicationServices } from "../../../app/application-services-context";
 
-type SettingsTab = "general" | "headers" | "auth" | "integrations";
+type SettingsTab = "general" | "headers" | "auth" | "graphql" | "integrations";
 
 const scopeLabel = (scope: RequestScope) => scope === "all" ? "All requests" : `${scope === "graphql" ? "GraphQL" : "HTTP"} requests`;
 const authLabel = (auth: WorkspaceSharedAuth) => authTypeOptions.find((option) => option.value === auth.value.type)?.label ?? auth.value.type;
@@ -40,6 +40,7 @@ export function WorkspaceSettings({
   name,
   description,
   config,
+  schemaConnections, defaultGraphqlSchemaId, onDefaultGraphqlSchemaChange,
   integrations,
   variables,
   variableActions,
@@ -55,6 +56,9 @@ export function WorkspaceSettings({
   name: string;
   description: string;
   config: WorkspaceRequestConfig;
+  schemaConnections: readonly { id: string; name: string }[];
+  defaultGraphqlSchemaId?: string;
+  onDefaultGraphqlSchemaChange: (id: string | undefined) => void;
   integrations: readonly IntegrationDefinition[];
   variables: Record<string, string>;
   variableActions?: TemplateVariableActions;
@@ -136,7 +140,7 @@ export function WorkspaceSettings({
         </header>
         <div className="shrink-0 border-b border-border-subtle px-ui-4 py-ui-2">
           <SegmentedTabs id="workspace-settings" panelId="workspace-settings-panel" label="Workspace settings"
-            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "integrations", label: "Integrations" }]} onValueChange={setTab} />
+            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }]} onValueChange={setTab} />
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-5">
           {tab === "general" ? (
@@ -152,6 +156,18 @@ export function WorkspaceSettings({
                 <p className="mb-ui-3 mt-ui-1 text-ui-xs text-content-tertiary">Removes Purr’s local state and managed project directory. An attached external directory is left on disk.</p>
                 {!confirmDelete ? <Button variant="secondary" className="text-accent-red" onClick={() => setConfirmDelete(true)}><Trash2 className="size-ui-4" />Delete workspace</Button>
                   : <div className="flex items-center gap-ui-2"><span className="text-ui-sm text-accent-red">Delete “{name}”?</span><Button variant="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Button><Button variant="secondary" className="text-accent-red" disabled={deleting} onClick={async () => { setDeleting(true); try { await onDelete(); } finally { setDeleting(false); } }}>{deleting ? "Deleting…" : "Delete permanently"}</Button></div>}
+              </div>
+            </div>
+          ) : tab === "graphql" ? (
+            <div className="max-w-ui-dialog space-y-ui-4">
+              <div><h2 className="m-ui-0 text-ui-md font-medium text-content-primary">GraphQL defaults</h2>
+                <p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">Choose the Schema Connection used by new GraphQL requests.</p></div>
+              <div className="space-y-ui-2">
+                <span className="block text-ui-xs font-medium text-content-secondary">Default schema</span>
+                <SelectField label="Default GraphQL schema" size="lg" className="w-full" value={defaultGraphqlSchemaId ?? "last-used"}
+                  options={[{ value: "last-used", label: "Use last-used schema" }, ...schemaConnections.map((connection) => ({ value: connection.id, label: connection.name || "Untitled GraphQL schema" }))]}
+                  onValueChange={(id) => onDefaultGraphqlSchemaChange(id === "last-used" ? undefined : id)} />
+                <p className="text-ui-xs text-content-tertiary">Without a default, new requests reuse the last-used connection. Existing requests keep their selected schema.</p>
               </div>
             </div>
           ) : tab === "headers" ? (

@@ -1,7 +1,7 @@
 import { credentialSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
 import { responseForPersistence, restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
 import { serializeResource } from "../storage/yaml";
-import { createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
+import { normalizeRequestAuth, createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
 import type { RequestDraft } from "../features/request-workbench/model/request";
 import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isExtensionDocument, isRequestDocument, validateWorkspace,
@@ -86,7 +86,7 @@ export async function authToDefinition(auth: RequestAuth, secure: SecureStore, w
     auth.secretRefs?.[field] ?? secretRef(workspace, owner, field), value, mode ?? (/{{[^{}]+}}/.test(value) ? "plain" : "secret"));
   switch (auth.type) {
     case "none": return { type: "none" };
-    case "inherit": return { type: "inherit", ...(auth.inherit.profileId ? { profileId: auth.inherit.profileId } : {}) };
+    case "inherit": return { type: "inherit", ...(auth.inherit.source === "schema" ? { source: "schema" as const } : {}), ...(auth.inherit.profileId ? { profileId: auth.inherit.profileId } : {}) };
     case "bearer": return { type: "bearer", token: await credential("bearer", auth.bearer.token, auth.credentialStorage?.bearer), prefix: auth.bearer.prefix };
     case "basic": return { type: "basic", username: auth.basic.username, password: await credential("password", auth.basic.password) };
     case "api-key": return { type: "api-key", name: auth.apiKey.name, placement: auth.apiKey.placement, value: await credential("api-key", auth.apiKey.value) };
@@ -103,7 +103,7 @@ export async function authFromDefinition(value: AuthDefinition, secure: SecureSt
     return resolveCredential(secure, credential);
   };
   switch (value.type) {
-    case "inherit": auth.inherit = { source: "workspace", ...(value.profileId ? { profileId: value.profileId } : {}) }; break;
+    case "inherit": auth.inherit = { source: value.source ?? "workspace", ...(value.profileId ? { profileId: value.profileId } : {}) }; break;
     case "bearer": auth.bearer = { ...auth.bearer, token: await remember("bearer", value.token), prefix: value.prefix };
       auth.credentialStorage = { bearer: value.token.kind }; break;
     case "basic": auth.basic = { username: value.username, password: await remember("password", value.password) }; break;
@@ -117,10 +117,16 @@ export async function authFromDefinition(value: AuthDefinition, secure: SecureSt
 }
 const pairs = (rows: Array<{ key?: string; name?: string; value: string; enabled: boolean; readOnly?: boolean }>) => rows
   .filter((row) => !row.readOnly && Boolean(row.name || row.key || row.value)).map((row) => ({ name: row.name ?? row.key ?? "", value: row.value, enabled: row.enabled }));
-function schemaSource(document: SchemaDocument): SchemaDefinition["source"] {
-  return document.schemaSource ?? (document.source === "file" ? { type: "sdl-file", location: document.sourceLabel, endpoint: document.endpoint }
-    : { type: "introspection", endpoint: document.endpoint || document.sourceLabel, ...(document.sourceRequestId ? { requestId: document.sourceRequestId } : {}) });
+function schemaDefinitionIdentity(definition: SchemaDefinition) {
+  return valueHash({ endpoint: definition.endpoint, source: definition.source, auth: definition.auth, introspectionHeaders: definition.introspectionHeaders });
 }
+function schemaSource(document: SchemaDocument): SchemaDefinition["source"] {
+  const source = document.schemaSource;
+  if (source?.type === "registry") return source;
+  if (source?.type === "sdl-file" || source?.type === "introspection-json") return { type: source.type, ...(source.location ? { location: source.location } : {}) };
+  return document.source === "file" ? { type: "sdl-file", location: document.sourceLabel } : { type: "introspection" };
+}
+
 async function variableToDefinition(variable: Variable, secure: SecureStore, workspace: string, owner: string): Promise<VariableDefinition> {
   const common = { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: variable.sensitive };
   if (variable.kind === "static") {
@@ -234,13 +240,20 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
         ...(definition ? { definition: serializeResource(definition), editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`), attachments) } : {}) } });
       if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: responseForPersistence(document.lastResponse) } });
     } else if (document.kind === "schema") {
-      if (document.saved) resources.push({ id: document.id, kind: "schema", name: document.name,
-        ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}), source: schemaSource(document),
-        pin: document.pinned !== false,
-        ...(document.pinned !== false ? { pinnedSdl: document.sdl } : {}) });
-      else local.push({ table: "drafts", id: document.id, value: document });
-      local.push({ table: "schema_cache", id: document.id, value: { sdl: document.sdl, loadedAt: document.loadedAt, source: schemaSource(document) } });
-      local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
+      const auth = await authToDefinition({ ...document.auth, credentialStorage: { bearer: "secret" } }, secure, workspace.id, `schemas/${document.id}`);
+      const introspectionHeaders = await Promise.all(document.introspectionHeaders.map(async (header) => ({ id: header.id, name: header.name, enabled: header.enabled,
+        value: await storeCredential(secure, secretRef(workspace.id, `schemas/${document.id}/headers`, header.id), header.value,
+          header.secret || /authorization|cookie|api[-_]?key|token|secret/i.test(header.name) ? "secret" : "plain") })));
+      const definition: SchemaDefinition = { id: document.id, kind: "schema", name: document.name,
+        ...(document.description ? { description: document.description } : {}), source: schemaSource(document),
+        endpoint: document.endpoint, auth, introspectionHeaders, pin: document.pinned !== false,
+        ...(document.pinned !== false && document.sdl ? { pinnedSdl: document.sdl } : {}) };
+      if (document.saved) resources.push(definition);
+      else local.push({ table: "drafts", id: document.id, value: await protectRuntime({ ...document,
+        introspectionHeaders: document.introspectionHeaders.map((header) => ({ ...header, secret: header.secret || /authorization|cookie|api[-_]?key|token|secret/i.test(header.name) })) }, secure, workspace.id, `schema-drafts/${document.id}`) });
+      local.push({ table: "schema_cache", id: document.id, value: { version: 2, definitionHash: await schemaDefinitionIdentity(definition), sdl: document.sdl, loadedAt: document.loadedAt, source: schemaSource(document), cacheIdentity: document.cacheIdentity } });
+      local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt,
+        authDefinition: JSON.stringify(auth), auth: await protectRuntime(document.auth, secure, workspace.id, `schema-auth/${document.id}`) } });
     } else {
       const definition: ProjectResource = { id: document.id, kind: "extension", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
@@ -254,6 +267,7 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
   for (const [id, value] of attachments) local.push({ table: "attachments", id, value });
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
   return { project: { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
+    ...(workspace.defaultGraphqlSchemaId ? { defaultGraphqlSchemaId: workspace.defaultGraphqlSchemaId } : {}),
     ...(workspace.requestConfig.tracePropagation ? { tracePropagation: workspace.requestConfig.tracePropagation } : {}),
     variables: await Promise.all(workspace.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, "variables"))),
     headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets };
@@ -299,6 +313,7 @@ export async function restoreWorkspace(
 ): Promise<Workspace> {
   const workspace = createWorkspace(project.workspace.name, project.workspace.id); workspace.documents = [];
   workspace.description = project.workspace.description ?? "";
+  workspace.defaultGraphqlSchemaId = project.workspace.defaultGraphqlSchemaId;
   workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration" || item.kind === "api-schema");
   workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, true)));
   workspace.requestConfig = { headers: project.workspace.headers, auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure) }))) };
@@ -332,14 +347,19 @@ export async function restoreWorkspace(
       extensionType: resource.extensionType, configVersion: resource.configVersion, config: structuredClone(resource.config),
       savedConfigVersion: resource.configVersion, savedConfig: structuredClone(resource.config), ui: {} });
     if (resource.kind === "schema") {
-      const storedCache = get("schema_cache", resource.id) as { sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"] } | undefined;
+      const storedCache = get("schema_cache", resource.id) as { version?: number; definitionHash?: string; sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"]; cacheIdentity?: string } | undefined;
       const source = resource.source;
-      const cache = storedCache && JSON.stringify(storedCache.source) === JSON.stringify(source) ? storedCache : undefined;
+      const cache = storedCache && typeof storedCache.sdl === "string"
+        && (storedCache.version === 2 || storedCache.version === undefined && JSON.stringify(storedCache.source) === JSON.stringify(source)) ? storedCache : undefined;
       workspace.documents.push({ ...createSchemaDocument(), id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, saved: true,
         source: source.type === "introspection" ? "introspection" : "file", schemaSource: source,
-        endpoint: "endpoint" in source ? source.endpoint ?? "" : "", sourceRequestId: source.type === "introspection" ? source.requestId ?? "" : "",
-        sourceLabel: source.type === "introspection" ? source.endpoint : "location" in source ? source.location ?? "" : "", pinned: resource.pin,
-        sdl: resource.pinnedSdl ?? cache?.sdl ?? "", loadedAt: cache?.loadedAt ?? null });
+        connectionVersion: resource.endpoint !== undefined ? 1 : undefined,
+        auth: resource.auth ? await authFromDefinition(resource.auth, secure) : createRequestAuth(),
+        introspectionHeaders: await Promise.all((resource.introspectionHeaders ?? []).map(async (header) => ({ ...header, value: await resolveCredential(secure, header.value), secret: header.value.kind === "secret" }))),
+        cacheIdentity: cache?.definitionHash && cache.definitionHash !== await schemaDefinitionIdentity(resource) ? "changed" : typeof cache?.cacheIdentity === "string" ? cache.cacheIdentity : undefined,
+        endpoint: resource.endpoint ?? ("endpoint" in source ? source.endpoint ?? "" : ""), sourceRequestId: source.type === "introspection" ? source.requestId ?? "" : "",
+        sourceLabel: source.type === "introspection" ? resource.endpoint ?? source.endpoint ?? "" : "location" in source ? source.location ?? "" : "", pinned: resource.pin,
+        sdl: resource.pinnedSdl ?? cache?.sdl ?? "", loadedAt: typeof cache?.loadedAt === "string" ? cache.loadedAt : null });
     }
   }
   for (const record of records.filter((item) => item.table === "drafts")) {
@@ -367,6 +387,21 @@ export async function restoreWorkspace(
   workspace.documents = await Promise.all(workspace.documents.map(async (document) => {
     const session = get("document_session_state", document.id) as (Partial<typeof document> & { editor?: unknown; definition?: string }) | undefined;
     const result = { ...document, ...(session ? { ui: session.ui ?? document.ui, createdAt: session.createdAt ?? document.createdAt, updatedAt: session.updatedAt ?? document.updatedAt } : {}) } as WorkspaceDocument;
+    if (result.kind === "schema") {
+      const schemaSession = session as { auth?: unknown; authDefinition?: string } | undefined;
+      const resource = project.resources.find((item) => item.id === result.id);
+      if (isRecord(schemaSession?.auth) && ["bearer", "basic", "apiKey", "oauth2", "inherit"].every((key) => isRecord((schemaSession.auth as Record<string, unknown>)[key]))
+        && resource?.kind === "schema" && schemaSession.authDefinition === JSON.stringify(resource.auth)) {
+        const restoredAuth = normalizeRequestAuth(await resolveRuntime(schemaSession.auth, secure) as RequestAuth);
+        const token = restoredAuth.oauth2.token;
+        if (token && (typeof token.accessToken !== "string" || typeof token.obtainedAt !== "number" || token.tokenType !== "Bearer")) restoredAuth.oauth2.token = null;
+        const active = result.auth;
+        const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[active.type];
+        result.auth = { ...restoredAuth, type: active.type, secretRefs: active.secretRefs, credentialStorage: active.credentialStorage,
+          ...(group ? { [group]: active[group as keyof RequestAuth] } : {}),
+          ...(active.type === "oauth2" ? { oauth2: { ...active.oauth2, token: restoredAuth.oauth2.token } } : {}) };
+      }
+    }
     if (isRequestDocument(result)) {
       const definition = project.resources.find((item) => item.id === result.id);
       if (session?.editor && definition && session.definition === serializeResource(definition) && !records.some((record) => record.table === "drafts" && record.id === result.id)) {

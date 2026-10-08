@@ -33,6 +33,7 @@ export interface DownloadPort {
     bodyBase64: string,
     suggestedName: string,
     mediaType: string,
+    options?: { dialogTitle?: string },
   ): Promise<string | null>;
 }
 

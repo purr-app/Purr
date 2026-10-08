@@ -119,3 +119,11 @@ Credential editors show `{{variable}}` references in orange italic text without 
 - `src-tauri/src/oauth.rs` — native browser callback boundary.
 - `src-tauri/src/security/mod.rs` — local root-key and encryption boundary.
 - `src-tauri/src/local_state.rs` — encrypted local records and secret vault.
+
+## GraphQL Schema Connection authentication
+
+A Schema Connection owns an auth configuration and uses the existing AuthEditor, OAuth runtime and SecureStore. Introspection can authenticate without any source request. Its custom headers apply only to introspection, with workspace headers composed normally.
+
+A GraphQL request can use `auth: {type: inherit, source: schema}` with `graphql.schemaId`, inherit a workspace profile, supply its own credentials, or explicitly choose None. Connection auth can inherit a workspace profile. Explicit None is not replaced by GraphQL workspace defaults. Auth inheritance is resolved through the same cycle-checked resolver used for ordinary requests.
+
+Interactive OAuth acquisition updates the owning connection or inherited workspace profile; connection token runtime is protected in local session state and canonical YAML contains only configuration/SecretRefs. Dependency OAuth remains execution-local. Detaching a request copies current connection auth configuration into independent request ownership. Connection drafts and inactive auth forms are protected as well as saved definitions.

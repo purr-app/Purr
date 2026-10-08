@@ -34,6 +34,11 @@ async function createSchema(page: Page) {
   await page.getByRole("menuitem", { name: "GraphQL schema", exact: true }).click();
 }
 
+async function schemaSettings(page: Page, tab: "General" | "Authentication" | "Introspection headers" = "General") {
+  await page.getByRole("button", { name: "Schema settings", exact: true }).click();
+  await page.getByRole("dialog", { name: "Schema Connection settings" }).getByRole("tab", { name: tab, exact: true }).click();
+}
+
 async function createEnvironmentVariable(page: Page) {
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
@@ -52,6 +57,11 @@ async function mockDesktop(page: Page) {
     (window as any).__requests = [];
     (window as any).__TAURI_INTERNALS__ = {
       invoke: async (command: string, args: any) => {
+        if (command === "save_response_body") {
+          (window as any).__schemaDownload = args;
+          if ((window as any).__saveError) throw new Error("Cannot save schema");
+          return (window as any).__cancelSave ? null : `/chosen/folder/${args.suggestedName}`;
+        }
         if (command !== "start_http") return;
         (window as any).__requests.push(args.request);
         const payload = JSON.parse(atob(args.request.bodyBase64));
@@ -62,6 +72,9 @@ async function mockDesktop(page: Page) {
               resolve();
             };
           });
+        }
+        if (payload.operationName === "IntrospectionQuery" && (window as any).__holdIntrospection) {
+          await new Promise<void>((resolve) => { (window as any).__releaseIntrospection = resolve; });
         }
         const body = payload.operationName === "IntrospectionQuery"
           ? ((window as any).__failIntrospection ? { errors: [{ message: "Introspection disabled" }] } : { data: introspection })
@@ -224,6 +237,7 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("tab", { name: /Errors/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("No schema loaded", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).__requests.length)).toBe(2);
   await page.getByRole("button", { name: "Reload", exact: true }).click();
@@ -240,7 +254,7 @@ test("GraphQL shares HTTP auth/cookies, validates variables, introspects and per
   await saved(page); await page.reload();
   await expect(page.getByRole("region", { name: "Type Customer", exact: true })).toBeVisible();
   await expect(page.getByLabel("GraphQL schema endpoint", { exact: true })).toHaveValue("https://example.com/graphql");
-  await expect(page.getByRole("region", { name: "Schemas", exact: true })).toContainText("SDL");
+  await expect(page.getByRole("region", { name: "Schema Connections", exact: true })).toContainText("SDL");
   await page.screenshot({ path: "test-results/graphql-schema.png" });
   await tabs(page).filter({ hasText: "GQL" }).click();
   await page.getByRole("tab", { name: "Query", exact: true }).click();
@@ -363,7 +377,7 @@ test("standalone GraphQL schemas accept an endpoint and introspect without a req
   await expect(endpoint).toHaveValue("");
   await expect(page.getByText("No schema loaded", { exact: true })).toBeVisible();
   await endpoint.fill("https://example.com/graphql");
-  await expect(page.getByRole("region", { name: "Drafts", exact: true })).toContainText("Untitled GraphQL schema");
+  await expect(page.getByRole("region", { name: "Schema Connections", exact: true })).toContainText("Untitled GraphQL schema");
   await page.getByRole("button", { name: "Reload", exact: true }).click();
   await expect(page.getByRole("complementary", { name: "Schema type registry", exact: true })).toContainText("Customer");
   await expect(endpoint).toHaveValue("https://example.com/graphql");
@@ -429,9 +443,11 @@ test("referenced introspection responses above 1 MiB install through bounded rea
 test("schema file import supports SDL and introspection JSON and keeps the previous schema on invalid input", async ({ page }) => {
   await page.goto("/");
   await createGraphql(page);
-  await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
+  await createSchema(page);
   const upload = (name: string, text: string) => page.getByLabel("Schema file", { exact: true }).setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(text) });
   await upload("customers.graphql", sdl);
+  await expect(page.getByLabel("Schema file path", { exact: true })).toHaveValue("customers.graphql");
+  await expect(page.getByLabel("Schema file path", { exact: true })).toHaveAttribute("readonly", "");
   const registry = page.getByRole("complementary", { name: "Schema type registry" });
   await page.getByLabel("Search schema types", { exact: true }).fill("Customer");
   await registry.getByRole("button", { name: "Customer", exact: true }).click();
@@ -442,25 +458,46 @@ test("schema file import supports SDL and introspection JSON and keeps the previ
   await expect(page.getByRole("alert")).toContainText("Syntax Error");
   await expect(page.getByRole("region", { name: "Type Tier", exact: true })).toBeVisible();
   await upload("schema.json", JSON.stringify({ data: introspectionFromSchema(buildSchema("type Query { ping: String! }")) }));
+  await expect(page.getByLabel("Schema file path", { exact: true })).toHaveValue("schema.json");
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Type Query", exact: true })).toContainText("ping");
   await page.getByRole("button", { name: "JSON", exact: true }).click();
   await expect(page.getByLabel("Schema source", { exact: true })).toContainText("__schema");
 });
 
-test("empty schema tabs stay out of the sidebar and explorer fields create linked requests", async ({ page }) => {
+test("schema export uses the native save dialog for SDL and JSON, cancellation and failures", async ({ page }) => {
+  await mockDesktop(page); await page.goto("/"); await createSchema(page);
+  const source = '"""Схема клієнтів"""\ntype Query { greeting: String }';
+  await page.getByLabel("Schema file", { exact: true }).setInputFiles({ name: "schema.graphql", mimeType: "text/plain", buffer: Buffer.from(source) });
+  const download = page.getByRole("button", { name: "Download schema", exact: true });
+  await expect(download).toBeEnabled();
+  await download.click();
+  const exported = await page.evaluate(() => (window as any).__schemaDownload);
+  expect(exported).toMatchObject({ suggestedName: "schema.graphql", extension: "graphql", dialogTitle: "Save GraphQL schema" });
+  expect(Buffer.from(exported.bodyBase64, "base64").toString("utf8")).toContain("Схема клієнтів");
+  await page.getByRole("button", { name: "JSON", exact: true }).click();
+  await download.click();
+  const json = await page.evaluate(() => (window as any).__schemaDownload);
+  expect(json.suggestedName).toBe("schema.json");
+  expect(JSON.parse(Buffer.from(json.bodyBase64, "base64").toString("utf8")).__schema.queryType.name).toBe("Query");
+  await page.evaluate(() => { (window as any).__cancelSave = true; });
+  await download.click(); await expect(download).toBeEnabled();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.evaluate(() => { (window as any).__saveError = true; });
+  await download.click(); await expect(page.getByRole("alert")).toContainText("Cannot save schema");
+});
+
+test("unfetched connections appear in the sidebar and explorer fields create linked requests", async ({ page }) => {
   await page.goto("/");
   await createGraphql(page);
   await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/graphql");
-  await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
+  await createSchema(page);
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://example.com/graphql");
   await expect(tabs(page)).toHaveCount(3);
-  await expect(page.getByRole("region", { name: "Schemas", exact: true })).toHaveCount(0);
-  await tabs(page).filter({ hasText: "GQL" }).click();
-  await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
-  await expect(tabs(page)).toHaveCount(3);
+  await expect(page.getByRole("region", { name: "Schema Connections", exact: true })).toBeVisible();
 
   await page.getByLabel("Schema file", { exact: true }).setInputFiles({ name: "customers.graphql", mimeType: "text/plain", buffer: Buffer.from(sdl) });
-  await expect(page.getByRole("region", { name: "Schemas", exact: true })).toContainText("SDL");
+  await expect(page.getByRole("region", { name: "Schema Connections", exact: true })).toContainText("SDL");
   const queryType = page.getByRole("region", { name: "Type Query", exact: true });
   await expect(queryType.getByText("Depth", { exact: true })).toBeVisible();
   await expect(queryType.getByText("Fields", { exact: true })).toBeVisible();
@@ -540,4 +577,154 @@ test("multiple operations expose inline run actions and variables navigate to th
   await expect(page.getByText("200 OK", { exact: true })).toBeVisible();
   const sent = await page.evaluate(() => (window as any).__requests.at(-1));
   expect(JSON.parse(Buffer.from(sent.bodyBase64, "base64").toString())).toEqual({ query: operations, variables: { input: { name: "Ada" } }, operationName: "Update" });
+});
+
+test("request-first creates a private shared connection, locks URLs and reuses its cache", async ({ page }) => {
+  await mockDesktop(page); await page.goto("/"); await createGraphql(page);
+  await page.getByLabel("Request URL", { exact: true }).fill("https://private.example/graphql");
+  await page.getByRole("combobox", { name: "Schema Connection", exact: true }).click();
+  await page.getByRole("option", { name: "New Schema Connection…", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await schemaSettings(page);
+  await page.getByLabel("Schema Connection name", { exact: true }).fill("Private API");
+  await page.getByRole("tab", { name: "Authentication", exact: true }).click();
+  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  await page.getByLabel("Bearer token", { exact: true }).fill("private-schema-token");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(page.getByRole("complementary", { name: "Schema type registry" })).toContainText("Customer");
+  await expect(page.getByRole("img", { name: "Loaded", exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/graphql-connection-editor.png" });
+  expect(await page.evaluate(() => (window as any).__requests.length)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__requests[0].headers)).toContainEqual(["Authorization", "Bearer private-schema-token"]);
+  await schemaSettings(page);
+  await page.getByRole("checkbox", { name: "Use as the workspace default schema", exact: true }).click();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await createGraphql(page);
+  const selector = page.getByRole("combobox", { name: "Schema Connection", exact: true });
+  await expect(selector).toContainText("Private API");
+  await expect(selector.getByRole("img", { name: "Loaded", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveAttribute("readonly", "");
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://private.example/graphql");
+  await page.getByLabel("GraphQL query", { exact: true }).fill("{ customers { id } }");
+  await page.screenshot({ path: "test-results/graphql-connection-request.png" });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__requests.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__requests[1].headers)).toContainEqual(["Authorization", "Bearer private-schema-token"]);
+  await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://private.example/v2/graphql");
+  await expect(page.getByRole("img", { name: "Stale", exact: true })).toBeVisible();
+  await createGraphql(page);
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://private.example/v2/graphql");
+  await selector.click(); await page.getByRole("option", { name: "No schema", exact: true }).click();
+  await expect(page.getByLabel("Request URL", { exact: true })).not.toHaveAttribute("readonly", "");
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://private.example/v2/graphql");
+  await page.getByRole("tab", { name: /^Auth/ }).click();
+  await expect(page.getByLabel("Bearer token", { exact: true })).toHaveValue("private-schema-token");
+  expect(await page.evaluate(() => (window as any).__requests.length)).toBe(2);
+});
+
+test("schema-first supports multiple connections, unfetched execution and explicit None auth", async ({ page }) => {
+  await mockDesktop(page); await page.goto("/"); await createSchema(page);
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://first.example/graphql");
+  await schemaSettings(page);
+  await page.getByLabel("Schema Connection name", { exact: true }).fill("First API");
+  await page.getByRole("checkbox", { name: "Use as the workspace default schema", exact: true }).click();
+  await page.getByRole("tab", { name: "Authentication", exact: true }).click();
+  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  await page.getByLabel("Bearer token", { exact: true }).fill("first-token");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await createSchema(page);
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://second.example/graphql");
+  await schemaSettings(page);
+  await page.getByLabel("Schema Connection name", { exact: true }).fill("Second API");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByLabel("Schema file", { exact: true }).setInputFiles({ name: "schema.graphql", mimeType: "text/plain", buffer: Buffer.from(sdl) });
+  await createGraphql(page);
+  const selector = page.getByRole("combobox", { name: "Schema Connection", exact: true });
+  await expect(selector).toContainText("First API"); await expect(selector.getByRole("img", { name: "Not fetched", exact: true })).toBeVisible();
+  await page.getByLabel("GraphQL query", { exact: true }).fill("{ customers { id } }");
+  await page.getByRole("tab", { name: /^Auth/ }).click(); await page.getByRole("tab", { name: "None", exact: true }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__requests.length)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__requests[0].url)).toBe("https://first.example/graphql");
+  expect(await page.evaluate(() => (window as any).__requests[0].headers.some(([name]: string[]) => name.toLowerCase() === "authorization"))).toBe(false);
+  await selector.click(); await page.getByRole("option", { name: "Loaded Second API", exact: true }).click();
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://second.example/graphql");
+  await createGraphql(page); await expect(selector).toContainText("First API");
+  await saved(page); await page.reload(); await expect(selector).toContainText("First API");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const workspaceSettings = page.getByRole("region", { name: "Workspace settings", exact: true });
+  await workspaceSettings.getByRole("tab", { name: "GraphQL", exact: true }).click();
+  await workspaceSettings.getByRole("combobox", { name: "Default GraphQL schema", exact: true }).click();
+  await page.getByRole("option", { name: "Second API", exact: true }).click();
+  await page.screenshot({ path: "test-results/graphql-workspace-settings.png" });
+  await createGraphql(page); await expect(selector).toContainText("Second API");
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://second.example/graphql");
+  await page.getByRole("button", { name: "Open GraphQL schema", exact: true }).click();
+  await expect(page.getByLabel("Schema file path", { exact: true })).toHaveValue("schema.graphql");
+  await schemaSettings(page);
+  await expect(page.getByRole("checkbox", { name: "Use as the workspace default schema", exact: true })).toHaveAttribute("aria-checked", "true");
+  await page.getByLabel("GraphQL request endpoint", { exact: true }).fill("https://second.example/v2/graphql");
+  await page.screenshot({ path: "test-results/graphql-connection-settings.png", animations: "disabled" });
+  await page.getByRole("tab", { name: "Introspection headers", exact: true }).click();
+  await page.screenshot({ path: "test-results/graphql-connection-headers.png", animations: "disabled" });
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await createGraphql(page);
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://second.example/v2/graphql");
+});
+
+test("changing connection settings during introspection cannot install an obsolete response", async ({ page }) => {
+  await mockDesktop(page); await page.goto("/"); await createSchema(page);
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://old.example/graphql");
+  await page.evaluate(() => { (window as any).__holdIntrospection = true; });
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__requests.length)).toBe(1);
+  await expect(page.getByRole("img", { name: "Loading", exact: true })).toBeVisible();
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://new.example/graphql");
+  await page.evaluate(() => { (window as any).__holdIntrospection = false; (window as any).__releaseIntrospection(); });
+  await expect(page.getByRole("img", { name: "Not fetched", exact: true })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Schema type registry" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(page.getByRole("img", { name: "Loaded", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__requests[1].url)).toBe("https://new.example/graphql");
+});
+
+test("connection OAuth acquisition preserves concurrent endpoint edits and is reused by requests", async ({ page }) => {
+  await mockDesktop(page); await page.goto("/"); await createSchema(page);
+  await page.evaluate(() => {
+    const original = (window as any).__TAURI_INTERNALS__.invoke;
+    (window as any).__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
+      if (command !== "start_http" || args.request.url !== "https://auth.example/token") return original(command, args);
+      (window as any).__tokenRequested = true;
+      await new Promise<void>((resolve) => { (window as any).__releaseToken = resolve; });
+      return { status: 200, statusText: "OK", durationMs: 1, httpVersion: "HTTP/2", headers: [["content-type", "application/json"]],
+        bodyBase64: btoa(JSON.stringify({ access_token: "connection-oauth", token_type: "Bearer", expires_in: 3600 })) };
+    };
+  });
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://old.example/graphql");
+  await schemaSettings(page, "Authentication");
+  await page.getByRole("tab", { name: "OAuth 2.0", exact: true }).click();
+  await page.getByLabel("Token URL", { exact: true }).fill("https://auth.example/token");
+  await page.getByLabel("Client ID", { exact: true }).fill("client");
+  await page.getByLabel("Client Secret", { exact: true }).fill("private-secret");
+  await page.screenshot({ path: "test-results/graphql-connection-oauth.png", animations: "disabled" });
+  await page.getByRole("button", { name: "Fetch & use token", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__tokenRequested)).toBe(true);
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByLabel("GraphQL schema endpoint", { exact: true }).fill("https://new.example/graphql");
+  await page.evaluate(() => (window as any).__releaseToken());
+  await schemaSettings(page, "Authentication");
+  await expect(page.getByLabel("OAuth access token", { exact: true })).toHaveValue("connection-oauth");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByLabel("GraphQL schema endpoint", { exact: true })).toHaveValue("https://new.example/graphql");
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(page.getByRole("img", { name: "Loaded", exact: true })).toBeVisible();
+  await createGraphql(page);
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://new.example/graphql");
+  await page.getByLabel("GraphQL query", { exact: true }).fill("{ customers { id } }");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__requests.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__requests[1].headers)).toContainEqual(["Authorization", "Bearer connection-oauth"]);
 });
