@@ -89,7 +89,7 @@ test("sensitive dynamic cache values use SecureStore instead of SQLite plaintext
   assert.equal(restored.dynamicVariableCache["token:none"].value, "runtime-token");
 });
 
-test("schema cache invalidates on external source changes and custom SDL sidecar paths remain stable", async () => {
+test("schema cache becomes stale on external source changes and custom SDL sidecar paths remain stable", async () => {
   const { workspace } = savedWorkspace(); const schema = createSchemaDocument();
   Object.assign(schema, { saved: true, source: "introspection", endpoint: "https://old.example/graphql", sdl: "type Query { user: String }", pinned: true });
   workspace.documents.push(schema); const secure = new MemorySecureStore();
@@ -106,7 +106,7 @@ test("schema cache invalidates on external source changes and custom SDL sidecar
   assert.equal(Object.keys(backend.snapshot.workspaces[0].files).filter((path) => path.endsWith(".graphql")).length, 1);
   const changed = { ...resource, pinnedSdl: undefined, source: { type: "introspection" as const, endpoint: "https://new.example/graphql" } };
   const restored = await restoreWorkspace({ ...projection.project, resources: [changed] }, projection.local, secure, {});
-  const fresh = restored.documents.find((document) => document.id === schema.id); assert.ok(fresh?.kind === "schema"); assert.equal(fresh.sdl, "");
+  const fresh = restored.documents.find((document) => document.id === schema.id); assert.ok(fresh?.kind === "schema"); assert.equal(fresh.sdl, schema.sdl); assert.equal(fresh.cacheIdentity, "changed");
   await persistence.save(loaded);
 });
 

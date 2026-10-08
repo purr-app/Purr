@@ -1,4 +1,3 @@
-import { Check } from "lucide-react";
 import { useRef } from "react";
 import { Button } from "./button";
 import { cn } from "../../lib/cn";
@@ -68,9 +67,6 @@ export function SegmentedTabs<Value extends string>({
           }}
         >
           {option.label}
-          {value === option.value ? (
-            <Check className="size-ui-3" aria-hidden="true" />
-          ) : null}
         </Button>
       ))}
     </div>

@@ -1,3 +1,5 @@
+import { ConnectionStatus } from "../graphql/components/schema-connection-status";
+import { SelectField } from "../../shared/components/ui/select-field";
 import { ResponseViewer } from "../request-workbench/components/response-viewer";
 import { HistoryPanel } from "../history/history-panel";
 import { historyNeedsReplacement, historySource, historyWorkingCopy, openHistoricalTab, returnFromHistory } from "../history/model/history-working-copy";
@@ -18,7 +20,7 @@ import { SessionCookieJar } from "../request-workbench/model/cookie-jar";
 import { createDependencyAuthRuntime } from "../request-workbench/services/dependency-auth-runtime";
 import type { RequestAuth } from "../request-workbench/model/request-auth";
 import type { RequestDraft } from "../request-workbench/model/request";
-import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
+import { snapshotSchemaRequest, withSchemaAuthContext, applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
 import { importCurl, isCurlCommand, type CurlImport } from "../request-workbench/model/curl-import";
@@ -53,6 +55,7 @@ import {
   closeDocument,
   discardAllDrafts,
   createHttpDocument,
+  bindGraphqlSchema, detachGraphqlSchema, defaultGraphqlSchema,
   createGraphqlDocument,
   createSchemaDocument,
   createExtensionDocument,
@@ -197,8 +200,9 @@ export function WorkspaceWorkbench() {
     return () => { disposed = true; };
   }, [workspace?.id, historyRevision, persistence, updateWorkspace]);
   const requestConfig = useMemo(() => ({ ...(workspace?.requestConfig ?? { headers: [], auth: [] }),
+    schemaConnections: workspace?.documents.filter((item): item is SchemaDocument => item.kind === "schema") ?? [],
     integrations: (workspace?.extraResources ?? []).filter((item) => item.kind === "integration").filter((item) => extensions.integration(item.provider)?.capabilities?.includes("traces")),
-  }), [workspace?.requestConfig, workspace?.extraResources, extensions]);
+  }), [workspace?.requestConfig, workspace?.documents, workspace?.extraResources, extensions]);
   useEffect(() => {
     if (!store) return;
     tabStates.retain(new Set(store.workspaces.flatMap((item) => [
@@ -213,8 +217,7 @@ export function WorkspaceWorkbench() {
   const sourceDocuments = useMemo(() => workspace?.documents
     .filter((document): document is RequestDocument => isRequestDocument(document) && document.saved && !document.historical)
     .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
-  const schemaSource = activeDocument?.kind === "schema" ? workspace?.documents.find((item): item is RequestDocument => isRequestDocument(item) && item.id === activeDocument.sourceRequestId) : undefined;
-  const linkedSchema = workspace?.documents.find((item): item is SchemaDocument => item.kind === "schema" && (item.id === currentDocument?.request.graphql?.schemaId || item.sourceRequestId === currentDocument?.id));
+  const linkedSchema = workspace?.documents.find((item): item is SchemaDocument => item.kind === "schema" && item.id === currentDocument?.request.graphql?.schemaId);
   const schemaSdl = linkedSchema?.sdl;
   const schema = useMemo(() => { try { return schemaSdl ? parseGraphqlSchema(schemaSdl) : undefined; } catch { return undefined; } }, [schemaSdl]);
   const variables = useMemo(() => workspace ? getEffectiveVariableValues(workspace, store?.globalVariables ?? []) : {}, [store?.globalVariables, workspace?.activeEnvironmentId, workspace?.environments, workspace?.variables]);
@@ -277,6 +280,7 @@ export function WorkspaceWorkbench() {
     ...current,
     requestConfig: { ...current.requestConfig, auth: current.requestConfig.auth.map((profile) =>
       profile.id === profileId ? { ...profile, value: auth } : profile) },
+    documents: current.documents.map((item) => item.id === profileId && item.kind === "schema" ? { ...item, auth } : item),
   }));
   const removeUnusedVariableSecrets = (before: readonly Variable[], after: readonly Variable[]) => {
     const retained = new Set(after.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
@@ -298,7 +302,7 @@ export function WorkspaceWorkbench() {
     // An old in-flight request may finish after switching environments. Its
     // response remains attached to its document, but cannot change new credentials.
     if (current.activeEnvironmentId !== workspace?.activeEnvironmentId || current.environments !== workspace?.environments) return current;
-    if (!id || (!current.ui.openDocumentIds.includes(id) && id !== schemaSource?.id)) return current;
+    if (!id || (!current.ui.openDocumentIds.includes(id))) return current;
     let pinPreview = false;
     const documents = current.documents.map((document) => {
       if (document.id !== id || !isRequestDocument(document)) return document;
@@ -347,13 +351,17 @@ export function WorkspaceWorkbench() {
   const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http", folderId?: string) => {
     updates.leaveTab();
     if (kind === "schema") {
-      const document = createSchemaDocument();
+      const document = { ...createSchemaDocument(), saved: true };
       update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
       return;
     }
     let document: RequestDocument = { ...(kind === "graphql" ? createGraphqlDocument() : createHttpDocument()), ...(folderId ? { folderId } : {}) };
     if (workspace)
       document = { ...document, request: withWorkspaceAuthDefault(document.request, kind, requestConfig) };
+    if (kind === "graphql" && workspace) {
+      const connection = defaultGraphqlSchema(workspace);
+      if (connection) document = { ...document, request: bindGraphqlSchema(document.request, connection, true) };
+    }
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
   const addExtensionDocument = (extensionType: string, folderId?: string) => {
@@ -484,22 +492,28 @@ export function WorkspaceWorkbench() {
     if (source && isRequestDocument(source) && source.historical) { promoteHistory(source, undefined, undefined, "draft", false); return; }
     update((current) => duplicateDocument(current, id));
   };
-  const openSchema = (selectedType?: string) => {
-    if (currentDocument?.kind !== "graphql" || currentDocument.historical) return;
+  const selectSchema = (id: string) => {
+    if (!currentDocument?.request.graphql) return;
     update((current) => {
-      const existing = current.documents.find((item): item is SchemaDocument => item.kind === "schema" && (
-        item.id === currentDocument.request.graphql?.schemaId || item.sourceRequestId === currentDocument.id ||
-        Boolean(currentDocument.request.url && (current.documents.find((candidate): candidate is RequestDocument => isRequestDocument(candidate) && candidate.id === item.sourceRequestId)?.request.url === currentDocument.request.url
-          || item.source === "introspection" && item.sourceLabel === currentDocument.request.url))
-      ));
-      const sourceStillExists = existing && current.documents.some((item) => isRequestDocument(item) && item.id === existing.sourceRequestId);
-      const document = existing ? { ...existing, sourceRequestId: sourceStillExists ? existing.sourceRequestId : currentDocument.id } : createSchemaDocument(currentDocument);
-      const selected = selectedType ? { ...document, ui: { ...document.ui, selectedType, selectedField: null } } : document;
-      const documents = (existing ? current.documents.map((item) => item.id === selected.id ? selected : item) : [...current.documents, selected]).map((item) =>
-        item.id === currentDocument.id && isRequestDocument(item) && item.request.graphql
-          ? { ...item, request: { ...item.request, graphql: { ...item.request.graphql, schemaId: selected.id } } } : item);
-      return openDocument({ ...current, documents }, selected.id);
+      const connection = current.documents.find((item): item is SchemaDocument => item.kind === "schema" && item.id === id);
+      return { ...current, ui: { ...current.ui, ...(connection ? { lastGraphqlSchemaId: connection.id } : {}) },
+        documents: current.documents.map((item) => item.id === currentDocument.id && isRequestDocument(item)
+          ? { ...item, request: connection ? bindGraphqlSchema(item.request, connection) : detachGraphqlSchema(item.request, linkedSchema) } : item) };
     });
+  };
+  const newSchemaConnection = () => {
+    if (currentDocument?.kind !== "graphql" || currentDocument.historical) return;
+    updates.leaveTab();
+    const connection = { ...createSchemaDocument(currentDocument), saved: true };
+    update((current) => openDocument({ ...current,
+      documents: [...current.documents.map((item) => item.id === currentDocument.id && isRequestDocument(item)
+        ? { ...item, request: bindGraphqlSchema(item.request, connection, true) } : item), connection] }, connection.id));
+  };
+  const openSchema = (selectedType?: string) => {
+    if (currentDocument?.kind !== "graphql" || currentDocument.historical || !workspace) return;
+    if (!linkedSchema) { newSchemaConnection(); return; }
+    update((current) => openDocument({ ...current, documents: current.documents.map((item) => item.id === linkedSchema.id && item.kind === "schema" && selectedType
+      ? { ...item, ui: { ...item.ui, selectedType, selectedField: null } } : item) }, linkedSchema.id));
   };
   const closeById = (id: string) => update((current) => closeDocument(current, id));
   const closeOtherTabs = (id: string) => update((current) => {
@@ -545,10 +559,9 @@ export function WorkspaceWorkbench() {
   const createRequestFromSchema = (operation: { name: string; query: string; variables: string }) => {
     if (!workspace || activeDocument?.kind !== "schema") return;
     const created = createGraphqlDocument();
-    const base = schemaSource?.request ?? { ...created.request, url: activeDocument.endpoint || (activeDocument.source === "introspection" ? activeDocument.sourceLabel : "") };
-    const request = withWorkspaceAuthDefault({ ...cloneRequestDraft(base), method: "POST", graphql: {
-      query: operation.query, variables: operation.variables, operationName: operation.name, schemaId: activeDocument.id,
-    } }, "graphql", requestConfig);
+    const request = bindGraphqlSchema({ ...created.request, graphql: {
+      query: operation.query, variables: operation.variables, operationName: operation.name,
+    } }, activeDocument, true);
     const document: RequestDocument = { ...created, name: operation.name, request, ui: { requestSection: "gql-query" } };
     update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
   };
@@ -757,6 +770,8 @@ export function WorkspaceWorkbench() {
             addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
           {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+            schemaConnections={requestConfig.schemaConnections} defaultGraphqlSchemaId={workspace.defaultGraphqlSchemaId}
+            onDefaultGraphqlSchemaChange={(defaultGraphqlSchemaId) => update((current) => ({ ...current, defaultGraphqlSchemaId }))}
             integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
             variables={variables}
             variableActions={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}
@@ -827,7 +842,7 @@ export function WorkspaceWorkbench() {
               const releaseAttachments = persistence.history?.retainAttachments(workspace.id);
               try {
                 const resolution = await resolveDynamicVariables({ root, onSteps, workspaceConfig: requestConfig, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
-                  onExecuted: async (record) => persistence.history?.append(workspace.id, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: record.document.request }),
+                  onExecuted: async (record) => persistence.history?.append(workspace.id, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: snapshotSchemaRequest(record.document.request, requestConfig) }),
                   onHistoryError: () => setActionError("Could not save dependency history."),
                   variablesForEnvironment, persistentCache: workspace.dynamicVariableCache, sessionCache: dynamicVariableSessionCache,
                   responseContent: services.responseContent,
@@ -836,13 +851,13 @@ export function WorkspaceWorkbench() {
                     const scoped = await variablesForEnvironment(environmentId);
                     const auth = getWorkspaceAuth(requestConfig, document.kind,
                       document.request.auth.type === "inherit" ? document.request.auth.inherit.profileId : undefined);
-                    const context = {
+                    const context = withSchemaAuthContext(document.request, requestConfig, {
                       variables: resolvedVariables, sensitiveVariableNames: scoped.filter((item) => item.sensitive).map((item) => item.name),
                       requestDocumentId: document.id,
                       workspaceProfiles: getWorkspaceAuthProfiles(requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
-                    };
+                    });
                     const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, requestConfig);
                     return executeRequest(outgoing, context, cookieJar!, createDependencyAuthRuntime(outgoing, context, services.httpTransport, services.responseContent), services.httpTransport, services.responseContent, { onDispatch: dispatch.onDispatch }, services.requestBodies);
                   } });
@@ -862,14 +877,16 @@ export function WorkspaceWorkbench() {
             onChange={(change) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && isExtensionDocument(item)
               ? { ...item, ...change, updatedAt: new Date().toISOString() } : item) }))} />
           : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
-            source={schemaSource} variables={variables} workspaceConfig={requestConfig} cookieJar={cookieJar!} setSourceDraft={(change) => setRequestDraft(schemaSource?.id, change)}
-            onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch } : item) }))}
+            variables={variables} workspaceConfig={requestConfig} cookieJar={cookieJar!}
+            environmentId={workspace.activeEnvironmentId} isDefault={workspace.defaultGraphqlSchemaId === activeDocument.id}
+            onDefaultChange={() => update((current) => ({ ...current, defaultGraphqlSchemaId: current.defaultGraphqlSchemaId === activeDocument.id ? undefined : activeDocument.id }))}
+            onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch, ...(item.sdl && !item.cacheIdentity && (patch.endpoint !== undefined || patch.auth || patch.schemaSource || patch.introspectionHeaders) ? { cacheIdentity: "changed" } : {}) } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1">{currentDocument.historical?.readOnly && currentDocument.lastResponse ? <div className="h-full min-h-0 bg-purr-base p-ui-2"><ResponseViewer response={currentDocument.lastResponse} workspaceId={workspace.id} documentId={currentDocument.historical.documentId} onOpenHistory={(id) => { void openHistory(id, true); }} historyEntryId={currentDocument.historical.entryId} historyStartedAt={currentDocument.historical.startedAt}
               onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
-            requestKind={currentDocument.kind} workspaceConfig={requestConfig}
+            requestKind={currentDocument.kind} workspaceConfig={currentDocument.historical ? { ...requestConfig, schemaConnections: [] } : requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.historical?.documentId ?? currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             historyEntryId={currentDocument.historical?.entryId} historyStartedAt={currentDocument.historical?.startedAt}
             onReturnCurrent={currentDocument.historical && historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined}
@@ -888,6 +905,14 @@ export function WorkspaceWorkbench() {
                 : { id: crypto.randomUUID(), name, enabled: true, sensitive: false, kind: "static" as const, value: candidate.value };
               openVariables("workspace", null, variable);
             }}
+            schemaSelector={currentDocument.historical ? undefined : <>
+              <SelectField label="Schema Connection" value={linkedSchema?.id ?? "none"} options={[
+                { value: "none", label: "No schema" },
+                ...requestConfig.schemaConnections.map((connection) => ({ value: connection.id, label: connection.name,
+                  icon: <ConnectionStatus connection={connection} config={requestConfig} variables={variables} environmentId={workspace.activeEnvironmentId} /> })),
+                { value: "create", label: "New Schema Connection…" },
+              ]} onValueChange={(id) => id === "create" ? newSchemaConnection() : selectSchema(id)} />
+            </>}
             schema={schema} onOpenSchema={currentDocument.historical ? undefined : () => openSchema()} onOpenGraphqlType={currentDocument.historical ? undefined : (name) => openSchema(name)}
             view={workspace.ui.view} splitRatios={workspace.ui.splitRatios} onSplitRatioChange={(orientation, ratio) => update((current) => ({ ...current, ui: { ...current.ui, splitRatios: { ...current.ui.splitRatios, [orientation]: ratio } } }))}
             requestSection={currentDocument.ui.requestSection} onRequestSectionChange={(requestSection) => updateDocument((document) => ({ ...document, ui: { ...document.ui, requestSection } }))}

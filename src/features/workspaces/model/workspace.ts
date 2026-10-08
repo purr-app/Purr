@@ -3,7 +3,7 @@ import { createRequestAuth, normalizeRequestAuth } from "../../request-workbench
 import { authTypeOptions } from "../../request-workbench/model/request-auth";
 import { createRequestBody } from "../../request-workbench/model/request-body";
 import { bodyTypeOptions } from "../../request-workbench/model/request-body";
-import { createRequestWorkspaceOverrides, type RequestDraft } from "../../request-workbench/model/request";
+import { createRequestWorkspaceOverrides, type RequestDraft, type RequestHeader } from "../../request-workbench/model/request";
 import { createWorkspaceRequestConfig, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 export { applyWorkspaceRequestConfig, createWorkspaceRequestConfig, requestScopeApplies, requestScopeOptions } from "../../request-workbench/model/request-workspace-config";
 export type { RequestScope, WorkspaceRequestConfig, WorkspaceSharedAuth, WorkspaceSharedHeader } from "../../request-workbench/model/request-workspace-config";
@@ -61,7 +61,14 @@ export type HttpDocument = RequestDocument & { kind: "http" };
 export type GraphqlDocument = RequestDocument & { kind: "graphql"; request: RequestDraft & { graphql: NonNullable<RequestDraft["graphql"]> } };
 export type SchemaDocument = DocumentBase & {
   kind: "schema";
+  /** Legacy migration only. Connections never read settings from a request. */
   sourceRequestId: string;
+  connectionVersion?: 1;
+  auth: ReturnType<typeof createRequestAuth>;
+  introspectionHeaders: RequestHeader[];
+  cacheIdentity?: string;
+  fetchStatus?: "loading" | "error";
+  fetchError?: string;
   endpoint: string;
   sdl: string;
   source: "introspection" | "file" | null;
@@ -90,13 +97,14 @@ export function getDocumentBadge(document: WorkspaceDocument) {
       : { label: document.request.method, color: getHttpMethodStyle(document.request.method).text };
 }
 export function getDocumentGroup(document: WorkspaceDocument) {
-  return !document.saved ? "Drafts" : document.kind === "schema" ? "Schemas" : "Documents";
+  return !document.saved ? "Drafts" : document.kind === "schema" ? "Schema Connections" : "Documents";
 }
 export type Workspace = {
   schemaVersion: 1;
   id: string;
   name: string;
   description: string;
+  defaultGraphqlSchemaId?: string;
   extraResources?: ProjectResource[];
   documents: WorkspaceDocument[];
   variables: Variable[];
@@ -109,6 +117,7 @@ export type Workspace = {
     openDocumentIds: string[];
     activeDocumentId: string | null;
     previewDocumentId: string | null;
+    lastGraphqlSchemaId?: string;
     lastRequestKind: RequestDocumentKind;
     cookiesTabOpen: boolean;
     cookiesTabActive: boolean;
@@ -156,8 +165,56 @@ export function createGraphqlDocument(): GraphqlDocument {
 
 export function createSchemaDocument(request?: RequestDocument): SchemaDocument {
   return { id: crypto.randomUUID(), kind: "schema", name: request ? `${getDocumentDisplayName(request)} schema` : "Untitled GraphQL schema", saved: false,
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), sourceRequestId: request?.id ?? "", endpoint: request?.request.url ?? "",
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), connectionVersion: 1, sourceRequestId: "", auth: { ...structuredClone(request?.request.auth ?? createRequestAuth()), secretRefs: undefined }, introspectionHeaders: structuredClone(request?.request.headers ?? []), endpoint: request?.request.url ?? "",
     sdl: "", source: null, sourceLabel: "", loadedAt: null, pinned: true, ui: { selectedType: null, selectedField: null, sourcePaneOpen: true } };
+}
+
+/** Binding is explicit. Existing request auth overrides survive selection. */
+export function bindGraphqlSchema(request: RequestDraft, connection: SchemaDocument, inheritAuth = false): RequestDraft {
+  if (!request.graphql) return request;
+  return { ...request, url: connection.endpoint,
+    graphql: { ...request.graphql, schemaId: connection.id },
+    auth: inheritAuth ? { ...request.auth, type: "inherit", inherit: { source: "schema" } } : request.auth };
+}
+export function detachGraphqlSchema(request: RequestDraft, connection?: SchemaDocument): RequestDraft {
+  if (!request.graphql) return request;
+  return { ...request, url: connection?.endpoint ?? request.url,
+    graphql: { ...request.graphql, schemaId: undefined },
+    auth: request.auth.type === "inherit" && request.auth.inherit.source === "schema"
+      ? { ...structuredClone(connection?.auth ?? createRequestAuth()), secretRefs: undefined } : request.auth };
+}
+export function defaultGraphqlSchema(workspace: Workspace): SchemaDocument | undefined {
+  const connections = workspace.documents.filter((item): item is SchemaDocument => item.kind === "schema");
+  return connections.find((item) => item.id === workspace.defaultGraphqlSchemaId)
+    ?? connections.find((item) => item.id === workspace.ui.lastGraphqlSchemaId);
+}
+/** Normalize old per-request schemas once without changing existing request targets. */
+export function migrateSchemaConnections(workspace: Workspace): Workspace {
+  const documents = workspace.documents.map((document): WorkspaceDocument => {
+    if (document.kind !== "schema" || document.connectionVersion === 1) return document;
+    const source = workspace.documents.find((item): item is RequestDocument => isRequestDocument(item) && item.id === document.sourceRequestId);
+    return { ...document, connectionVersion: 1, sourceRequestId: "",
+      endpoint: source?.request.url || document.endpoint || (document.source === "introspection" ? document.sourceLabel : ""),
+      auth: { ...structuredClone(source?.request.auth ?? document.auth ?? createRequestAuth()), secretRefs: undefined },
+      introspectionHeaders: structuredClone(source?.request.headers ?? document.introspectionHeaders ?? []),
+    };
+  });
+  const normalize = (request: RequestDraft, requestId: string): RequestDraft => {
+    if (!request.graphql) return request;
+    const legacy = workspace.documents.find((item) => item.kind === "schema" && item.connectionVersion !== 1 && item.sourceRequestId === requestId);
+    const id = request.graphql.schemaId ?? legacy?.id;
+    if (!id) return request;
+    const connection = documents.find((item): item is SchemaDocument => item.kind === "schema" && item.id === id);
+    const old = workspace.documents.find((item) => item.id === id);
+    if (!connection || old?.kind === "schema" && old.connectionVersion !== 1 && request.url && request.url !== connection.endpoint)
+      return detachGraphqlSchema(request);
+    return { ...request, graphql: { ...request.graphql, schemaId: id } };
+  };
+  return { ...workspace, documents: documents.map((document) => isRequestDocument(document) ? { ...document,
+    request: normalize(document.request, document.id), savedRequest: document.savedRequest ? normalize(document.savedRequest, document.id) : null } : document),
+    defaultGraphqlSchemaId: documents.some((item) => item.kind === "schema" && item.id === workspace.defaultGraphqlSchemaId) ? workspace.defaultGraphqlSchemaId : undefined,
+    ui: { ...workspace.ui, ...(workspace.ui.lastGraphqlSchemaId ? { lastGraphqlSchemaId: documents.some((item) => item.kind === "schema" && item.id === workspace.ui.lastGraphqlSchemaId) ? workspace.ui.lastGraphqlSchemaId : undefined } : {}) },
+  };
 }
 
 export function createExtensionDocument(extensionType: string, name: string, configVersion: number, config: JsonObject, folderId?: string): ExtensionDocument {
@@ -199,6 +256,7 @@ export function openDocument(workspace: Workspace, id: string): Workspace {
   if (!document) return workspace;
   return { ...workspace, ui: { ...workspace.ui,
     openDocumentIds: workspace.ui.openDocumentIds.includes(id) ? workspace.ui.openDocumentIds : [...workspace.ui.openDocumentIds, id],
+    ...(document.kind === "schema" ? { lastGraphqlSchemaId: document.id } : isRequestDocument(document) && document.request.graphql?.schemaId ? { lastGraphqlSchemaId: document.request.graphql.schemaId } : {}),
     activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
   } };
 }
@@ -272,8 +330,9 @@ export function duplicateDocument(workspace: Workspace, id: string): Workspace {
   }
   if (source.kind === "schema") {
     const created = createSchemaDocument();
-    const duplicate: SchemaDocument = { ...created, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
+    const duplicate: SchemaDocument = { ...created, saved: true, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
       folderId: source.folderId, sourceRequestId: source.sourceRequestId, endpoint: source.endpoint, sdl: source.sdl, source: source.source,
+      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders), cacheIdentity: source.cacheIdentity,
       sourceLabel: source.sourceLabel, loadedAt: source.loadedAt, schemaSource: source.schemaSource, pinned: source.pinned, ui: { ...source.ui } };
     return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
   }
@@ -350,15 +409,14 @@ export function deleteDocument(workspace: Workspace, id: string): Workspace {
   if (!document) return workspace;
   const withoutDocument = closeDocument(workspace, id, true);
   const documents = withoutDocument.documents.filter((item) => item.id !== id).map((item) => {
-    if (document.kind === "schema" && isRequestDocument(item) && item.request.graphql?.schemaId === id)
-      return { ...item, request: { ...item.request, graphql: { ...item.request.graphql, schemaId: undefined } } };
-    if (isRequestDocument(document) && item.kind === "schema" && item.sourceRequestId === id) {
-      const replacement = withoutDocument.documents.find((candidate): candidate is GraphqlDocument => candidate.id !== id && candidate.kind === "graphql" && candidate.request.graphql?.schemaId === item.id);
-      return { ...item, sourceRequestId: replacement?.id ?? "", endpoint: replacement?.request.url || (isRequestDocument(document) ? document.request.url : item.endpoint) || item.endpoint };
-    }
-    return item;
+    if (document.kind !== "schema" || !isRequestDocument(item) || item.historical) return item;
+    const detach = (request: RequestDraft) => request.graphql?.schemaId === id ? detachGraphqlSchema(request, document) : request;
+    return { ...item, request: detach(item.request), savedRequest: item.savedRequest ? detach(item.savedRequest) : null };
   });
-  return { ...withoutDocument, documents };
+  return { ...withoutDocument, documents,
+    defaultGraphqlSchemaId: workspace.defaultGraphqlSchemaId === id ? undefined : workspace.defaultGraphqlSchemaId,
+    ui: { ...withoutDocument.ui, lastGraphqlSchemaId: workspace.ui.lastGraphqlSchemaId === id ? undefined : workspace.ui.lastGraphqlSchemaId } };
+
 }
 
 // Saved documents reopen from their explicit snapshot. A blank, never-sent tab
@@ -368,7 +426,7 @@ export function closeDocument(workspace: Workspace, id: string, keepDocument = f
   const index = workspace.ui.openDocumentIds.indexOf(id);
   const openDocumentIds = workspace.ui.openDocumentIds.filter((value) => value !== id);
   const remove = !keepDocument && document && (isRequestDocument(document) && document.historical || !document.saved && !isMeaningfulDraft(document));
-  let documents = remove
+  const documents = remove
     ? workspace.documents.filter((item) => item.id !== id)
     : workspace.documents.map((item) => {
       if (item.id !== id || !item.saved) return item;
@@ -377,11 +435,6 @@ export function closeDocument(workspace: Workspace, id: string, keepDocument = f
         return { ...item, config: structuredClone(item.savedConfig), configVersion: item.savedConfigVersion };
       return item;
     });
-  if (remove) documents = documents.map((item) => {
-    if (item.kind !== "schema" || item.sourceRequestId !== id) return item;
-    const replacement = documents.find((candidate): candidate is GraphqlDocument => candidate.kind === "graphql" && candidate.request.graphql?.schemaId === item.id);
-    return { ...item, sourceRequestId: replacement?.id ?? "", endpoint: replacement?.request.url || (isRequestDocument(document) ? document.request.url : item.endpoint) || item.endpoint };
-  });
   return { ...workspace, documents, ui: { ...workspace.ui, openDocumentIds,
     previewDocumentId: workspace.ui.previewDocumentId === id ? null : workspace.ui.previewDocumentId,
     activeDocumentId: workspace.ui.activeDocumentId === id
@@ -435,7 +488,7 @@ export function validateEnvironment(environment: Environment): string | null {
 }
 
 export function validateWorkspace(value: unknown): Workspace {
-  const workspace = value as Workspace;
+  let workspace = value as Workspace;
   if (!workspace || workspace.schemaVersion !== 1 || typeof workspace.id !== "string" || !/^[a-zA-Z0-9_-]+$/.test(workspace.id)
     || typeof workspace.name !== "string" || !Array.isArray(workspace.documents)
     || !Array.isArray(workspace.environments) || !workspace.ui || !Array.isArray(workspace.ui.openDocumentIds))
@@ -513,6 +566,7 @@ export function validateWorkspace(value: unknown): Workspace {
     || workspace.variables.some((variable) => !isVariable(variable)))
     throw new Error("Invalid document or environment data. The original file has not been changed.");
   const hasInvalidInheritedProfile = (request: RequestDraft, kind: RequestDocumentKind) => request.auth.type === "inherit"
+    && request.auth.inherit.source !== "schema"
     && request.auth.inherit.profileId
     && !requestConfig.auth.some((profile) => profile.id === request.auth.inherit.profileId
       && (profile.scope === "all" || profile.scope === kind));
@@ -541,6 +595,7 @@ export function validateWorkspace(value: unknown): Workspace {
     && workspace.documents.some((document) => document.id === workspace.ui.previewDocumentId && document.saved && !isDocumentDirty(document))
     ? workspace.ui.previewDocumentId
     : null;
+  workspace = migrateSchemaConnections(workspace);
   return { ...workspace,
     description: typeof workspace.description === "string" ? workspace.description : "",
     variables: workspace.variables,
@@ -562,6 +617,7 @@ export function validateWorkspace(value: unknown): Workspace {
       savedConfigVersion: document.saved ? document.savedConfigVersion ?? document.configVersion : null,
       savedConfig: document.saved ? structuredClone(document.savedConfig ?? document.config) : null,
     } satisfies ExtensionDocument) : { ...document,
+      auth: normalizeRequestAuth(document.auth), introspectionHeaders: document.introspectionHeaders ?? [],
       endpoint: typeof document.endpoint === "string" ? document.endpoint : document.source === "introspection" ? document.sourceLabel : "",
       saved: document.saved || Boolean(document.sdl), ui: {
       selectedType: typeof document.ui.selectedType === "string" ? document.ui.selectedType : null,

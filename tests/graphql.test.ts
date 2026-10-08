@@ -75,7 +75,7 @@ test("GraphQL snapshots, schemas and last-created type survive validation while 
   assert.equal(validateWorkspace(legacy).ui.lastRequestKind, "http");
 });
 
-test("schema documents stay ephemeral until loaded and deletion unlinks or reassigns their requests", () => {
+test("schema connections remain independent of source requests and deletion unlinks requests", () => {
   const source = createGraphqlDocument();
   source.request.url = "https://example.com/graphql";
   const sibling = createGraphqlDocument();
@@ -90,7 +90,7 @@ test("schema documents stay ephemeral until loaded and deletion unlinks or reass
 
   workspace = deleteDocument(workspace, source.id);
   const reassigned = workspace.documents.find((item) => item.kind === "schema");
-  assert.equal(reassigned?.sourceRequestId, sibling.id);
+  assert.equal(reassigned?.sourceRequestId, "");
   assert.equal(reassigned?.endpoint, "https://example.com/graphql");
   workspace = deleteDocument(workspace, schema.id);
   const remaining = workspace.documents.find((item) => item.id === sibling.id);

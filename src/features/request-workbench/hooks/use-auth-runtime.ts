@@ -127,6 +127,7 @@ export function useAuthRuntime(
             const updatedSourceAuth = update(effective.source.auth);
             setContext((previous) => ({
               ...previous,
+              schema: previous.schema && previous.schema.id === effective.source?.id ? { ...previous.schema, auth: updatedSourceAuth } : previous.schema,
               workspace:
                 previous.workspace &&
                 previous.workspace.id === effective.source?.id

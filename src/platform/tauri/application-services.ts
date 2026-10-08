@@ -463,12 +463,13 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
         invoke("import_collection", { source, workspaceId, target, importId: crypto.randomUUID() }),
     },
     downloads: {
-      saveInlineResponse: (bodyBase64, suggestedName) => {
+      saveInlineResponse: (bodyBase64, suggestedName, _mediaType, options) => {
         const extension = suggestedName.match(/\.([a-z0-9]{1,12})$/i)?.[1];
         return invoke<string | null>("save_response_body", {
           bodyBase64,
           suggestedName,
           extension: extension ?? "bin",
+          dialogTitle: options?.dialogTitle,
         });
       },
     },

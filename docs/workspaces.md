@@ -21,14 +21,14 @@ Workspace (runtime aggregate)
 
 - `http`: HTTP request document;
 - `graphql`: GraphQL request executed over HTTP;
-- `schema`: GraphQL schema resource.
+- `schema`: workspace-level GraphQL Schema Connection with endpoint, auth and schema source.
 - `extension`: a module-owned protocol/document whose versioned JSON configuration is opaque to core.
 
-HTTP, GraphQL, and extension documents are not automatic sidebar sections. Their saved definitions share one user-controlled tree. `Schemas` and `Drafts` are derived UI groups, not user folders. Runtime `DocumentKind` also reserves `trace`, `benchmark`, and `integration`, but there are no corresponding working trace/benchmark editors or canonical trace/benchmark resources.
+HTTP, GraphQL, and extension documents are not automatic sidebar sections. Their saved definitions share one user-controlled tree. `Schema Connections` and `Drafts` are derived UI groups, not user folders. Runtime `DocumentKind` also reserves `trace`, `benchmark`, and `integration`, but there are no corresponding working trace/benchmark editors or canonical trace/benchmark resources.
 
 A request document has a current `request`, a saved baseline `savedRequest`, and a `saved` flag. `isDocumentDirty` compares the working request with the saved baseline. Saving updates the canonical resource and baseline; closing/discarding a dirty document does not silently overwrite the project file.
 
-Schema documents have their own lifecycle; see [GraphQL](graphql.md).
+Schema Connections persist when created, including before fetch. They are shared independently of the request folder tree. The default connection is canonical workspace configuration; the last-used connection is local UI state. Workspace settings includes a GraphQL tab with the default Schema Connection selector. The same choice is available as an explicit checkbox in connection Settings. New GraphQL requests choose default, then last-used. See [GraphQL](graphql.md) for binding, auth inheritance and deletion behavior.
 
 An extension document has a stable `extensionType`, positive `configVersion`, opaque JSON `config`, and a saved baseline. Its registered controller validates/migrates config and renders the editor. If that module is absent, Purr shows an unavailable host while preserving the canonical definition and any encrypted dirty working copy. Core rename, folder move, duplicate, discard, and delete operations remain available; core never interprets vendor fields. Extension config must not contain credentials or filesystem paths. A module stores credential references through an explicit integration credential boundary rather than hiding them in opaque config.
 

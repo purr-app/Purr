@@ -244,3 +244,11 @@ released on tab close and does not add project fields or local database records.
 ## Postman import ownership
 
 Postman adapters normalize natively into existing canonical resources. The source JSON, scripts, and response examples are not stored. Collection import creates a workspace; environment import adds a resource to an existing workspace through the same validation and revision-checked commit, preserving current document drafts and UI/session state. Per-import IDs prevent collisions on repeated imports. Secret values are transient import payloads passed to SecureStore, while project variables/auth retain only SecretRefs; new vault entries are rolled back on failed import writes/commit. Workspace/environment name overlap is now valid and uses environment precedence; this relaxes validation without changing the YAML shape or requiring a format migration.
+
+## GraphQL connection format transition
+
+The existing `kind: schema` resource and `schemas/` paths now represent workspace-level Schema Connections. Canonical fields add `endpoint`, `auth` and ordered `introspectionHeaders` with credential-aware values. Source-level endpoint/request IDs remain readable for migration and are omitted from new writes. `defaultGraphqlSchemaId` is canonical workspace configuration; `ui.lastGraphqlSchemaId` is local state. Request auth inheritance can explicitly name `source: schema` alongside the existing `graphql.schemaId` binding.
+
+`projectWorkspace` / `restoreWorkspace` own conversion. Legacy source-request settings are copied once, keeping IDs and pinned SDL; conflicting request targets are detached. Saved configuration does not require a successful fetch. Connection auth/editor runtime is protected in `document_session_state`, guarded by its canonical auth definition; drafts are protected before local serialization. Header credentials and OAuth token values live behind SecureStore references.
+
+`schema_cache` version 2 retains SDL and load time together with configuration/context hashes. An external configuration change marks cached SDL stale rather than deleting the last valid schema. Pin still produces a portable SDL sidecar and is enabled by default. No new SQLite table or native transport IPC is required.

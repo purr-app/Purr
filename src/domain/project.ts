@@ -36,7 +36,7 @@ const pair = z.strictObject({ name: z.string(), value: z.string(), enabled: z.bo
 const scope = z.enum(["all", "http", "graphql"]);
 export const authDefinitionSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("none") }),
-  z.strictObject({ type: z.literal("inherit"), profileId: entityId.optional() }),
+  z.strictObject({ type: z.literal("inherit"), source: z.enum(["workspace", "schema"]).optional(), profileId: entityId.optional() }),
   z.strictObject({ type: z.literal("bearer"), token: credentialSchema, prefix: z.string().default("Bearer") }),
   z.strictObject({ type: z.literal("basic"), username: z.string(), password: credentialSchema }),
   z.strictObject({ type: z.literal("api-key"), name: z.string(), placement: z.enum(["header", "query", "cookie"]), value: credentialSchema }),
@@ -70,8 +70,11 @@ export const requestDefinitionSchema = z.discriminatedUnion("kind", [
 ]);
 export type RequestDefinition = z.infer<typeof requestDefinitionSchema>;
 export const schemaDefinitionSchema = z.strictObject({
-  ...base, kind: z.literal("schema"), source: z.discriminatedUnion("type", [
-    z.strictObject({ type: z.literal("introspection"), endpoint: z.string(), requestId: entityId.optional() }),
+  ...base, kind: z.literal("schema"),
+  endpoint: z.string().optional(), auth: authDefinitionSchema.optional(),
+  introspectionHeaders: z.array(z.strictObject({ id: entityId, name: z.string(), value: credentialSchema, enabled: z.boolean().default(true) })).default([]),
+  source: z.discriminatedUnion("type", [
+    z.strictObject({ type: z.literal("introspection"), endpoint: z.string().optional(), requestId: entityId.optional() }),
     z.strictObject({ type: z.enum(["sdl-file", "introspection-json"]), location: z.string().optional(), endpoint: z.string().optional() }),
     z.strictObject({ type: z.literal("registry"), provider: z.string(), resource: z.string(), credential: credentialSchema.optional() }),
   ]), pin: z.boolean().default(true), pinnedSdl: z.string().optional(),
@@ -121,6 +124,7 @@ export type ExtensionDocumentDefinition = z.infer<typeof extensionDocumentDefini
 export const resourceSchema = z.union([requestDefinitionSchema, schemaDefinitionSchema, apiSchemaDefinitionSchema, environmentDefinitionSchema, folderDefinitionSchema, integrationDefinitionSchema, extensionDocumentDefinitionSchema]);
 export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
+  defaultGraphqlSchemaId: entityId.optional(),
   tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
   id: entityId, name: z.string(), description: z.string().optional(),
   variables: z.array(variableDefinitionSchema).default([]),

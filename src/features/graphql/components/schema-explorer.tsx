@@ -1,3 +1,10 @@
+import { Modal } from "../../../shared/components/ui/modal";
+import { Checkbox } from "../../../shared/components/ui/checkbox";
+import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
+import { AuthEditor } from "../../request-workbench/components/auth-editor";
+import { SchemaHeadersEditor } from "./schema-headers-editor";
+import { schemaConnectionIdentity } from "../model/schema-connection";
+import { SchemaStatusDot, useSchemaConnectionStatus } from "./schema-connection-status";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { getIntrospectionQuery, getNamedType, introspectionFromSchema, isCompositeType, isEnumType, isInputObjectType, isInterfaceType, isListType, isNonNullType, isObjectType, isScalarType, isUnionType, print, printType, type GraphQLField, type GraphQLInputField, type GraphQLNamedType, type GraphQLSchema } from "graphql";
 import { ChevronDown, Copy, Download, LoaderCircle, Network, PanelRightClose, PanelRightOpen, Pin, Play, RefreshCw, Search, Upload } from "lucide-react";
@@ -5,9 +12,9 @@ import { Button } from "../../../shared/components/ui/button";
 import { Input } from "../../../shared/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../shared/components/ui/popover";
 import { cn } from "../../../shared/lib/cn";
-import type { RequestDocument, SchemaDocument } from "../../workspaces/model/workspace";
+import type { SchemaDocument } from "../../workspaces/model/workspace";
 import { initialRequestDraft, type RequestDraft } from "../../request-workbench/model/request";
-import type { AuthContext, RequestAuth } from "../../request-workbench/model/request-auth";
+import { base64Bytes, type AuthContext, type RequestAuth } from "../../request-workbench/model/request-auth";
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
 import { useAuthRuntime } from "../../request-workbench/hooks/use-auth-runtime";
 import { executeRequest } from "../../request-workbench/services/execute-request";
@@ -67,14 +74,21 @@ function analysis(type: GraphQLNamedType) {
   return { fields: fields.length, deprecated: deprecatedPaths.length, lists: listPaths.length, depth: depthPath.length, depthPath, listPaths, deprecatedPaths };
 }
 
-export function SchemaExplorer({ document, source, variables, workspaceConfig, cookieJar, setSourceDraft, onChange, onWorkspaceAuthChange, onCreateRequest }: {
-  document: SchemaDocument; source?: RequestDocument; variables: Record<string, string>; cookieJar: SessionCookieJar;
+export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar, onChange, onWorkspaceAuthChange, onCreateRequest, environmentId, isDefault, onDefaultChange }: {
+  document: SchemaDocument; environmentId: string | null; isDefault: boolean; onDefaultChange: () => void; variables: Record<string, string>; cookieJar: SessionCookieJar;
   workspaceConfig: WorkspaceRequestConfig;
-  setSourceDraft: Dispatch<SetStateAction<RequestDraft>>; onChange: (patch: Partial<SchemaDocument>) => void;
+  onChange: (patch: Partial<SchemaDocument>) => void;
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
-  const { httpTransport, responseContent, requestBodies } = useApplicationServices();
+  const { httpTransport, responseContent, requestBodies, downloads } = useApplicationServices();
+  const [downloading, setDownloading] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"general" | "auth" | "headers">("general");
+  const status = useSchemaConnectionStatus(document, workspaceConfig, variables, environmentId);
+  const latest = useRef({ document, workspaceConfig, variables, environmentId });
+  latest.current = { document, workspaceConfig, variables, environmentId };
+  const changeRef = useRef(onChange); changeRef.current = onChange;
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -83,10 +97,10 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   const workspaceAuthEntries = useMemo(() => getWorkspaceAuthProfiles(workspaceConfig, "graphql"), [workspaceConfig]);
   const workspaceProfiles = useMemo(() => workspaceAuthEntries.map((entry) => ({ id: entry.id, name: entry.name || "Workspace", auth: entry.value })), [workspaceAuthEntries]);
   const workspaceAuthEntry = useMemo(() => getWorkspaceAuth(workspaceConfig, "graphql",
-    source?.request.auth.type === "inherit" ? source.request.auth.inherit.profileId : undefined), [source?.request.auth, workspaceConfig]);
-  const workspaceAuth = useMemo(() => (source?.request.workspace.authEnabled ?? true) && workspaceAuthEntry
+    document.auth.type === "inherit" ? document.auth.inherit.profileId : undefined), [document.auth, workspaceConfig]);
+  const workspaceAuth = useMemo(() => workspaceAuthEntry
     ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || "Workspace", auth: workspaceAuthEntry.value } : undefined,
-  [source?.request.workspace.authEnabled, workspaceAuthEntry]);
+  [workspaceAuthEntry]);
   const [context, setContext] = useState<AuthContext>({ variables, workspace: workspaceAuth, workspaceProfiles });
   useEffect(() => setContext((current) => ({ ...current, variables, workspace: workspaceAuth, workspaceProfiles })), [variables, workspaceAuth, workspaceProfiles]);
   const upload = useRef<HTMLInputElement>(null);
@@ -101,21 +115,21 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
       mounted.current = false;
       operation.current?.abort();
       schemaAnalyzer.current?.dispose();
+      changeRef.current({ fetchStatus: undefined });
     };
   }, []);
-  const endpoint = source?.request.url || document.endpoint || (document.source === "introspection" ? document.sourceLabel : "");
-  const schemaDraft = useMemo<RequestDraft>(() => source?.request ?? {
-    ...initialRequestDraft,
-    method: "POST",
-    url: endpoint,
+  const endpoint = document.endpoint;
+  const schemaDraft = useMemo<RequestDraft>(() => ({
+    ...initialRequestDraft, method: "POST", url: endpoint, auth: document.auth, headers: document.introspectionHeaders,
     graphql: { query: "", variables: "", operationName: "" },
-  }, [endpoint, source?.request]);
+  }), [endpoint, document.auth, document.introspectionHeaders]);
   const setSchemaDraft = useCallback<Dispatch<SetStateAction<RequestDraft>>>((change) => {
-    const next = typeof change === "function" ? change(schemaDraft) : change;
-    if (source) setSourceDraft(next);
-    onChange({ endpoint: next.url, ...(document.schemaSource && "endpoint" in document.schemaSource ? { schemaSource: { ...document.schemaSource, endpoint: next.url } } : {}),
-      ...(next.url !== endpoint && document.pinned === false ? { sdl: "", loadedAt: null } : {}) });
-  }, [document.pinned, document.schemaSource, endpoint, onChange, schemaDraft, setSourceDraft, source]);
+    const current = latest.current.document;
+    const currentDraft: RequestDraft = { ...initialRequestDraft, method: "POST", url: current.endpoint,
+      auth: current.auth, headers: current.introspectionHeaders, graphql: { query: "", variables: "", operationName: "" } };
+    const next = typeof change === "function" ? change(currentDraft) : change;
+    changeRef.current({ endpoint: next.url, auth: next.auth, introspectionHeaders: next.headers, updatedAt: new Date().toISOString() });
+  }, []);
   const runtime = useAuthRuntime(schemaDraft, setSchemaDraft, context, setContext, onWorkspaceAuthChange);
   const parsed = useMemo(() => { try { return { schema: document.sdl ? parseGraphqlSchema(document.sdl) : undefined, error: "" }; } catch (cause) { return { schema: undefined, error: String(cause) }; } }, [document.sdl]);
   const schema = parsed.schema;
@@ -126,17 +140,22 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
   useEffect(() => setCopied(false), [code]);
   const selectType = (name: string) => onChange({ ui: { ...document.ui, selectedType: name, selectedField: null } });
   const selectField = (type: string, field: string) => onChange({ ui: { ...document.ui, selectedType: type, selectedField: field } });
-  const install = async (text: string, sourceKind: "file" | "introspection", sourceLabel: string, signal: AbortSignal) => {
+  const install = async (text: string, sourceKind: "file" | "introspection", sourceLabel: string, signal: AbortSignal, expectedIdentity: string) => {
     const { normalizedSdl: sdl } = await schemaAnalyzer.current!.analyze(text, signal);
+    const current = latest.current;
+    if (!mounted.current || signal.aborted || await schemaConnectionIdentity(current.document, current.workspaceConfig, current.variables, current.environmentId) !== expectedIdentity) return;
+    const loadedAt = new Date().toISOString();
+    const schemaSource: SchemaDocument["schemaSource"] = sourceKind === "introspection" ? { type: "introspection" }
+      : { type: text.trim().startsWith("{") ? "introspection-json" : "sdl-file", location: sourceLabel };
+    const cacheIdentity = await schemaConnectionIdentity({ ...document, schemaSource }, workspaceConfig, variables, environmentId);
     if (!mounted.current || signal.aborted) return;
-    const loadedAt = new Date().toISOString(); onChange({ sdl, saved: true, source: sourceKind, sourceLabel, loadedAt, updatedAt: loadedAt,
-      schemaSource: sourceKind === "introspection" ? { type: "introspection", endpoint, ...(source ? { requestId: source.id } : {}) }
-        : { type: text.trim().startsWith("{") ? "introspection-json" : "sdl-file", location: sourceLabel, endpoint } }); setError("");
+    onChange({ sdl, saved: true, source: sourceKind, sourceLabel, loadedAt, updatedAt: loadedAt, schemaSource, cacheIdentity }); setError("");
   };
   const introspect = async () => {
-    if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError("");
+    if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError(""); onChange({ fetchStatus: "loading", fetchError: undefined });
     const controller = new AbortController(); operation.current = controller;
     try {
+      const identity = await schemaConnectionIdentity(document, workspaceConfig, variables, environmentId);
       const request = applyWorkspaceRequestConfig({ ...schemaDraft, url: endpoint, graphql: { ...schemaDraft.graphql!, query: getIntrospectionQuery(), variables: "", operationName: "IntrospectionQuery" } }, "graphql", workspaceConfig);
       const result = await executeRequest(
         request,
@@ -160,28 +179,37 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
         }
         finally { await responseContent.release(result.content).catch(() => {}); }
       }
-      await install(text, "introspection", endpoint, controller.signal);
-    } catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+      await install(text, "introspection", endpoint, controller.signal, identity);
+    } catch (cause) { if (mounted.current && !controller.signal.aborted) { const message = cause instanceof Error ? cause.message : String(cause); setError(message); onChange({ fetchStatus: "error", fetchError: message }); } }
     finally {
       if (operation.current === controller) operation.current = undefined;
       pending.current = false;
-      if (mounted.current) setBusy(false);
+      if (mounted.current) { setBusy(false); onChange({ fetchStatus: undefined }); }
     }
   };
   const loadFile = async (file?: File) => {
-    if (!file || pending.current) return; pending.current = true; setBusy(true); setError("");
+    if (!file || pending.current) return; pending.current = true; setBusy(true); setError(""); onChange({ fetchStatus: "loading", fetchError: undefined });
     const controller = new AbortController(); operation.current = controller;
-    try { await install(await file.text(), "file", file.name, controller.signal); }
-    catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+    try { const identity = await schemaConnectionIdentity(document, workspaceConfig, variables, environmentId); await install(await file.text(), "file", (file as File & { path?: string }).path || file.webkitRelativePath || file.name, controller.signal, identity); }
+    catch (cause) { if (mounted.current && !controller.signal.aborted) { const message = cause instanceof Error ? cause.message : String(cause); setError(message); onChange({ fetchStatus: "error", fetchError: message }); } }
     finally {
       if (operation.current === controller) operation.current = undefined;
       pending.current = false;
-      if (mounted.current) setBusy(false);
+      if (mounted.current) { setBusy(false); onChange({ fetchStatus: undefined }); }
     }
   };
-  const download = () => {
-    if (!schema) return; const json = format === "json"; const content = json ? JSON.stringify(introspectionFromSchema(schema), null, 2) : document.sdl;
-    const url = URL.createObjectURL(new Blob([content], { type: json ? "application/json" : "text/plain" })); const link = globalThis.document.createElement("a"); link.href = url; link.download = `schema.${json ? "json" : "graphql"}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+  const download = async () => {
+    if (!schema || downloading) return;
+    setDownloading(true);
+    try {
+      const json = format === "json";
+      const content = json ? JSON.stringify(introspectionFromSchema(schema), null, 2) : document.sdl;
+      await downloads.saveInlineResponse(base64Bytes(new TextEncoder().encode(content)), `schema.${json ? "json" : "graphql"}`, json ? "application/json" : "text/plain", { dialogTitle: "Save GraphQL schema" });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save the schema.");
+    } finally {
+      setDownloading(false);
+    }
   };
   const roots: Array<{ label: string; kind: RootKind; type?: ReturnType<GraphQLSchema["getQueryType"]> }> = [
     { label: "Queries", kind: "query", type: schema?.getQueryType() }, { label: "Mutations", kind: "mutation", type: schema?.getMutationType() }, { label: "Subscriptions", kind: "subscription", type: schema?.getSubscriptionType() },
@@ -197,27 +225,55 @@ export function SchemaExplorer({ document, source, variables, workspaceConfig, c
     return [...own, ...fields];
   }) : [];
   return <section aria-label="GraphQL schema explorer" className="flex h-full min-h-0 flex-col gap-ui-2 overflow-hidden p-ui-2">
-    <div className="flex shrink-0 flex-wrap items-center gap-x-ui-3 gap-y-ui-1 rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2">
-      <Network className="size-ui-4 shrink-0 text-action-graphql" />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-ui-3"><span className="shrink-0 text-ui-md font-medium">GraphQL Schema</span><Input aria-label="GraphQL schema endpoint" variant="transparent" className="h-control-md min-w-0 flex-1 font-code text-ui-sm" placeholder="Enter endpoint or use {{base_url}}" value={endpoint}
-          onChange={(event) => setSchemaDraft({ ...schemaDraft, url: event.target.value })} spellCheck="false" /></div>
-        <div className="mt-ui-1 flex min-w-0 flex-wrap items-center gap-ui-3 text-ui-xs text-content-tertiary"><span>Source: <span className="text-content-secondary">{document.source === "introspection" ? "Introspection" : document.source === "file" ? document.sourceLabel : "Not loaded"}</span></span>
-          {document.loadedAt && <span title={new Date(document.loadedAt).toLocaleString()}>Updated {updatedLabel(document.loadedAt)}</span>}
-        </div>
+    <header aria-label="Schema Connection toolbar" className="shrink-0 rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2">
+      <div className="flex items-center gap-ui-2">
+        <Network className="size-ui-4 shrink-0 text-action-graphql" aria-hidden="true" />
+        {document.source === "file" ? <Input aria-label="Schema file path" className="ui-focus-ring h-control-md min-w-0 flex-1 border-border-default bg-purr-codefield font-code text-ui-sm" value={document.schemaSource && "location" in document.schemaSource ? document.schemaSource.location ?? document.sourceLabel : document.sourceLabel}
+          readOnly title="Imported schema file. Choose another file to replace it." />
+          : <Input aria-label="GraphQL schema endpoint" className="ui-focus-ring h-control-md min-w-0 flex-1 border-border-default bg-purr-codefield font-code text-ui-sm" placeholder="Enter endpoint or use {{base_url}}" value={endpoint}
+            onChange={(event) => setSchemaDraft({ ...schemaDraft, url: event.target.value })} spellCheck="false" />}
+        <Button variant="toolbar" size="sm" onClick={() => document.source === "file" ? upload.current?.click() : void introspect()} disabled={busy || document.source !== "file" && !endpoint.trim()}>{busy ? <LoaderCircle className="size-ui-3-5 animate-spin" /> : <RefreshCw className="size-ui-3-5 text-action-graphql" />}Reload</Button>
+        {busy && <Button variant="ghost" size="sm" onClick={() => operation.current?.abort()}>Cancel fetch</Button>}
+        <Button variant="toolbar" size="sm" aria-label="Schema settings" onClick={() => setSettings(true)}>Settings</Button>
+        <Popover><PopoverTrigger asChild><Button variant="toolbar" size="sm" aria-label="Change schema source">{document.source === "file" ? "File" : "Introspection"}<ChevronDown className="size-ui-3" /></Button></PopoverTrigger>
+          <PopoverContent align="end" className="w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
+            <Button variant="ghost" className="w-full justify-start" onClick={() => onChange({ source: "introspection", schemaSource: { type: "introspection" } })}><RefreshCw className="size-ui-3-5" />Introspection</Button>
+            <Button variant="ghost" className="w-full justify-start" onClick={() => upload.current?.click()}><Upload className="size-ui-3-5" />SDL or introspection file</Button>
+          </PopoverContent></Popover>
+        <input ref={upload} type="file" accept=".graphql,.gql,.graphqls,.sdl,.json,text/plain,application/json" aria-label="Schema file" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
+        <Button variant="toolbar" size="icon" aria-label={document.ui.sourcePaneOpen ? "Hide SDL pane" : "Show SDL pane"} title={document.ui.sourcePaneOpen ? "Hide source pane" : "Show source pane"} aria-pressed={document.ui.sourcePaneOpen} onClick={() => onChange({ ui: { ...document.ui, sourcePaneOpen: !document.ui.sourcePaneOpen } })}>{document.ui.sourcePaneOpen ? <PanelRightClose className="size-ui-4" /> : <PanelRightOpen className="size-ui-4" />}</Button>
+        <Button variant="toolbar" size="icon" aria-label="Download schema" title="Download schema" onClick={() => void download()} disabled={!schema || downloading}><Download className="size-ui-4" /></Button>
+        <Button variant="toolbar" size="icon" aria-label="Pin schema SDL to project" title="Include the schema SDL in the project" aria-pressed={document.pinned !== false} className={document.pinned !== false ? "text-action-brand" : undefined} onClick={() => onChange({ pinned: document.pinned === false })} disabled={!schema}><Pin className="size-ui-4" /></Button>
       </div>
-      <Button variant="secondary" size="sm" onClick={() => void introspect()} disabled={busy || !endpoint.trim()}>{busy ? <LoaderCircle className="size-ui-3-5 animate-spin" /> : <RefreshCw className="size-ui-3-5 text-action-graphql" />}Reload</Button>
-      <Popover><PopoverTrigger asChild><Button variant="secondary" size="sm">Change source<ChevronDown className="size-ui-3" /></Button></PopoverTrigger>
-        <PopoverContent align="end" className="w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
-          <Button variant="ghost" className="w-full justify-start" disabled={!endpoint.trim()} onClick={() => void introspect()}><RefreshCw className="size-ui-3-5" />Introspection</Button>
-          <Button variant="ghost" className="w-full justify-start" onClick={() => upload.current?.click()}><Upload className="size-ui-3-5" />SDL or introspection file</Button>
-        </PopoverContent></Popover>
-      <input ref={upload} type="file" accept=".graphql,.gql,.graphqls,.sdl,.json,text/plain,application/json" aria-label="Schema file" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
-      <Button variant="ghost" size="icon" aria-label={document.ui.sourcePaneOpen ? "Hide SDL pane" : "Show SDL pane"} title={document.ui.sourcePaneOpen ? "Hide source pane" : "Show source pane"} aria-pressed={document.ui.sourcePaneOpen} onClick={() => onChange({ ui: { ...document.ui, sourcePaneOpen: !document.ui.sourcePaneOpen } })}>{document.ui.sourcePaneOpen ? <PanelRightClose className="size-ui-4" /> : <PanelRightOpen className="size-ui-4" />}</Button>
-      <Button variant="ghost" size="icon" aria-label="Download schema" onClick={download} disabled={!schema}><Download className="size-ui-4" /></Button>
-      <Button variant="ghost" size="icon" aria-label="Pin schema SDL to project" title="Pinned schemas are saved as SDL in the workspace and stay available after restarting Purr" aria-pressed={document.pinned !== false} className={document.pinned !== false ? "text-action-brand" : undefined} onClick={() => onChange({ pinned: document.pinned === false })} disabled={!schema}><Pin className="size-ui-4" /></Button>
-    </div>
-    {(error || parsed.error) && <p role="alert" className="shrink-0 whitespace-pre-wrap rounded-ui-md bg-purr-elevated px-ui-3 py-ui-2 text-ui-sm text-accent-red">{error || parsed.error}</p>}
+      <div className="mt-ui-1 flex min-w-0 items-center gap-ui-3 text-ui-xs text-content-tertiary">
+        <span className="flex items-center gap-ui-2"><SchemaStatusDot status={status} />{status}</span>
+        <span className="truncate" title={document.name}>{document.name || "Untitled GraphQL schema"}</span>
+        {schema && <span className="shrink-0 font-code">{types.length} types</span>}
+        {document.loadedAt && <span className="shrink-0" title={new Date(document.loadedAt).toLocaleString()}>Updated {updatedLabel(document.loadedAt)}</span>}
+      </div>
+    </header>
+    {settings && <Modal className="h-ui-settings-dialog w-ui-integration-dialog flex-col overflow-hidden bg-purr-surface open:flex" title="Schema Connection settings" onClose={() => setSettings(false)}>
+      <div className="shrink-0 border-b border-border-subtle px-ui-4 py-ui-2">
+        <SegmentedTabs id="schema-settings" panelId="schema-settings-panel" label="Schema settings" value={settingsTab}
+          options={[{ value: "general", label: "General" }, { value: "auth", label: "Authentication" }, { value: "headers", label: "Introspection headers" }]} onValueChange={setSettingsTab} />
+      </div>
+      <div id="schema-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto">
+        {settingsTab === "general" ? <div className="space-y-ui-4 p-ui-4">
+          <label className="block space-y-ui-2 text-ui-xs font-medium text-content-secondary">Connection name
+            <Input aria-label="Schema Connection name" className="ui-focus-ring border-border-default font-ui" placeholder="Untitled GraphQL schema" value={document.name} onChange={(event) => onChange({ name: event.target.value })} />
+          </label>
+          {document.source === "file" && <label className="block space-y-ui-2 text-ui-xs font-medium text-content-secondary">Request endpoint
+            <Input aria-label="GraphQL request endpoint" className="ui-focus-ring border-border-default font-code" placeholder="Endpoint for requests using this schema" value={endpoint} onChange={(event) => setSchemaDraft({ ...schemaDraft, url: event.target.value })} />
+            <span className="block font-normal text-content-tertiary">The imported file describes the schema. Requests are sent to this endpoint.</span>
+          </label>}
+          <div className="space-y-ui-2"><Checkbox label="Use as the workspace default schema" checked={isDefault} onCheckedChange={onDefaultChange} />
+            <p className="m-ui-0 text-ui-xs text-content-tertiary">New GraphQL requests will use this connection. You can also change the default in Workspace settings → GraphQL.</p></div>
+        </div> : settingsTab === "auth" ? <AuthEditor auth={document.auth} onAuthChange={(auth) => setSchemaDraft({ ...schemaDraft, auth })} context={context} runtime={runtime} secureStorageOnly ariaLabel="Schema authentication" idPrefix="schema" />
+          : <SchemaHeadersEditor headers={document.introspectionHeaders} onChange={(headers) => setSchemaDraft({ ...schemaDraft, headers })} />}
+      </div>
+      <div className="flex shrink-0 justify-end border-t border-border-subtle p-ui-3"><Button variant="brand" onClick={() => setSettings(false)}>Done</Button></div>
+    </Modal>}
+    {(error || document.fetchError || parsed.error) && <p role="alert" className="shrink-0 whitespace-pre-wrap rounded-ui-md bg-purr-elevated px-ui-3 py-ui-2 text-ui-sm text-accent-red">{error || document.fetchError || parsed.error}</p>}
     {!schema ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-ui-3 rounded-ui-xl border border-border-subtle bg-purr-surface p-ui-6 text-center"><Network className="size-ui-10 text-action-graphql" /><p className="text-ui-md text-content-secondary">No schema loaded</p><p className="text-ui-sm text-content-tertiary">Reload through introspection or choose an SDL / introspection JSON source.</p></div>
       : <div className={cn("grid min-h-0 flex-1 gap-ui-2 overflow-x-auto", document.ui.sourcePaneOpen ? "grid-cols-ui-schema" : "grid-cols-ui-schema-compact")}>
       <aside aria-label="Schema type registry" className="flex min-h-0 flex-col overflow-hidden rounded-ui-lg border border-border-subtle bg-purr-surface">

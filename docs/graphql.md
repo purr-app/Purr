@@ -2,14 +2,11 @@
 
 This document owns GraphQL request and schema behavior. GraphQL uses the normal HTTP/auth/cookie/variable pipeline; this document covers only its GraphQL-specific model, preparation, editor services, and response views.
 
-## Two distinct resources
+## Requests and Schema Connections
 
-Purr keeps GraphQL requests and schemas separate:
+A GraphQL request is an independent operation with query, variables, selected operation and optional `graphql.schemaId`. A Schema Connection is a workspace-level API context, represented by the existing `SchemaDocument` / canonical `SchemaDefinition(kind=schema)`. It owns name, endpoint, source, authentication, introspection-only headers, a cached schema and last successful load time. Multiple requests can share one connection.
 
-- a `GraphqlDocument` is a request definition with endpoint, headers/auth/body infrastructure plus query, variables, selected operation, and optional `schemaId`;
-- a `SchemaDocument` is a schema source/cache/snapshot and explorer state, not an executable request.
-
-Both are workspace documents in runtime. GraphQL requests live with HTTP requests in the common `documents/` folder tree; schemas appear in the derived Schemas group and persist under `schemas/`.
+Requests stay in the common Documents/folders tree. Connections appear in the separate Schema Connections group and persist under `schemas/`; creating a connection saves its configuration even before a successful fetch. Deleting or closing a request never changes its connection.
 
 ## GraphQL request over HTTP
 
@@ -36,33 +33,43 @@ Template variables can appear in query text, variables JSON, operation name, end
 
 Subscriptions can appear in an imported schema and explorer, but cannot be sent. Query and mutation are the supported operations.
 
-## Schema linking
+## Selection and workflows
 
-A GraphQL request can identify a schema by `graphql.schemaId`. `WorkspaceWorkbench` also resolves a schema whose `sourceRequestId` is that request and retains endpoint-based fallback for older links. Opening Schema from a request creates/reuses a `SchemaDocument` and writes the selected schema ID back to the request.
+The request toolbar is ordered GQL, URL, schema icon and adjacent Schema Connection selector, then Send. It has a Schema Connection selector with an explicit No schema option, a status dot for every connection and a create action. A selected connection makes the URL read-only and supplies its live endpoint to execution and export. The endpoint is edited in the connection editor. Query/path parameter editors cannot override the bound endpoint. Missing or stale schema data does not prevent sending; an endpoint is still required.
 
-The parsed `GraphQLSchema` is passed to the query editor for completion, hover, diagnostics, and navigation. Clicking a type reference can open the schema document focused on that type.
+New requests select the canonical workspace `defaultGraphqlSchemaId`, otherwise the locally remembered last-used connection, otherwise No schema. Newly created bound requests inherit connection auth. Existing auth overrides survive switching connections. Request auth can explicitly inherit from the connection, select a workspace profile, use its own scheme or choose None. Connection auth may itself inherit a workspace profile.
+
+Request-first: enter a URL and open the schema icon or choose New Schema Connection in the selector. This creates and opens a connection tab, prefilling endpoint, auth and introspection headers from the request, and links the request. No creation dialog or automatic fetch runs. Configure private access through Settings, then Reload to introspect. Existing connections can be selected directly without fetching again. Failures leave editable connection settings available for retry.
+
+The compact connection toolbar has an explicit bordered source input: endpoint for introspection, or a read-only imported file location (filename when the picker does not expose a path). Name, default selection, auth and introspection headers live in the Settings modal. File-backed connections keep their separate request endpoint in Settings; the file location is never used as an HTTP URL. Workspace settings → GraphQL also selects the default connection.
+
+Schema-first: create a connection, configure auth, fetch/import, then generate query/mutation requests from root fields in the explorer. Generated requests live in Documents and inherit the connection endpoint/auth. Further requests reuse the cached schema without another fetch.
+
+No schema materializes the current endpoint and inherited auth configuration into the working request. Deleting a connection does the same independently for saved and working copies of all linked requests, and clears default/last-used references. Copied credentials receive independent SecureStore ownership when persisted. History records capture the effective connection settings rather than retaining a live binding.
+
+The cached `GraphQLSchema` supplies completion, hover, diagnostics and type navigation. A request without a schema still has syntax validation and remains executable.
 
 ## Schema sources
 
 Canonical `SchemaDefinition.source` supports:
 
-- `introspection {endpoint, requestId?}`;
-- `sdl-file {location?, endpoint?}`;
-- `introspection-json {location?, endpoint?}`;
+- `introspection`;
+- `sdl-file {location?}`;
+- `introspection-json {location?}`;
 - `registry {provider,resource,credential?}`.
 
-Current working sources are introspection and user-selected SDL/introspection JSON files. Registry is a canonical extension point only; no provider implementation or UI resolves it.
+Endpoint and auth are connection-level fields, independent of source kind. Legacy source-level endpoints and `requestId` are accepted for migration only. Current working sources are introspection and user-selected SDL/introspection JSON files. Registry is a canonical extension point only; no provider implementation or UI resolves it.
 
 `parseGraphqlSchema` accepts SDL or introspection JSON, builds a schema, and runs `validateSchema`. `normalizeSchema` prints introspection JSON as normalized SDL; for SDL it prints the imported AST to preserve applied custom directives and extensions that an introspection representation may lose. Schema-source normalization and validation run in a dedicated Web Worker. The worker uses monotonically increasing request IDs; replacing or aborting an analysis terminates its worker, and a stale result cannot install an older schema.
 
 ## Introspection flow
 
-`SchemaExplorer` creates an introspection `RequestDraft`, usually from the linked request. It applies workspace GraphQL shared configuration, variables, auth/OAuth runtime, and cookie jar through the normal request execution services, then requires a 2xx response and installs normalized SDL.
+`SchemaExplorer` creates an introspection `RequestDraft` from connection settings, never from a linked request. Connection headers augment/override workspace headers for introspection only. Its Authentication editor supports None, Bearer, Basic, API Key, OAuth 2.0 and workspace inheritance. Credential-like headers are stored securely; other headers have an explicit secure-storage toggle. It applies workspace GraphQL shared configuration, variables, auth/OAuth runtime, and cookie jar through the normal request execution services, then requires a 2xx response and installs normalized SDL.
 
 Inline introspection installs directly. A referenced introspection response is read through bounded `ResponseContentPort` windows, released immediately after materialization, and sent to the schema-analysis worker. This removes the old 1 MiB installation failure and keeps JSON parsing, schema construction, validation, and SDL normalization off the UI thread. It does not claim constant memory: the worker still receives the complete introspection source and returns the normalized SDL.
 
 ```text
-linked GraphQL request / schema endpoint
+Schema Connection endpoint / auth / introspection headers
   → getIntrospectionQuery()
   → workspace-effective GraphQL request
   → executeRequest() + cookie jar
@@ -72,15 +79,17 @@ linked GraphQL request / schema endpoint
   → SchemaDocument cache/snapshot
 ```
 
-Changing an unpinned schema endpoint clears stale SDL/cache state. File import reads the selected browser `File` as text and validates before installation. The schema can be downloaded as SDL or introspection JSON.
+Configuration changes do not discard the last valid schema. A late result cannot replace a schema after its source, endpoint, auth or environment context changes. File import reads the selected browser `File` as text and validates before installation; Reload for a file source asks the user to select a file again. The schema can be downloaded as SDL or introspection JSON through the shared `DownloadPort`. Desktop export opens the native save dialog to choose the file name and location; cancellation writes nothing. Browser preview uses its save picker when available, otherwise browser-managed downloads. The inline-download IPC accepts an optional dialog title so schema exports are labelled correctly.
 
 ## Cache and pinning
 
-Every schema document writes local `schema_cache` containing SDL, load time, and source identity. The cache is reused only when its recorded source equals the current canonical source.
+Every connection writes a version-2 local `schema_cache` with normalized SDL, last successful load time, a canonical-definition hash and an opaque SHA-256 load-context identity. Credential values are not copied into cache metadata. Changes to source, endpoint, active auth, introspection headers, inherited configuration or environment make an existing cache Stale. OAuth token rotation does not change identity.
 
-When `pin` is true, projection also writes the SDL to a Git-friendly `.graphql` sidecar and the schema YAML references it. That snapshot wins on restore and remains available offline/across machines. When unpinned, canonical YAML keeps source metadata but SDL remains only in encrypted local cache and can be regenerated.
+The selector and editor show Not fetched, Loading, Loaded, Stale or Error using a dot and an accessible text label. A successful SDL/JSON import counts as Loaded. Failed reloads preserve the last valid SDL and timestamp. There is no time-based expiry or background refresh.
 
-Pinning is about portability, not whether the schema document itself is saved.
+Pin defaults to enabled. A valid SDL snapshot is written to a Git-friendly `.graphql` sidecar; no empty snapshot is written before the first load. With Pin disabled, SDL remains in encrypted local cache. Pinned snapshots are available on another machine without fetching, even when that machine has no local load timestamp.
+
+Older per-request schemas migrate without changing IDs. Source request endpoint/auth/headers are copied once, after which the connection is independent. A legacy request whose URL conflicts with its connection is detached without changing its target. Missing connections are tolerated, and obsolete local records do not prevent workspace opening.
 
 ## Explorer and language service
 
@@ -119,7 +128,7 @@ GraphQL shares:
 - the workspace cookie jar and redirect policy;
 - cURL/code export after GraphQL has been prepared as HTTP JSON.
 
-There is no separate GraphQL credential, cookie, or transport subsystem.
+Connection endpoint/auth resolution participates in the existing request composition path, including Send, dynamic-variable dependencies and code/cURL export. There is no separate GraphQL vault, cookie jar or transport subsystem.
 
 ## Unsupported/reserved behavior
 

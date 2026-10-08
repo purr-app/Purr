@@ -1,7 +1,7 @@
 import type { IntegrationDefinition } from "../../../domain/project";
 import { resolveRequestTracing } from "./request-tracing";
-import type { RequestAuth } from "./request-auth";
-import type { RequestDraft, RequestHeader } from "./request";
+import { resolveAuth, type AuthContext, type RequestAuth } from "./request-auth";
+import { getRequestQueryParamsFromUrl, type RequestDraft, type RequestHeader } from "./request";
 
 export type RequestKind = "http" | "graphql";
 export type RequestScope = "all" | RequestKind;
@@ -18,7 +18,25 @@ export type WorkspaceSharedAuth = {
   scope: RequestScope;
   value: RequestAuth;
 };
+export type SchemaConnectionConfig = { id: string; name: string; endpoint: string; auth: RequestAuth };
+export function withSchemaAuthContext(request: RequestDraft, config: WorkspaceRequestConfig, context: AuthContext): AuthContext {
+  const connection = config.schemaConnections?.find((item) => item.id === request.graphql?.schemaId);
+  return { ...context, schema: connection ? { id: connection.id, name: connection.name, auth: connection.auth } : undefined };
+}
+/** History captures connection settings at dispatch time, never a live schema reference. */
+export function snapshotSchemaRequest(request: RequestDraft, config: WorkspaceRequestConfig, context: AuthContext = {}): RequestDraft {
+  if (!request.graphql?.schemaId) return request;
+  const effective = applyWorkspaceRequestConfig(request, "graphql", config);
+  const profile = getWorkspaceAuth(config, "graphql");
+  const resolved = resolveAuth(effective.auth, withSchemaAuthContext(effective, config, {
+    workspace: profile ? { id: profile.id, name: profile.name, auth: profile.value } : undefined,
+    workspaceProfiles: getWorkspaceAuthProfiles(config, "graphql").map((item) => ({ id: item.id, name: item.name, auth: item.value })), ...context,
+  }));
+  return { ...effective, graphql: { ...effective.graphql!, schemaId: undefined }, auth: structuredClone(resolved.auth) };
+}
 export type WorkspaceRequestConfig = {
+  /** Runtime-only workspace connection projection, shared by every execution path. */
+  schemaConnections?: readonly SchemaConnectionConfig[];
   /** Runtime projection only; canonical integrations remain separate resources. */
   integrations?: readonly IntegrationDefinition[];
   tracePropagation?: string;
@@ -80,6 +98,9 @@ export function applyWorkspaceRequestConfig(
   kind: RequestKind,
   config: WorkspaceRequestConfig,
 ): RequestDraft {
+  const connection = kind === "graphql" ? config.schemaConnections?.find((item) => item.id === request.graphql?.schemaId) : undefined;
+  if (connection) request = { ...request, url: connection.endpoint,
+    params: getRequestQueryParamsFromUrl(connection.endpoint, []), pathParams: [] };
   const ownNames = new Set(request.headers.map((header) => header.name.trim().toLowerCase()).filter(Boolean));
   const sharedHeaders = config.headers
     .filter((header) => header.enabled && header.name.trim()
@@ -98,7 +119,7 @@ export function applyWorkspaceRequestConfig(
     && request.auth.type === "inherit"
     && request.auth.inherit.source === "workspace"
       ? { ...request.auth, type: "none" as const }
-      : withWorkspaceAuthDefault(request, kind, config).auth;
+      : kind === "graphql" ? request.auth : withWorkspaceAuthDefault(request, kind, config).auth;
   const tracing = config.integrations ? resolveRequestTracing(request, config.integrations, config.tracePropagation) : undefined;
   return {
     ...request,

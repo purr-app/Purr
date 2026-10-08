@@ -151,7 +151,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 | Workspace | `Workspace` | `WorkspaceDefinition` | Working |
 | HTTP request | `RequestDocument` + `RequestDraft` | `RequestDefinition(kind=http)` | Working |
 | GraphQL request | `GraphqlDocument` | `RequestDefinition(kind=graphql)` | Working over HTTP |
-| Schema resource | `SchemaDocument` | `SchemaDefinition` | Working for introspection/file sources |
+| Schema Connection | `SchemaDocument` | `SchemaDefinition` | Workspace-level endpoint/auth, shared request binding, introspection/file sources |
 | Imported API schema | `Workspace.extraResources` | `ApiSchemaDefinition` | OpenAPI 3.x source snapshot working; no schema editor yet |
 | Folder | `extraResources` | folder `ProjectResource` | Working, nested filesystem hierarchy |
 | Environment | `Environment` | `EnvironmentDefinition` | Working |

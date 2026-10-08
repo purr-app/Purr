@@ -58,7 +58,7 @@ export function AuthEditor({
           value={auth.type}
           options={typeOptions}
           onValueChange={(type) => {
-            onAuthChange({ ...auth, type });
+            onAuthChange({ ...auth, type, ...(type === "inherit" && context.schema ? { inherit: { source: "schema" as const } } : {}) });
             runtime.clearError();
           }}
         />
@@ -180,12 +180,12 @@ export function AuthEditor({
 
         {auth.type === "inherit" ? (
           <div className="space-y-ui-4">
-            {workspaceProfiles.length > 1 ? <div className="max-w-ui-dialog space-y-ui-2">
+            {(context.schema || workspaceProfiles.length > 1) ? <div className="max-w-ui-dialog space-y-ui-2">
               <span className="block text-ui-xs font-medium text-content-secondary">Shared authentication profile</span>
               <SelectField label="Inherit authentication from" size="lg"
-                value={auth.inherit.profileId ?? resolved.source?.id ?? workspaceProfiles[0].id}
-                options={workspaceProfiles.map((profile) => ({ value: profile.id, label: profile.name }))}
-                onValueChange={(profileId) => onAuthChange({ ...auth, inherit: { source: "workspace", profileId } })}
+                value={auth.inherit.source === "schema" ? "schema" : auth.inherit.profileId ?? resolved.source?.id ?? workspaceProfiles[0]?.id ?? ""}
+                options={[...(context.schema ? [{ value: "schema", label: `Schema: ${context.schema.name}` }] : []), ...workspaceProfiles.map((profile) => ({ value: profile.id, label: profile.name }))]}
+                onValueChange={(profileId) => onAuthChange({ ...auth, inherit: profileId === "schema" ? { source: "schema" } : { source: "workspace", profileId } })}
                 className="w-full" />
             </div> : null}
             <div className="flex items-center gap-ui-2 text-ui-sm">
