@@ -24,8 +24,8 @@ function ResponseStateShell({ label, children, pending = false, headerAction }: 
 export function ErrorResponse({ message, headerAction }: { message: string; headerAction?: ReactNode }) {
   return <ResponseStateShell label="Request error" headerAction={headerAction}>
     <div role="tabpanel" className="flex h-full min-h-0 items-start bg-purr-codefield p-ui-4">
-      <div role="alert" className="flex min-w-0 items-start gap-ui-2 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-3">
-        <CircleAlert className="mt-ui-1 size-ui-4 shrink-0 text-accent-red" aria-hidden="true" />
+      <div role="alert" className="flex min-w-0 items-center gap-ui-2 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-3">
+        <CircleAlert className="size-ui-4 shrink-0 text-accent-red" aria-hidden="true" />
         <p className="m-ui-0 whitespace-pre-wrap break-words font-code text-ui-sm text-accent-red">{message}</p>
       </div>
     </div>
