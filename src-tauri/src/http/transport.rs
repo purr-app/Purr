@@ -57,6 +57,56 @@ impl LineStatistics {
 
 pub struct HttpClient(pub Client);
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum HttpVersionPolicy {
+    #[default]
+    Auto,
+    Http1,
+    Http2,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct TransportSettings {
+    timeout_ms: u64,
+    validate_tls_certificates: bool,
+    http_version: HttpVersionPolicy,
+}
+
+impl Default for TransportSettings {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 60_000,
+            validate_tls_certificates: true,
+            http_version: HttpVersionPolicy::Auto,
+        }
+    }
+}
+
+impl TransportSettings {
+    fn client(&self, default: &Client) -> Result<Client, String> {
+        if !(1..=3_600_000).contains(&self.timeout_ms) {
+            return Err("Request timeout must be between 1 and 3600000 ms.".into());
+        }
+        if self.validate_tls_certificates && self.http_version == HttpVersionPolicy::Auto {
+            return Ok(default.clone());
+        }
+        // Never mutate the shared client's trust or protocol policy.
+        let builder = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .danger_accept_invalid_certs(!self.validate_tls_certificates);
+        let builder = match self.http_version {
+            HttpVersionPolicy::Auto => builder,
+            HttpVersionPolicy::Http1 => builder.http1_only(),
+            HttpVersionPolicy::Http2 => builder.http2_prior_knowledge(),
+        };
+        builder
+            .build()
+            .map_err(|_| "Could not configure the HTTP client.".into())
+    }
+}
+
 impl Default for HttpClient {
     fn default() -> Self {
         Self(
@@ -86,6 +136,8 @@ pub struct HttpRequest {
     body_source: Option<RequestBodySource>,
     #[serde(default)]
     response_storage: ResponseStoragePolicy,
+    #[serde(default)]
+    transport_settings: TransportSettings,
 }
 
 impl HttpRequest {
@@ -317,7 +369,10 @@ pub async fn perform_http_with_files(
         Some(RequestBodySource::Multipart { .. })
     );
     let streamed_body = request.body_source.is_some();
-    let mut builder = client.request(method, url);
+    let client = request.transport_settings.client(client)?;
+    let mut builder = client
+        .request(method, url)
+        .timeout(Duration::from_millis(request.transport_settings.timeout_ms));
     for (name, value) in request.headers {
         if (multipart && name.eq_ignore_ascii_case("content-type"))
             || (streamed_body && name.eq_ignore_ascii_case("content-length"))
@@ -431,7 +486,11 @@ pub async fn perform_http_with_files(
         loop {
             let next = tokio::select! {
                 _ = cancelled(&mut cancellation) => return Err("Request cancelled.".into()),
-                result = response.chunk() => result.map_err(|_| "Could not read the response body.")?,
+                result = response.chunk() => result.map_err(|error| if error.is_timeout() {
+                    "Request timed out."
+                } else {
+                    "Could not read the response body."
+                })?,
             };
             let Some(chunk) = next else { break };
             received_bytes = received_bytes
@@ -450,9 +509,7 @@ pub async fn perform_http_with_files(
                 pending_writes.push_back(pending);
                 if pending_writes.len() >= 2 {
                     let (timing, waited) = await_write(
-                        pending_writes
-                            .pop_front()
-                            .expect("pending response write"),
+                        pending_writes.pop_front().expect("pending response write"),
                         &mut cancellation,
                     )
                     .await?;
@@ -497,9 +554,16 @@ pub async fn perform_http_with_files(
         tokio::select! {
             _ = cancelled(&mut cancellation) => Err("Request cancelled.".into()),
             result = &mut finish => result,
-        }.map(|mut reference| {
+        }
+        .map(|mut reference| {
             line_statistics.apply(&mut reference);
-            (reference, network_completed, encryption, sqlite_write, storage_backpressure)
+            (
+                reference,
+                network_completed,
+                encryption,
+                sqlite_write,
+                storage_backpressure,
+            )
         })
     }
     .await;
@@ -618,7 +682,162 @@ mod tests {
             body_base64: None,
             body_source: None,
             response_storage: ResponseStoragePolicy::default(),
+            transport_settings: TransportSettings::default(),
         }
+    }
+
+    #[test]
+    fn transport_settings_default_and_validate_at_the_native_boundary() {
+        let legacy: HttpRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://example.test", "method": "GET", "headers": [], "bodyBase64": null
+        }))
+        .unwrap();
+        assert_eq!(legacy.transport_settings.timeout_ms, 60_000);
+        assert!(legacy.transport_settings.validate_tls_certificates);
+        assert_eq!(
+            legacy.transport_settings.http_version,
+            HttpVersionPolicy::Auto
+        );
+        for timeout_ms in [0, 3_600_001] {
+            let settings = TransportSettings {
+                timeout_ms,
+                ..Default::default()
+            };
+            assert!(settings.client(&HttpClient::default().0).is_err());
+        }
+        assert!(
+            serde_json::from_value::<TransportSettings>(serde_json::json!({
+                "httpVersion": "http3"
+            }))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_timeout_covers_waiting_for_headers_and_body() {
+        for headers_first in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                tokio::io::AsyncReadExt::read(&mut socket, &mut bytes)
+                    .await
+                    .unwrap();
+                if headers_first {
+                    tokio::io::AsyncWriteExt::write_all(
+                        &mut socket,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\na",
+                    )
+                    .await
+                    .unwrap();
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+            let directory = tempfile::tempdir().unwrap();
+            let content = content_handle(&directory);
+            let mut outgoing = request(format!("http://{address}/slow"));
+            outgoing.transport_settings.timeout_ms = 100;
+            let (_, cancel) = watch::channel(false);
+            let result =
+                perform_http(outgoing, &HttpClient::default().0, &content, cancel, |_| {}).await;
+            assert_eq!(result.unwrap_err(), "Request timed out.");
+            assert!(!server.is_finished());
+            server.abort();
+            let database =
+                rusqlite::Connection::open(directory.path().join("state.sqlite3")).unwrap();
+            let rows: i64 = database
+                .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_http_version_changes_the_wire_protocol() {
+        for (policy, expected) in [
+            (HttpVersionPolicy::Http1, "GET /protocol HTTP/1.1\r\n"),
+            (HttpVersionPolicy::Http2, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = vec![0; expected.len()];
+                tokio::io::AsyncReadExt::read_exact(&mut socket, &mut bytes)
+                    .await
+                    .unwrap();
+                assert_eq!(bytes, expected.as_bytes());
+            });
+            let directory = tempfile::tempdir().unwrap();
+            let content = content_handle(&directory);
+            let mut outgoing = request(format!("http://{address}/protocol"));
+            outgoing.transport_settings.http_version = policy;
+            let (_, cancel) = watch::channel(false);
+            // The fixture closes after observing the protocol preface.
+            assert!(
+                perform_http(outgoing, &HttpClient::default().0, &content, cancel, |_| {})
+                    .await
+                    .is_err()
+            );
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn untrusted_tls_is_allowed_only_for_the_request_that_disables_validation() {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio_rustls::{rustls, TlsAcceptor};
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(
+                    include_bytes!("../../../tests/fixtures/tls/localhost-cert.der").to_vec(),
+                )],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                    include_bytes!("../../../tests/fixtures/tls/localhost-key.der").to_vec(),
+                )),
+            )
+            .unwrap();
+        let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (socket, _) = listener.accept().await.unwrap();
+                if let Ok(mut stream) = acceptor.accept(socket).await {
+                    let mut bytes = [0; 4096];
+                    tokio::io::AsyncReadExt::read(&mut stream, &mut bytes)
+                        .await
+                        .unwrap();
+                    tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let content = content_handle(&directory);
+        let client = HttpClient::default();
+        for validate in [true, false, true] {
+            let mut outgoing = request(format!("https://localhost:{}/tls", address.port()));
+            outgoing.transport_settings.validate_tls_certificates = validate;
+            let (_, cancel) = watch::channel(false);
+            let result = perform_http(outgoing, &client.0, &content, cancel, |_| {}).await;
+            if validate {
+                assert!(result.is_err());
+            } else {
+                let response = result.unwrap();
+                assert_eq!(response.status, 200);
+                content.release(response.content.id).await.unwrap();
+            }
+        }
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -757,6 +976,7 @@ mod tests {
                         reference: reference.clone(),
                     }),
                     response_storage: ResponseStoragePolicy::default(),
+                    transport_settings: TransportSettings::default(),
                 },
                 &HttpClient::default().0,
                 &content,
@@ -831,6 +1051,7 @@ mod tests {
                     ],
                 }),
                 response_storage: ResponseStoragePolicy::default(),
+                transport_settings: TransportSettings::default(),
             },
             &HttpClient::default().0,
             &content,
@@ -905,6 +1126,7 @@ mod tests {
                 body_base64: Some(STANDARD.encode([0, 1, 255, 128])),
                 body_source: None,
                 response_storage: ResponseStoragePolicy::default(),
+                transport_settings: TransportSettings::default(),
             },
             &HttpClient::default().0,
             &content,

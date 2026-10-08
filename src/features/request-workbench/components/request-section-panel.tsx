@@ -1,7 +1,4 @@
-import { useWorkspaceIntegrations } from "../../../integrations/workspace-integrations";
-import { resolveRequestTracing } from "../model/request-tracing";
-import { Button } from "../../../shared/components/ui/button";
-import { Switch } from "../../../shared/components/ui/switch";
+import { RequestSettingsEditor } from "./request-settings-editor";
 import {
   getRequestHeaders,
   getRequestPathParams,
@@ -25,7 +22,6 @@ import type { GraphQLSchema } from "graphql";
 import { GraphqlQueryEditor } from "../../graphql/components/graphql-query-editor";
 import type { TemplateVariableActions } from "./template-variable-popover";
 import { MarkdownDocumentationEditor } from "./markdown-documentation-editor";
-import { SelectField } from "../../../shared/components/ui/select-field";
 
 type RequestSectionPanelProps = {
   schema?: GraphQLSchema;
@@ -52,10 +48,6 @@ export function RequestSectionPanel({
   effectiveDraft,
   variableActions,
 }: RequestSectionPanelProps) {
-  const integrations = useWorkspaceIntegrations();
-  const providers = integrations.traces.filter((item) => item.enabled && item.available);
-  const tracing = resolveRequestTracing(draft, integrations.definitions, effectiveDraft.tracePropagation);
-  const selectedProvider = providers.find((item) => item.id === draft.tracing?.integrationId) ?? (!draft.tracing?.integrationId ? providers[0] : undefined);
   const section = getRequestEditorSection(activeSection);
 
   if (draft.graphql && (activeSection === "gql-query" || activeSection === "gql-variables")) return <GraphqlQueryEditor
@@ -67,21 +59,7 @@ export function RequestSectionPanel({
     value={draft.documentation}
     onChange={(documentation) => onDraftChange({ ...draft, documentation })}
   />;
-  if (activeSection === "settings") return <section className="space-y-ui-5 p-ui-4 font-ui text-ui-md">
-    <h2 className="m-ui-0 text-ui-lg font-medium text-content-primary">Tracing</h2>
-    <div className="flex items-center justify-between gap-ui-4 border-b border-border-subtle pb-ui-4">
-      <div><p className="m-ui-0 text-content-primary">Tracing provider</p><p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">Connect this request to a workspace integration.</p></div>
-      {!providers.length ? <Button variant="brand" onClick={integrations.addProvider}>Add provider</Button>
-        : providers.length === 1 ? <span className="text-content-primary">{providers[0].name}</span>
-          : <SelectField label="Tracing provider" value={selectedProvider?.id ?? ""} options={[...(!selectedProvider ? [{ value: "", label: "Select provider" }] : []), ...providers.map((item) => ({ value: item.id, label: item.name }))]}
-              onValueChange={(integrationId) => onDraftChange({ ...draft, tracing: { enabled: tracing.enabled, integrationId } })} />}
-    </div>
-    <div className="flex items-center justify-between gap-ui-4">
-      <div><p className="m-ui-0 text-content-primary">Is enabled</p><p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">Apply tracing to this request and inspect its spans.</p></div>
-      <Switch label="Enable tracing for this request" checked={draft.tracing?.enabled ?? tracing.enabled} disabled={!providers.length && !(draft.tracing?.enabled ?? tracing.enabled)}
-        onCheckedChange={(enabled) => onDraftChange({ ...draft, tracing: { enabled, integrationId: (selectedProvider ?? providers[0])?.id } })} />
-    </div>
-  </section>;
+  if (activeSection === "settings") return <RequestSettingsEditor draft={draft} effectiveDraft={effectiveDraft} onChange={onDraftChange} />;
 
   return section?.id === "body" ? (
     <BodyEditor

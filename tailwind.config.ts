@@ -113,6 +113,7 @@ export default {
         "control-lg": "var(--control-height-lg)",
         panel: "var(--panel-min-height)",
         content: "var(--content-max-width)",
+        "ui-setting-control": "var(--setting-control-width)",
         "method-popover": "var(--method-popover-width)",
         "auth-grant": "var(--auth-grant-width)",
         "request-toolbar": "var(--request-toolbar-height)",

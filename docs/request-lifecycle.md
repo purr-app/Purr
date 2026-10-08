@@ -14,7 +14,7 @@ This document is the source of truth for request models, effective request const
 - `saved`, timestamps, folder identity, and request-editor section;
 - `lastResponse` and `sentAt`, which are runtime/local state.
 
-`RequestDraft` in `src/features/request-workbench/model/request.ts` contains method, URL, query and path rows, header rows, all body-editor modes, all auth-editor modes, cookie-jar opt-out, request-level workspace overrides, documentation, and optional GraphQL data. It is deliberately richer than the canonical request schema so switching an editor mode does not destroy inactive input.
+`RequestDraft` in `src/features/request-workbench/model/request.ts` contains method, URL, query and path rows, header rows, all body-editor modes, all auth-editor modes, request transport/cookie settings, request-level workspace overrides, documentation, and optional GraphQL data. It is deliberately richer than the canonical request schema so switching an editor mode does not destroy inactive input.
 
 ### Canonical saved request
 
@@ -168,16 +168,36 @@ The redacted representation is the default in Request Code and Response → Requ
 
 ## Cookies and redirects
 
-`executeHttp` merges the workspace cookie jar immediately before each native hop. Manually supplied cookie names win over jar cookies. It also captures every hop’s `Set-Cookie`, applies SameSite context, enforces a 10-hop limit, blocks HTTPS downgrade, strips credentials on cross-origin redirects, and applies browser-like method rewriting for 301/302/303.
+`executeHttp` merges the workspace cookie jar immediately before each native hop when automatic sending is enabled. Manually supplied cookie names win over jar cookies. Automatic capture of every hop’s `Set-Cookie` is independently configurable. The redirect loop applies SameSite context, enforces the request’s redirect limit (default 10), blocks HTTPS downgrade, strips credentials on cross-origin redirects, and applies browser-like method rewriting for 301/302/303. Disabling Follow redirects returns the initial redirect response as-is; a zero limit with following enabled rejects the first redirect.
 
 Rust redirects are disabled so this policy remains in one TypeScript layer. See [Authentication and cookies](auth.md) for full jar ownership and matching rules.
 
+## Per-request settings
+
+The Settings editor groups Tracing first, then Redirects, Connection, and Cookies. Section headings and spacing distinguish groups from individual options. HTTP and GraphQL requests share these settings through the existing `executeRequest` path, including requests executed as dynamic-variable dependencies.
+
+`src/domain/request-settings.ts` defines validated optional overrides with these effective defaults:
+
+| Setting | Default | Bounds / behavior |
+| --- | --- | --- |
+| Follow redirects | On | Follow 301, 302, 303, 307, 308 |
+| Maximum redirects | 10 | Integer 0–50; ignored when following is off |
+| Maximum timeout | 60,000 ms | Integer 1–3,600,000 ms; one budget across redirect hops and body download |
+| Validate TLS certificates | On | Verify HTTPS trust and hostname; opt-out applies only to this request |
+| HTTP version | Auto | Auto negotiates HTTP/1.1 or HTTP/2; explicit HTTP/1.1 restricts to HTTP/1, explicit HTTP/2 has no HTTP/1 fallback (prior knowledge for cleartext HTTP) |
+| Automatically send cookies | On | Existing `useCookieJar` / canonical `overrides.cookies` flag |
+| Automatically store cookies | On | Independent `settings.storeCookies`; absent inherits the legacy jar flag |
+
+The timeout starts after variable/auth/body preparation, when the HTTP exchange starts. Before each native hop, `executeHttp` subtracts elapsed time using a monotonic clock and forwards the remaining budget. Reqwest enforces the per-hop remainder through upload, response headers, and body download; timeout failures release partial response content. OAuth token acquisition keeps its separate fixed defaults and never follows redirects.
+
+The shared native client retains normal TLS validation. Non-default TLS/protocol choices use a request-scoped client, so opting out cannot affect another request or OAuth. Changing TLS validation does not relax redirect credential stripping or HTTPS downgrade protection. These controls require desktop transport; browser mode continues to fail explicitly rather than silently ignore them.
+
 ## Frontend/native boundary
 
-The IPC request is `PreparedHttpTransportRequest`: final URL, method, duplicate-preserving header tuples, an optional inline base64 body for small/text modes, and an optional opaque file or multipart body source. The Rust `start_http` command:
+The IPC request is `PreparedHttpTransportRequest`: final URL, method, duplicate-preserving header tuples, an optional inline base64 body for small/text modes, an optional opaque file or multipart body source, and typed `transportSettings` (remaining timeout, TLS validation, HTTP version). The Rust `start_http` command:
 
 - validates HTTP(S), host, method, headers, body encoding, and URL credentials;
-- sends with Reqwest using a fixed timeout and redirects disabled;
+- validates the timeout range and HTTP-version enum, then sends with Reqwest using request-specific timeout/TLS/protocol policy and redirects disabled;
 - preserves duplicate response headers;
 - streams at most the configured 128 MiB response capture into encrypted native chunks through a bounded worker queue, grouping up to 8 MiB per storage transaction while retaining 256 KiB encrypted chunks;
 - emits coalesced header/progress events and returns an opaque content reference plus status, protocol, addresses, and transport timings;
@@ -218,6 +238,8 @@ The default output uses `displayRequest`; secrets and cookie values are masked. 
 Validation, missing variables, dynamic dependency failures, malformed GraphQL, auth/OAuth errors, invalid URL/body/header, redirect policy, and native transport can all fail before an `HttpResult`. `RequestWorkbench` catches them and assigns the error to the originating document session.
 
 Each send owns an execution counter. A later send or Escape cancellation invalidates the earlier completion so stale results cannot replace current state. Escape also invokes `cancel_http`; Rust stops pending network/content work, releases partial response content, and the TypeScript `finally` releases staged request-file handles.
+
+Generated request snippets currently describe the wire request and do not reproduce the new transport settings or cookie-capture policy. cURL import likewise does not yet map these options.
 
 ## Key files
 

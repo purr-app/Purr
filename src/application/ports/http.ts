@@ -1,4 +1,5 @@
 import type { HttpRequestSnapshot, ResponseContentRef } from "../../domain/http";
+import type { RequestSettings } from "../../domain/request-settings";
 
 export type RequestFileRef = {
   id: string;
@@ -25,6 +26,7 @@ export type PreparedHttpTransportRequest = Omit<
   bodySource?: PreparedRequestBody;
   tracePropagation?: string;
   traceHeaders?: [string, string][];
+  transportSettings?: Pick<RequestSettings, "timeoutMs" | "validateTlsCertificates" | "httpVersion">;
 };
 
 export type ResponseContentProtection = "encrypted" | "plaintext";

@@ -41,6 +41,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Dynamic variable definition | workspace `Variable` | `purr.yaml` | Yes | Definition only | Shareable dependency/extraction contract |
 | Dynamic variable cache | `Workspace.dynamicVariableCache` | encrypted `workspace_local_state/dynamic-variable-cache`; sensitive values use vault refs | No | Maybe | Environment/session/TTL-specific runtime result |
 | Shared headers | `Workspace.requestConfig.headers` | `purr.yaml` | Yes | Should use variables for secrets | Project-wide request definition |
+| Request transport/cookie policy | `RequestDraft.settings` and `useCookieJar` | Optional `settings` and `overrides.cookies` in saved HTTP/GraphQL YAML | Yes | No | Saved baseline only; unsaved overrides remain in encrypted drafts |
 | Trace propagation preference | Workspace request config / saved request | Optional `tracePropagation` format ID in workspace/request YAML | Yes | No | Definition only; absent means off/inherit, generated IDs never enter canonical definitions |
 | Observability integration | `Workspace.extraResources` | `integrations/*.yaml`, opaque versioned config + scoped SecretRefs | Yes | Reference only | Native descriptor validates config; credential values stay in the vault |
 | Trace lookup result/cache | Rust observability service / React bounded presentation | Bounded memory cache only | No | Potentially | No new persisted trace table; correlation reads the exact encrypted execution metadata |
@@ -252,3 +253,9 @@ The existing `kind: schema` resource and `schemas/` paths now represent workspac
 `projectWorkspace` / `restoreWorkspace` own conversion. Legacy source-request settings are copied once, keeping IDs and pinned SDL; conflicting request targets are detached. Saved configuration does not require a successful fetch. Connection auth/editor runtime is protected in `document_session_state`, guarded by its canonical auth definition; drafts are protected before local serialization. Header credentials and OAuth token values live behind SecureStore references.
 
 `schema_cache` version 2 retains SDL and load time together with configuration/context hashes. An external configuration change marks cached SDL stale rather than deleting the last valid schema. Pin still produces a portable SDL sidecar and is enabled by default. No new SQLite table or native transport IPC is required.
+
+### Request settings compatibility
+
+HTTP/GraphQL resources accept an optional, strictly validated `settings` object for redirects, timeout, TLS verification, protocol preference, and cookie capture. This is an additive format-1 change: old YAML and local records may omit every new field. Defaults remain follow redirects, 10 hops, 60 seconds, TLS verification, and automatic protocol negotiation. Cookie capture inherits the old `overrides.cookies`/`useCookieJar` value when `storeCookies` is absent, so old jar opt-outs remain both send-off and store-off.
+
+`projectWorkspace` writes settings from the saved request baseline; working-copy changes stay in encrypted local records. `restoreWorkspace` preserves both. Local decoding salvages valid settings fields independently and ignores invalid fields before applying defaults; a corrupt timeout or protocol field cannot prevent an otherwise valid workspace from opening. Canonical YAML remains strict and rejects invalid ranges or unknown settings. No SQLite table or secret ownership changes are involved.

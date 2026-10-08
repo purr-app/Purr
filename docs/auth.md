@@ -74,11 +74,11 @@ The jar records stable identity from domain, path, and name plus value, Secure, 
 
 Immediately before every HTTP hop, `executeHttp` asks the jar for cookies matching URL, domain/host, path, Secure, expiry, disabled state, and SameSite context. HttpOnly cookies are intentionally eligible because Purr is an HTTP client, not page script.
 
-Manual Cookie headers and auth/API-key cookie bindings are merged with jar cookies. For duplicate names, explicit request cookies win. A request can turn off the jar with `useCookieJar`/canonical `overrides.cookies`; manual cookies still remain part of that request.
+Manual Cookie headers and auth/API-key cookie bindings are merged with jar cookies. For duplicate names, explicit request cookies win. Automatic sending is controlled by `useCookieJar`/canonical `overrides.cookies`; manual cookies still remain part of the request when it is off. The Cookies tab’s “Automatically send cookies” checkbox changes this same flag without changing capture. Request Settings has a separate “Automatically store cookies” option (`settings.storeCookies`). For old requests that omit it, capture inherits `useCookieJar`, preserving the legacy both-off behavior. Editing either switch records the independent capture value.
 
 ### Redirects and Set-Cookie
 
-Every hop’s repeated `Set-Cookie` headers are passed to `SessionCookieJar.receive`, including redirect responses. `tough-cookie` rejects foreign-domain and otherwise invalid cookies; Purr additionally rejects insecure `SameSite=None`. A bad cookie cannot fail the HTTP response.
+When automatic storage is enabled, every hop’s repeated `Set-Cookie` headers are passed to `SessionCookieJar.receive`, including redirect responses. `tough-cookie` rejects foreign-domain and otherwise invalid cookies; Purr additionally rejects insecure `SameSite=None`. A bad cookie cannot fail the HTTP response.
 
 Cross-site redirects request jar cookies with the restrictive `none` context used by the current policy. Cross-origin redirects strip explicit Cookie and other sensitive headers before the next hop. HTTPS-to-HTTP redirects are blocked. Redirect policy is TypeScript-owned because native Reqwest redirects are disabled.
 

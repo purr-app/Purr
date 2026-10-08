@@ -1,6 +1,6 @@
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import { getAuthBindingForRequest, resolveAuth, type AuthContext } from "../model/request-auth";
-import { applyRequestPathParamsToUrl, applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParams, normalizeRequestUrlProtocol, type RequestDraft } from "../model/request";
+import { applyRequestPathParamsToUrl, applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParams, getRequestSettings, normalizeRequestUrlProtocol, type RequestDraft } from "../model/request";
 import { getActiveBodyFields, getRequestBodyValidationMessage, serializeRequestBody, type RequestBody } from "../model/request-body";
 import type { SessionCookieJar } from "../model/cookie-jar";
 import { resolveRequestEnvironment } from "../../workspaces/model/environment";
@@ -238,7 +238,9 @@ export async function executeRequest(
     execution?.onDispatch?.();
     return await executeHttp(prepared.request, {
       transport,
-      jar: draft.useCookieJar ? jar : undefined,
+      jar,
+      sendCookies: draft.useCookieJar,
+      settings: getRequestSettings(draft),
       sensitiveHeaders: prepared.sensitiveHeaders,
       sensitiveQueryParams: prepared.sensitiveQueryParams,
       displayRequest: prepared.displayRequest,
