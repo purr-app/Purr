@@ -5,7 +5,8 @@ import { HistoryPanel } from "../history/history-panel";
 import { historyNeedsReplacement, historySource, historyWorkingCopy, openHistoricalTab, returnFromHistory } from "../history/model/history-working-copy";
 import { Modal } from "../../shared/components/ui/modal";
 import { useUpdates } from "../updates/update-context";
-import { VersionFooter, ApplicationUpdatePanel } from "../updates/update-ui";
+import { useToasts } from "../../shared/components/ui/toasts";
+import { ApplicationUpdatePanel } from "../updates/update-ui";
 import { WorkspaceIntegrationsProvider } from "../../integrations/workspace-integrations";
 import { TabStateProvider, TabStateStore } from "../../shared/state/tab-state";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type SetStateAction } from "react";
@@ -53,6 +54,7 @@ import {
   toggleWorkspaceSidebar,
   cloneRequestDraft,
   closeDocument,
+  closeWorkspaceTab,
   discardAllDrafts,
   createHttpDocument,
   bindGraphqlSchema, detachGraphqlSchema, defaultGraphqlSchema,
@@ -82,8 +84,7 @@ import {
   type Workspace,
 } from "./model/workspace";
 
-type Dialog = "palette" | "new-workspace" | "import-workspace" | "import-environment" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
-const actionErrorTimeoutMs = 15_000;
+type Dialog = "palette" | "new-workspace" | "new-environment" | "import-workspace" | "import-environment" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
 const noHistorySubscription = () => () => {};
 const noHistoryRevision = () => 0;
 
@@ -164,11 +165,21 @@ export function WorkspaceWorkbench() {
   const requestActions = useRef<RequestActions>(null);
   const emptyPasteTarget = useRef<HTMLTextAreaElement>(null);
   const sidebarResize = useRef<{ startX: number; width: number } | null>(null);
+  const { notify, dismiss } = useToasts();
+  const [retryingSave, setRetryingSave] = useState(false);
   useEffect(() => {
-    if (!actionError) return;
-    const timeout = window.setTimeout(() => setActionError(""), actionErrorTimeoutMs);
-    return () => window.clearTimeout(timeout);
-  }, [actionError]);
+    if (!actionError) { dismiss("workspace-action-error"); return; }
+    notify({ id: "workspace-action-error", title: "Action failed", description: actionError, variant: "error", onClose: () => setActionError("") });
+  }, [actionError, notify, dismiss]);
+  useEffect(() => {
+    if (!saveError) { dismiss("workspace-save-error"); return; }
+    notify({ id: "workspace-save-error", title: "Could not save workspace", description: saveError, variant: "error",
+      actions: <Button variant="brand" size="sm" disabled={retryingSave} onClick={() => {
+        setRetryingSave(true);
+        void retrySave().catch(() => {}).finally(() => setRetryingSave(false));
+      }}>{retryingSave ? "Retrying…" : "Reload and retry"}</Button>,
+    });
+  }, [saveError, retryingSave, retrySave, notify, dismiss]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
   useEffect(() => {
     setVariableScope("effective");
@@ -571,9 +582,9 @@ export function WorkspaceWorkbench() {
   };
   const toggleSidebar = () => update(toggleWorkspaceSidebar);
   const openCookies = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false } })); };
-  const closeCookies = () => update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: false, cookiesTabActive: false } }));
+  const closeCookies = () => update((current) => closeWorkspaceTab(current, "cookies"));
   const openSettings = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false } })); };
-  const closeSettings = () => update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: false, settingsTabActive: false } }));
+  const closeSettings = () => update((current) => closeWorkspaceTab(current, "settings"));
   const openVariables = (scope: VariableScope = variableScope, selectedId?: string | null, draft?: Variable | null) => {
     updates.leaveTab();
     setVariableScope(scope);
@@ -581,17 +592,11 @@ export function WorkspaceWorkbench() {
     if (draft !== undefined) setVariableDraft(draft);
     update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: true, variablesTabActive: true, cookiesTabActive: false, settingsTabActive: false } }));
   };
-  const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: false, variablesTabActive: false } })); };
-  const showEnvironment = async (create = false) => {
+  const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => closeWorkspaceTab(current, "variables")); };
+  const showEnvironment = async () => {
     const existing = workspace?.environments.find((item) => item.id === workspace.activeEnvironmentId);
     try {
-      if (create) {
-        let name = "New environment"; let suffix = 2;
-        while (workspace?.environments.some((environment) => environment.name === name)) name = `New environment ${suffix++}`;
-        const environment = { id: crypto.randomUUID(), name, variables: [] };
-        update((current) => ({ ...current, activeEnvironmentId: environment.id, environments: [...current.environments, environment] }));
-        openVariables(`environment:${environment.id}`, null, null);
-      } else if (existing) {
+      if (existing) {
         const environment = await resolveEnvironmentSecrets(existing, persistence.secure);
         update((current) => ({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }));
         openVariables(`environment:${environment.id}`, null, null);
@@ -721,18 +726,18 @@ export function WorkspaceWorkbench() {
     setVariableScope(`environment:${imported.environmentId}`); setVariableSelection(null); setVariableDraft(null);
     setDialog(null); setImportResult(imported.report);
   };
-  return <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
+  return <div role="region" aria-label="Workspace" aria-busy={saving} className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} variablesActive={workspace.ui.variablesTabActive} onCookies={openCookies} onVariables={() => openVariables("effective", null, null)}
       onNewWorkspace={() => setDialog("new-workspace")}
       onImportWorkspace={() => setDialog("import-workspace")}
       onRequestSettings={openSettings}
-      onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
+      onEnvironment={changeEnvironment} onEditEnvironment={showEnvironment} onNewEnvironment={() => setDialog("new-environment")}
       onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
       <WorkspaceActivityRail activity={workspace.ui.sidebarActivity} open={workspace.ui.sidebarOpen}
         onSelect={(activity) => update((current) => selectSidebarActivity(current, activity))} />
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>{workspace.ui.sidebarActivity === "history" ? <aside id="workspace-sidebar" aria-label="Workspace history" className="h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max border-r border-border-subtle bg-purr-surface">
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>{workspace.ui.sidebarActivity === "history" ? <aside id="workspace-sidebar" aria-label="Workspace history" className="h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max bg-purr-base">
         <HistoryPanel workspaceId={workspace.id} selectedId={currentDocument?.historical?.entryId} onOpen={(id) => { void openHistory(id); }} />
       </aside> : <WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => { updates.leaveTab(); update((current) => previewDocument(current, id)); }} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
@@ -930,11 +935,7 @@ export function WorkspaceWorkbench() {
         </div>
       </div>
     </div>
-    <footer className="flex h-control-sm shrink-0 items-center justify-end gap-ui-3 border-t border-border-subtle bg-purr-base px-ui-3 text-ui-xs text-content-tertiary">
-      <VersionFooter />
-      {saveError || actionError ? <><span role="alert" className="min-w-0 truncate text-accent-red" title={saveError || actionError}>{saveError ? `Could not save workspace: ${saveError}` : actionError}</span>{saveError ? <Button variant="ghost" size="xs" onClick={() => { void retrySave().catch(() => {}); }}>Reload and retry</Button> : null}</>
-        : <span role="status">{saving ? "Saving…" : "Saved locally"}</span>}
-    </footer>
+
     {historyConflict && <Modal title="This document has unsaved changes" onClose={() => setHistoryConflict(null)}>
       <div className="space-y-ui-4 p-ui-5">
         <p className="text-ui-md text-content-secondary">Use the historical request as a working copy? Replacing current changes does not save the document. The historical execution stays unchanged.</p>
@@ -951,6 +952,14 @@ export function WorkspaceWorkbench() {
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
+    {dialog === "new-environment" && <NameDialog title="New environment" label="Environment name" initial=""
+      validate={(name) => workspace.environments.some((environment) => environment.name.trim() === name) ? "An environment with this name already exists." : null}
+      onClose={() => setDialog(null)} onSave={(name) => {
+        const environment = { id: crypto.randomUUID(), name, variables: [] };
+        update((current) => ({ ...current, activeEnvironmentId: environment.id, environments: [...current.environments, environment] }));
+        setDialog(null);
+        openVariables(`environment:${environment.id}`, null, null);
+      }} />}
     {importResult && <ImportReportDialog report={importResult} onClose={() => setImportResult(null)} />}
     {dialog === "import-environment" && <ImportWorkspaceDialog target="environment" onClose={() => setDialog(null)} onImport={importEnvironment} />}
     {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} />}

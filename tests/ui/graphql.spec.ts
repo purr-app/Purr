@@ -22,7 +22,7 @@ const sdl = `
 `;
 const query = "query Customer($id: ID!) { customer(id: $id) { id name } }";
 const tabs = (page: Page) => page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab");
-const saved = (page: Page) => expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+const saved = (page: Page) => expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
 
 async function createGraphql(page: Page) {
   await page.getByRole("button", { name: "Create document", exact: true }).click();
@@ -43,6 +43,7 @@ async function createEnvironmentVariable(page: Page) {
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("GraphQL local");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   await page.getByRole("button", { name: "Variable", exact: true }).click();
   await page.getByLabel("Variable name", { exact: true }).fill("customer_id");
   await page.getByLabel("Variable value", { exact: true }).fill("42");

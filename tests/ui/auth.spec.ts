@@ -406,6 +406,7 @@ test("auth templates remain readable while literal credentials stay masked", asy
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Development");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   await page.getByRole("button", { name: "Variable", exact: true }).click();
   await page.getByLabel("Variable name", { exact: true }).fill("base_url");
   await page.getByLabel("Variable value", { exact: true }).fill("https://example.com");

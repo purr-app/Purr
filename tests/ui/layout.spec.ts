@@ -43,11 +43,11 @@ for (const initialFullscreen of [false, true]) test(`macOS toolbar follows nativ
   await page.goto("/");
   const workspaceControls = page.locator("header > div").first();
   await expect(page.getByRole("button", { name: "Select workspace" })).toBeVisible();
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "64px");
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "72px");
   await page.evaluate((value) => (window as any).__setFullscreen(value), !initialFullscreen);
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "64px" : "0px");
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "72px" : "0px");
   await page.evaluate((value) => (window as any).__setFullscreen(value), initialFullscreen);
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "64px");
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "72px");
 });
 
 test("activity rail stays visible while sidebar selection, shortcuts and resizing preserve the layout", async ({ page }) => {
@@ -74,7 +74,7 @@ test("activity rail stays visible while sidebar selection, shortcuts and resizin
   const expandedEditorWidth = (await editor.boundingBox())!.width;
   const activeStyle = await documents.evaluate((element) => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }));
   const railBox = (await rail.boundingBox())!;
-  expect(railBox.width).toBe(64);
+  expect(railBox.width).toBe(72);
   const documentsBox = (await documents.boundingBox())!;
   expect(documentsBox.y - railBox.y).toBeLessThan(20);
 
@@ -100,7 +100,7 @@ test("activity rail stays visible while sidebar selection, shortcuts and resizin
   await expect(documents).toHaveAttribute("aria-expanded", "false");
   await expect(documents).toHaveAttribute("aria-pressed", "true");
   await expect(rail).toBeVisible();
-  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await page.reload();
   await expect(rail).toBeVisible();
   await expect(documents).toHaveAttribute("aria-pressed", "true");
@@ -214,6 +214,7 @@ for (const delayMs of [0, 700]) test(`first Send animates to the full response l
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Development");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   if (delayMs) {
     await page.getByRole("button", { name: "Variable", exact: true }).click();
     await page.getByLabel("Variable name", { exact: true }).fill("test_secret");
@@ -224,7 +225,7 @@ for (const delayMs of [0, 700]) test(`first Send animates to the full response l
   await page.getByRole("tab", { name: "Variables", exact: true }).hover();
   await page.getByRole("button", { name: "Close variables", exact: true }).click();
   if (delayMs) {
-    await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
     await page.reload();
   }
   await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");
@@ -465,4 +466,47 @@ test("response cookies empty state fills the response surface", async ({ page })
     return Math.abs((messageBox.y + messageBox.height / 2) - (panelBox.y + panelBox.height / 2));
   }).toBeLessThan(2);
   await page.screenshot({ path: "test-results/layout-cookies-empty.png", fullPage: true });
+});
+
+test("request and response clocks stay synchronized across rerenders and tab navigation", async ({ page }) => {
+  await page.clock.install();
+  await page.addInitScript(() => {
+    (window as any).isTauri = true;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string) => {
+      if (command === "start_http") return new Promise(() => {});
+    } };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/delay");
+  const requestTab = page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab").first();
+  const requestTabId = await requestTab.getAttribute("id");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const pending = page.getByRole("region", { name: "Response pending", exact: true });
+  await expect(pending).toBeVisible();
+  const responseElapsed = () => pending.locator("[data-response-elapsed]").evaluate((element) => Number.parseFloat(element.textContent!));
+  const assertClocks = async (minimum: number) => {
+    const elapsed = await responseElapsed();
+    expect(elapsed).toBeGreaterThanOrEqual(minimum);
+    const running = await page.getByRole("button", { name: /Request running/ }).getAttribute("aria-label");
+    expect(Math.abs(Number(running!.match(/running, (\d+)/)![1]) - elapsed)).toBeLessThanOrEqual(1);
+  };
+  await page.clock.runFor(2600);
+  await assertClocks(2500);
+  await page.getByRole("button", { name: "Vertical split view", exact: true }).click();
+  await page.clock.runFor(1400);
+  await assertClocks(3900);
+  await page.getByRole("button", { name: "New HTTP request", exact: true }).click();
+  await expect(pending).toHaveCount(0);
+  await page.clock.runFor(1500);
+  await page.locator(`[id="${requestTabId}"]`).click();
+  await expect(pending).toBeVisible();
+  await assertClocks(5400);
+  await page.keyboard.press("Escape");
+  await expect(pending).toHaveCount(0);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(pending).toBeVisible();
+  expect(await responseElapsed()).toBeLessThan(100);
+  await page.clock.runFor(1200);
+  await assertClocks(1100);
+  await page.keyboard.press("Escape");
 });

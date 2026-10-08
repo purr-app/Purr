@@ -224,7 +224,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
     const fields: SearchResult[] = isObjectType(type) || isInterfaceType(type) || isInputObjectType(type) ? Object.values(type.getFields()).filter((field) => field.name.toLowerCase().includes(filter.toLowerCase())).map((field) => ({ path: `${type.name}.${field.name}`, type, field })) : [];
     return [...own, ...fields];
   }) : [];
-  return <section aria-label="GraphQL schema explorer" className="flex h-full min-h-0 flex-col gap-ui-2 overflow-hidden p-ui-2">
+  return <section aria-label="GraphQL schema explorer" className="flex h-full min-h-0 flex-col gap-ui-2 overflow-hidden px-ui-2 pb-ui-2 pt-ui-1">
     <header aria-label="Schema Connection toolbar" className="shrink-0 rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2">
       <div className="flex items-center gap-ui-2">
         <Network className="size-ui-4 shrink-0 text-action-graphql" aria-hidden="true" />

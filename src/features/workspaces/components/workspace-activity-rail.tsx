@@ -1,3 +1,4 @@
+import { ApplicationMenu } from "./application-menu";
 import { Files, History } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { cn } from "../../../shared/lib/cn";
@@ -16,6 +17,6 @@ export function WorkspaceActivityRail({ activity, open, onSelect }: {
       className={cn("size-ui-8", activity === id && "bg-purr-highlight text-content-primary")} onClick={() => onSelect(id)}>
       <Icon className="size-ui-5" />
     </Button>)}
-
+    <div className="mt-auto"><ApplicationMenu /></div>
   </nav>;
 }

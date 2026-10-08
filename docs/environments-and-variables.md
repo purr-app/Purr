@@ -12,6 +12,8 @@ This document is the source of truth for variable scopes, interpolation, dynamic
 
 Environments are canonical `EnvironmentDefinition` resources containing static variables only. Workspace variables can be static or dynamic-request. Global variables are application-local definitions, not part of any project repository, and are currently restricted to static variables.
 
+Choosing **New environment** opens a name dialog. The environment is added to the workspace and selected only when Save is pressed; canceling leaves the workspace unchanged.
+
 ## Scopes and effective namespace
 
 `getVariableNamespace` concatenates scopes in this order:

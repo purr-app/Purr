@@ -26,6 +26,10 @@ function FakeDocumentEditor({ document, onChange }: ExtensionDocumentEditorProps
 export const fakeExtensionModule = defineExtensionModule({
   manifest: { id: "test.fake", extensionApi: 1, version: "1.0.0" },
   register(registrar) {
+    registrar.menuItems.register({ id: "docs", label: "Extension documentation", action: { type: "link", url: "https://example.com/extension" } });
+    registrar.menuItems.register({ id: "dashboard", label: "Open extension dashboard", order: 1, action: { type: "action", run: ({ openPage }) => openPage("dashboard") } });
+    registrar.menuItems.register({ id: "dialog", label: "Extension dialog", order: 2, action: { type: "action", run: ({ openDialog }) => openDialog({ title: "Extension dialog", component: ({ onClose }) => <Button onClick={onClose}>Close extension dialog</Button> }) } });
+    registrar.menuItems.register({ id: "failure", label: "Fail extension action", order: 3, action: { type: "action", run: async () => { throw new Error("Synthetic error"); } } });
     registrar.integrations.register({ id: "test.fake", label: "Synthetic provider" });
     registrar.pages.register({ id: "dashboard", routeSegment: "dashboard", title: "Synthetic dashboard",
       navigation: { area: "primary", label: "Synthetic extension", order: 10 }, create: () => ({ component: FakePage }) });

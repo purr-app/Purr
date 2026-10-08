@@ -249,3 +249,23 @@ values also isolate trace cache entries. Browser builds cannot execute providers
 
 Optional `integration.tracing` holds propagation and enabled/disabled custom request
 and response header rows; absent fields preserve older integration definitions.
+
+### Application menu contributions
+
+Extension API v1 additionally accepts `registrar.menuItems.register({ id, label, icon?, order?, action })`. IDs are scoped to the module; duplicate IDs fail composition. Contributions appear in a separate group above Version, sorted by order (default zero), module ID, and local ID. Built-in items cannot be replaced. Link actions use `{ type: "link", url }` with an HTTP(S) URL and the host external-link adapter. Callback actions use `{ type: "action", run(context) }`; asynchronous failures produce a toast and repeated invocation is disabled while pending.
+
+The callback context offers `openPage(localPageId)` for that module’s registered pages, `openDialog({ title, component })` for a component receiving `onClose` inside the standard modal, and `notify({ title, description?, variant? })`. These presentation capabilities add no persistence, IPC, or secret-store access. Registrations and actions freeze after composition and are exported through `@purr/core/extension-api`.
+
+For example, inside a module’s `register(registrar)`:
+
+```ts
+registrar.menuItems.register({
+  id: "account",
+  label: "Account",
+  order: 10,
+  action: {
+    type: "action",
+    run: ({ openPage }) => openPage("account"), // the module's registered page ID
+  },
+});
+```

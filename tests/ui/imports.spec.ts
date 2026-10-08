@@ -75,7 +75,7 @@ test("environment import works without an existing env, preserves the draft and 
   await page.getByRole("tab", { name: "Variables", exact: true }).hover();
   await page.getByRole("button", { name: "Close variables", exact: true }).click();
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://draft.test");
-  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await page.reload(); await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("https://draft.test");
 });
 

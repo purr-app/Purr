@@ -6,7 +6,10 @@
     "emitDeclarationOnly": true,
     "noEmit": false,
     "outDir": "./dist-core/types",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    "types": [
+      "vite/client"
+    ]
   },
   "include": [
     "src/app/public.ts",

@@ -130,28 +130,28 @@ export function WorkspaceSettings({
   );
 
   return (
-    <section aria-label="Workspace settings" className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base p-ui-2">
+    <section aria-label="Workspace settings" className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base p-ui-1">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui-xl border border-border-subtle bg-purr-surface shadow-panel">
-        <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-ui-5 py-ui-3">
+        <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-ui-3 py-ui-2">
           <div>
             <h1 className="m-ui-0 text-ui-xl font-medium text-content-primary">Workspace settings</h1>
             <p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">Configure identity and request defaults for this workspace.</p>
           </div>
         </header>
-        <div className="shrink-0 border-b border-border-subtle px-ui-4 py-ui-2">
+        <div className="shrink-0 border-b border-border-subtle px-ui-2 py-ui-1">
           <SegmentedTabs id="workspace-settings" panelId="workspace-settings-panel" label="Workspace settings"
             value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }]} onValueChange={setTab} />
         </div>
-        <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-5">
+        <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-3">
           {tab === "general" ? (
-            <div className="max-w-ui-dialog space-y-ui-5">
+            <div className="max-w-ui-dialog space-y-ui-3">
               <FormField label="Workspace name" value={name} placeholder="Workspace name" onChange={(event) => onNameChange(event.target.value)} />
               <div className="space-y-ui-2">
                 <label htmlFor="workspace-description" className="block text-ui-xs font-medium text-content-secondary">Description</label>
                 <textarea id="workspace-description" aria-label="Workspace description" className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 font-ui text-ui-md text-content-primary outline-none placeholder:text-content-tertiary"
                   value={description} placeholder="What is this workspace used for?" onChange={(event) => onDescriptionChange(event.target.value)} />
               </div>
-              <div className="border-t border-border-subtle pt-ui-5">
+              <div className="border-t border-border-subtle pt-ui-3">
                 <h2 className="m-ui-0 text-ui-md font-medium text-accent-red">Delete workspace</h2>
                 <p className="mb-ui-3 mt-ui-1 text-ui-xs text-content-tertiary">Removes Purr’s local state and managed project directory. An attached external directory is left on disk.</p>
                 {!confirmDelete ? <Button variant="secondary" className="text-accent-red" onClick={() => setConfirmDelete(true)}><Trash2 className="size-ui-4" />Delete workspace</Button>

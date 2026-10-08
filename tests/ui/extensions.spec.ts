@@ -35,7 +35,7 @@ test("external module contributes navigation, a page action, and a restorable do
   await expect(page.getByRole("main", { name: "Synthetic protocol editor" })).toBeVisible();
   await page.getByLabel("Synthetic message", { exact: true }).fill("preserved across module absence");
   await page.getByRole("button", { name: "Save document", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await expect.poll(() => canonicalProjectContains(page, "preserved across module absence")).toBe(true);
 
   await page.goto(shell("modules=0"));

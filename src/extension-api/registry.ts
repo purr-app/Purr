@@ -6,6 +6,7 @@ import type {
 } from "../integrations/contracts";
 import {
   extensionApiVersion,
+  type ExtensionMenuContribution,
   type ExtensionDocumentController,
   type ExtensionModuleContext,
   type ExtensionPage,
@@ -30,6 +31,7 @@ export type RegisteredDocumentType = Readonly<WorkspaceDocumentTypeContribution 
 export type OwnedContribution<T> = Readonly<T & { moduleId: string }>;
 
 export type ExtensionRegistry = Readonly<{
+  menuItems: readonly OwnedContribution<ExtensionMenuContribution>[];
   modules: readonly PurrExtensionModule["manifest"][];
   integrations: readonly OwnedContribution<IntegrationPresentationContribution>[];
   pages: readonly RegisteredExtensionPage[];
@@ -72,6 +74,8 @@ export function createExtensionRegistry(
     moduleIds.add(manifest.id);
   }
 
+  const menuItems: OwnedContribution<ExtensionMenuContribution>[] = [];
+  const menuIds = new Set<string>();
   const integrations: OwnedContribution<IntegrationPresentationContribution>[] = [];
   const pages: RegisteredExtensionPage[] = [];
   const documentTypes: RegisteredDocumentType[] = [];
@@ -99,6 +103,18 @@ export function createExtensionRegistry(
         logger: logger(moduleId),
       });
       const registrar: ExtensionRegistrar = Object.freeze({
+        menuItems: Object.freeze({ register: (value: ExtensionMenuContribution) => {
+          assertOpen();
+          const id = `${moduleId}.${value.id}`;
+          if (!localId.test(value.id) || !value.label.trim() || value.order !== undefined && !Number.isFinite(value.order)) throw new Error(`Invalid menu contribution: ${id}`);
+          if (menuIds.has(id)) throw new Error(`Duplicate menu contribution: ${id}`);
+          if (value.action.type === "link") {
+            const url = new URL(value.action.url);
+            if (!["https:", "http:"].includes(url.protocol)) throw new Error(`Invalid menu URL: ${id}`);
+          } else if (value.action.type !== "action" || typeof value.action.run !== "function") throw new Error(`Invalid menu action: ${id}`);
+          menuIds.add(id);
+          register(menuItems, { ...value, action: Object.freeze({ ...value.action }), moduleId });
+        } }),
         integrations: Object.freeze({
           register: (value: IntegrationPresentationContribution) => {
             assertOpen();
@@ -138,6 +154,7 @@ export function createExtensionRegistry(
   const frozenIntegrations = freezeList(integrations);
   const frozenDocumentTypes = freezeList(documentTypes);
   return Object.freeze({
+    menuItems: freezeList(menuItems.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.moduleId.localeCompare(b.moduleId) || a.id.localeCompare(b.id))),
     modules: Object.freeze(manifests),
     integrations: frozenIntegrations,
     pages: freezeList([...pages].sort((left, right) => (left.navigation?.order ?? 0) - (right.navigation?.order ?? 0))),

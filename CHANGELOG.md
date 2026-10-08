@@ -4,6 +4,12 @@
 
 ### Improvements
 
+- Create reusable GraphQL Schema Connections from introspection, SDL, or introspection JSON, then explore their types and create query or mutation requests from schema fields.
+- Choose a Schema Connection in a GraphQL request to use its endpoint and authentication without typing the request URL. Connections show their load status and can be shared by multiple requests.
+
+### Fixes
+
+- Align the icon and message in request error notices.
 - Configure redirects, their maximum count, a total request timeout, TLS certificate validation, and HTTP version separately for each request.
 - Control whether a request automatically sends and stores workspace cookies with independent switches.
 - Find these controls in clearly separated Settings sections, with Tracing first. Saved settings travel with the project; unsaved edits stay local.

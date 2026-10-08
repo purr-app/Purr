@@ -421,6 +421,22 @@ export function deleteDocument(workspace: Workspace, id: string): Workspace {
 
 }
 
+function activateRemainingTab(workspace: Workspace): Workspace {
+  const { ui } = workspace;
+  if (ui.cookiesTabOpen && ui.cookiesTabActive || ui.variablesTabOpen && ui.variablesTabActive || ui.settingsTabOpen && ui.settingsTabActive)
+    return workspace;
+  if (ui.activeDocumentId && ui.openDocumentIds.includes(ui.activeDocumentId)) return workspace;
+  const activeDocumentId = ui.openDocumentIds[0] ?? null;
+  const cookiesTabActive = !activeDocumentId && ui.cookiesTabOpen;
+  const variablesTabActive = !activeDocumentId && !cookiesTabActive && ui.variablesTabOpen;
+  const settingsTabActive = !activeDocumentId && !cookiesTabActive && !variablesTabActive && ui.settingsTabOpen;
+  return { ...workspace, ui: { ...ui, activeDocumentId, cookiesTabActive, variablesTabActive, settingsTabActive } };
+}
+
+export function closeWorkspaceTab(workspace: Workspace, tab: "cookies" | "variables" | "settings"): Workspace {
+  return activateRemainingTab({ ...workspace, ui: { ...workspace.ui, [`${tab}TabOpen`]: false, [`${tab}TabActive`]: false } });
+}
+
 // Saved documents reopen from their explicit snapshot. A blank, never-sent tab
 // is ephemeral and disappears instead of becoming a Drafts entry.
 export function closeDocument(workspace: Workspace, id: string, keepDocument = false): Workspace {
@@ -437,12 +453,12 @@ export function closeDocument(workspace: Workspace, id: string, keepDocument = f
         return { ...item, config: structuredClone(item.savedConfig), configVersion: item.savedConfigVersion };
       return item;
     });
-  return { ...workspace, documents, ui: { ...workspace.ui, openDocumentIds,
+  return activateRemainingTab({ ...workspace, documents, ui: { ...workspace.ui, openDocumentIds,
     previewDocumentId: workspace.ui.previewDocumentId === id ? null : workspace.ui.previewDocumentId,
     activeDocumentId: workspace.ui.activeDocumentId === id
       ? openDocumentIds[Math.min(index, openDocumentIds.length - 1)] ?? null
       : workspace.ui.activeDocumentId,
-  } };
+  } });
 }
 
 export function getEnvironmentVariables(workspace: Workspace): Record<string, string> {
@@ -599,7 +615,7 @@ export function validateWorkspace(value: unknown): Workspace {
     ? workspace.ui.previewDocumentId
     : null;
   workspace = migrateSchemaConnections(workspace);
-  return { ...workspace,
+  return activateRemainingTab({ ...workspace,
     description: typeof workspace.description === "string" ? workspace.description : "",
     variables: workspace.variables,
     cookies: Array.isArray(workspace.cookies) ? workspace.cookies : [],
@@ -651,7 +667,7 @@ export function validateWorkspace(value: unknown): Workspace {
         vertical: Math.max(24, Math.min(76, workspace.ui.splitRatios?.vertical || 50)),
       },
     },
-  };
+  });
 }
 
 function isVariable(value: unknown): value is Variable {

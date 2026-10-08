@@ -107,7 +107,7 @@ Three persistent workspace-level tabs share the tab strip but are not documents:
 - Request settings;
 - Variables.
 
-Their open/active flags are stored in `Workspace.ui` and cannot be placed in folders.
+Their open/active flags are stored in `Workspace.ui` and cannot be placed in folders. Closing the last document activates the first remaining workspace-level tab in strip order (Cookies, Variables, Workspace settings). Closing a workspace-level tab returns to the selected document, or another open workspace-level tab when no documents remain. Previously saved local state with open workspace tabs and no selection is repaired on restoration. The empty state appears only when no workspace tabs remain.
 
 ## Request/response layout
 
@@ -192,3 +192,9 @@ written to project files or local records. `TabStateStore.remember` defaults to
 `true` and is the policy switch for a future user preference; turning it off uses
 ordinary component-local state. New panels can use `useTabState` without retaining
 mounted editors, timers or network requests in background tabs.
+
+## Application menu and notifications
+
+The bottom rail More button opens documentation, changelog, feedback, issue reporting, GitHub, homepage, extension actions, and version/update controls. There is no status footer or About tab. Release notes still open once after a version change.
+
+Application notifications appear at bottom right, with at most three visible and remaining messages queued. Informational/success toasts expire after five seconds, paused while hovered or focused. Warnings, errors, and update progress persist until dismissed or resolved. Save failures offer a retry and disappear after a successful save; blocking workspace-load errors and field validation remain inline. Development builds include isolated UI previews in More; production builds exclude them.

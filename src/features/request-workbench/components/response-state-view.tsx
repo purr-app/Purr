@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { CircleAlert } from "lucide-react";
 
 import { Button } from "../../../shared/components/ui/button";
@@ -24,8 +24,8 @@ function ResponseStateShell({ label, children, pending = false, headerAction }: 
 export function ErrorResponse({ message, headerAction }: { message: string; headerAction?: ReactNode }) {
   return <ResponseStateShell label="Request error" headerAction={headerAction}>
     <div role="tabpanel" className="flex h-full min-h-0 items-start bg-purr-codefield p-ui-4">
-      <div role="alert" className="flex min-w-0 items-start gap-ui-2 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-3">
-        <CircleAlert className="mt-ui-1 size-ui-4 shrink-0 text-accent-red" aria-hidden="true" />
+      <div role="alert" className="flex min-w-0 items-center gap-ui-2 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-3">
+        <CircleAlert className="size-ui-4 shrink-0 text-accent-red" aria-hidden="true" />
         <p className="m-ui-0 whitespace-pre-wrap break-words font-code text-ui-sm text-accent-red">{message}</p>
       </div>
     </div>
@@ -45,11 +45,8 @@ function progressLabel(progress: HttpTransportProgress | null) {
   return `Downloading ${received} / ${(totalBytes / 1024 / 1024).toFixed(1)} MiB…`;
 }
 
-export function PendingResponse({ graphql, onCancel, progress }: { graphql: boolean; onCancel: () => void; progress: HttpTransportProgress | null }) {
-  const [elapsed, setElapsed] = useState(0);
+export function PendingResponse({ graphql, onCancel, progress, elapsed }: { graphql: boolean; onCancel: () => void; progress: HttpTransportProgress | null; elapsed: number }) {
   useEffect(() => {
-    const started = performance.now();
-    const timer = window.setInterval(() => setElapsed(performance.now() - started), 50);
     const cancel = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -57,7 +54,6 @@ export function PendingResponse({ graphql, onCancel, progress }: { graphql: bool
     };
     window.addEventListener("keydown", cancel);
     return () => {
-      window.clearInterval(timer);
       window.removeEventListener("keydown", cancel);
     };
   }, [onCancel]);

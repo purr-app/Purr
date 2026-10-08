@@ -1,5 +1,7 @@
 export { defineExtensionModule, extensionApiVersion } from "./contracts";
 export type {
+  ExtensionMenuActionContext,
+  ExtensionMenuContribution,
   ExtensionDocumentChange,
   ExtensionDocumentController,
   ExtensionDocumentEditorProps,

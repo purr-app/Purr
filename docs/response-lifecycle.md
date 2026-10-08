@@ -196,3 +196,5 @@ produce no history entry. Pinning and retention apply identically to dependencie
 The response header has a compact Dynamic vars execution badge; extraction details
 open on click. Execution controllers remain associated with in-memory request
 sessions while navigating, so Escape after returning cancels the original run.
+
+The pending-response clock and the Send button share a monotonic start timestamp in the current request session. Rerenders, layout changes, and returning to a running request do not reset it. A new execution starts a fresh clock; cancellation or completion stops the timer. This timestamp is transient UI state and is never projected into project files or persisted execution records.
