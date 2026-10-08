@@ -61,7 +61,7 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
   };
   const clearSelection = () => setSelectedDocumentIds([]);
 
-  return <aside id="workspace-sidebar" aria-label="Workspace documents" className="flex h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max shrink-0 flex-col border-r border-border-subtle bg-purr-surface" style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>
+  return <aside id="workspace-sidebar" aria-label="Workspace documents" className="flex h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max shrink-0 flex-col bg-purr-base" style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>
     <div className="flex shrink-0 items-center gap-ui-1 px-ui-2 py-ui-2">
       <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-ui-2 top-1/2 size-ui-3-5 -translate-y-1/2 text-content-tertiary" />
         <Input aria-label="Search documents" placeholder="Search documents…" className="ui-focus-ring h-control-md pl-ui-7 text-ui-md" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -82,9 +82,11 @@ export function WorkspaceSidebar({ workspace, extensionTypes = [], onOpen, onPin
         onDiscardAll={onDiscardAll} showDiscardAll={hasDrafts} />
       {!hasContent && <p className="px-ui-2 py-ui-3 text-ui-sm text-content-tertiary">{query ? "No matching documents." : "Create a request or folder to get started."}</p>}
     </div>
-    <button type="button" className="ui-focus-ring flex items-center gap-ui-2 border-t border-border-subtle px-ui-3 py-ui-2 text-left text-ui-sm text-content-tertiary hover:bg-purr-elevated hover:text-content-secondary" onClick={onOpenFolder}>
-      <FolderOpen className="size-ui-3-5" /><span className="truncate">{workspace.name} · Local workspace</span>
-    </button>
+    <div className="border-t border-border-subtle p-ui-1">
+      <button type="button" className="ui-focus-ring flex w-full items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-2 text-left text-ui-sm text-content-tertiary hover:bg-purr-elevated hover:text-content-secondary" onClick={onOpenFolder}>
+        <FolderOpen className="size-ui-3-5" /><span className="truncate">{workspace.name} · Local workspace</span>
+      </button>
+    </div>
   </aside>;
 }
 

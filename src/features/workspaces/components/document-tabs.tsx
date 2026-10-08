@@ -54,7 +54,9 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
   const geometry = useRef<TabGeometry[]>([]);
   const dragState = useRef<TabDrag | null>(null);
   const dropPositions = useRef<Map<string, number> | null>(null);
+  const scrollbarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [drag, setDrag] = useState<TabDrag | null>(null);
+  const [scrollbarVisible, setScrollbarVisible] = useState(false);
   const [settling, setSettling] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
@@ -85,6 +87,15 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive, workspace.ui.variablesTabActive, updates.activeTab]);
+  useEffect(() => () => {
+    if (scrollbarTimer.current) clearTimeout(scrollbarTimer.current);
+  }, []);
+  const onTabsScroll = () => {
+    setScrollbarVisible(true);
+    if (scrollbarTimer.current) clearTimeout(scrollbarTimer.current);
+    const duration = parseFloat(getComputedStyle(globalThis.document.documentElement).getPropertyValue("--duration-layout"));
+    scrollbarTimer.current = setTimeout(() => { setScrollbarVisible(false); scrollbarTimer.current = null; }, duration * 2);
+  };
   useEffect(() => {
     dragState.current = null;
     dropPositions.current = null;
@@ -195,8 +206,8 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
     if (drag.targetIndex < drag.sourceIndex && index >= drag.targetIndex && index < drag.sourceIndex) return drag.shiftDistance;
     return 0;
   };
-  return <div className="flex h-control-lg min-w-0 shrink-0 items-center gap-ui-1 bg-purr-base px-ui-2">
-    <div ref={list} role="tablist" aria-label="Documents" className="flex min-w-0 items-center gap-ui-1 overflow-x-auto">
+  return <div className="flex h-control-lg min-w-0 shrink-0 items-center gap-ui-1 px-ui-2">
+    <div ref={list} role="tablist" aria-label="Documents" onScroll={onTabsScroll} className={cn("ui-document-tabs-scroll flex min-w-0 items-center gap-ui-1 overflow-x-auto pb-ui-1", scrollbarVisible && "ui-document-tabs-scrolling")}>
       {workspace.ui.openDocumentIds.map((id, index) => {
         const document = workspace.documents.find((item) => item.id === id)!;
         const name = getDocumentDisplayName(document);

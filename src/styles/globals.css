@@ -186,12 +186,13 @@
     --workspace-sidebar-min-width: 12rem;
     --workspace-sidebar-max-width: 28rem;
     --workspace-titlebar-height: 2.5rem;
-    --workspace-traffic-lights-width: 4rem;
+    --workspace-traffic-lights-width: 4.5rem;
     --workspace-menu-width: 14rem;
     --application-menu-width: 18rem;
     --history-popover-width: 18rem;
     --context-menu-width: 12rem;
     --document-tab-max-width: 14rem;
+    --document-tab-scrollbar-height: 0.1875rem;
     --schema-registry-width: 16.5rem;
     --schema-details-min-width: 18rem;
     --schema-source-min-width: 20rem;
@@ -324,6 +325,34 @@
     background: var(--content-quaternary);
   }
 
+  .ui-document-tabs-scroll::-webkit-scrollbar {
+    height: var(--document-tab-scrollbar-height);
+  }
+
+  .ui-document-tabs-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .ui-document-tabs-scroll::-webkit-scrollbar-thumb {
+    border-radius: var(--radius-lg);
+    background: transparent;
+  }
+
+  .ui-document-tabs-scrolling::-webkit-scrollbar-thumb {
+    background: var(--border-default);
+  }
+
+  @supports (-moz-appearance: none) {
+    .ui-document-tabs-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+
+    .ui-document-tabs-scrolling {
+      scrollbar-color: var(--border-default) transparent;
+    }
+  }
+
   .ui-auth-bearer-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -434,7 +463,19 @@
   }
 
   .ui-workspace-header {
+    position: relative;
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1fr);
+  }
+
+  .ui-workspace-header::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: var(--workspace-traffic-lights-width);
+    border-right: var(--border-width-hairline) solid var(--border-subtle);
+    background: var(--purr-surface);
+    pointer-events: none;
   }
 
   .ui-graphql-editor-pane {

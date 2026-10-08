@@ -119,7 +119,7 @@ function HistoryPanelContent({ workspaceId, documentId, selectedId, selectedStar
   };
 
   return <section aria-label={documentId ? "Document request history" : "Workspace request history"}
-    className={cn("flex min-h-0 min-w-0 flex-col bg-purr-surface font-ui", compact ? "max-h-ui-palette" : "h-full")}>
+    className={cn("flex min-h-0 min-w-0 flex-col font-ui", compact ? "max-h-ui-palette bg-purr-surface" : "h-full")}>
     <div className="flex items-center justify-between gap-ui-2 px-ui-3 py-ui-2">
       <h2 className="truncate text-ui-sm font-medium text-content-primary">History</h2>
       <div className="flex shrink-0 items-center gap-ui-1">
@@ -160,7 +160,7 @@ function HistoryPanelContent({ workspaceId, documentId, selectedId, selectedStar
       {!history ? <p className="p-ui-3 text-ui-sm text-content-tertiary">History is unavailable in this host.</p>
         : items.length === 0 && !loading && !error ? <p className="p-ui-3 text-ui-sm text-content-tertiary">{search ? "No matching requests." : "No requests yet. Sent requests appear here."}</p> : null}
       {groupHistoryByDay(items).map((group) => <section key={group.key} aria-label={group.label}>
-        <h3 className="sticky top-0 z-10 bg-purr-surface px-ui-2 py-ui-2 text-ui-xs font-medium text-content-tertiary">{group.label}</h3>
+        <h3 className={cn("sticky top-0 z-10 px-ui-2 py-ui-2 text-ui-xs font-medium text-content-tertiary", compact ? "bg-purr-surface" : "bg-purr-base")}>{group.label}</h3>
         <ul className="space-y-ui-1">
           {group.items.map((item) => <li key={item.id} className={cn("group relative flex min-w-0 items-center rounded-ui-md hover:bg-purr-elevated", isSelected(item) && "bg-purr-highlight")}>
             <button type="button" className="ui-focus-ring flex h-control-sm min-w-0 flex-1 items-center gap-ui-2 rounded-ui-md px-ui-2 text-left font-code text-ui-xs" aria-current={isSelected(item) ? "true" : undefined}

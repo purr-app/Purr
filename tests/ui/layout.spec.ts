@@ -43,11 +43,11 @@ for (const initialFullscreen of [false, true]) test(`macOS toolbar follows nativ
   await page.goto("/");
   const workspaceControls = page.locator("header > div").first();
   await expect(page.getByRole("button", { name: "Select workspace" })).toBeVisible();
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "64px");
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "72px");
   await page.evaluate((value) => (window as any).__setFullscreen(value), !initialFullscreen);
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "64px" : "0px");
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "72px" : "0px");
   await page.evaluate((value) => (window as any).__setFullscreen(value), initialFullscreen);
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "64px");
+  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "72px");
 });
 
 test("activity rail stays visible while sidebar selection, shortcuts and resizing preserve the layout", async ({ page }) => {
@@ -74,7 +74,7 @@ test("activity rail stays visible while sidebar selection, shortcuts and resizin
   const expandedEditorWidth = (await editor.boundingBox())!.width;
   const activeStyle = await documents.evaluate((element) => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }));
   const railBox = (await rail.boundingBox())!;
-  expect(railBox.width).toBe(64);
+  expect(railBox.width).toBe(72);
   const documentsBox = (await documents.boundingBox())!;
   expect(documentsBox.y - railBox.y).toBeLessThan(20);
 
