@@ -1,5 +1,16 @@
 # @purr/core
 
+## Unreleased
+
+### Improvements
+
+- Create reusable GraphQL Schema Connections from introspection, SDL, or introspection JSON, then explore their types and create query or mutation requests from schema fields.
+- Choose a Schema Connection in a GraphQL request to use its endpoint and authentication without typing the request URL. Connections show their load status and can be shared by multiple requests.
+
+### Fixes
+
+- Align the icon and message in request error notices.
+
 ## 0.1.2
 
 ### Fixes
