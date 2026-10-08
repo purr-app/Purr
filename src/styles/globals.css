@@ -164,6 +164,7 @@
     --control-height-lg: 2.5rem;
     --panel-min-height: 9rem;
     --content-max-width: 85rem;
+    --setting-control-width: 9rem;
     --method-popover-width: 9rem;
     --validation-popover-width: 20rem;
     --body-editor-min-height: var(--integration-dialog-min-height);

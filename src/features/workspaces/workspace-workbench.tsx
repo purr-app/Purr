@@ -20,7 +20,7 @@ import { RequestWorkbench, emptyRequestSession, type RequestActions, type Reques
 import { SessionCookieJar } from "../request-workbench/model/cookie-jar";
 import { createDependencyAuthRuntime } from "../request-workbench/services/dependency-auth-runtime";
 import type { RequestAuth } from "../request-workbench/model/request-auth";
-import type { RequestDraft } from "../request-workbench/model/request";
+import { getRequestSettings, type RequestDraft } from "../request-workbench/model/request";
 import { snapshotSchemaRequest, withSchemaAuthContext, applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
@@ -876,7 +876,7 @@ export function WorkspaceWorkbench() {
           : workspace.ui.cookiesTabActive ? <section aria-label="Workspace cookies" className="h-full min-h-0 overflow-auto bg-purr-base p-ui-2">
             <div className="min-h-full rounded-ui-xl border border-border-subtle bg-purr-surface">
               <CookieJarEditor jar={cookieJar!} url={currentDocument?.request.url ?? ""} enabled={currentDocument?.request.useCookieJar ?? true}
-                onEnabledChange={(useCookieJar) => setDraft((request) => ({ ...request, useCookieJar }))} />
+                onEnabledChange={(useCookieJar) => setDraft((request) => ({ ...request, useCookieJar, settings: { ...request.settings, storeCookies: getRequestSettings(request).storeCookies } }))} />
             </div>
           </section> : activeDocument?.kind === "extension" ? <ExtensionDocumentHost key={`${workspace.id}:${activeDocument.id}`} document={activeDocument} registration={extensions.documentType(activeDocument.extensionType)}
             onChange={(change) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && isExtensionDocument(item)

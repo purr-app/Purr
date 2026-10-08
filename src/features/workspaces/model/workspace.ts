@@ -1,4 +1,5 @@
 import type { DynamicExecutionMetadata } from "../../../application/ports/history";
+import { defaultRequestSettings, normalizeRequestSettings } from "../../../domain/request-settings";
 import { createRequestAuth, normalizeRequestAuth } from "../../request-workbench/model/request-auth";
 import { authTypeOptions } from "../../request-workbench/model/request-auth";
 import { createRequestBody } from "../../request-workbench/model/request-body";
@@ -369,6 +370,7 @@ export function isMeaningfulDraft(document: WorkspaceDocument): boolean {
   if (!isRequestDocument(document)) return Boolean(document.sdl || (!document.sourceRequestId && document.endpoint.trim()));
   const { request } = document;
   return Boolean(
+    !request.useCookieJar || Object.entries(request.settings ?? {}).some(([key, value]) => value !== defaultRequestSettings[key as keyof typeof defaultRequestSettings]) ||
     request.graphql?.query.trim() || request.graphql?.variables.trim() || request.graphql?.operationName.trim() || request.url.trim() ||
     request.params.some((param) => param.key || param.value) ||
     request.headers.some((header) => header.name || header.value) ||
@@ -514,6 +516,7 @@ export function validateWorkspace(value: unknown): Workspace {
   const requestShape = createHttpDocument().request;
   const normalizeRequest = (request: RequestDraft): RequestDraft => ({
     ...request,
+    settings: normalizeRequestSettings(request.settings),
     documentation: typeof request.documentation === "string" ? request.documentation : "",
     pathParams: Array.isArray(request.pathParams)
       ? request.pathParams.filter((param): param is NonNullable<RequestDraft["pathParams"]>[number] => Boolean(param)

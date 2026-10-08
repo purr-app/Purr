@@ -58,7 +58,7 @@ export function CookieJarEditor({
           <Checkbox
             checked={enabled}
             onCheckedChange={onEnabledChange}
-            label="Use cookie jar"
+            label="Automatically send cookies"
           />
           <Button variant="secondary" size="sm" onClick={add}>
             <Plus className="size-ui-3" />

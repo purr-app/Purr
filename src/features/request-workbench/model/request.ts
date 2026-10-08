@@ -1,4 +1,5 @@
 import { traceHeaderPreview } from "./request-tracing";
+import { defaultRequestSettings, normalizeRequestSettings, type RequestSettings } from "../../../domain/request-settings";
 import type { HttpMethod } from "../../../shared/model/http-method";
 import {
   createRequestAuth,
@@ -56,6 +57,7 @@ export type RequestPathParam = {
 const validHeaderName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export type RequestDraft = {
+  settings?: Partial<RequestSettings>;
   tracing?: { enabled: boolean; integrationId?: string };
   /** Prepared runtime templates. Never persisted with the request definition. */
   traceHeaderTemplates?: { name: string; value: string }[];
@@ -73,6 +75,10 @@ export type RequestDraft = {
   useCookieJar: boolean;
   workspace: RequestWorkspaceOverrides;
 };
+
+export function getRequestSettings(draft: Pick<RequestDraft, "settings" | "useCookieJar">): RequestSettings {
+  return { ...defaultRequestSettings, storeCookies: draft.useCookieJar, ...normalizeRequestSettings(draft.settings) };
+}
 
 export type RequestWorkspaceOverrides = {
   headersEnabled: boolean;
