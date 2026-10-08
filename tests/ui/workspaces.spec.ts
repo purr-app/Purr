@@ -19,6 +19,7 @@ async function createEnvironment(page: Page, name: string, values: Record<string
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill(name);
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   for (const [key, value] of Object.entries(values)) {
     await page.getByRole("button", { name: "Variable", exact: true }).click();
     await page.getByLabel("Variable name", { exact: true }).fill(key);
@@ -28,6 +29,25 @@ async function createEnvironment(page: Page, name: string, values: Record<string
   await page.getByRole("tab", { name: "Variables", exact: true }).hover();
   await page.getByRole("button", { name: "Close variables", exact: true }).click();
 }
+
+test("new environments are added only after Save and duplicate names are rejected", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select environment" }).click();
+  await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByLabel("Environment name", { exact: true }).fill("Canceled");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Select environment" }).click();
+  await expect(page.getByRole("button", { name: "Canceled", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByLabel("Environment name", { exact: true }).fill("Local");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Select environment" })).toContainText("Local");
+  await page.getByRole("button", { name: "Select environment" }).click();
+  await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByRole("dialog", { name: "New environment" }).getByLabel("Environment name", { exact: true }).fill("Local");
+  await expect(page.getByRole("alert")).toHaveText("An environment with this name already exists.");
+  await expect(page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+});
 
 async function mockDesktop(page: Page, delayed = false) {
   await page.addInitScript(({ delayed }) => {
@@ -753,10 +773,11 @@ test("Secret is independent of reveal; browser preview persists ciphertext and r
   await page.goto("/");
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByLabel("Environment name", { exact: true }).fill("Secure staging");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   const environmentNameBox = await page.getByLabel("Environment name", { exact: true }).boundingBox();
   const addVariableBox = await page.getByRole("button", { name: "Variable", exact: true }).boundingBox();
   expect(addVariableBox?.height).toBe(environmentNameBox?.height);
-  await page.getByLabel("Environment name", { exact: true }).fill("Secure staging");
   await page.getByRole("button", { name: "Variable", exact: true }).click();
   await page.getByLabel("Variable name", { exact: true }).fill("access_token");
   await page.getByLabel("Variable value", { exact: true }).fill("purr-test-secret-not-in-project");

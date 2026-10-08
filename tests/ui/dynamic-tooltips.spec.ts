@@ -5,6 +5,7 @@ async function createVariable(page: Page) {
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Tooltip environment");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   await page.getByRole("button", { name: "Variable", exact: true }).click();
   await page.getByLabel("Variable name", { exact: true }).fill("tooltip_var");
   await page.getByLabel("Variable value", { exact: true }).fill("value");

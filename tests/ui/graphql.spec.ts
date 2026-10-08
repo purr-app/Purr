@@ -43,6 +43,7 @@ async function createEnvironmentVariable(page: Page) {
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("GraphQL local");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   await page.getByRole("button", { name: "Variable", exact: true }).click();
   await page.getByLabel("Variable name", { exact: true }).fill("customer_id");
   await page.getByLabel("Variable value", { exact: true }).fill("42");

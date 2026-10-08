@@ -214,6 +214,7 @@ for (const delayMs of [0, 700]) test(`first Send animates to the full response l
   await page.getByRole("button", { name: "Select environment" }).click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Development");
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
   if (delayMs) {
     await page.getByRole("button", { name: "Variable", exact: true }).click();
     await page.getByLabel("Variable name", { exact: true }).fill("test_secret");

@@ -84,7 +84,7 @@ import {
   type Workspace,
 } from "./model/workspace";
 
-type Dialog = "palette" | "new-workspace" | "import-workspace" | "import-environment" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
+type Dialog = "palette" | "new-workspace" | "new-environment" | "import-workspace" | "import-environment" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
 const noHistorySubscription = () => () => {};
 const noHistoryRevision = () => 0;
 
@@ -593,16 +593,10 @@ export function WorkspaceWorkbench() {
     update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: true, variablesTabActive: true, cookiesTabActive: false, settingsTabActive: false } }));
   };
   const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => closeWorkspaceTab(current, "variables")); };
-  const showEnvironment = async (create = false) => {
+  const showEnvironment = async () => {
     const existing = workspace?.environments.find((item) => item.id === workspace.activeEnvironmentId);
     try {
-      if (create) {
-        let name = "New environment"; let suffix = 2;
-        while (workspace?.environments.some((environment) => environment.name === name)) name = `New environment ${suffix++}`;
-        const environment = { id: crypto.randomUUID(), name, variables: [] };
-        update((current) => ({ ...current, activeEnvironmentId: environment.id, environments: [...current.environments, environment] }));
-        openVariables(`environment:${environment.id}`, null, null);
-      } else if (existing) {
+      if (existing) {
         const environment = await resolveEnvironmentSecrets(existing, persistence.secure);
         update((current) => ({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }));
         openVariables(`environment:${environment.id}`, null, null);
@@ -738,7 +732,7 @@ export function WorkspaceWorkbench() {
       onNewWorkspace={() => setDialog("new-workspace")}
       onImportWorkspace={() => setDialog("import-workspace")}
       onRequestSettings={openSettings}
-      onEnvironment={changeEnvironment} onEditEnvironment={() => showEnvironment()} onNewEnvironment={() => showEnvironment(true)}
+      onEnvironment={changeEnvironment} onEditEnvironment={showEnvironment} onNewEnvironment={() => setDialog("new-environment")}
       onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
       <WorkspaceActivityRail activity={workspace.ui.sidebarActivity} open={workspace.ui.sidebarOpen}
@@ -958,6 +952,14 @@ export function WorkspaceWorkbench() {
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
+    {dialog === "new-environment" && <NameDialog title="New environment" label="Environment name" initial=""
+      validate={(name) => workspace.environments.some((environment) => environment.name.trim() === name) ? "An environment with this name already exists." : null}
+      onClose={() => setDialog(null)} onSave={(name) => {
+        const environment = { id: crypto.randomUUID(), name, variables: [] };
+        update((current) => ({ ...current, activeEnvironmentId: environment.id, environments: [...current.environments, environment] }));
+        setDialog(null);
+        openVariables(`environment:${environment.id}`, null, null);
+      }} />}
     {importResult && <ImportReportDialog report={importResult} onClose={() => setImportResult(null)} />}
     {dialog === "import-environment" && <ImportWorkspaceDialog target="environment" onClose={() => setDialog(null)} onImport={importEnvironment} />}
     {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} />}
