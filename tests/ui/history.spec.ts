@@ -174,7 +174,7 @@ test("deleting a draft keeps its execution and editing it creates a new draft", 
   const documents = page.getByRole("complementary", { name: "Workspace documents", exact: true });
   await documents.getByRole("button", { name: /GET.*deleted-draft/ }).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Discard", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await page.reload();
   await openHistory(page);
   await expect(historyPanel(page).getByRole("listitem")).toHaveCount(1);

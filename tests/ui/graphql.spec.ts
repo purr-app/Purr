@@ -22,7 +22,7 @@ const sdl = `
 `;
 const query = "query Customer($id: ID!) { customer(id: $id) { id name } }";
 const tabs = (page: Page) => page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab");
-const saved = (page: Page) => expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+const saved = (page: Page) => expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
 
 async function createGraphql(page: Page) {
   await page.getByRole("button", { name: "Create document", exact: true }).click();

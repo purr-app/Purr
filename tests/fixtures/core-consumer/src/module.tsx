@@ -43,6 +43,7 @@ function ConsumerIntegrationSettings({ value, onSave, onCancel }: IntegrationSet
 export const consumerModule = defineExtensionModule({
   manifest: { id: "consumer.fixture", extensionApi: 1, version: "1.0.0" },
   register(registrar) {
+    registrar.menuItems.register({ id: "home", label: "Open consumer page", action: { type: "action", run: ({ openPage }) => openPage("home") } });
     registrar.integrations.register({ id: "consumer.fixture", label: "Consumer trace provider", initialConfig: { fixture: true }, Settings: ConsumerIntegrationSettings });
     registrar.pages.register({ id: "home", routeSegment: "home", title: "Consumer",
       navigation: { area: "primary", label: "External consumer", order: 20 }, create: () => ({ component: ConsumerPage }) });

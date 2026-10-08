@@ -49,6 +49,7 @@ export class UpdateController {
     this.started = true;
     void this.check(false);
   }
+  present = () => { if (this.update) this.set({ notice: this.state.error ? "error" : "update" }); };
   dismiss = () => this.set({ notice: undefined });
   check = async (manual = true) => {
     if (!this.updater || this.busy) return;

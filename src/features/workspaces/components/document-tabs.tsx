@@ -266,9 +266,9 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
         <button type="button" role="tab" id={`document-tab-${tab}`} aria-selected={updates.activeTab === tab} aria-controls="application-update-panel"
           tabIndex={updates.activeTab === tab ? 0 : -1} onClick={() => openTab(tab)} onKeyDown={(event) => onTabKeyDown(event, tab)}
           className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm text-content-secondary">
-          {tab === "about" ? "About Purr" : "Release notes"}
+          Release notes
         </button>
-        <Button variant="ghost" size="icon" aria-label={`Close ${tab === "about" ? "About Purr" : "Release notes"}`} onClick={() => updates.closeTab(tab)}><X className="size-ui-3" /></Button>
+        <Button variant="ghost" size="icon" aria-label={`Close $Release notes`} onClick={() => updates.closeTab(tab)}><X className="size-ui-3" /></Button>
       </div>)}
     </div>
     <NewDocumentButton defaultKind={workspace.ui.lastRequestKind} onNew={onNew} onNewExtension={onNewExtension} extensionTypes={extensionTypes} />

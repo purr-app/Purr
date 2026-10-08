@@ -100,7 +100,7 @@ test("activity rail stays visible while sidebar selection, shortcuts and resizin
   await expect(documents).toHaveAttribute("aria-expanded", "false");
   await expect(documents).toHaveAttribute("aria-pressed", "true");
   await expect(rail).toBeVisible();
-  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await page.reload();
   await expect(rail).toBeVisible();
   await expect(documents).toHaveAttribute("aria-pressed", "true");
@@ -224,7 +224,7 @@ for (const delayMs of [0, 700]) test(`first Send animates to the full response l
   await page.getByRole("tab", { name: "Variables", exact: true }).hover();
   await page.getByRole("button", { name: "Close variables", exact: true }).click();
   if (delayMs) {
-    await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
     await page.reload();
   }
   await page.getByLabel("Request URL", { exact: true }).fill("https://api.example.com/users/42");

@@ -50,7 +50,17 @@ export type WorkspaceDocumentTypeContribution = Readonly<{
 export interface ExtensionContributionRegistrar<T> {
   register(contribution: T): void;
 }
+export type ExtensionMenuActionContext = Readonly<{
+  openPage(pageId: string): void;
+  openDialog(dialog: { title: string; component: ComponentType<{ onClose(): void }> }): void;
+  notify(message: { title: string; description?: string; variant?: "info" | "success" | "warning" | "error" }): void;
+}>;
+export type ExtensionMenuContribution = Readonly<{
+  id: string; label: string; icon?: ComponentType<{ className?: string }>; order?: number;
+  action: Readonly<{ type: "link"; url: string } | { type: "action"; run(context: ExtensionMenuActionContext): void | Promise<void> }>;
+}>;
 export type ExtensionRegistrar = Readonly<{
+  menuItems: ExtensionContributionRegistrar<ExtensionMenuContribution>;
   integrations: ExtensionContributionRegistrar<IntegrationPresentationContribution>;
   pages: ExtensionContributionRegistrar<ExtensionPageContribution>;
   documentTypes: ExtensionContributionRegistrar<WorkspaceDocumentTypeContribution>;

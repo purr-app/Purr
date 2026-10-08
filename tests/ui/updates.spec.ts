@@ -3,20 +3,14 @@ const { version } = JSON.parse(readFileSync(new URL("../../package.json", import
 const nextVersion = version.replace(/\d+$/, (patch) => String(Number(patch) + 1));
 import { expect, test } from "@playwright/test";
 
-test("source build exposes version and About without contacting an updater", async ({ page }) => {
+test("source build exposes its version in More without an updater", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("button", { name: `v${version}`, exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "About", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "About Purr" })).toBeVisible();
-  const check = page.getByRole("button", { name: "Check for Updates…", exact: true });
-  await expect(check).toBeDisabled();
-  await expect(check).toHaveClass(/bg-action-brand/);
-  await page.getByRole("button", { name: "Select workspace" }).click();
-  await expect(page.getByRole("button", { name: "About Purr", exact: true })).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Release notes", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "Release notes", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "What’s new" })).toBeVisible();
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: `Version v${version}` })).toBeVisible();
+  await expect(page.locator("footer")).toHaveCount(0);
+  await expect(page.getByText("About Purr", { exact: true })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: `Version v${version}` }).click();
+  await expect(page.getByRole("heading", { name: "Automatic updates unavailable" })).toBeVisible();
 });
 test("release notes open once after the installed version changes", async ({ page }) => {
   await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { localStorage.setItem("purr.release-notes.seen-version", "0.1.0"); sessionStorage.setItem("seeded", "yes"); } });
@@ -25,13 +19,16 @@ test("release notes open once after the installed version changes", async ({ pag
   await page.reload();
   await expect(page.getByRole("tab", { name: "Release notes", exact: true })).toHaveCount(0);
 });
-test("startup notice can be deferred; footer downloads and explicit Restart installs", async ({ page }) => {
+test("startup notice can be deferred; menu reveals updates and explicit Restart installs", async ({ page }) => {
   await page.goto("/tests/fixtures/updater/index.html");
   await expect(page.getByRole("heading", { name: `Purr v${nextVersion}` })).toBeVisible();
   await expect(page.getByText("Faster response viewer.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Later", exact: true }).click();
   await expect(page.getByRole("heading", { name: `Purr v${nextVersion}` })).toHaveCount(0);
-  await page.locator("footer button").first().click();
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByRole("menuitem", { name: /Version v/ }).click();
+  await expect(page.getByRole("button", { name: "Download", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Download", exact: true }).click();
   await expect(page.getByRole("progressbar")).toBeVisible();
   await expect(page.getByRole("button", { name: "Restart", exact: true })).toBeVisible();
   await expect(page.locator("body")).not.toHaveAttribute("data-installed", "true");
@@ -50,10 +47,11 @@ test("failed startup checks show a dismissible error with retry", async ({ page 
 });
 
 test("a distribution owns its version and notes independently of core", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("purr.release-notes.seen-version", "0.0.1"));
   await page.goto("/tests/fixtures/updater/index.html?mode=commercial");
-  await expect(page.locator("footer button").first()).toContainText("v0.1.0");
-  await page.getByRole("button", { name: "About", exact: true }).click();
-  await page.getByRole("button", { name: "Release notes", exact: true }).click();
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: /Version v/ })).toContainText("v0.1.0");
+  await page.keyboard.press("Escape");
   const panel = page.getByRole("tabpanel", { name: "Release notes" });
   await expect(panel).toContainText("Purr v0.1.0");
   await expect(panel.getByRole("heading", { name: "First beta" })).toBeVisible();

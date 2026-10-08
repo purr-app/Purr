@@ -1,6 +1,7 @@
 import type { AppRelease } from "../application/ports/release";
 import { UpdateController, type AppUpdater } from "../features/updates/update-controller";
 import { UpdateProvider } from "../features/updates/update-context";
+import { ToastProvider } from "../shared/components/ui/toasts";
 import { UpdateNotifications } from "../features/updates/update-ui";
 import type { ComponentType } from "react";
 
@@ -44,10 +45,10 @@ export function createPurrApp(
       <ApplicationServicesProvider services={services}>
         <ExtensionRegistryProvider registry={extensions}>
           <ThemeProvider>
-            <UpdateProvider controller={updates} release={options.release}>
+            <ToastProvider><UpdateProvider controller={updates} release={options.release}>
               <AppRouter composition={composition} />
               <UpdateNotifications />
-            </UpdateProvider>
+            </UpdateProvider></ToastProvider>
           </ThemeProvider>
         </ExtensionRegistryProvider>
       </ApplicationServicesProvider>

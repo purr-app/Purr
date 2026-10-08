@@ -508,7 +508,7 @@ test("large native responses use bounded pages instead of a full CodeMirror docu
   expect(reads.some((read: { length: number }) => read.length <= 192 * 1024)).toBe(true);
   expect(reads.every((read: { length: number }) => read.length <= 4 * 1024 * 1024)).toBe(true);
 
-  await expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await page.reload();
   const restored = page.getByRole("region", { name: "HTTP response" });
   const restoredViewer = restored.getByLabel("Large response body viewer", { exact: true });

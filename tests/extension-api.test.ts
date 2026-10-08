@@ -66,3 +66,23 @@ test("extension composition is atomic, validates collisions, and freezes capture
   assert.throws(() => lateRegister?.(), /registries are frozen/);
   assert.equal(createExtensionRegistry([module("test.clean")], capabilities).modules.length, 1);
 });
+
+test("menu contributions are owned, ordered, validated and frozen", () => {
+  const contribution = { id: "help", label: "Help", action: { type: "link" as const, url: "https://example.com/help" } };
+  const registry = createExtensionRegistry([
+    module("test.z", (r) => r.menuItems.register(contribution)),
+    module("test.a", (r) => r.menuItems.register(contribution)),
+  ], capabilities);
+  assert.deepEqual(registry.menuItems.map((item) => item.moduleId), ["test.a", "test.z"]);
+  assert.ok(Object.isFrozen(registry.menuItems));
+  assert.ok(Object.isFrozen(registry.menuItems[0].action));
+  assert.throws(() => createExtensionRegistry([module("test.duplicate", (r) => {
+    r.menuItems.register(contribution); r.menuItems.register(contribution);
+  })], capabilities), /Duplicate menu contribution/);
+  assert.throws(() => createExtensionRegistry([module("test.invalid", (r) => {
+    r.menuItems.register({ ...contribution, action: { type: "link", url: "javascript:alert(1)" } });
+  })], capabilities), /Invalid menu URL/);
+  let registerLate: (() => void) | undefined;
+  createExtensionRegistry([module("test.late", (r) => { registerLate = () => r.menuItems.register(contribution); })], capabilities);
+  assert.throws(() => registerLate?.(), /frozen/);
+});

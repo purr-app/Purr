@@ -149,7 +149,7 @@ export function RequestComposer({
               {schemaSelector}
             </div>}
             <Button
-              variant={sending ? "secondary" : draft.graphql ? "graphql" : "default"}
+              variant={sending ? "secondary" : draft.graphql ? "graphql" : "http"}
               className={cn(
                 "shadow-action",
                 sending && (draft.graphql

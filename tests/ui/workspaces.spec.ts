@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 const tabs = (page: Page) => page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab");
-const saved = (page: Page) => expect(page.getByRole("status").filter({ hasText: "Saved locally" })).toBeVisible();
+const saved = (page: Page) => expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
 const variableScope = (page: Page, name: "Workspace" | "Effective") => page.getByRole("navigation", { name: "Variable scopes" }).getByRole("button", { name, exact: true });
 
 async function saveDocument(page: Page, name: string) {

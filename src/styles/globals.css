@@ -188,6 +188,7 @@
     --workspace-titlebar-height: 2.5rem;
     --workspace-traffic-lights-width: 4rem;
     --workspace-menu-width: 14rem;
+    --application-menu-width: 18rem;
     --history-popover-width: 18rem;
     --context-menu-width: 12rem;
     --document-tab-max-width: 14rem;
@@ -298,6 +299,9 @@
 }
 
 @layer components {
+  .ui-progress-indeterminate { animation: progress-indeterminate calc(var(--duration-layout) * 4) linear infinite; }
+  @keyframes progress-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+  @media (prefers-reduced-motion: reduce) { .ui-progress-indeterminate { animation: none; } }
   .ui-subtle-scrollbar {
     scrollbar-width: thin;
     scrollbar-color: var(--purr-muted) transparent;

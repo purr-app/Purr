@@ -5,7 +5,8 @@ import { HistoryPanel } from "../history/history-panel";
 import { historyNeedsReplacement, historySource, historyWorkingCopy, openHistoricalTab, returnFromHistory } from "../history/model/history-working-copy";
 import { Modal } from "../../shared/components/ui/modal";
 import { useUpdates } from "../updates/update-context";
-import { VersionFooter, ApplicationUpdatePanel } from "../updates/update-ui";
+import { useToasts } from "../../shared/components/ui/toasts";
+import { ApplicationUpdatePanel } from "../updates/update-ui";
 import { WorkspaceIntegrationsProvider } from "../../integrations/workspace-integrations";
 import { TabStateProvider, TabStateStore } from "../../shared/state/tab-state";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type SetStateAction } from "react";
@@ -83,7 +84,6 @@ import {
 } from "./model/workspace";
 
 type Dialog = "palette" | "new-workspace" | "import-workspace" | "import-environment" | "save-document" | { renameDocument: string } | { newFolder: string | null } | { renameFolder: string } | null;
-const actionErrorTimeoutMs = 15_000;
 const noHistorySubscription = () => () => {};
 const noHistoryRevision = () => 0;
 
@@ -164,11 +164,21 @@ export function WorkspaceWorkbench() {
   const requestActions = useRef<RequestActions>(null);
   const emptyPasteTarget = useRef<HTMLTextAreaElement>(null);
   const sidebarResize = useRef<{ startX: number; width: number } | null>(null);
+  const { notify, dismiss } = useToasts();
+  const [retryingSave, setRetryingSave] = useState(false);
   useEffect(() => {
-    if (!actionError) return;
-    const timeout = window.setTimeout(() => setActionError(""), actionErrorTimeoutMs);
-    return () => window.clearTimeout(timeout);
-  }, [actionError]);
+    if (!actionError) { dismiss("workspace-action-error"); return; }
+    notify({ id: "workspace-action-error", title: "Action failed", description: actionError, variant: "error", onClose: () => setActionError("") });
+  }, [actionError, notify, dismiss]);
+  useEffect(() => {
+    if (!saveError) { dismiss("workspace-save-error"); return; }
+    notify({ id: "workspace-save-error", title: "Could not save workspace", description: saveError, variant: "error",
+      actions: <Button variant="brand" size="sm" disabled={retryingSave} onClick={() => {
+        setRetryingSave(true);
+        void retrySave().catch(() => {}).finally(() => setRetryingSave(false));
+      }}>{retryingSave ? "Retrying…" : "Reload and retry"}</Button>,
+    });
+  }, [saveError, retryingSave, retrySave, notify, dismiss]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
   useEffect(() => {
     setVariableScope("effective");
@@ -721,7 +731,7 @@ export function WorkspaceWorkbench() {
     setVariableScope(`environment:${imported.environmentId}`); setVariableSelection(null); setVariableDraft(null);
     setDialog(null); setImportResult(imported.report);
   };
-  return <div className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
+  return <div role="region" aria-label="Workspace" aria-busy={saving} className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} variablesActive={workspace.ui.variablesTabActive} onCookies={openCookies} onVariables={() => openVariables("effective", null, null)}
       onNewWorkspace={() => setDialog("new-workspace")}
@@ -930,11 +940,7 @@ export function WorkspaceWorkbench() {
         </div>
       </div>
     </div>
-    <footer className="flex h-control-sm shrink-0 items-center justify-end gap-ui-3 border-t border-border-subtle bg-purr-base px-ui-3 text-ui-xs text-content-tertiary">
-      <VersionFooter />
-      {saveError || actionError ? <><span role="alert" className="min-w-0 truncate text-accent-red" title={saveError || actionError}>{saveError ? `Could not save workspace: ${saveError}` : actionError}</span>{saveError ? <Button variant="ghost" size="xs" onClick={() => { void retrySave().catch(() => {}); }}>Reload and retry</Button> : null}</>
-        : <span role="status">{saving ? "Saving…" : "Saved locally"}</span>}
-    </footer>
+
     {historyConflict && <Modal title="This document has unsaved changes" onClose={() => setHistoryConflict(null)}>
       <div className="space-y-ui-4 p-ui-5">
         <p className="text-ui-md text-content-secondary">Use the historical request as a working copy? Replacing current changes does not save the document. The historical execution stays unchanged.</p>

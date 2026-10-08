@@ -124,14 +124,8 @@ export const purrCodeTheme = EditorView.theme(
       lineHeight: "var(--line-height-lg)",
       padding: "var(--space-2)",
     },
-    ".cm-tooltip-autocomplete.cm-tooltip-below": {
-      marginTop: "var(--space-2)",
-      transform: "translateY(var(--space-1))",
-    },
-    ".cm-tooltip-autocomplete.cm-tooltip-above": {
-      marginBottom: "var(--space-2)",
-      transform: "translateY(calc(var(--space-1) * -1))",
-    },
+    // CodeMirror owns tooltip positioning and viewport clamping. CSS offsets
+    // would move completion menus outside those measured bounds.
     ".cm-tooltip-autocomplete > ul > li": {
       display: "flex",
       alignItems: "center",

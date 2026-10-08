@@ -49,6 +49,7 @@ export async function installPersistenceMock(page: Page) {
           if (command === "load_persistence") return { ...snapshot, workspaces: snapshot.workspaces.map(restoreHistory) };
           if (command === "load_project") return restoreHistory(snapshot.workspaces.find((item: any) => item.id === args.id));
           if (command === "commit_project") {
+            if ((window as any).__purrFailSave) throw new Error("Synthetic persistence failure");
             let workspace = snapshot.workspaces.find((item: any) => item.id === args.id);
             if (!workspace) { workspace = { id: args.id, files: {}, local: [] }; snapshot.workspaces.push(workspace); }
             const changed: Record<string, unknown> = {};

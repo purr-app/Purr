@@ -4,7 +4,7 @@ import coreRelease from "../../app/release-notes.json";
 import type { AppRelease } from "../../application/ports/release";
 import { UpdateController } from "./update-controller";
 
-export type ApplicationTab = "about" | "release-notes";
+export type ApplicationTab = "release-notes";
 const notesKey = "purr.release-notes.seen-version";
 const Context = createContext<{
   controller: UpdateController; version: string; notes: string; date?: string;

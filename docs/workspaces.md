@@ -192,3 +192,9 @@ written to project files or local records. `TabStateStore.remember` defaults to
 `true` and is the policy switch for a future user preference; turning it off uses
 ordinary component-local state. New panels can use `useTabState` without retaining
 mounted editors, timers or network requests in background tabs.
+
+## Application menu and notifications
+
+The bottom rail More button opens documentation, changelog, feedback, issue reporting, GitHub, homepage, extension actions, and version/update controls. There is no status footer or About tab. Release notes still open once after a version change.
+
+Application notifications appear at bottom right, with at most three visible and remaining messages queued. Informational/success toasts expire after five seconds, paused while hovered or focused. Warnings, errors, and update progress persist until dismissed or resolved. Save failures offer a retry and disappear after a successful save; blocking workspace-load errors and field validation remain inline. Development builds include isolated UI previews in More; production builds exclude them.
