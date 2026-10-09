@@ -1,7 +1,7 @@
 {
   "name": "@purr/core",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local-first desktop client for HTTP and GraphQL APIs",
   "license": "MIT",
   "repository": {

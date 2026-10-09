@@ -14,6 +14,12 @@
 - Control whether a request automatically sends and stores workspace cookies with independent switches.
 - Find these controls in clearly separated Settings sections, with Tracing first. Saved settings travel with the project; unsaved edits stay local.
 
+## 0.2.1
+
+### Patch Changes
+
+- 59a1b86: Fix a macOS window resize crash caused by over-releasing the native WebView while laying out the window controls.
+
 ## 0.2.0
 
 ### Minor Changes

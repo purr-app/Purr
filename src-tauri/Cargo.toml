@@ -1,6 +1,6 @@
 [package]
 name = "purr"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first desktop HTTP and GraphQL client"
 edition = "2021"
 rust-version = "1.89"
