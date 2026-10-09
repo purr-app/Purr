@@ -49,6 +49,9 @@ jobs:
         working-directory: src-tauri
       - run: cargo test
         working-directory: src-tauri
+      - name: Verify native macOS resize with release optimizations
+        run: cargo test --locked --release --test macos_window_resize
+        working-directory: src-tauri
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit Rust dependencies

@@ -1,7 +1,7 @@
 //! Compact native traffic lights for shells using an overlay titlebar.
 
-use objc2::MainThreadMarker;
-use objc2_app_kit::{NSWindow, NSWindowButton};
+use objc2::{msg_send, MainThreadMarker};
+use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
 use objc2_foundation::{NSPoint, NSSize};
 use tauri::{plugin::TauriPlugin, Manager, Window, WindowEvent, Wry};
 
@@ -48,7 +48,12 @@ fn schedule_layout(window: Window<Wry>) {
         };
         // Tauri owns this NSWindow; it is borrowed only during this main-thread callback.
         let native = unsafe { &*pointer.cast::<NSWindow>() };
-        let Some(content) = native.contentView() else {
+        // The window owns its content view. Borrow it for this synchronous
+        // main-thread layout; do not participate in the optimized Objective-C
+        // autoreleased-return handshake on every resize. In optimized macOS
+        // builds that handshake can over-release Wry's content view on drop.
+        let pointer: *mut NSView = unsafe { msg_send![native, contentView] };
+        let Some(content) = (unsafe { pointer.as_ref() }) else {
             return;
         };
         let content_bounds = content.bounds();
@@ -75,7 +80,7 @@ fn schedule_layout(window: Window<Wry>) {
             let Some(parent) = (unsafe { button.superview() }) else {
                 continue;
             };
-            let center = parent.convertPoint_fromView(NSPoint::new(0.0, center_y), Some(&content));
+            let center = parent.convertPoint_fromView(NSPoint::new(0.0, center_y), Some(content));
             let bounds = button.bounds();
             let mut frame = button.frame();
             frame.origin.x = position.x + index as f64 * BUTTON_PITCH;
