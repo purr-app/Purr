@@ -13,6 +13,11 @@ repository = "https://github.com/purr-app/Purr"
 name = "Purr"
 path = "src/main.rs"
 
+[[test]]
+name = "macos_window_resize"
+path = "tests/macos_window_resize.rs"
+harness = false
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
