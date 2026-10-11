@@ -1,3 +1,4 @@
+import { renameVariableDefinitions, renameWorkspaceReferences, variableRenames } from "./model/rename-variable";
 import { TemplateVariableProvider } from "../../shared/components/ui/template-variable-context";
 import { ConnectionStatus } from "../graphql/components/schema-connection-status";
 import { SelectField } from "../../shared/components/ui/select-field";
@@ -809,17 +810,23 @@ export function WorkspaceWorkbench() {
               await deleteWorkspace(workspace.id); jars.current.delete(workspace.id); dynamicSessionCaches.current.delete(workspace.id);
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
-          : workspace.ui.variablesTabActive ? <VariablesExplorer onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
+          : workspace.ui.variablesTabActive ? <VariablesExplorer onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
             onWorkspaceVariablesChange={(variables) => { removeUnusedVariableSecrets(workspace.variables, variables); update((current) => {
-              const next = { ...current, variables }; return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) };
+              const next = renameWorkspaceReferences({ ...current, variables }, variableRenames(current.variables, variables)); return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) };
             }); }}
-            onGlobalVariablesChange={(globalVariables) => { removeUnusedVariableSecrets(store.globalVariables, globalVariables); setStore((current) => current ? { ...current, globalVariables,
-              workspaces: current.workspaces.map((candidate) => ({ ...candidate, dynamicVariableCache: pruneVariableCache(candidate, globalVariables) })),
-            } : current); }}
+            onGlobalVariablesChange={(globalVariables) => { removeUnusedVariableSecrets(store.globalVariables, globalVariables); setStore((current) => {
+              if (!current) return current;
+              const renames = variableRenames(current.globalVariables, globalVariables);
+              const nextGlobals = renameVariableDefinitions(globalVariables, renames);
+              return { ...current, globalVariables: nextGlobals, workspaces: current.workspaces.map((candidate) => {
+                const next = renameWorkspaceReferences(candidate, renames);
+                return { ...next, dynamicVariableCache: pruneVariableCache(next, nextGlobals) };
+              }) };
+            }); }}
             onEnvironmentChange={(environment) => {
               const previous = workspace.environments.find((item) => item.id === environment.id);
               if (previous) removeUnusedVariableSecrets(previous.variables, environment.variables);
-              update((current) => { const next = { ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) };
+              update((current) => { const next = renameWorkspaceReferences({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }, variableRenames(current.environments.find((item) => item.id === environment.id)?.variables ?? [], environment.variables));
                 return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) }; });
             }}
             onDeleteEnvironment={(id) => {

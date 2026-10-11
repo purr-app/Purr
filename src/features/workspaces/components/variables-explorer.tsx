@@ -1,3 +1,4 @@
+import { variableRenameError } from "../model/rename-variable";
 import { DynamicDependencyChain } from "./dynamic-dependency-chain";
 import { DynamicVariableResolutionError, type DynamicExecutionStep } from "../services/dynamic-variable-resolver";
 import type { WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
@@ -61,12 +62,13 @@ function usedBy(variable: Variable, documents: readonly DynamicVariableRequest[]
   return documents.filter((document) => JSON.stringify(document.request).includes(`{{${variable.name}}}`));
 }
 
-export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHistory, workspace, globalVariables, scope, selectedId, draft, documents,
+export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHistory, workspace, workspaces = [workspace], globalVariables, scope, selectedId, draft, documents,
   onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
   onImportEnvironment?: () => void;
   requestConfig?: WorkspaceRequestConfig;
   onOpenHistory?: (id: string) => void;
   workspace: Workspace;
+  workspaces?: readonly Workspace[];
   globalVariables: Variable[];
   scope: VariableScope;
   selectedId: string | null;
@@ -115,12 +117,20 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   const add = () => { onSelectionChange(null); onDraftChange(createStaticVariable()); };
   const persisted = activeDraft ? variables.find((variable) => variable.id === activeDraft.id) : undefined;
   const dirty = Boolean(activeDraft && (!persisted || JSON.stringify(activeDraft) !== JSON.stringify(persisted)));
-  const nameError = activeDraft ? validateVariableName(activeDraft, scope, workspace, globalVariables) : "";
+  const validateName = (variable: Variable) => {
+    const error = validateVariableName(variable, scope, workspace, globalVariables);
+    if (error) return error;
+    const affected = scope === "global" ? workspaces : [workspace];
+    if (scope === "global" && workspaces.some((item) => [...item.variables, ...item.environments.flatMap((environment) => environment.variables)].some((candidate) => candidate.name === variable.name.trim())))
+      return `Variable “${variable.name.trim()}” already exists in a workspace.`;
+    return variableRenameError(affected, variables.find((candidate) => candidate.id === variable.id), variable);
+  };
+  const nameError = activeDraft ? validateName(activeDraft) : "";
   const canSave = Boolean(activeDraft?.name.trim() && !nameError
     && (activeDraft.kind !== "dynamic-request" || activeDraft.documentId && activeDraft.expression.trim()));
   const saveDraft = () => {
     if (!activeDraft || !canSave || scope === "effective") return;
-    let next = structuredClone(activeDraft);
+    let next = { ...structuredClone(activeDraft), name: activeDraft.name.trim() };
     if (next.kind === "static") {
       next = next.sensitive ? { ...next, secretRef: next.secretRef ?? variableSecretRef(scope, workspace, next.id), loaded: true }
         : { id: next.id, name: next.name.trim(), enabled: next.enabled, sensitive: false, kind: "static", value: next.value };
@@ -183,7 +193,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
         <div role="region" aria-label="Variable list" className="ui-subtle-scrollbar min-h-0 flex-1 overflow-auto p-ui-2" onClick={(event) => { if (event.target === event.currentTarget && showDetails) cancelDraft(); }}>
           {scope === "effective" ? <EffectiveTable variables={filtered} workspace={workspace} globalVariables={globalVariables} selectedId={selectedId}
               onSelect={(variable) => { onSelectionChange(variable.id); onDraftChange(null); }} onDefinition={(variable) => selectScope(definitionScope(variable, workspace, globalVariables), variable.id)} />
-            : <ScopeTable variables={filtered} scope={scope} workspace={workspace} globalVariables={globalVariables}
+            : <ScopeTable variables={filtered} scope={scope} workspace={workspace} validateName={validateName}
               detailsVariableId={activeDraft?.id ?? null} inlineDisabled={showDetails} onCreate={persistStatic} onStaticChange={(variable) => persistStatic(variable, true)}
               onInlineStart={() => { onSelectionChange(null); onDraftChange(null); }} onSelect={openVariable} onToggle={toggle}
               confirmDeleteId={confirmDeleteId} onConfirmDelete={setConfirmDeleteId} onDelete={remove} documents={documents} />}
@@ -238,11 +248,11 @@ function EffectiveTable({ variables, workspace, globalVariables, selectedId, onS
     {!variables.length ? <p className="p-ui-6 text-center text-ui-sm text-content-tertiary">No enabled variables are effective here.</p> : null}</div>;
 }
 
-function ScopeTable({ variables, scope, workspace, globalVariables, detailsVariableId, inlineDisabled, onCreate, onStaticChange, onInlineStart, onSelect, onToggle, confirmDeleteId, onConfirmDelete, onDelete, documents }: {
+function ScopeTable({ variables, scope, workspace, validateName, detailsVariableId, inlineDisabled, onCreate, onStaticChange, onInlineStart, onSelect, onToggle, confirmDeleteId, onConfirmDelete, onDelete, documents }: {
   variables: Variable[];
   scope: VariableScope;
   workspace: Workspace;
-  globalVariables: readonly Variable[];
+  validateName: (variable: Variable) => string;
   detailsVariableId: string | null;
   inlineDisabled: boolean;
   onCreate: (variable: Extract<Variable, { kind: "static" }>) => void;
@@ -258,7 +268,7 @@ function ScopeTable({ variables, scope, workspace, globalVariables, detailsVaria
   const [quickOpen, setQuickOpen] = useState(false);
   const [quick, setQuick] = useState(() => createStaticVariable());
   const quickName = useRef<HTMLInputElement>(null); const quickValue = useRef<HTMLInputElement>(null);
-  const quickError = quick.name || quick.value ? validateVariableName(quick, scope, workspace, globalVariables) : "";
+  const quickError = quick.name || quick.value ? validateName(quick) : "";
   const commitQuick = () => {
     if (!quick.name.trim() || quickError) return;
     onCreate(quick); setQuick(createStaticVariable()); setQuickOpen(false);
@@ -273,8 +283,7 @@ function ScopeTable({ variables, scope, workspace, globalVariables, detailsVaria
     </div>
     {variables.map((variable) => {
       const usages = usedBy(variable, documents);
-      if (variable.kind === "static") return <StaticVariableRow key={variable.id} variable={variable} scope={scope} workspace={workspace}
-        globalVariables={globalVariables} selected={detailsVariableId === variable.id} inlineDisabled={inlineDisabled} onInlineStart={onInlineStart} onChange={onStaticChange}
+      if (variable.kind === "static") return <StaticVariableRow key={variable.id} variable={variable} validateName={validateName} selected={detailsVariableId === variable.id} inlineDisabled={inlineDisabled} onInlineStart={onInlineStart} onChange={onStaticChange}
         onSelect={() => onSelect(variable)} onToggle={(enabled) => onToggle(variable, enabled)} confirmDelete={confirmDeleteId === variable.id}
         onConfirmDelete={() => onConfirmDelete(variable.id)} onDelete={() => onDelete(variable)} usages={usages.length} />;
       return <div key={variable.id} className={cn("group mb-ui-1 grid cursor-pointer grid-cols-ui-variable-row items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 hover:bg-purr-highlight", !variable.enabled && "opacity-ui-muted", detailsVariableId === variable.id && "bg-purr-highlight")} onClick={() => onSelect(variable)}>
@@ -302,11 +311,9 @@ function ScopeTable({ variables, scope, workspace, globalVariables, detailsVaria
   </div>;
 }
 
-function StaticVariableRow({ variable, scope, workspace, globalVariables, selected, inlineDisabled, onInlineStart, onChange, onSelect, onToggle, confirmDelete, onConfirmDelete, onDelete, usages }: {
+function StaticVariableRow({ variable, validateName, selected, inlineDisabled, onInlineStart, onChange, onSelect, onToggle, confirmDelete, onConfirmDelete, onDelete, usages }: {
   variable: Extract<Variable, { kind: "static" }>;
-  scope: VariableScope;
-  workspace: Workspace;
-  globalVariables: readonly Variable[];
+  validateName: (variable: Variable) => string;
   selected: boolean;
   inlineDisabled: boolean;
   onInlineStart: () => void;
@@ -320,11 +327,16 @@ function StaticVariableRow({ variable, scope, workspace, globalVariables, select
 }) {
   const [name, setName] = useState(variable.name);
   useEffect(() => setName(variable.name), [variable.name]);
-  const candidate = { ...variable, name }; const error = validateVariableName(candidate, scope, workspace, globalVariables);
+  const candidate = { ...variable, name }; const error = validateName(candidate);
   return <div className={cn("group mb-ui-1 grid cursor-pointer grid-cols-ui-variable-row items-start gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 hover:bg-purr-highlight", !variable.enabled && "opacity-ui-muted", selected && "bg-purr-highlight")} onClick={onSelect}>
     <span className="flex h-control-sm items-center justify-center" onClick={(event) => event.stopPropagation()}><Checkbox hideLabel disabled={inlineDisabled} label={`Enable ${variable.name}`} checked={variable.enabled} onCheckedChange={onToggle} /></span>
     <div onClick={(event) => event.stopPropagation()}><Input variant="transparent" disabled={inlineDisabled} aria-label={`Variable name ${variable.name}`} aria-invalid={Boolean(error)} className="ui-focus-ring h-control-sm rounded-ui-sm px-ui-2 font-code text-syntax-property transition-colors duration-ui-fast focus:border-border-default focus:bg-purr-elevated" value={name}
-      onFocus={onInlineStart} onChange={(event) => { const next = event.target.value; setName(next); const nextVariable = { ...variable, name: next }; if (!validateVariableName(nextVariable, scope, workspace, globalVariables)) onChange(nextVariable); }} />
+      onFocus={onInlineStart} onChange={(event) => setName(event.target.value)}
+      onBlur={() => { if (!error && name.trim() !== variable.name) onChange({ ...variable, name: name.trim() }); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !error) { event.preventDefault(); event.currentTarget.blur(); }
+        if (event.key === "Escape") { event.preventDefault(); setName(variable.name); }
+      }} />
       {error ? <p role="alert" className="mb-ui-0 mt-ui-1 text-ui-xs text-accent-red">{error}</p> : null}</div>
     <Input variant="transparent" disabled={inlineDisabled} aria-label={`Variable value ${variable.name}`} className="ui-focus-ring h-control-sm rounded-ui-sm px-ui-2 font-code transition-colors duration-ui-fast focus:border-border-default focus:bg-purr-elevated" type={variable.sensitive ? "password" : "text"} value={variable.value}
       onClick={(event) => event.stopPropagation()} onFocus={onInlineStart} onChange={(event) => onChange({ ...variable, value: event.target.value, loaded: true })} />

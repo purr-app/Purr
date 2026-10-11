@@ -945,3 +945,25 @@ for (const method of ["shortcut", "close button"] as const) {
     await expect(page.getByRole("heading", { name: "Nothing is open" })).toBeVisible();
   });
 }
+
+test("renaming an environment variable updates request snapshots and sibling environments", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("{{base}}/saved");
+  await saveDocument(page, "Variable references");
+  await page.getByLabel("Request URL", { exact: true }).fill("{{base}}/working");
+  await createEnvironment(page, "Local rename", { base: "https://local.example" });
+  await createEnvironment(page, "Production rename", { base: "https://production.example" });
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  const scopes = page.getByRole("navigation", { name: "Variable scopes" });
+  await scopes.getByRole("button", { name: "Production rename", exact: true }).click();
+  const name = page.getByLabel("Variable name base", { exact: true });
+  await name.fill("endpoint");
+  await name.press("Enter");
+  await expect(page.getByLabel("Variable name endpoint", { exact: true })).toHaveValue("endpoint");
+  await scopes.getByRole("button", { name: "Local rename", exact: true }).click();
+  await expect(page.getByLabel("Variable name endpoint", { exact: true })).toHaveValue("endpoint");
+  await page.getByRole("tablist", { name: "Documents", exact: true }).getByRole("tab", { name: /Variable references/ }).click();
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("{{endpoint}}/working");
+  await saved(page); await page.reload();
+  await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("{{endpoint}}/working");
+});

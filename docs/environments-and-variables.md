@@ -186,3 +186,20 @@ search fields and numeric controls remain ordinary inputs. An explicit
 `TemplateVariablePopover` overrides the inherited behavior without nesting menus.
 The context contains definitions, not a resolver: previews show only non-secret
 static values, never dynamic results or secret-backed values.
+
+### Renaming variables
+
+Saving a variable name (or committing an inline name with Enter/blur) refactors
+complete `{{name}}` references across the workspace, including encoded URL query
+templates, disabled rows, inactive body/auth modes, GraphQL operations, schema
+connection endpoints/headers/auth, shared settings, and static-variable templates.
+Same-name workspace/environment overrides are renamed together so changing the
+active environment preserves the reference. A conflicting name in any affected
+scope blocks the edit. Global renames update references in every loaded workspace
+and are checked against their variable namespaces.
+
+Saved request baselines and working copies are refactored independently; an
+unrelated unsaved edit remains unsaved. Immutable execution history, response
+snapshots, file contents, opaque extension configuration, IDs and secret references
+are unchanged. Dynamic cache entries are invalidated. Secrets are never resolved
+as part of the rename operation.
