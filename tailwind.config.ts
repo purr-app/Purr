@@ -127,6 +127,7 @@ export default {
         "ui-traffic-lights": "var(--workspace-traffic-lights-width)",
         "ui-workspace-menu": "var(--workspace-menu-width)",
         "ui-workspace-selector-menu": "var(--workspace-selector-menu-width)",
+        "ui-environment-selector": "var(--environment-selector-max-width)",
         "ui-variable-popover": "var(--variable-popover-width)",
         "ui-application-menu": "var(--application-menu-width)",
         "ui-history-popover": "var(--history-popover-width)",

@@ -57,26 +57,29 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
         </PopoverContent>
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />
-      <Popover open={environmentOpen} onOpenChange={setEnvironmentOpen}>
-        <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 w-full justify-start" title={environment?.name ?? "No environment"} aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
-        <PopoverContent align="start" className={menuClass} aria-label="Environments">
-          <Button variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={!environment} onClick={() => { onEnvironment(null); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", environment && "invisible")} />No environment</Button>
-          <div className="max-h-ui-variable-list overflow-y-auto">
-            {workspace.environments.map((item) => <Button key={item.id} variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={item.id === environment?.id} onClick={() => { onEnvironment(item.id); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", item.id !== environment?.id && "invisible")} /><span className="min-w-0 break-words">{item.name}</span></Button>)}
-          </div>
+      <div className="flex min-w-0 items-center gap-ui-1">
+        <Popover open={environmentOpen} onOpenChange={setEnvironmentOpen}>
+          <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 max-w-ui-environment-selector justify-start" title={environment?.name ?? "No environment"} aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
+          <PopoverContent align="start" className={menuClass} aria-label="Environments">
+            <Button variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={!environment} onClick={() => { onEnvironment(null); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", environment && "invisible")} />No environment</Button>
+            <div className="max-h-ui-variable-list overflow-y-auto">
+              {workspace.environments.map((item) => <Button key={item.id} variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={item.id === environment?.id} onClick={() => { onEnvironment(item.id); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", item.id !== environment?.id && "invisible")} /><span className="min-w-0 break-words">{item.name}</span></Button>)}
+
+      </div>
           <div className="mt-ui-1 border-t border-border-subtle pt-ui-1">
             <Button variant="ghost" className={rowClass} onClick={() => { setEnvironmentOpen(false); onNewEnvironment(); }}><Plus className="size-ui-4" />New environment</Button>
             {environment && <Button variant="ghost" className={rowClass} onClick={() => { setEnvironmentOpen(false); onEditEnvironment(); }}><Settings2 className="size-ui-4" />Edit environment<KbdGroup keys={keyboardShortcuts.editEnvironment.keys} /></Button>}
           </div>
         </PopoverContent>
       </Popover>
-      <Button variant="ghost" size="sm" className={cn("font-code", variablesActive && "bg-purr-highlight text-content-primary")} aria-label="Open variables" title="Variables: inspect effective values and dependencies" aria-pressed={variablesActive} onClick={onVariables}>
+      <Button variant="ghost" size="sm" className={cn("shrink-0 font-code", variablesActive && "bg-purr-highlight text-content-primary")} aria-label="Open variables" title="Variables: inspect effective values and dependencies" aria-pressed={variablesActive} onClick={onVariables}>
         <Braces className="size-ui-3-5 text-action-brand" />Variables
       </Button>
-      <Button id="request-cookies-button" variant="ghost" size="icon" className={cn(cookiesActive && "bg-purr-highlight text-content-primary")} aria-label={`Cookies ${cookieCount}`} title="Workspace cookies" aria-controls="active-document-panel" aria-pressed={cookiesActive} onClick={onCookies}>
+      <Button id="request-cookies-button" variant="ghost" size="icon" className={cn("shrink-0", cookiesActive && "bg-purr-highlight text-content-primary")} aria-label={`Cookies ${cookieCount}`} title="Workspace cookies" aria-controls="active-document-panel" aria-pressed={cookiesActive} onClick={onCookies}>
         <CookieIcon className="size-ui-3-5 text-action-brand" />
         {cookieCount > 0 ? <span className="sr-only">{cookieCount} stored</span> : null}
       </Button>
+      </div>
     </div>
     <Button variant="secondary" size="sm" className="min-w-0 justify-between" onClick={onPalette} aria-label="Open command palette" title="Search documents and commands · Mod+K">
       <Search className="size-ui-3-5 shrink-0 text-content-tertiary" /><span className="truncate">{settingsActive ? "Workspace settings" : variablesActive ? "Variables" : cookiesActive ? "Cookies" : document ? getDocumentDisplayName(document) : "Search documents and commands"}</span><KbdGroup keys={["mod", "k"]} />

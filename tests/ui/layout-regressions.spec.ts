@@ -86,24 +86,39 @@ test("variable definition disables inline edits until it closes", async ({ page 
   await expect(page.getByLabel("Variable value base_url", { exact: true })).toHaveValue("https://updated.example.com");
 });
 
-test("workspace and environment names do not move adjacent toolbar controls", async ({ page }) => {
+test("environment width follows its name up to a cap with Variables immediately beside it", async ({ page }) => {
+  await page.setViewportSize({ width: 1560, height: 950 });
   await page.goto("/");
   const environment = page.getByRole("button", { name: "Select environment" });
   const variables = page.getByRole("button", { name: "Open variables" });
   const before = await environment.boundingBox();
-  const variablesBefore = await variables.boundingBox();
   await page.getByRole("button", { name: "Select workspace" }).click();
   await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
   await page.getByLabel("Workspace name", { exact: true }).fill("Long workspace name ".repeat(6));
   expect(await environment.boundingBox()).toEqual(before);
-  expect(await variables.boundingBox()).toEqual(variablesBefore);
   const workspaceBefore = await page.getByRole("button", { name: "Select workspace" }).boundingBox();
   await environment.click();
   await page.getByRole("button", { name: "New environment", exact: true }).click();
-  await page.getByRole("dialog", { name: "New environment" }).getByLabel("Environment name", { exact: true }).fill("Long environment ".repeat(7));
+  await page.getByRole("dialog", { name: "New environment" }).getByLabel("Environment name", { exact: true }).fill("Local");
   await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
+  const short = (await environment.boundingBox())!;
+  expect(short.width).toBeLessThan(before!.width);
+  let adjacent = (await variables.boundingBox())!;
+  expect(adjacent.x - short.x - short.width).toBeLessThanOrEqual(4);
+  await page.getByLabel("Environment name", { exact: true }).fill("Long environment ".repeat(7));
+  await page.getByRole("heading", { name: "Variables", exact: true }).click();
+  const long = (await environment.boundingBox())!;
+  expect(long.width).toBeGreaterThan(short.width);
+  expect(long.width).toBeLessThanOrEqual(192);
+  adjacent = (await variables.boundingBox())!;
+  expect(adjacent.x - long.x - long.width).toBeLessThanOrEqual(4);
   expect(await page.getByRole("button", { name: "Select workspace" }).boundingBox()).toEqual(workspaceBefore);
-  expect(await variables.boundingBox()).toEqual(variablesBefore);
+  await page.setViewportSize({ width: 1000, height: 700 });
+  const narrowEnvironment = (await environment.boundingBox())!;
+  const narrowVariables = (await variables.boundingBox())!;
+  expect(narrowEnvironment.width).toBeGreaterThan(0);
+  expect(narrowVariables.x - narrowEnvironment.x - narrowEnvironment.width).toBeLessThanOrEqual(4);
+  await expect(variables).toBeVisible();
 });
 
 test("workspace deletion stays at the bottom of General settings", async ({ page }) => {

@@ -191,6 +191,7 @@
     --workspace-traffic-lights-width: 4.5rem;
     --workspace-menu-width: 14rem;
     --workspace-selector-menu-width: 26rem;
+    --environment-selector-max-width: 12rem;
     --application-menu-width: 18rem;
     --history-popover-width: 18rem;
     --context-menu-width: 12rem;
@@ -479,7 +480,7 @@
   }
 
   .ui-workspace-controls {
-    grid-template-columns: minmax(0, 1fr) var(--space-3) minmax(0, 1fr) max-content max-content;
+    grid-template-columns: minmax(0, 1fr) var(--space-3) minmax(0, 2fr);
   }
 
   .ui-workspace-header {
