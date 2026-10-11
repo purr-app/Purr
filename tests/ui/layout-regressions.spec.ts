@@ -43,3 +43,28 @@ test("workspace menus wrap long names and keep the creation submenu on screen", 
   await submenu.getByRole("menuitem", { name: "New empty" }).click();
   await expect(page.getByRole("dialog", { name: "New workspace", exact: true })).toBeVisible();
 });
+
+test("shared authentication edits in place and preserves profile order", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  await page.getByRole("tab", { name: "Shared auth", exact: true }).click();
+  for (const name of ["First", "Second", "Third"]) {
+    await page.getByRole("button", { name: "Add shared auth" }).click();
+    await page.getByLabel("Auth name", { exact: true }).fill(name);
+    await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+    await page.getByLabel("Bearer token", { exact: true }).fill("{{token}}");
+    await page.getByRole("button", { name: "Save authentication" }).click();
+  }
+  await page.getByRole("button", { name: "Edit Second", exact: true }).click();
+  const editor = page.getByRole("group", { name: "Edit authentication Second", exact: true });
+  const first = (await page.getByRole("button", { name: "Edit First" }).boundingBox())!;
+  const third = (await page.getByRole("button", { name: "Edit Third" }).boundingBox())!;
+  const box = (await editor.boundingBox())!;
+  expect(box.y).toBeGreaterThan(first.y);
+  expect(box.y + box.height).toBeLessThan(third.y);
+  await editor.getByLabel("Auth name", { exact: true }).fill("Renamed");
+  await page.getByRole("button", { name: "Save authentication" }).click();
+  await expect(page.getByRole("button", { name: /^Edit (First|Renamed|Third)$/ })).toHaveText(["", "", ""]);
+  expect(await page.getByRole("button", { name: /^Edit (First|Renamed|Third)$/ }).evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")))).toEqual(["Edit First", "Edit Renamed", "Edit Third"]);
+});
