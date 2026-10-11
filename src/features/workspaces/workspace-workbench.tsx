@@ -1,3 +1,4 @@
+import { TemplateVariableProvider } from "../../shared/components/ui/template-variable-context";
 import { ConnectionStatus } from "../graphql/components/schema-connection-status";
 import { SelectField } from "../../shared/components/ui/select-field";
 import { ResponseViewer } from "../request-workbench/components/response-viewer";
@@ -773,6 +774,7 @@ export function WorkspaceWorkbench() {
             definitions={requestConfig.integrations}
             authContext={{ variables, workspaceProfiles: requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
             addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
+          <TemplateVariableProvider value={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
           {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             schemaConnections={requestConfig.schemaConnections} defaultGraphqlSchemaId={workspace.defaultGraphqlSchemaId}
@@ -931,6 +933,7 @@ export function WorkspaceWorkbench() {
               pasteTargetRef={emptyPasteTarget}
             />}
           </TabStateProvider>
+          </TemplateVariableProvider>
           </WorkspaceIntegrationsProvider>
         </div>
       </div>

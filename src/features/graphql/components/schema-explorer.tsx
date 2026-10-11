@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import { getIntrospectionQuery, getNamedType, introspectionFromSchema, isCompositeType, isEnumType, isInputObjectType, isInterfaceType, isListType, isNonNullType, isObjectType, isScalarType, isUnionType, print, printType, type GraphQLField, type GraphQLInputField, type GraphQLNamedType, type GraphQLSchema } from "graphql";
 import { ChevronDown, Copy, Download, LoaderCircle, Network, PanelRightClose, PanelRightOpen, Pin, Play, RefreshCw, Search, Upload } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
+import { TemplateInput } from "../../../shared/components/ui/template-input";
 import { Input } from "../../../shared/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../shared/components/ui/popover";
 import { cn } from "../../../shared/lib/cn";
@@ -230,7 +231,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
         <Network className="size-ui-4 shrink-0 text-action-graphql" aria-hidden="true" />
         {document.source === "file" ? <Input aria-label="Schema file path" className="ui-focus-ring h-control-md min-w-0 flex-1 border-border-default bg-purr-codefield font-code text-ui-sm" value={document.schemaSource && "location" in document.schemaSource ? document.schemaSource.location ?? document.sourceLabel : document.sourceLabel}
           readOnly title="Imported schema file. Choose another file to replace it." />
-          : <Input aria-label="GraphQL schema endpoint" className="ui-focus-ring h-control-md min-w-0 flex-1 border-border-default bg-purr-codefield font-code text-ui-sm" placeholder="Enter endpoint or use {{base_url}}" value={endpoint}
+          : <TemplateInput aria-label="GraphQL schema endpoint" className="ui-focus-ring h-control-md min-w-0 flex-1 border-border-default bg-purr-codefield font-code text-ui-sm" placeholder="Enter endpoint or use {{base_url}}" value={endpoint}
             onChange={(event) => setSchemaDraft({ ...schemaDraft, url: event.target.value })} spellCheck="false" />}
         <Button variant="toolbar" size="sm" onClick={() => document.source === "file" ? upload.current?.click() : void introspect()} disabled={busy || document.source !== "file" && !endpoint.trim()}>{busy ? <LoaderCircle className="size-ui-3-5 animate-spin" /> : <RefreshCw className="size-ui-3-5 text-action-graphql" />}Reload</Button>
         {busy && <Button variant="ghost" size="sm" onClick={() => operation.current?.abort()}>Cancel fetch</Button>}
@@ -262,10 +263,10 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
           <label className="block space-y-ui-2 text-ui-xs font-medium text-content-secondary">Connection name
             <Input aria-label="Schema Connection name" className="ui-focus-ring border-border-default font-ui" placeholder="Untitled GraphQL schema" value={document.name} onChange={(event) => onChange({ name: event.target.value })} />
           </label>
-          {document.source === "file" && <label className="block space-y-ui-2 text-ui-xs font-medium text-content-secondary">Request endpoint
-            <Input aria-label="GraphQL request endpoint" className="ui-focus-ring border-border-default font-code" placeholder="Endpoint for requests using this schema" value={endpoint} onChange={(event) => setSchemaDraft({ ...schemaDraft, url: event.target.value })} />
-            <span className="block font-normal text-content-tertiary">The imported file describes the schema. Requests are sent to this endpoint.</span>
-          </label>}
+          <label className="block space-y-ui-2 text-ui-xs font-medium text-content-secondary">Request endpoint
+            <TemplateInput aria-label="GraphQL request endpoint" className="ui-focus-ring border-border-default font-code" placeholder="Endpoint for requests using this schema" value={endpoint} onChange={(event) => setSchemaDraft({ ...schemaDraft, url: event.target.value })} />
+            <span className="block font-normal text-content-tertiary">{document.source === "file" ? "The imported file describes the schema. Requests are sent to this endpoint." : "Requests and schema introspection use this endpoint."}</span>
+          </label>
           <div className="space-y-ui-2"><Checkbox label="Use as the workspace default schema" checked={isDefault} onCheckedChange={onDefaultChange} />
             <p className="m-ui-0 text-ui-xs text-content-tertiary">New GraphQL requests will use this connection. You can also change the default in Workspace settings → GraphQL.</p></div>
         </div> : settingsTab === "auth" ? <AuthEditor auth={document.auth} onAuthChange={(auth) => setSchemaDraft({ ...schemaDraft, auth })} context={context} runtime={runtime} secureStorageOnly ariaLabel="Schema authentication" idPrefix="schema" />
