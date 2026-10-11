@@ -68,3 +68,20 @@ test("shared authentication edits in place and preserves profile order", async (
   await expect(page.getByRole("button", { name: /^Edit (First|Renamed|Third)$/ })).toHaveText(["", "", ""]);
   expect(await page.getByRole("button", { name: /^Edit (First|Renamed|Third)$/ }).evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")))).toEqual(["Edit First", "Edit Renamed", "Edit Third"]);
 });
+
+test("variable definition disables inline edits until it closes", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables" }).click();
+  await page.getByRole("navigation", { name: "Variable scopes" }).getByRole("button", { name: "Workspace", exact: true }).click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("base_url");
+  await page.getByLabel("Variable value", { exact: true }).fill("https://example.com");
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await expect(page.getByLabel("Variable name base_url", { exact: true })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: "Enable base_url", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Variable value base_url", { exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Cancel variable changes" }).click();
+  await expect(page.getByLabel("Variable value base_url", { exact: true })).toBeEnabled();
+  await page.getByLabel("Variable value base_url", { exact: true }).fill("https://updated.example.com");
+  await expect(page.getByLabel("Variable value base_url", { exact: true })).toHaveValue("https://updated.example.com");
+});

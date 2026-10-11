@@ -184,7 +184,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
           {scope === "effective" ? <EffectiveTable variables={filtered} workspace={workspace} globalVariables={globalVariables} selectedId={selectedId}
               onSelect={(variable) => { onSelectionChange(variable.id); onDraftChange(null); }} onDefinition={(variable) => selectScope(definitionScope(variable, workspace, globalVariables), variable.id)} />
             : <ScopeTable variables={filtered} scope={scope} workspace={workspace} globalVariables={globalVariables}
-              detailsVariableId={activeDraft?.id ?? null} inlineDisabled={dirty} onCreate={persistStatic} onStaticChange={(variable) => persistStatic(variable, true)}
+              detailsVariableId={activeDraft?.id ?? null} inlineDisabled={showDetails} onCreate={persistStatic} onStaticChange={(variable) => persistStatic(variable, true)}
               onInlineStart={() => { onSelectionChange(null); onDraftChange(null); }} onSelect={openVariable} onToggle={toggle}
               confirmDeleteId={confirmDeleteId} onConfirmDelete={setConfirmDeleteId} onDelete={remove} documents={documents} />}
         </div>
@@ -278,17 +278,17 @@ function ScopeTable({ variables, scope, workspace, globalVariables, detailsVaria
         onSelect={() => onSelect(variable)} onToggle={(enabled) => onToggle(variable, enabled)} confirmDelete={confirmDeleteId === variable.id}
         onConfirmDelete={() => onConfirmDelete(variable.id)} onDelete={() => onDelete(variable)} usages={usages.length} />;
       return <div key={variable.id} className={cn("group mb-ui-1 grid cursor-pointer grid-cols-ui-variable-row items-center gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 hover:bg-purr-highlight", !variable.enabled && "opacity-ui-muted", detailsVariableId === variable.id && "bg-purr-highlight")} onClick={() => onSelect(variable)}>
-        <span className="flex h-control-sm items-center justify-center" onClick={(event) => event.stopPropagation()}><Checkbox hideLabel label={`Enable ${variable.name}`} checked={variable.enabled} onCheckedChange={(enabled) => onToggle(variable, enabled)} /></span>
+        <span className="flex h-control-sm items-center justify-center" onClick={(event) => event.stopPropagation()}><Checkbox hideLabel disabled={inlineDisabled} label={`Enable ${variable.name}`} checked={variable.enabled} onCheckedChange={(enabled) => onToggle(variable, enabled)} /></span>
         <span className="truncate px-ui-2 font-code text-ui-sm text-syntax-property">{variable.name}</span>
         <span className="truncate px-ui-2 font-code text-ui-sm text-content-secondary">{variableSummary(variable, workspace)}</span>
         <span className="flex items-center gap-ui-1 px-ui-2 text-ui-xs text-content-tertiary"><VariableIcon variable={variable} />{variable.sensitive ? <LockKeyhole className="size-ui-3" /> : null}{kindLabels[variable.kind]}</span>
         <span className="flex justify-end" onClick={(event) => event.stopPropagation()}>{confirmDeleteId === variable.id
-          ? <Button variant="ghost" size="xs" className="text-accent-red" title={usages.length ? `Used by ${usages.length} requests` : "Delete variable"} onClick={() => onDelete(variable)}>Confirm</Button>
-          : <Button variant="ghost" size="icon" className="text-accent-red opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label={`Delete ${variable.name}`} onClick={() => onConfirmDelete(variable.id)}><Trash2 className="size-ui-3" /></Button>}</span>
+          ? <Button variant="ghost" size="xs" className="text-accent-red" disabled={inlineDisabled} title={usages.length ? `Used by ${usages.length} requests` : "Delete variable"} onClick={() => onDelete(variable)}>Confirm</Button>
+          : <Button variant="ghost" size="icon" className="text-accent-red opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label={`Delete ${variable.name}`} disabled={inlineDisabled} onClick={() => onConfirmDelete(variable.id)}><Trash2 className="size-ui-3" /></Button>}</span>
       </div>;
     })}
     {quickOpen ? <div className="mb-ui-1 mt-ui-2 grid grid-cols-ui-variable-row items-start gap-ui-2 rounded-ui-lg border border-action-brand bg-action-brand-surface p-ui-2" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeQuick(); } }}>
-      <span className="flex h-control-sm items-center justify-center"><Checkbox hideLabel label="Enable new variable" checked={quick.enabled} onCheckedChange={(enabled) => setQuick({ ...quick, enabled })} /></span>
+      <span className="flex h-control-sm items-center justify-center"><Checkbox hideLabel disabled={inlineDisabled} label="Enable new variable" checked={quick.enabled} onCheckedChange={(enabled) => setQuick({ ...quick, enabled })} /></span>
       <div><Input ref={quickName} disabled={inlineDisabled} aria-label="New variable name" aria-invalid={Boolean(quickError)} className="ui-focus-ring h-control-sm rounded-ui-sm px-ui-2 font-code text-syntax-property" value={quick.name} placeholder="variable_name"
         onChange={(event) => setQuick({ ...quick, name: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); quickValue.current?.focus(); } }} />
         {quickError ? <p role="alert" className="mb-ui-0 mt-ui-1 text-ui-xs text-accent-red">{quickError}</p> : null}</div>
@@ -322,7 +322,7 @@ function StaticVariableRow({ variable, scope, workspace, globalVariables, select
   useEffect(() => setName(variable.name), [variable.name]);
   const candidate = { ...variable, name }; const error = validateVariableName(candidate, scope, workspace, globalVariables);
   return <div className={cn("group mb-ui-1 grid cursor-pointer grid-cols-ui-variable-row items-start gap-ui-2 rounded-ui-md px-ui-2 py-ui-1 hover:bg-purr-highlight", !variable.enabled && "opacity-ui-muted", selected && "bg-purr-highlight")} onClick={onSelect}>
-    <span className="flex h-control-sm items-center justify-center" onClick={(event) => event.stopPropagation()}><Checkbox hideLabel label={`Enable ${variable.name}`} checked={variable.enabled} onCheckedChange={onToggle} /></span>
+    <span className="flex h-control-sm items-center justify-center" onClick={(event) => event.stopPropagation()}><Checkbox hideLabel disabled={inlineDisabled} label={`Enable ${variable.name}`} checked={variable.enabled} onCheckedChange={onToggle} /></span>
     <div onClick={(event) => event.stopPropagation()}><Input variant="transparent" disabled={inlineDisabled} aria-label={`Variable name ${variable.name}`} aria-invalid={Boolean(error)} className="ui-focus-ring h-control-sm rounded-ui-sm px-ui-2 font-code text-syntax-property transition-colors duration-ui-fast focus:border-border-default focus:bg-purr-elevated" value={name}
       onFocus={onInlineStart} onChange={(event) => { const next = event.target.value; setName(next); const nextVariable = { ...variable, name: next }; if (!validateVariableName(nextVariable, scope, workspace, globalVariables)) onChange(nextVariable); }} />
       {error ? <p role="alert" className="mb-ui-0 mt-ui-1 text-ui-xs text-accent-red">{error}</p> : null}</div>
@@ -331,8 +331,8 @@ function StaticVariableRow({ variable, scope, workspace, globalVariables, select
     <Button variant="ghost" size="sm" disabled={inlineDisabled} aria-label={`Toggle ${variable.name} sensitive`} aria-pressed={variable.sensitive} className="justify-start" title={variable.sensitive ? "Encrypted in local secure storage" : "Mark as sensitive"}
       onClick={(event) => { event.stopPropagation(); onInlineStart(); onChange({ ...variable, sensitive: !variable.sensitive }); }}><LockKeyhole className={cn("size-ui-3", variable.sensitive ? "text-accent-orange" : "opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible")} />Static</Button>
     <span className="flex justify-end" onClick={(event) => event.stopPropagation()}>{confirmDelete
-      ? <Button variant="ghost" size="xs" className="text-accent-red" title={usages ? `Used by ${usages} requests` : "Delete variable"} onClick={onDelete}>Confirm</Button>
-      : <Button variant="ghost" size="icon" className="text-accent-red opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label={`Delete ${variable.name}`} onClick={onConfirmDelete}><Trash2 className="size-ui-3" /></Button>}</span>
+      ? <Button variant="ghost" size="xs" className="text-accent-red" disabled={inlineDisabled} title={usages ? `Used by ${usages} requests` : "Delete variable"} onClick={onDelete}>Confirm</Button>
+      : <Button variant="ghost" size="icon" className="text-accent-red opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label={`Delete ${variable.name}`} disabled={inlineDisabled} onClick={onConfirmDelete}><Trash2 className="size-ui-3" /></Button>}</span>
   </div>;
 }
 
