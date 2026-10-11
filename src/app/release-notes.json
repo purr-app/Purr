@@ -1,4 +1,4 @@
 {
-  "version": "0.2.1",
-  "notes": "### Patch Changes\n\n- 59a1b86: Fix a macOS window resize crash caused by over-releasing the native WebView while laying out the window controls."
+  "version": "0.2.2",
+  "notes": "### Patch Changes\n\n- a457a2a: Fix workspace layout and variable editing workflows:\n  \n  - Restore usable name, type, and value columns in multipart form-data bodies.\n  - Bound workspace/environment menus, wrap long names, and keep creation options on screen.\n  - Keep workspace positioning stable, let the environment selector fit its name up to a maximum width with Variables immediately beside it, and prevent activity-rail overlap in fullscreen.\n  - Edit shared authentication profiles in place without changing their order.\n  - Keep workspace deletion at the bottom of General settings.\n  - Bound variable hover cards and preview only non-secret static values.\n  - Disable inline variable edits while the definition editor is open.\n  - Rename variable references in saved requests, working copies, schemas, and shared settings, keeping environment overrides consistent and historical executions unchanged.\n  - Share template completion and definition navigation across GraphQL endpoints, authentication, and header editors."
 }

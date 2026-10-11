@@ -14,6 +14,22 @@
 - Control whether a request automatically sends and stores workspace cookies with independent switches.
 - Find these controls in clearly separated Settings sections, with Tracing first. Saved settings travel with the project; unsaved edits stay local.
 
+## 0.2.2
+
+### Patch Changes
+
+- a457a2a: Fix workspace layout and variable editing workflows:
+  
+  - Restore usable name, type, and value columns in multipart form-data bodies.
+  - Bound workspace/environment menus, wrap long names, and keep creation options on screen.
+  - Keep workspace positioning stable, let the environment selector fit its name up to a maximum width with Variables immediately beside it, and prevent activity-rail overlap in fullscreen.
+  - Edit shared authentication profiles in place without changing their order.
+  - Keep workspace deletion at the bottom of General settings.
+  - Bound variable hover cards and preview only non-secret static values.
+  - Disable inline variable edits while the definition editor is open.
+  - Rename variable references in saved requests, working copies, schemas, and shared settings, keeping environment overrides consistent and historical executions unchanged.
+  - Share template completion and definition navigation across GraphQL endpoints, authentication, and header editors.
+
 ## 0.2.1
 
 ### Patch Changes
