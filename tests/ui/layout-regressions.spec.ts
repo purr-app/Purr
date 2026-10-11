@@ -105,3 +105,18 @@ test("workspace and environment names do not move adjacent toolbar controls", as
   expect(await page.getByRole("button", { name: "Select workspace" }).boundingBox()).toEqual(workspaceBefore);
   expect(await variables.boundingBox()).toEqual(variablesBefore);
 });
+
+test("workspace deletion stays at the bottom of General settings", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const panel = page.locator("#workspace-settings-panel");
+  const button = panel.getByRole("button", { name: "Delete workspace", exact: true });
+  const box = (await panel.boundingBox())!;
+  const danger = (await button.boundingBox())!;
+  expect(box.y + box.height - danger.y - danger.height).toBeLessThanOrEqual(16);
+  await page.setViewportSize({ width: 1000, height: 400 });
+  await button.scrollIntoViewIfNeeded();
+  await expect(button).toBeVisible();
+  await expect(panel.getByLabel("Workspace name", { exact: true })).toBeAttached();
+});
