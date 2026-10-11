@@ -1,7 +1,7 @@
 import type { Completion, CompletionSource } from "@codemirror/autocomplete";
 import { Decoration, EditorView, MatchDecorator, ViewPlugin, hoverTooltip } from "@codemirror/view";
 
-import type { TemplateVariableActions } from "./template-variable-popover";
+import { staticVariablePreview, type TemplateVariableActions } from "./template-variable-popover";
 
 const templateMarks = new MatchDecorator({
   regexp: /{{\s*[^{}]+?\s*}}/g,
@@ -53,11 +53,18 @@ export function templateVariableHover(actions: TemplateVariableActions) {
     const name = match[1].trim();
     const variable = actions.definitions.find((candidate) => candidate.name === name);
     return { pos: match.index!, end: match.index! + match[0].length, above: true, create: () => {
-      const dom = document.createElement("div"); dom.className = "rounded-ui-md border border-border bg-purr-overlay p-ui-2 font-ui text-ui-sm text-content-secondary shadow-popover";
+      const dom = document.createElement("div"); dom.className = "ui-variable-popover rounded-ui-md border border-border bg-purr-overlay p-ui-2 font-ui text-ui-sm text-content-secondary shadow-popover";
       const title = document.createElement("div"); title.className = "font-code text-accent-orange italic";
       title.textContent = `{{${name}}}`; dom.append(title);
       const description = document.createElement("p"); description.className = "mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary";
       description.textContent = variable ? `${typeLabel(variable.kind)} variable` : "Undefined variable"; dom.append(description);
+      const value = variable && staticVariablePreview(variable);
+      if (value !== undefined) {
+        const preview = document.createElement("p");
+        preview.className = "mb-ui-0 mt-ui-2 whitespace-pre-wrap break-all font-code text-ui-xs text-content-primary";
+        preview.textContent = value || "(empty)";
+        dom.append(preview);
+      }
       const actionsRow = document.createElement("div"); actionsRow.className = "mt-ui-2 flex gap-ui-1";
       const button = (label: string, run: () => void) => { const element = document.createElement("button"); element.type = "button"; element.className = "ui-focus-ring h-control-sm rounded-ui-md px-ui-2 text-ui-xs text-content-secondary hover:bg-purr-highlight hover:text-content-primary"; element.textContent = label; element.onclick = run; actionsRow.append(element); };
       if (variable) button("Go to definition", () => actions.onOpenVariable(variable.id));
