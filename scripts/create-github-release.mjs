@@ -1,12 +1,18 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const dryRun = process.argv.includes("--dry-run");
-const unexpectedArguments = process.argv.slice(2).filter((argument) => argument !== "--dry-run");
-if (unexpectedArguments.length > 0) {
-  throw new Error("Usage: node scripts/create-github-release.mjs [--dry-run]");
+let dryRun = false;
+let assetPath;
+for (let index = 2; index < process.argv.length; index += 1) {
+  const argument = process.argv[index];
+  if (argument === "--dry-run") dryRun = true;
+  else if (argument === "--asset" && !assetPath && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
+    assetPath = process.argv[++index];
+  } else {
+    throw new Error("Usage: node scripts/create-github-release.mjs [--dry-run] [--asset path.zip]");
+  }
 }
 if (!dryRun && process.env.GITHUB_ACTIONS !== "true") {
   throw new Error("GitHub Releases may only be created by the validated GitHub Actions workflow. Use --dry-run locally.");
@@ -30,6 +36,9 @@ run("node", ["scripts/sync-release-version.mjs", "--check"]);
 const { version } = JSON.parse(readFileSync("package.json", "utf8"));
 const tag = `v${version}`;
 const target = process.env.GITHUB_SHA || run("git", ["rev-parse", "HEAD"], { capture: true });
+if (assetPath && (!assetPath.endsWith(".zip") || !existsSync(assetPath) || !statSync(assetPath).isFile() || statSync(assetPath).size === 0)) {
+  throw new Error(`Release asset must be a nonempty ZIP file: ${assetPath}`);
+}
 const remoteTag = run(
   "git",
   ["ls-remote", "origin", `refs/tags/${tag}`, `refs/tags/${tag}^{}`],
@@ -45,7 +54,8 @@ if (remoteTag) {
   }
 
   if (run("gh", ["release", "view", tag], { allowFailure: true })) {
-    process.stdout.write(`GitHub Release ${tag} already exists; nothing to do.\n`);
+    uploadMissingAsset();
+    process.stdout.write(`GitHub Release ${tag} already exists; its tag and existing assets are unchanged.\n`);
     process.exit(0);
   }
 }
@@ -65,10 +75,11 @@ try {
     "--notes-file",
     notesPath,
   ];
+  if (assetPath) args.push(assetPath);
   if (remoteTag) args.push("--verify-tag");
   else args.push("--target", target);
   if (dryRun) {
-    process.stdout.write(`Dry run: would create ${tag} at ${target} with notes from CHANGELOG.md.\n`);
+    process.stdout.write(`Dry run: would create ${tag} at ${target} with notes from CHANGELOG.md${assetPath ? ` and asset ${basename(assetPath)}` : ""}.\n`);
   } else {
     run("gh", args);
   }
@@ -78,6 +89,17 @@ try {
 
 if (!dryRun) {
   process.stdout.write(`Created immutable tag and GitHub Release ${tag} at ${target}.\n`);
+}
+
+function uploadMissingAsset() {
+  if (!assetPath) return;
+  const names = JSON.parse(run("gh", ["release", "view", tag, "--json", "assets", "--jq", "[.assets[].name]"], { capture: true }));
+  if (names.includes(basename(assetPath))) return;
+  if (dryRun) {
+    process.stdout.write(`Dry run: would upload ${basename(assetPath)} to ${tag}.\n`);
+  } else {
+    run("gh", ["release", "upload", tag, assetPath]);
+  }
 }
 
 function extractReleaseNotes(changelog, releaseVersion) {

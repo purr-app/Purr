@@ -27,6 +27,8 @@ jobs:
   validate-and-build:
     runs-on: macos-latest
     timeout-minutes: 45
+    outputs:
+      oss-asset-name: ${{ steps.oss-archive.outputs.asset-name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -59,6 +61,21 @@ jobs:
         working-directory: src-tauri
       - name: Build unsigned OSS application bundle
         run: npm run tauri -- build --bundles app --no-sign --ci
+      - name: Archive OSS application with permissions and symlinks intact
+        id: oss-archive
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          asset_name="Purr-OSS-${version}-macOS-$(uname -m).zip"
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc --keepParent src-tauri/target/release/bundle/macos/Purr.app "release-assets/$asset_name"
+          echo "asset-name=$asset_name" >> "$GITHUB_OUTPUT"
+      - name: Preserve OSS application for the release job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oss-macos-application
+          path: release-assets/*.zip
+          if-no-files-found: error
+          retention-days: 7
 
   release:
     name: Prepare or publish release
@@ -89,8 +106,15 @@ jobs:
           commit-message: "chore: release Purr"
           pr-title: "chore: release Purr"
           pr-base-branch: main
+      - name: Download the validated OSS application
+        if: steps.changesets.outputs['has-changesets'] == 'false'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: oss-macos-application
+          path: release-assets
       - name: Create version tag and GitHub Release
         if: steps.changesets.outputs['has-changesets'] == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/create-github-release.mjs
+          OSS_ASSET_NAME: ${{ needs.validate-and-build.outputs.oss-asset-name }}
+        run: node scripts/create-github-release.mjs --asset "release-assets/$OSS_ASSET_NAME"
