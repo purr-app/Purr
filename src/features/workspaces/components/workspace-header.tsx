@@ -1,5 +1,5 @@
 import { useUpdates } from "../../updates/update-context";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Braces, Check, ChevronDown, ChevronRight, Cookie as CookieIcon, FileInput, FilePlus2, Globe2, Layers, Plus, Search, Settings2 } from "lucide-react";
 import { Button } from "../../../shared/components/ui/button";
 import { KbdGroup } from "../../../shared/components/ui/kbd";
@@ -9,7 +9,6 @@ import { cn } from "../../../shared/lib/cn";
 import { RequestTabBar } from "../../request-workbench/components/request-tab-bar";
 import { getDocumentDisplayName, type Workspace, type WorkspaceStore } from "../model/workspace";
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
-import { useApplicationServices } from "../../../app/application-services-context";
 
 const menuClass = "ui-workspace-menu mt-ui-2 rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
 const rowClass = "w-full justify-start font-normal";
@@ -27,8 +26,6 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   onPalette: () => void; onView: (view: Workspace["ui"]["view"]) => void;
 }) {
   const updates = useUpdates();
-  const { runtime, lifecycle } = useApplicationServices();
-  const [fullscreen, setFullscreen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [newWorkspaceOptionsOpen, setNewWorkspaceOptionsOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
@@ -37,19 +34,8 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   const cookieCount = cookieJar.list().length;
   const environment = workspace.environments.find((item) => item.id === workspace.activeEnvironmentId);
   const document = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const nativeMac = runtime.kind === "desktop" && runtime.os === "macos";
-  useEffect(() => {
-    if (!nativeMac || !lifecycle.observeFullscreen) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void lifecycle.observeFullscreen((value) => { if (!disposed) setFullscreen(value); }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    }).catch(() => { /* Keep space for native controls if the window state is unavailable. */ });
-    return () => { disposed = true; unlisten?.(); };
-  }, [lifecycle, nativeMac]);
   return <header data-tauri-drag-region className="ui-workspace-header grid h-ui-titlebar shrink-0 items-center gap-ui-2 bg-purr-base px-ui-2">
-    <div className={cn("ui-workspace-controls grid min-w-0 items-center gap-ui-1", nativeMac && !fullscreen && "pl-ui-traffic-lights")}>
+    <div className="ui-workspace-controls grid min-w-0 items-center gap-ui-1 pl-ui-traffic-lights">
       <Popover open={workspaceOpen} onOpenChange={(open) => { setWorkspaceOpen(open); if (!open) setNewWorkspaceOptionsOpen(false); }}>
         <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 w-full justify-start" title={workspace.name} aria-label="Select workspace"><Layers className="size-ui-3-5 shrink-0 text-action-brand" /><span className="truncate">{workspace.name}</span><ChevronDown className="size-ui-3 shrink-0" /></Button></PopoverTrigger>
         <PopoverContent align="start" className={menuClass} aria-label="Workspaces" onOpenAutoFocus={(event) => event.preventDefault()}>
