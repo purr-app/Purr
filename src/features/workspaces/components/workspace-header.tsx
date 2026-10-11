@@ -49,9 +49,9 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
     return () => { disposed = true; unlisten?.(); };
   }, [lifecycle, nativeMac]);
   return <header data-tauri-drag-region className="ui-workspace-header grid h-ui-titlebar shrink-0 items-center gap-ui-2 bg-purr-base px-ui-2">
-    <div className={cn("flex min-w-0 items-center gap-ui-1", nativeMac && !fullscreen && "pl-ui-traffic-lights")}>
+    <div className={cn("ui-workspace-controls grid min-w-0 items-center gap-ui-1", nativeMac && !fullscreen && "pl-ui-traffic-lights")}>
       <Popover open={workspaceOpen} onOpenChange={(open) => { setWorkspaceOpen(open); if (!open) setNewWorkspaceOptionsOpen(false); }}>
-        <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 shrink" aria-label="Select workspace"><Layers className="size-ui-3-5 shrink-0 text-action-brand" /><span className="truncate">{workspace.name}</span><ChevronDown className="size-ui-3 shrink-0" /></Button></PopoverTrigger>
+        <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 w-full justify-start" title={workspace.name} aria-label="Select workspace"><Layers className="size-ui-3-5 shrink-0 text-action-brand" /><span className="truncate">{workspace.name}</span><ChevronDown className="size-ui-3 shrink-0" /></Button></PopoverTrigger>
         <PopoverContent align="start" className={menuClass} aria-label="Workspaces" onOpenAutoFocus={(event) => event.preventDefault()}>
           <Popover open={newWorkspaceOptionsOpen} onOpenChange={setNewWorkspaceOptionsOpen}>
             <PopoverTrigger asChild>
@@ -72,7 +72,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />
       <Popover open={environmentOpen} onOpenChange={setEnvironmentOpen}>
-        <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 shrink" aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
+        <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 w-full justify-start" title={environment?.name ?? "No environment"} aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
         <PopoverContent align="start" className={menuClass} aria-label="Environments">
           <Button variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={!environment} onClick={() => { onEnvironment(null); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", environment && "invisible")} />No environment</Button>
           <div className="max-h-ui-variable-list overflow-y-auto">

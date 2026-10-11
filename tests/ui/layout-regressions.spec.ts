@@ -85,3 +85,23 @@ test("variable definition disables inline edits until it closes", async ({ page 
   await page.getByLabel("Variable value base_url", { exact: true }).fill("https://updated.example.com");
   await expect(page.getByLabel("Variable value base_url", { exact: true })).toHaveValue("https://updated.example.com");
 });
+
+test("workspace and environment names do not move adjacent toolbar controls", async ({ page }) => {
+  await page.goto("/");
+  const environment = page.getByRole("button", { name: "Select environment" });
+  const variables = page.getByRole("button", { name: "Open variables" });
+  const before = await environment.boundingBox();
+  const variablesBefore = await variables.boundingBox();
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  await page.getByLabel("Workspace name", { exact: true }).fill("Long workspace name ".repeat(6));
+  expect(await environment.boundingBox()).toEqual(before);
+  expect(await variables.boundingBox()).toEqual(variablesBefore);
+  const workspaceBefore = await page.getByRole("button", { name: "Select workspace" }).boundingBox();
+  await environment.click();
+  await page.getByRole("button", { name: "New environment", exact: true }).click();
+  await page.getByRole("dialog", { name: "New environment" }).getByLabel("Environment name", { exact: true }).fill("Long environment ".repeat(7));
+  await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Save", exact: true }).click();
+  expect(await page.getByRole("button", { name: "Select workspace" }).boundingBox()).toEqual(workspaceBefore);
+  expect(await variables.boundingBox()).toEqual(variablesBefore);
+});

@@ -478,6 +478,10 @@
     box-shadow: none;
   }
 
+  .ui-workspace-controls {
+    grid-template-columns: minmax(0, 1fr) var(--space-3) minmax(0, 1fr) max-content max-content;
+  }
+
   .ui-workspace-header {
     position: relative;
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1fr);
