@@ -11,7 +11,7 @@ import { getDocumentDisplayName, type Workspace, type WorkspaceStore } from "../
 import type { SessionCookieJar } from "../../request-workbench/model/cookie-jar";
 import { useApplicationServices } from "../../../app/application-services-context";
 
-const menuClass = "mt-ui-2 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
+const menuClass = "ui-workspace-menu mt-ui-2 rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover";
 const rowClass = "w-full justify-start font-normal";
 
 export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, settingsActive, variablesActive, onCookies, onVariables, onWorkspace, onNewWorkspace, onImportWorkspace, onRequestSettings, onEnvironment, onEditEnvironment, onNewEnvironment, onPalette, onView }: {
@@ -32,6 +32,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [newWorkspaceOptionsOpen, setNewWorkspaceOptionsOpen] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
+  const closeWorkspaceMenu = () => { setWorkspaceOpen(false); setNewWorkspaceOptionsOpen(false); };
   useSyncExternalStore(cookieJar.subscribe, cookieJar.getVersion);
   const cookieCount = cookieJar.list().length;
   const environment = workspace.environments.find((item) => item.id === workspace.activeEnvironmentId);
@@ -52,28 +53,30 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
       <Popover open={workspaceOpen} onOpenChange={(open) => { setWorkspaceOpen(open); if (!open) setNewWorkspaceOptionsOpen(false); }}>
         <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 shrink" aria-label="Select workspace"><Layers className="size-ui-3-5 shrink-0 text-action-brand" /><span className="truncate">{workspace.name}</span><ChevronDown className="size-ui-3 shrink-0" /></Button></PopoverTrigger>
         <PopoverContent align="start" className={menuClass} aria-label="Workspaces" onOpenAutoFocus={(event) => event.preventDefault()}>
-          <div className="relative" onPointerEnter={() => setNewWorkspaceOptionsOpen(true)} onPointerLeave={() => setNewWorkspaceOptionsOpen(false)}>
-            <Button variant="ghost" className={rowClass} aria-haspopup="menu" aria-expanded={newWorkspaceOptionsOpen} onClick={() => setNewWorkspaceOptionsOpen(true)}><Plus className="size-ui-4" />New workspace<ChevronRight className="ml-auto size-ui-3" /></Button>
-            <div role="menu" aria-label="New workspace options" aria-hidden={!newWorkspaceOptionsOpen} className={cn("absolute left-full top-0 z-50 min-w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover transition-opacity duration-ui-fast", newWorkspaceOptionsOpen ? "visible opacity-100" : "invisible opacity-0")}>
-              <Button role="menuitem" variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onNewWorkspace(); }}><FilePlus2 className="size-ui-4" />New empty</Button>
-              <Button role="menuitem" variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); onImportWorkspace(); }}><FileInput className="size-ui-4" />Import</Button>
-            </div>
-          </div>
-          <div className="my-ui-1 max-h-ui-variable-list overflow-y-auto border-y border-border-subtle py-ui-1">
-            {store.workspaces.map((item) => <Button key={item.id} variant="ghost" className={rowClass} aria-pressed={item.id === workspace.id} onClick={() => { onWorkspace(item.id); setWorkspaceOpen(false); }}>
-              <Check className={cn("size-ui-4 text-action-brand", item.id !== workspace.id && "invisible")} /><span className="max-w-ui-document-tab truncate">{item.name}</span>
+          <Popover open={newWorkspaceOptionsOpen} onOpenChange={setNewWorkspaceOptionsOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" className={rowClass} aria-haspopup="menu" onClick={(event) => { event.preventDefault(); setNewWorkspaceOptionsOpen(true); }} onPointerEnter={() => setNewWorkspaceOptionsOpen(true)}><Plus className="size-ui-4" />New workspace<ChevronRight className="ml-auto size-ui-3" /></Button>
+            </PopoverTrigger>
+            <PopoverContent side="right" align="start" collisionPadding={8} sideOffset={0} role="menu" aria-label="New workspace options" onOpenAutoFocus={(event) => event.preventDefault()} onPointerLeave={() => setNewWorkspaceOptionsOpen(false)} className="w-ui-workspace-menu rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
+              <Button role="menuitem" variant="ghost" className={rowClass} onClick={() => { closeWorkspaceMenu(); onNewWorkspace(); }}><FilePlus2 className="size-ui-4" />New empty</Button>
+              <Button role="menuitem" variant="ghost" className={rowClass} onClick={() => { closeWorkspaceMenu(); onImportWorkspace(); }}><FileInput className="size-ui-4" />Import</Button>
+            </PopoverContent>
+          </Popover>
+          <div onPointerEnter={() => setNewWorkspaceOptionsOpen(false)} className="my-ui-1 max-h-ui-variable-list overflow-y-auto border-y border-border-subtle py-ui-1">
+            {store.workspaces.map((item) => <Button key={item.id} variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={item.id === workspace.id} onClick={() => { onWorkspace(item.id); closeWorkspaceMenu(); }}>
+              <Check className={cn("size-ui-4 shrink-0 text-action-brand", item.id !== workspace.id && "invisible")} /><span className="min-w-0 break-words">{item.name}</span>
             </Button>)}
           </div>
-          <Button variant="ghost" className={rowClass} onClick={() => { setWorkspaceOpen(false); updates.leaveTab(); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
+          <Button variant="ghost" className={rowClass} onClick={() => { closeWorkspaceMenu(); updates.leaveTab(); onRequestSettings(); }}><Settings2 className="size-ui-4" />Workspace settings</Button>
         </PopoverContent>
       </Popover>
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />
       <Popover open={environmentOpen} onOpenChange={setEnvironmentOpen}>
         <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 shrink" aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
         <PopoverContent align="start" className={menuClass} aria-label="Environments">
-          <Button variant="ghost" className={rowClass} aria-pressed={!environment} onClick={() => { onEnvironment(null); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 text-action-brand", environment && "invisible")} />No environment</Button>
+          <Button variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={!environment} onClick={() => { onEnvironment(null); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", environment && "invisible")} />No environment</Button>
           <div className="max-h-ui-variable-list overflow-y-auto">
-            {workspace.environments.map((item) => <Button key={item.id} variant="ghost" className={rowClass} aria-pressed={item.id === environment?.id} onClick={() => { onEnvironment(item.id); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 text-action-brand", item.id !== environment?.id && "invisible")} /><span className="max-w-ui-document-tab truncate">{item.name}</span></Button>)}
+            {workspace.environments.map((item) => <Button key={item.id} variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={item.id === environment?.id} onClick={() => { onEnvironment(item.id); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", item.id !== environment?.id && "invisible")} /><span className="min-w-0 break-words">{item.name}</span></Button>)}
           </div>
           <div className="mt-ui-1 border-t border-border-subtle pt-ui-1">
             <Button variant="ghost" className={rowClass} onClick={() => { setEnvironmentOpen(false); onNewEnvironment(); }}><Plus className="size-ui-4" />New environment</Button>

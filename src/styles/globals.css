@@ -189,6 +189,7 @@
     --workspace-titlebar-height: 2.5rem;
     --workspace-traffic-lights-width: 4.5rem;
     --workspace-menu-width: 14rem;
+    --workspace-selector-menu-width: 26rem;
     --application-menu-width: 18rem;
     --history-popover-width: 18rem;
     --context-menu-width: 12rem;
@@ -386,6 +387,11 @@
   .ui-integration-dialog[open] { display: flex; flex-direction: column; }
   .ui-integration-dialog > :first-child { flex-shrink: 0; }
   .ui-integration-content { flex: 1; min-height: 0; }
+  .ui-workspace-menu {
+    width: var(--workspace-selector-menu-width);
+    max-width: var(--radix-popover-content-available-width);
+  }
+
   .ui-popover-match-anchor {
     width: var(--radix-popover-trigger-width);
   }

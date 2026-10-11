@@ -21,3 +21,25 @@ test("multipart fields keep usable name, type, and value columns", async ({ page
   await page.getByRole("option", { name: "File", exact: true }).click();
   await expect(row.locator('button[aria-label="Choose file for message"]')).toBeVisible();
 });
+
+test("workspace menus wrap long names and keep the creation submenu on screen", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  const name = "Workspace ".repeat(12) + "12345";
+  await page.getByLabel("Workspace name", { exact: true }).fill(name);
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  const menu = page.getByRole("dialog", { name: "Workspaces", exact: true });
+  expect((await menu.boundingBox())!.width).toBeLessThanOrEqual(416);
+  const label = menu.getByRole("button", { name, exact: true }).locator("span");
+  await expect(label).toHaveText(name);
+  expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.getByRole("button", { name: "New workspace", exact: true }).click();
+  const submenu = page.getByRole("menu", { name: "New workspace options" });
+  await expect(submenu).toBeVisible();
+  const box = (await submenu.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  await submenu.getByRole("menuitem", { name: "New empty" }).click();
+  await expect(page.getByRole("dialog", { name: "New workspace", exact: true })).toBeVisible();
+});
