@@ -729,3 +729,36 @@ test("connection OAuth acquisition preserves concurrent endpoint edits and is re
   await expect.poll(() => page.evaluate(() => (window as any).__requests.length)).toBe(2);
   expect(await page.evaluate(() => (window as any).__requests[1].headers)).toContainEqual(["Authorization", "Bearer connection-oauth"]);
 });
+
+test("schema endpoints and settings inherit template completion and resolve on introspection", async ({ page }) => {
+  await mockDesktop(page); await page.goto("/");
+  await createEnvironmentVariable(page);
+  await createSchema(page);
+  const endpoint = page.getByLabel("GraphQL schema endpoint", { exact: true });
+  await endpoint.fill("https://example.com/{{cust");
+  await page.keyboard.press("Enter");
+  await expect(endpoint).toHaveValue("https://example.com/{{customer_id}}");
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect(page.getByRole("img", { name: "Loaded", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__requests.at(-1).url)).toBe("https://example.com/42");
+  await schemaSettings(page);
+  const settingsEndpoint = page.getByLabel("GraphQL request endpoint", { exact: true });
+  await settingsEndpoint.fill("https://example.com/{{cust");
+  await page.keyboard.press("Enter");
+  await expect(settingsEndpoint).toHaveValue("https://example.com/{{customer_id}}");
+  await page.getByRole("tab", { name: "Authentication", exact: true }).click();
+  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  const token = page.getByLabel("Bearer token", { exact: true });
+  await token.fill("{{cust"); await page.keyboard.press("Enter");
+  await expect(token).toHaveValue("{{customer_id}}");
+  await page.getByRole("tab", { name: "Introspection headers", exact: true }).click();
+  await page.getByLabel("Header-name", { exact: true }).last().fill("X-Customer");
+  const header = page.getByLabel("Value for X-Customer", { exact: true });
+  await header.fill("{{cust"); await page.keyboard.press("Enter");
+  await expect(header).toHaveValue("{{customer_id}}");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__requests.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__requests.at(-1).headers)).toContainEqual(["X-Customer", "42"]);
+  expect(await page.evaluate(() => (window as any).__requests.at(-1).headers)).toContainEqual(["Authorization", "Bearer 42"]);
+});

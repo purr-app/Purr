@@ -471,8 +471,8 @@ function KeyValueRow({
     <div
       data-key-value-row-id={entry.id}
       className={cn(
-        "group flex min-w-0 items-center gap-ui-2 rounded-ui-md px-ui-1 transition-colors duration-ui-fast hover:bg-purr-surface",
-        multipart && "ui-multipart-row",
+        "group min-w-0 items-center gap-ui-2 rounded-ui-md px-ui-1 transition-colors duration-ui-fast hover:bg-purr-surface",
+        multipart ? "ui-multipart-row" : "flex",
         isDragging && "opacity-ui-inactive",
         isDropTarget && "ui-drop-indicator",
       )}

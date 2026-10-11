@@ -1,3 +1,4 @@
+import { useTemplateVariableActions } from "../../../shared/components/ui/template-variable-context";
 import { useId } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { SecretInput } from "../../../shared/components/ui/secret-input";
@@ -12,6 +13,8 @@ export function AuthVariableField({ label, value, placeholder, secret = false, s
   variableActions?: TemplateVariableActions;
   onChange: (value: string) => void;
 }) {
+  const inheritedActions = useTemplateVariableActions();
+  variableActions ??= inheritedActions;
   const id = useId();
   const credential = secret || secretVariablesOnly;
   const actions = variableActions && credential ? {

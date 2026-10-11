@@ -167,6 +167,7 @@
     --setting-control-width: 9rem;
     --method-popover-width: 9rem;
     --validation-popover-width: 20rem;
+    --variable-popover-width: 22rem;
     --body-editor-min-height: var(--integration-dialog-min-height);
     --body-editor-max-height: 42rem;
     --response-viewer-min-height: var(--integration-dialog-min-height);
@@ -189,6 +190,8 @@
     --workspace-titlebar-height: 2.5rem;
     --workspace-traffic-lights-width: 4.5rem;
     --workspace-menu-width: 14rem;
+    --workspace-selector-menu-width: 26rem;
+    --environment-selector-max-width: 12rem;
     --application-menu-width: 18rem;
     --history-popover-width: 18rem;
     --context-menu-width: 12rem;
@@ -386,6 +389,19 @@
   .ui-integration-dialog[open] { display: flex; flex-direction: column; }
   .ui-integration-dialog > :first-child { flex-shrink: 0; }
   .ui-integration-content { flex: 1; min-height: 0; }
+  .ui-workspace-menu {
+    width: var(--workspace-selector-menu-width);
+    max-width: var(--radix-popover-content-available-width);
+  }
+
+  .ui-variable-popover {
+    width: var(--variable-popover-width);
+    max-width: min(var(--variable-popover-width), calc(100vw - var(--space-4)));
+    max-height: var(--variable-list-max-height);
+    overflow: auto;
+    overflow-wrap: anywhere;
+  }
+
   .ui-popover-match-anchor {
     width: var(--radix-popover-trigger-width);
   }
@@ -461,6 +477,10 @@
   .ui-editor-surface:focus-visible {
     outline: none;
     box-shadow: none;
+  }
+
+  .ui-workspace-controls {
+    grid-template-columns: minmax(0, 1fr) var(--space-3) minmax(0, 2fr);
   }
 
   .ui-workspace-header {

@@ -175,3 +175,31 @@ hover information uses a viewport-level tooltip to avoid panel clipping.
 ### Postman environment import
 
 The Import button beside Environments opens the shared native import dialog, even when no environments exist. It adds one environment, renames duplicate environment names with numeric suffixes, and opens the imported scope without changing the active execution environment. Import is disabled while the variable editor has an unsaved draft. Enabled flags and secret references survive save/reload; secret values never enter YAML or diagnostics. See [Postman import](imports-and-integrations.md#postman-mapping-and-environment-import) for supported mappings and warnings.
+
+### Shared template field support
+
+The workbench provides read-only variable metadata and definition actions through
+`TemplateVariableProvider`. Shared `TemplateInput` fields inherit completion,
+hover previews and definition navigation automatically, including fields mounted
+in dialogs. Use this primitive for template-capable protocol values; plain names,
+search fields and numeric controls remain ordinary inputs. An explicit
+`TemplateVariablePopover` overrides the inherited behavior without nesting menus.
+The context contains definitions, not a resolver: previews show only non-secret
+static values, never dynamic results or secret-backed values.
+
+### Renaming variables
+
+Saving a variable name (or committing an inline name with Enter/blur) refactors
+complete `{{name}}` references across the workspace, including encoded URL query
+templates, disabled rows, inactive body/auth modes, GraphQL operations, schema
+connection endpoints/headers/auth, shared settings, and static-variable templates.
+Same-name workspace/environment overrides are renamed together so changing the
+active environment preserves the reference. A conflicting name in any affected
+scope blocks the edit. Global renames update references in every loaded workspace
+and are checked against their variable namespaces.
+
+Saved request baselines and working copies are refactored independently; an
+unrelated unsaved edit remains unsaved. Immutable execution history, response
+snapshots, file contents, opaque extension configuration, IDs and secret references
+are unchanged. Dynamic cache entries are invalidated. Secrets are never resolved
+as part of the rename operation.

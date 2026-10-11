@@ -43,11 +43,14 @@ for (const initialFullscreen of [false, true]) test(`macOS toolbar follows nativ
   await page.goto("/");
   const workspaceControls = page.locator("header > div").first();
   await expect(page.getByRole("button", { name: "Select workspace" })).toBeVisible();
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "72px");
+  await expect(workspaceControls).toHaveCSS("padding-left", "72px");
+  const before = await page.getByRole("button", { name: "Select workspace" }).boundingBox();
+  expect(before!.x).toBeGreaterThanOrEqual(72);
   await page.evaluate((value) => (window as any).__setFullscreen(value), !initialFullscreen);
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "72px" : "0px");
+  await expect(workspaceControls).toHaveCSS("padding-left", "72px");
+  expect(await page.getByRole("button", { name: "Select workspace" }).boundingBox()).toEqual(before);
   await page.evaluate((value) => (window as any).__setFullscreen(value), initialFullscreen);
-  await expect(workspaceControls).toHaveCSS("padding-left", initialFullscreen ? "0px" : "72px");
+  await expect(workspaceControls).toHaveCSS("padding-left", "72px");
 });
 
 test("activity rail stays visible while sidebar selection, shortcuts and resizing preserve the layout", async ({ page }) => {

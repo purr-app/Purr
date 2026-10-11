@@ -27,6 +27,8 @@ async function inspectTooltip(page: Page, token: Locator) {
   }).toBe(true);
   const rect = await tooltip.boundingBox();
   expect(rect).not.toBeNull();
+  expect(rect!.width).toBeLessThanOrEqual(354);
+  await expect(tooltip).toContainText("value");
   expect(rect!.y).toBeGreaterThanOrEqual(0);
   expect(rect!.x).toBeGreaterThanOrEqual(0);
   expect(rect!.y + rect!.height).toBeLessThanOrEqual(viewport.height);
@@ -72,3 +74,24 @@ for (const mode of ["Canvas view", "Horizontal split view", "Vertical split view
     });
   }
 }
+
+test("input hover previews only public static values in a compact popover", async ({ page }) => {
+  await installPersistenceMock(page);
+  await page.goto("/");
+  await createVariable(page);
+  const input = page.getByLabel("Request URL", { exact: true });
+  await input.fill("{{tooltip_var}}/users");
+  await page.getByRole("tab", { name: "Params", exact: true }).click();
+  await input.hover({ position: { x: 50, y: 15 } });
+  const tooltip = page.locator(".ui-variable-popover");
+  await expect(tooltip.getByText("value", { exact: true })).toBeVisible();
+  expect((await tooltip.boundingBox())!.width).toBeLessThanOrEqual(352);
+  await tooltip.getByRole("button", { name: "Go to definition" }).click();
+  await page.getByRole("switch", { name: "Sensitive & masked secret" }).click();
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await page.getByRole("tab", { name: "Variables", exact: true }).hover();
+  await page.getByRole("button", { name: "Close variables", exact: true }).click();
+  await input.hover({ position: { x: 50, y: 15 } });
+  await expect(tooltip).toContainText("Encrypted local value");
+  await expect(tooltip.getByText("value", { exact: true })).toHaveCount(0);
+});

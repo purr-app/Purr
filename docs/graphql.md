@@ -153,3 +153,9 @@ Connection endpoint/auth resolution participates in the existing request composi
 - `src/features/request-workbench/components/response-viewer.tsx` — GraphQL Errors/Extensions views.
 - `src/domain/project.ts` — canonical GraphQL request and schema source schemas.
 - `src/application/project-projection.ts` — request/schema projection, pinning, and cache hydration.
+
+Schema endpoints in the toolbar and connection settings use the shared template
+input context, as do authentication and introspection header fields. They provide
+variable completion, public static-value previews and definition navigation.
+Introspection still resolves templates through the existing request composition
+path; editor completion does not create a separate execution path.

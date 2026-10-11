@@ -129,6 +129,33 @@ export function WorkspaceSettings({
       && scopes.includes(editingAuth.scope),
   );
 
+  const authEditor = editingAuth ? (
+                <div key={editingAuth.id} role="group" aria-label={`Edit authentication ${editingAuth.name || "New profile"}`} className="space-y-ui-4 rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-4">
+                  <div className="grid gap-ui-4 md:grid-cols-2">
+                    <FormField label="Auth name" value={editingAuth.name} placeholder="Production API auth" onChange={(event) => setEditingAuth((current) => current ? { ...current, name: event.target.value } : current)} />
+                    <div className="space-y-ui-2">
+                      <span className="block text-ui-xs font-medium text-content-secondary">Applies to</span>
+                      <SelectField<RequestScope> label="Requests using this authentication" size="lg" value={editingAuth.scope}
+                        options={requestScopeOptions.filter((option) => scopes.includes(option.value))}
+                        onValueChange={(scope) => setEditingAuth((current) => current ? { ...current, scope } : current)} className="w-full" />
+                    </div>
+                  </div>
+                  <div className="overflow-hidden rounded-ui-lg border border-border-subtle">
+                    <AuthEditor auth={editingAuth.value} onAuthChange={(value) => setEditingAuth((current) => current ? { ...current, value } : current)}
+                      context={authContext} runtime={authRuntime} variableActions={variableActions} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication" />
+                  </div>
+                  <div className="flex justify-end gap-ui-2">
+                    <Button variant="ghost" onClick={() => setEditingAuth(null)}>Cancel</Button>
+                    <Button variant="brand" disabled={!canSaveAuth} onClick={() => {
+                      if (!editingAuth || !canSaveAuth) return;
+                      const saved = { ...editingAuth, name: editingAuth.name.trim() };
+                      onConfigChange({ ...config, auth: config.auth.some((entry) => entry.id === saved.id) ? config.auth.map((entry) => entry.id === saved.id ? saved : entry) : [...config.auth, saved] });
+                      setEditingAuth(null);
+                    }}>Save authentication</Button>
+                  </div>
+                </div>
+              ) : null;
+
   return (
     <section aria-label="Workspace settings" className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base p-ui-1">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui-xl border border-border-subtle bg-purr-surface shadow-panel">
@@ -144,14 +171,14 @@ export function WorkspaceSettings({
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-3">
           {tab === "general" ? (
-            <div className="max-w-ui-dialog space-y-ui-3">
+            <div className="flex min-h-full max-w-ui-dialog flex-col gap-ui-3">
               <FormField label="Workspace name" value={name} placeholder="Workspace name" onChange={(event) => onNameChange(event.target.value)} />
               <div className="space-y-ui-2">
                 <label htmlFor="workspace-description" className="block text-ui-xs font-medium text-content-secondary">Description</label>
                 <textarea id="workspace-description" aria-label="Workspace description" className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 font-ui text-ui-md text-content-primary outline-none placeholder:text-content-tertiary"
                   value={description} placeholder="What is this workspace used for?" onChange={(event) => onDescriptionChange(event.target.value)} />
               </div>
-              <div className="border-t border-border-subtle pt-ui-3">
+              <div className="mt-auto border-t border-border-subtle pt-ui-3">
                 <h2 className="m-ui-0 text-ui-md font-medium text-accent-red">Delete workspace</h2>
                 <p className="mb-ui-3 mt-ui-1 text-ui-xs text-content-tertiary">Removes Purr’s local state and managed project directory. An attached external directory is left on disk.</p>
                 {!confirmDelete ? <Button variant="secondary" className="text-accent-red" onClick={() => setConfirmDelete(true)}><Trash2 className="size-ui-4" />Delete workspace</Button>
@@ -206,41 +233,16 @@ export function WorkspaceSettings({
                   setEditingAuth({ id: crypto.randomUUID(), name: "", enabled: true, scope: available[0] ?? "all", value: createRequestAuth() });
                 }}><Plus className="size-ui-4" />Add shared auth</Button>
               </div>
-              {editingAuth ? (
-                <div className="space-y-ui-4 rounded-ui-lg border border-border-subtle bg-purr-codefield p-ui-4">
-                  <div className="grid gap-ui-4 md:grid-cols-2">
-                    <FormField label="Auth name" value={editingAuth.name} placeholder="Production API auth" onChange={(event) => setEditingAuth((current) => current ? { ...current, name: event.target.value } : current)} />
-                    <div className="space-y-ui-2">
-                      <span className="block text-ui-xs font-medium text-content-secondary">Applies to</span>
-                      <SelectField<RequestScope> label="Requests using this authentication" size="lg" value={editingAuth.scope}
-                        options={requestScopeOptions.filter((option) => scopes.includes(option.value))}
-                        onValueChange={(scope) => setEditingAuth((current) => current ? { ...current, scope } : current)} className="w-full" />
-                    </div>
-                  </div>
-                  <div className="overflow-hidden rounded-ui-lg border border-border-subtle">
-                    <AuthEditor auth={editingAuth.value} onAuthChange={(value) => setEditingAuth((current) => current ? { ...current, value } : current)}
-                      context={authContext} runtime={authRuntime} variableActions={variableActions} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication" />
-                  </div>
-                  <div className="flex justify-end gap-ui-2">
-                    <Button variant="ghost" onClick={() => setEditingAuth(null)}>Cancel</Button>
-                    <Button variant="brand" disabled={!canSaveAuth} onClick={() => {
-                      if (!editingAuth || !canSaveAuth) return;
-                      const saved = { ...editingAuth, name: editingAuth.name.trim() };
-                      onConfigChange({ ...config, auth: [...config.auth.filter((entry) => entry.id !== saved.id), saved] });
-                      setEditingAuth(null);
-                    }}>Save authentication</Button>
-                  </div>
-                </div>
-              ) : null}
+              {editingAuth && !config.auth.some((auth) => auth.id === editingAuth.id) ? authEditor : null}
               <div className="space-y-ui-2">
-                {config.auth.map((auth) => (
+                {config.auth.map((auth) => auth.id === editingAuth?.id ? authEditor : (
                   <div key={auth.id} className="flex items-center gap-ui-3 rounded-ui-lg border border-border-subtle bg-purr-codefield px-ui-3 py-ui-2">
                     <Checkbox checked={auth.enabled} hideLabel label={`Enable ${auth.name}`} onCheckedChange={(enabled) => onConfigChange({ ...config, auth: config.auth.map((entry) => entry.id === auth.id ? { ...entry, enabled } : entry) })} />
                     <div className="min-w-0 flex-1">
                       <p className="m-ui-0 truncate text-ui-sm font-medium text-content-primary">{auth.name}</p>
                       <p className="m-ui-0 font-code text-ui-xs text-content-tertiary">{authLabel(auth)} · {scopeLabel(auth.scope)}</p>
                     </div>
-                    <Button variant="ghost" size="icon" aria-label={`Edit ${auth.name}`} onClick={() => setEditingAuth(structuredClone(auth))}><Pencil className="size-ui-4" /></Button>
+                    <Button variant="ghost" size="icon" aria-label={`Edit ${auth.name}`} disabled={Boolean(editingAuth)} onClick={() => setEditingAuth(structuredClone(auth))}><Pencil className="size-ui-4" /></Button>
                     <Button variant="ghost" size="icon" className="text-accent-red" aria-label={`Delete ${auth.name}`} onClick={() => onConfigChange({ ...config, auth: config.auth.filter((entry) => entry.id !== auth.id) })}><Trash2 className="size-ui-4" /></Button>
                   </div>
                 ))}
