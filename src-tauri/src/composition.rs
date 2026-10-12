@@ -131,6 +131,7 @@ pub fn core_builder() -> PurrBuilder {
         .plugin(tauri_plugin_dialog::init())
         .manage(http::HttpRuntimeState::default())
         .manage(oauth::OAuthCallbacks::default())
+        .manage(crate::security::context::NativeKeyState::default())
         .manage(persistence::PersistenceState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default());

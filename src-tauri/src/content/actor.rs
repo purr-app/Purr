@@ -5,7 +5,10 @@ use super::{
     },
     store::{ContentWriteTiming, ResponseContentStore},
 };
-use crate::security::PlatformRootKeyStore;
+use crate::security::{
+    context::{data_directory, NativeKeyState},
+    RootCiphers,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{atomic::AtomicBool, Arc, Mutex},
@@ -31,12 +34,8 @@ impl PendingContentWrite {
 }
 
 impl ResponseContentHandle {
-    fn start(path: PathBuf) -> Result<Self, String> {
-        let data_directory = path
-            .parent()
-            .ok_or_else(|| "Cannot locate application storage".to_string())?;
-        let root_keys = PlatformRootKeyStore::new(data_directory);
-        Self::start_store(ResponseContentStore::open(&path, &root_keys)?)
+    fn start(path: PathBuf, ciphers: &RootCiphers) -> Result<Self, String> {
+        Self::start_store(ResponseContentStore::open_with_ciphers(&path, ciphers)?)
     }
 
     fn start_store(mut store: ResponseContentStore) -> Result<Self, String> {
@@ -183,13 +182,14 @@ impl ResponseContentState {
             .lock()
             .map_err(|_| "Response storage is unavailable")?;
         if guard.is_none() {
-            let data = app
-                .path()
-                .app_data_dir()
-                .map_err(|_| "Cannot locate application storage")?;
-            std::fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
+            let data = data_directory(app).map_err(|error| error.to_string())?;
+            let ciphers = app
+                .state::<NativeKeyState>()
+                .open(app)
+                .map_err(|error| error.to_string())?;
             *guard = Some(ResponseContentHandle::start(
                 data.join("local-state.sqlite3"),
+                &ciphers,
             )?);
         }
         guard

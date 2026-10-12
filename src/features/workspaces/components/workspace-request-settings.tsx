@@ -187,7 +187,7 @@ export function WorkspaceSettings({
             value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }, { value: "secrets", label: "Secrets" }]} onValueChange={setTab} />
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-3">
-          <fieldset disabled={secrets.protectedState.status !== "available" && tab !== "secrets"} className="m-ui-0 min-w-0 border-0 p-ui-0">
+          <fieldset disabled={secrets.protectedState.status !== "available" && tab !== "secrets"} className="m-ui-0 h-full min-w-0 border-0 p-ui-0">
           {tab === "secrets" ? <div className="space-y-ui-4"><RequiredLocalSecrets {...secrets} />{secrets.migrationRequired ? <Button variant="brand" disabled={secrets.protectedState.status !== "available"} onClick={onUpgrade}>Upgrade workspace format</Button> : null}</div> : tab === "general" ? (
             <div className="flex min-h-full max-w-ui-dialog flex-col gap-ui-3">
               <FormField label="Workspace name" value={name} placeholder="Workspace name" onChange={(event) => onNameChange(event.target.value)} />

@@ -437,13 +437,23 @@ export class WorkspacePersistence {
       const saved = document.savedRequest.auth;
       const slot = { bearer: "bearer", basic: "password", "api-key": "api-key", oauth2: "client-secret", inherit: null, none: null }[saved.type];
       if (slot) {
+        const savedState = saved.credentialStates?.[slot];
+        const editorState = document.request.auth.credentialStates?.[slot];
+        // Lazy saved definitions carry an unresolved buffer. They cannot undo
+        // hydration (or a typed failure) already obtained for the same ref.
+        const synchronizedState = savedState?.status === "unresolved" && savedState.ref === editorState?.ref
+          ? editorState : savedState;
         document.request.auth.secretRefs = { ...document.request.auth.secretRefs, ...(saved.secretRefs?.[slot] ? { [slot]: saved.secretRefs[slot] } : {}) };
-        document.request.auth.credentialStates = { ...document.request.auth.credentialStates, ...(saved.credentialStates?.[slot] ? { [slot]: saved.credentialStates[slot] } : {}) };
-        if (!saved.credentialStates?.[slot]) { delete document.request.auth.credentialStates[slot]; delete document.request.auth.secretRefs[slot]; }
+        document.request.auth.credentialStates = { ...document.request.auth.credentialStates, ...(synchronizedState ? { [slot]: synchronizedState } : {}) };
+        if (!savedState) { delete document.request.auth.credentialStates[slot]; delete document.request.auth.secretRefs[slot]; }
       }
       for (const header of document.request.headers) {
         const savedHeader = document.savedRequest.headers.find((row) => row.id === header.id);
-        if (savedHeader) { header.secretState = savedHeader.secretState; header.secretRef = savedHeader.secretRef; }
+        if (savedHeader) {
+          if (!(savedHeader.secretState?.status === "unresolved" && savedHeader.secretState.ref === header.secretState?.ref))
+            header.secretState = savedHeader.secretState;
+          header.secretRef = savedHeader.secretRef;
+        }
       }
     }
   }

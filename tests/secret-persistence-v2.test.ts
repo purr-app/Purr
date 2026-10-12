@@ -210,3 +210,46 @@ test("reusable localhost fixture distinguishes A/B credentials, rejects invalid 
   assert.deepEqual(await (await fetch(`${fixture.url}/cookies/check`, { headers: { cookie: cookie.split(";")[0] } })).json(), { cookie: "A" });
   assert.deepEqual(await (await fetch(`${fixture.url}/cookies/check`)).json(), { cookie: "missing" });
 });
+
+test("autosave preserves resolved clean editor buffers after lazy restart", async () => {
+  for (const type of ["basic", "bearer"] as const) {
+    const { secure, backend, persistence, workspace, document } = fixture(`hydration-${type}`);
+    document.request.auth.type = type;
+    document.request.auth.basic.password = "synthetic-password";
+    document.request.auth.bearer.token = "synthetic-bearer";
+    document.request.headers = [{ id: "sensitive-row", name: "X-User-Secret", value: "synthetic-header", enabled: true, secret: true }];
+    document.savedRequest = cloneRequestDraft(document.request);
+    await persistence.save(asStore(workspace));
+    const restarted = new WorkspacePersistence(backend, secure);
+    const store = await restarted.load();
+    const restored = requestDocument(store.workspaces[0], document.id);
+    const slot = type === "basic" ? "password" : "bearer";
+    const state = restored.request.auth.credentialStates![slot];
+    assert.equal(state.status, "unresolved");
+    const resolution = await secure.resolve(state.ref);
+    assert.equal(resolution.status, "available");
+    if (resolution.status !== "available") assert.fail("Synthetic secret must be available");
+    const header = restored.request.headers.find((row) => row.id === "sensitive-row")!;
+    const headerResolution = await secure.resolve(header.secretState!.ref);
+    if (headerResolution.status !== "available") assert.fail("Synthetic header must be available");
+    const auth = { ...restored.request.auth, credentialStates: { ...restored.request.auth.credentialStates, [slot]: { ...state, status: "available" as const } },
+      ...(type === "basic" ? { basic: { ...restored.request.auth.basic, password: resolution.value } } : { bearer: { ...restored.request.auth.bearer, token: resolution.value } }) };
+    restored.request = { ...restored.request, auth, headers: restored.request.headers.map((row) => row.id === header.id ? { ...row, value: headerResolution.value, secretState: { ...row.secretState!, status: "available" as const } } : row) };
+    const before = await secure.read(state.ref);
+    for (let index = 0; index < 3; index++) {
+      store.workspaces[0].ui.sidebarWidth = 19 + index;
+      await restarted.save(store);
+      assert.equal(restored.request.auth.credentialStates![slot].status, "available", `${type}: autosave must not restore the unresolved saved buffer`);
+      assert.equal(restored.request.headers.find((row) => row.id === header.id)!.secretState!.status, "available");
+      assert.deepEqual(await secure.read(state.ref), before, "hydration must not modify the vault");
+    }
+    for (const status of ["missing", "locked"] as const) {
+      restored.request.auth.credentialStates![slot] = { ...restored.request.auth.credentialStates![slot], status };
+      await restarted.save(store);
+      assert.equal(restored.request.auth.credentialStates![slot].status, status, "autosave must preserve known unavailable states too");
+      assert.deepEqual(await secure.read(state.ref), before);
+    }
+    assert.ok(!JSON.stringify(backend.snapshot).includes(resolution.value));
+    assert.ok(!JSON.stringify(backend.snapshot).includes(headerResolution.value));
+  }
+});

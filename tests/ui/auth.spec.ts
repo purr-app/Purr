@@ -464,3 +464,45 @@ test("template highlighting covers the complete token in URL, headers and body",
   await expect(token).toHaveCSS("font-style", "italic");
   await expect(token).toHaveCSS("color", orange);
 });
+
+for (const type of ["Basic Auth", "Bearer Token"] as const) test(`${type} stays resolved after reopening and autosave`, async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).isTauri = true;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async () => undefined };
+  });
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("http://127.0.0.1:18765/echo");
+  await page.getByRole("tab", { name: /^Auth/ }).click();
+  await page.getByRole("tab", { name: type, exact: true }).click();
+  const fieldName = type === "Basic Auth" ? "Password" : "Bearer token";
+  if (type === "Basic Auth") await page.getByLabel("Username", { exact: true }).fill("purr-test");
+  await page.getByLabel(fieldName, { exact: true }).fill("synthetic-restart-token");
+  await page.getByRole("button", { name: "Save document", exact: true }).click();
+  await page.getByLabel("Document name", { exact: true }).fill(`Restart ${type}`);
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
+  await page.reload();
+  await page.getByRole("tab", { name: /^Auth/ }).click();
+  await expect(page.getByLabel(fieldName, { exact: true })).toHaveValue("synthetic-restart-token");
+  await expect(page.getByText(/Local secret unresolved\. Provide/)).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /^Headers/ })).toHaveText("Headers1");
+  const snapshot = await page.evaluate(() => ({
+    values: localStorage.getItem("purr-native-secure-test"),
+    revisions: localStorage.getItem("purr-native-secure-revisions-test"),
+  }));
+  await page.evaluate(() => {
+    (window as any).__authHydrationRegressions = [];
+    const observer = new MutationObserver(() => {
+      const warning = document.body.innerText.includes("Local secret unresolved. Provide");
+      const headerTab = document.querySelector("#request-tab-headers");
+      if (warning || headerTab?.textContent?.trim() !== "Headers1") (window as any).__authHydrationRegressions.push("hydration state regressed");
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  // Cover the 180ms autosave and two 1s auth-runtime ticks, which exposed the
+  // previous unresolved/available loop after reopening a clean saved request.
+  await page.waitForTimeout(2200);
+  expect(await page.evaluate(() => (window as any).__authHydrationRegressions)).toEqual([]);
+  await expect(page.getByLabel(fieldName, { exact: true })).toHaveValue("synthetic-restart-token");
+  expect(await page.evaluate(() => ({ values: localStorage.getItem("purr-native-secure-test"), revisions: localStorage.getItem("purr-native-secure-revisions-test") }))).toEqual(snapshot);
+});

@@ -1,21 +1,34 @@
 pub mod availability;
+pub mod context;
+pub mod inventory;
+pub mod manager;
+#[cfg(all(test, target_os = "macos"))]
+mod os_store_smoke;
+mod platform;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
 pub use availability::{ProtectedError, ProtectedStatus};
+#[cfg(test)]
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
 use sha2::Sha256;
+#[cfg(test)]
+use std::fs;
+#[cfg(test)]
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
-    fs::{self, OpenOptions},
-    io::{ErrorKind, Write},
-    path::{Path, PathBuf},
+    fs::OpenOptions,
+    io::{ErrorKind, Read},
+    path::Path,
+    sync::Arc,
 };
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "app.purr.credentials";
 pub const ROOT_KEY_REF: &str = "purr/local-storage/master-key-v1";
 const DATABASE_KEY_INFO: &[u8] = b"purr:database:v1";
@@ -24,6 +37,7 @@ const RESPONSE_CONTENT_KEY_INFO: &[u8] = b"purr:response-content:v1";
 
 // Application storage owns one root key only. SecretRef values are handled by
 // the encrypted SQLite vault and never become individual files or Keychain items.
+#[cfg(test)]
 pub trait RootKeyStore: Send + Sync {
     fn get_root_key(&self) -> Result<Option<String>, String>;
     fn set_root_key(&self, value: &str) -> Result<(), String>;
@@ -58,48 +72,53 @@ pub fn validate_secret_ref(reference: &str) -> Result<(), String> {
 
 const ROOT_KEY_FILE: &str = "root-key-v1";
 
-pub struct PlatformRootKeyStore {
-    path: PathBuf,
-}
-
-impl PlatformRootKeyStore {
-    pub fn new(data_directory: &Path) -> Self {
-        Self {
-            path: data_directory.join(ROOT_KEY_FILE),
-        }
-    }
-}
-
 #[cfg(test)]
 fn read_root_key_file(path: &Path) -> Result<Option<String>, String> {
     read_root_key_file_typed(path).map_err(|error| error.to_string())
 }
 fn read_root_key_file_typed(path: &Path) -> Result<Option<String>, ProtectedError> {
-    match fs::read_to_string(path) {
-        Ok(value) => {
-            #[cfg(unix)]
-            if fs::metadata(path)
-                .map_err(|_| ProtectedError::unavailable("root-key-metadata-unavailable"))?
-                .permissions()
-                .mode()
-                & 0o077
-                != 0
-            {
-                return Err(ProtectedError::denied("root-key-unsafe-permissions"));
-            }
-            Ok(Some(value.trim().into()))
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(ProtectedError::corrupt("root-key-invalid"))
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
-            Err(ProtectedError::denied("root-key-read-denied"))
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            return Err(ProtectedError::unavailable("root-key-metadata-unavailable"))
         }
-        Err(error) if error.kind() == ErrorKind::InvalidData => {
-            Err(ProtectedError::corrupt("root-key-invalid"))
-        }
-        Err(_) => Err(ProtectedError::unavailable("root-key-read-unavailable")),
+        _ => {}
     }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+            return Err(ProtectedError::denied("root-key-read-denied"))
+        }
+        Err(_) => return Err(ProtectedError::unavailable("root-key-read-unavailable")),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|_| ProtectedError::unavailable("root-key-metadata-unavailable"))?;
+    if !metadata.is_file() || metadata.len() > 1024 {
+        return Err(ProtectedError::corrupt("root-key-invalid"));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(ProtectedError::denied("root-key-unsafe-permissions"));
+    }
+    let mut value = Zeroizing::new(String::new());
+    file.read_to_string(&mut value)
+        .map_err(|error| match error.kind() {
+            ErrorKind::InvalidData => ProtectedError::corrupt("root-key-invalid"),
+            ErrorKind::PermissionDenied => ProtectedError::denied("root-key-read-denied"),
+            _ => ProtectedError::unavailable("root-key-read-unavailable"),
+        })?;
+    Ok(Some(value.trim().into()))
 }
 
+#[cfg(test)]
 fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -113,49 +132,10 @@ fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
         .map_err(|_| "Cannot save the local encryption key".into())
 }
 
-#[cfg(target_os = "macos")]
-impl RootKeyStore for PlatformRootKeyStore {
-    fn get_root_key(&self) -> Result<Option<String>, String> {
-        self.get_root_key_typed().map_err(|error| error.to_string())
-    }
-    fn get_root_key_typed(&self) -> Result<Option<String>, ProtectedError> {
-        if let Some(value) = read_root_key_file_typed(&self.path)? {
-            return Ok(Some(value));
-        }
-        // Versions before 0.1.2 stored this root in Keychain. Read it only
-        // when no file key exists, then migrate so unsigned updates no longer
-        // cause macOS to authorize each changed application binary.
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, ROOT_KEY_REF)
-            .map_err(|_| ProtectedError::unavailable("root-provider-unavailable"))?;
-        match entry.get_password() {
-            Ok(value) => {
-                write_root_key_file(&self.path, &value)?;
-                Ok(Some(value))
-            }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(keyring::Error::NoStorageAccess(_)) => {
-                Err(ProtectedError::denied("root-provider-access-denied"))
-            }
-            Err(_) => Err(ProtectedError::unavailable("root-provider-unavailable")),
-        }
-    }
-    fn set_root_key(&self, value: &str) -> Result<(), String> {
-        write_root_key_file(&self.path, value)
-    }
-}
-// Other platforms deliberately fail closed until their native adapters are added.
-#[cfg(not(target_os = "macos"))]
-impl RootKeyStore for PlatformRootKeyStore {
-    fn get_root_key(&self) -> Result<Option<String>, String> {
-        Err("Native secure store is not configured for this platform".into())
-    }
-    fn set_root_key(&self, _: &str) -> Result<(), String> {
-        Err("Native secure store is not configured for this platform".into())
-    }
-}
-
-pub struct LocalCipher(Aes256Gcm);
+#[derive(Clone)]
+pub struct LocalCipher(Arc<Aes256Gcm>);
 pub struct RootCiphers {
+    pub(crate) storage_initialization: std::sync::Mutex<()>,
     pub database: LocalCipher,
     pub secrets: LocalCipher,
     pub response_content: LocalCipher,
@@ -171,6 +151,7 @@ fn derive_key(root: &[u8], info: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
 }
 
 impl RootCiphers {
+    #[cfg(test)]
     pub fn open(
         store: &dyn RootKeyStore,
         existing_encrypted_data: bool,
@@ -179,6 +160,7 @@ impl RootCiphers {
         Self::open_typed(store, existing_encrypted_data, needs_legacy_database_key)
             .map_err(|error| error.to_string())
     }
+    #[cfg(test)]
     pub fn open_typed(
         store: &dyn RootKeyStore,
         existing_encrypted_data: bool,
@@ -212,15 +194,25 @@ impl RootCiphers {
         if root.len() != 32 {
             return Err(ProtectedError::corrupt("root-key-invalid"));
         }
-        let database_key = derive_key(&root, DATABASE_KEY_INFO)?;
-        let secrets_key = derive_key(&root, SECRETS_KEY_INFO)?;
-        let response_content_key = derive_key(&root, RESPONSE_CONTENT_KEY_INFO)?;
+        Self::from_root(&root, needs_legacy_database_key)
+    }
+    pub(crate) fn from_root(
+        root: &[u8],
+        needs_legacy_database_key: bool,
+    ) -> Result<Self, ProtectedError> {
+        if root.len() != 32 {
+            return Err(ProtectedError::corrupt("root-key-invalid"));
+        }
+        let database_key = derive_key(root, DATABASE_KEY_INFO)?;
+        let secrets_key = derive_key(root, SECRETS_KEY_INFO)?;
+        let response_content_key = derive_key(root, RESPONSE_CONTENT_KEY_INFO)?;
         Ok(Self {
+            storage_initialization: std::sync::Mutex::new(()),
             database: LocalCipher::from_key(&database_key[..])?,
             secrets: LocalCipher::from_key(&secrets_key[..])?,
             response_content: LocalCipher::from_key(&response_content_key[..])?,
             legacy_database: needs_legacy_database_key
-                .then(|| LocalCipher::from_key(&root))
+                .then(|| LocalCipher::from_key(root))
                 .transpose()?,
         })
     }
@@ -234,9 +226,9 @@ pub struct SealedValue {
 
 impl LocalCipher {
     fn from_key(key: &[u8]) -> Result<Self, String> {
-        Ok(Self(
+        Ok(Self(Arc::new(
             Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid local encryption key")?,
-        ))
+        )))
     }
     pub fn seal(&self, bytes: &[u8], aad: &str) -> Result<SealedValue, String> {
         let mut nonce = [0_u8; 12];
@@ -473,13 +465,6 @@ pub mod tests {
             encoded,
             "d69330ea806cdc19613eb56efbbfc17d8efe819d64f8ea533662ae264c70de91"
         );
-    }
-
-    #[test]
-    fn platform_adapter_is_root_key_only() {
-        fn accepts_root_store(_: &dyn RootKeyStore) {}
-        let directory = tempfile::tempdir().unwrap();
-        accepts_root_store(&PlatformRootKeyStore::new(directory.path()));
     }
 
     #[test]

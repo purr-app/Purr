@@ -6,7 +6,10 @@ use crate::{
         secret_commits::{OperationStatus, SecretBatch, SecretSnapshot},
         workspace_cleanup::{self, WorkspaceDeletionResult},
     },
-    security::{PlatformRootKeyStore, ProtectedError, ProtectedStatus},
+    security::{
+        context::{data_directory, NativeKeyState},
+        ProtectedError, ProtectedStatus,
+    },
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
@@ -118,13 +121,11 @@ fn valid_id(id: &str) -> Result<(), String> {
 }
 impl RuntimeStorage {
     fn open(app: &tauri::AppHandle) -> Result<Self, ProtectedError> {
-        let data = app
-            .path()
-            .app_data_dir()
-            .map_err(|_| "Cannot locate application storage")?;
+        let data = data_directory(app)?;
         fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
-        let root_keys = PlatformRootKeyStore::new(&data);
-        let local = LocalStateStore::open_typed(&data.join("local-state.sqlite3"), &root_keys)?;
+        let ciphers = app.state::<NativeKeyState>().open(app)?;
+        let local =
+            LocalStateStore::open_with_ciphers(&data.join("local-state.sqlite3"), &ciphers)?;
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);
@@ -312,10 +313,7 @@ fn degraded_snapshot(
     state: &PersistenceState,
     error: &ProtectedError,
 ) -> Result<Value, String> {
-    let data = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Cannot locate application storage")?;
+    let data = data_directory(app).map_err(|error| error.to_string())?;
     let attached = state
         .2
         .lock()
@@ -608,9 +606,14 @@ pub fn retry_protected_storage(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
 ) -> Result<Value, String> {
+    let _ = app.state::<NativeKeyState>().retry(&app);
     {
         let mut current = state.0.lock().map_err(|_| "Persistence is unavailable")?;
+        // Re-read repaired local state, but retain successful key handles shared
+        // with active response workers. Concurrent key retries coalesce above.
         *current = None;
+        // Resolve the latest manager state during load, rather than publishing
+        // a delayed failed retry over a newer successful attempt.
         *state.1.lock().map_err(|_| "Persistence is unavailable")? = None;
     }
     load_persistence(app, state)
@@ -741,10 +744,7 @@ pub fn attach_project_directory(
     directory: String,
 ) -> Result<Value, String> {
     valid_id(&id)?;
-    let data = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Cannot locate application storage")?;
+    let data = data_directory(&app).map_err(|error| error.to_string())?;
     let path = fs::canonicalize(directory).map_err(|_| "Project directory does not exist")?;
     if data.starts_with(&path) {
         return Err("A project directory cannot contain Purr's private application storage".into());

@@ -13,6 +13,8 @@ async function saveDocument(page: Page, name: string) {
   await page.getByRole("button", { name: "Save document", exact: true }).click();
   await page.getByLabel("Document name", { exact: true }).fill(name);
   await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Save document", exact: true })).toHaveCount(0);
+  await saved(page);
 }
 
 async function createEnvironment(page: Page, name: string, values: Record<string, string>) {
@@ -270,7 +272,7 @@ test("request tab context menu duplicates and closes tab groups", async ({ page 
   await expect(page.getByLabel("Value for X-Source", { exact: true })).toHaveValue("clipboard");
 });
 
-test("pasting cURL into the URL field imports the request and protects custom credentials", async ({ page }) => {
+test("pasting cURL imports protocol auth and keeps custom header sensitivity explicit", async ({ page }) => {
   await page.goto("/");
   const url = page.getByLabel("Request URL", { exact: true });
   await url.evaluate((input, command) => {
@@ -284,7 +286,12 @@ test("pasting cURL into the URL field imports the request and protects custom cr
   await page.getByRole("tab", { name: /^Auth/ }).click();
   await expect(page.getByLabel("Bearer token", { exact: true })).toHaveValue("imported-token");
   await page.getByRole("tab", { name: /^Headers/ }).click();
-  await expect(page.getByLabel("Value for X-Client-Secret", { exact: true })).toHaveValue("{{curl_x_client_secret}}");
+  await expect(page.getByLabel("Value for X-Client-Secret", { exact: true })).toHaveValue("imported-secret");
+  const sensitivity = page.getByRole("button", { name: "Sensitive X-Client-Secret", exact: true });
+  await expect(sensitivity).toHaveAttribute("aria-pressed", "false");
+  await sensitivity.click();
+  await expect(sensitivity).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Value for X-Client-Secret", { exact: true })).toHaveAttribute("type", "password");
 });
 
 test("pasting cURL into an empty workspace creates and opens an HTTP request", async ({ page }) => {
@@ -706,7 +713,7 @@ test("variables use explicit drafts, validate duplicate names without blocking t
   // in the actual browser backend before testing restoration after reload.
   await expect.poll(async () => {
     const manifests = await page.evaluate(() => new Promise<string[]>((resolve, reject) => {
-      const open = indexedDB.open("purr-preview-v2", 1);
+      const open = indexedDB.open("purr-preview-v2");
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const db = open.result;

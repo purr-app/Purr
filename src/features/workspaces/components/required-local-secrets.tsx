@@ -1,3 +1,4 @@
+import { protectedStorageMessage } from "../model/protected-storage-message";
 import { useEffect, useMemo, useState } from "react";
 import type { Project } from "../../../domain/project";
 import type { SecureStore } from "../../../application/ports/credentials";
@@ -65,7 +66,7 @@ export function RequiredLocalSecrets({ workspace, project, globalVariables, secu
         finally { setBusy(false); }
       }}>Retry / Unlock</Button>
     </div>
-    {!available ? <p role="status" className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">Protected storage is {protectedState.status}. Editing is disabled until the stored baseline can be read. Public definitions remain available.</p> : null}
+    {!available ? <p role="status" className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">{protectedStorageMessage(protectedState)} Editing is disabled until the stored baseline can be read. Public definitions remain available.</p> : null}
     {migrationRequired ? <p role="status" className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">This workspace still uses format v1. Known legacy credential literals may remain in its public files until an explicit Save or Upgrade succeeds. Updating current files does not remove previous Git history or copies.</p> : null}
     <div className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">
       <p className="m-ui-0 font-medium text-content-primary">Configuration sharing preview</p>

@@ -1,3 +1,4 @@
+import { protectedStorageMessage } from "../workspaces/model/protected-storage-message";
 import type { ProtectedState } from "../../application/ports/persistence";
 import type { DynamicRequestCodeContext } from "./model/dynamic-request-code";
 import { createDependencyAuthRuntime } from "./services/dependency-auth-runtime";
@@ -248,7 +249,7 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
   });
   const send = async (graphqlOperationName?: string) => {
     if (sendingRef.current || sending) return;
-    if (!protectedAvailable) { setError(`Protected storage is ${protectedState!.status}. Open Workspace settings → Secrets and retry before sending.`); setCanvasFocus("response"); return; }
+    if (!protectedAvailable) { setError(`${protectedStorageMessage(protectedState!)} Open Workspace settings → Secrets and retry before sending.`); setCanvasFocus("response"); return; }
     if (!effectiveDraft.url.trim()) {
       setCanvasFocus("request");
       setUrlInvalid(true);

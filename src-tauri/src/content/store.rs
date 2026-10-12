@@ -6,9 +6,11 @@ use super::{
     },
     operations::{format_document, query_document, query_large_document},
 };
+#[cfg(test)]
+use crate::security::{inventory::EncryptedInventory, RootKeyStore};
 use crate::{
     persistence::local_records::LocalStateStore,
-    security::{LocalCipher, RootCiphers, RootKeyStore},
+    security::{LocalCipher, RootCiphers},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use regex::bytes::RegexBuilder;
@@ -29,24 +31,6 @@ const SEARCH_MAX_MATCH_BYTES: usize = 64 * 1024;
 const SEARCH_PAGE_MATCHES: usize = 1_000;
 const STRUCTURED_PARSE_BYTES: u64 = 32 * 1024 * 1024;
 const INLINE_OPERATION_RESULT_BYTES: usize = 256 * 1024;
-
-const ENCRYPTED_TABLES: [&str; 15] = [
-    "workspace_local_state",
-    "drafts",
-    "document_session_state",
-    "request_executions",
-    "cookie_jar",
-    "schema_cache",
-    "recent_items",
-    "attachments",
-    "pending_commits",
-    "response_bodies",
-    "secret_values",
-    "response_content_chunks",
-    "history_attachments",
-    "secret_operations",
-    "workspace_cleanup",
-];
 
 #[derive(Clone, Copy)]
 pub struct ResponseLimits {
@@ -82,37 +66,45 @@ pub struct ContentWriteTiming {
 }
 
 impl ResponseContentStore {
+    #[cfg(test)]
     pub fn open(path: &Path, root_store: &dyn RootKeyStore) -> Result<Self, String> {
         Self::open_with_limits(path, root_store, ResponseLimits::default())
     }
 
+    #[cfg(test)]
     fn open_with_limits(
         path: &Path,
         root_store: &dyn RootKeyStore,
         limits: ResponseLimits,
     ) -> Result<Self, String> {
+        let inventory =
+            EncryptedInventory::inspect_database(path).map_err(|error| error.to_string())?;
+        let ciphers = RootCiphers::open(root_store, inventory.has_encrypted_data(), true)?;
+        Self::open_ciphers_with_limits(path, &ciphers, limits)
+    }
+
+    pub fn open_with_ciphers(path: &Path, ciphers: &RootCiphers) -> Result<Self, String> {
+        Self::open_ciphers_with_limits(path, ciphers, ResponseLimits::default())
+    }
+
+    fn open_ciphers_with_limits(
+        path: &Path,
+        ciphers: &RootCiphers,
+        limits: ResponseLimits,
+    ) -> Result<Self, String> {
+        let _initialization = ciphers
+            .storage_initialization
+            .lock()
+            .map_err(|_| "Response storage initialization is unavailable")?;
         let mut db = Connection::open(path).map_err(|_| "Cannot open response storage")?;
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|_| "Cannot configure response storage")?;
         db.execute_batch(
-            // Response bodies are reconstructible runtime data. NORMAL keeps WAL
-            // transactions atomic while avoiding a disk sync for every streamed
-            // append; canonical project data continues to use FULL durability.
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
         )
         .map_err(|_| "Cannot configure response storage")?;
-        LocalStateStore::migrate(&mut db)?;
-        let mut has_encrypted_data = false;
-        for table in ENCRYPTED_TABLES {
-            has_encrypted_data |= db
-                .query_row(
-                    &format!("SELECT EXISTS(SELECT 1 FROM {table})"),
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(|_| "Cannot inspect response storage")?;
-        }
-        let cipher = RootCiphers::open(root_store, has_encrypted_data, false)?.response_content;
+        LocalStateStore::initialize_database(&mut db, ciphers)?;
+        let cipher = ciphers.response_content.clone();
         let mut store = Self { db, cipher, limits };
         store.cleanup_expired(now_seconds())?;
         Ok(store)
@@ -939,6 +931,131 @@ mod tests {
         )
         .unwrap();
         (directory, root, store)
+    }
+
+    #[test]
+    fn content_first_and_persistence_share_ciphers_without_reacquiring_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("local-state.sqlite3");
+        let root = MemoryRootKeyStore::default();
+        let ciphers = RootCiphers::open(&root, false, true).unwrap();
+        let mut db = Connection::open(&path).unwrap();
+        LocalStateStore::migrate(&mut db).unwrap();
+        let draft = serde_json::json!({"body":"synthetic pre-HKDF draft"});
+        let payload = ciphers
+            .legacy_database
+            .as_ref()
+            .unwrap()
+            .encrypt(
+                &serde_json::to_vec(&draft).unwrap(),
+                "workspace/drafts/draft",
+            )
+            .unwrap();
+        db.execute(
+            "INSERT INTO drafts(workspace_id,id,payload) VALUES('workspace','draft',?1)",
+            [payload],
+        )
+        .unwrap();
+        drop(db);
+
+        let mut content = ResponseContentStore::open_with_ciphers(&path, &ciphers).unwrap();
+        let local = LocalStateStore::open_with_ciphers(&path, &ciphers).unwrap();
+        assert_eq!(local.read("workspace").unwrap()[0].value, draft);
+        for _ in 0..8 {
+            local
+                .set_secret("purr/workspace/token", "synthetic-token")
+                .unwrap();
+            assert_eq!(
+                local.get_secret("purr/workspace/token").unwrap().as_deref(),
+                Some("synthetic-token")
+            );
+            let reference = content
+                .create_staging(ContentMetadata {
+                    media_type: None,
+                    charset: None,
+                })
+                .unwrap();
+            content
+                .append(&reference.id, b"synthetic-response")
+                .unwrap();
+            content.finish(&reference.id).unwrap();
+            assert_eq!(
+                content
+                    .read_bytes_range(
+                        &reference.id,
+                        ByteRange {
+                            offset: 0,
+                            length: 18
+                        }
+                    )
+                    .unwrap(),
+                b"synthetic-response"
+            );
+        }
+        assert_eq!(root.reads(), 1);
+        assert_eq!(root.writes(), 1);
+    }
+
+    #[test]
+    fn concurrent_workers_initialize_fresh_and_legacy_databases_once() {
+        for legacy in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("local-state.sqlite3");
+            let root = MemoryRootKeyStore::default();
+            let ciphers = RootCiphers::open(&root, false, true).unwrap();
+            if legacy {
+                let mut db = Connection::open(&path).unwrap();
+                LocalStateStore::migrate(&mut db).unwrap();
+                let payload = ciphers
+                    .legacy_database
+                    .as_ref()
+                    .unwrap()
+                    .encrypt(b"{\"value\":\"synthetic\"}", "workspace/drafts/draft")
+                    .unwrap();
+                db.execute(
+                    "INSERT INTO drafts(workspace_id,id,payload) VALUES('workspace','draft',?1)",
+                    [payload],
+                )
+                .unwrap();
+            }
+            let start = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let local = scope.spawn(|| {
+                    start.wait();
+                    let store = LocalStateStore::open_with_ciphers(&path, &ciphers).unwrap();
+                    if legacy {
+                        assert_eq!(
+                            store.read("workspace").unwrap()[0].value["value"],
+                            "synthetic"
+                        );
+                    }
+                    store
+                        .set_secret("purr/workspace/token", "concurrent synthetic token")
+                        .unwrap();
+                });
+                let content = scope.spawn(|| {
+                    start.wait();
+                    let mut store =
+                        ResponseContentStore::open_with_ciphers(&path, &ciphers).unwrap();
+                    let response = store
+                        .create_staging(ContentMetadata {
+                            media_type: None,
+                            charset: None,
+                        })
+                        .unwrap();
+                    store.append(&response.id, b"parallel content").unwrap();
+                    store.finish(&response.id).unwrap();
+                });
+                local.join().unwrap();
+                content.join().unwrap();
+            });
+            assert_eq!(root.reads(), 1);
+            let store = LocalStateStore::open_with_ciphers(&path, &ciphers).unwrap();
+            assert_eq!(
+                store.get_secret("purr/workspace/token").unwrap().as_deref(),
+                Some("concurrent synthetic token")
+            );
+        }
     }
 
     #[test]

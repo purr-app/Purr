@@ -59,7 +59,7 @@ export function WorkspaceHeader({ store, workspace, cookieJar, cookiesActive, se
       <ChevronRight className="size-ui-3 shrink-0 text-content-quaternary" />
       <div className="flex min-w-0 items-center gap-ui-1">
         <Popover open={environmentOpen} onOpenChange={setEnvironmentOpen}>
-          <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 max-w-ui-environment-selector justify-start" title={environment?.name ?? "No environment"} aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
+          <PopoverTrigger asChild><Button variant="ghost" size="sm" className="min-w-0 max-w-ui-environment-selector shrink justify-start" title={environment?.name ?? "No environment"} aria-label="Select environment"><Globe2 className={cn("size-ui-3-5 shrink-0", environment ? "text-action-brand" : "text-content-tertiary")} /><span className="truncate">{environment?.name ?? "No environment"}</span></Button></PopoverTrigger>
           <PopoverContent align="start" className={menuClass} aria-label="Environments">
             <Button variant="ghost" className={cn(rowClass, "h-auto min-h-control-lg whitespace-normal text-left")} aria-pressed={!environment} onClick={() => { onEnvironment(null); setEnvironmentOpen(false); }}><Check className={cn("size-ui-4 shrink-0 text-action-brand", environment && "invisible")} />No environment</Button>
             <div className="max-h-ui-variable-list overflow-y-auto">

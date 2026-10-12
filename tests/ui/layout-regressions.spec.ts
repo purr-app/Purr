@@ -121,6 +121,31 @@ test("environment width follows its name up to a cap with Variables immediately 
   await expect(variables).toBeVisible();
 });
 
+test("header controls stay clickable beside the command palette at narrow widths", async ({ page }) => {
+  await page.goto("/");
+  const environment = page.getByRole("button", { name: "Select environment" });
+  const variables = page.getByRole("button", { name: "Open variables" });
+  const cookies = page.getByRole("button", { name: /^Cookies \d+$/ });
+  const palette = page.getByRole("button", { name: "Open command palette" });
+  for (const width of [1280, 1000]) {
+    await page.setViewportSize({ width, height: 900 });
+    const environmentBox = (await environment.boundingBox())!;
+    const variablesBox = (await variables.boundingBox())!;
+    const cookiesBox = (await cookies.boundingBox())!;
+    const paletteBox = (await palette.boundingBox())!;
+    expect(environmentBox.width).toBeGreaterThan(0);
+    expect(environmentBox.x + environmentBox.width).toBeLessThanOrEqual(variablesBox.x);
+    expect(variablesBox.x + variablesBox.width).toBeLessThanOrEqual(cookiesBox.x);
+    expect(cookiesBox.x + cookiesBox.width).toBeLessThanOrEqual(paletteBox.x);
+    await environment.click({ trial: true });
+    await variables.click({ trial: true });
+    await cookies.click({ trial: true });
+    await palette.click({ trial: true });
+  }
+  await cookies.click();
+  await expect(page.getByRole("button", { name: "Add cookie", exact: true })).toBeVisible();
+});
+
 test("workspace deletion stays at the bottom of General settings", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Select workspace" }).click();

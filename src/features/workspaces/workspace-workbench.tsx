@@ -1,3 +1,4 @@
+import { protectedStorageMessage } from "./model/protected-storage-message";
 import { invalidateSecretBuffers } from "../../application/invalidate-secret-buffers";
 import type { SecretPreparationStore } from "../../storage/secrets";
 import { renameVariableDefinitions, renameWorkspaceReferences, variableRenames } from "./model/rename-variable";
@@ -776,7 +777,7 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, ui: { ...current.ui, sidebarWidth: Math.max(12, Math.min(28, current.ui.sidebarWidth + (event.key === "ArrowRight" ? 1 : -1))) } }));
       }} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {!writable ? <div role="status" className="flex items-center justify-between gap-ui-3 border-b border-border-subtle bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-content-secondary"><span>Protected storage is {workspaceStatus!.protectedState.status}. Workspace definitions remain readable; editing and Send are unavailable.</span><Button variant="brand" size="sm" onClick={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "secrets"); openSettings(); }}>Required local secrets</Button></div> : null}
+        {!writable ? <div role="status" className="flex items-center justify-between gap-ui-3 border-b border-border-subtle bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-content-secondary"><span>{protectedStorageMessage(workspaceStatus!.protectedState)} Workspace definitions remain readable; editing and Send are unavailable.</span><Button variant="brand" size="sm" onClick={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "secrets"); openSettings(); }}>Required local secrets</Button></div> : null}
         <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />

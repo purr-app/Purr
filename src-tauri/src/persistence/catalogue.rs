@@ -36,6 +36,23 @@ pub fn load(
     error: &ProtectedError,
     attached: &HashMap<String, PathBuf>,
 ) -> Result<Value, String> {
+    if database_absent(data)? {
+        let mut roots = attached.iter().collect::<Vec<_>>();
+        roots.sort_by(|a, b| a.0.cmp(b.0));
+        let mut workspaces = Vec::new();
+        for (id, directory) in roots {
+            let files = FilesystemWorkspaceStore {
+                directory: directory.clone(),
+            }
+            .load()?;
+            workspaces.push(
+                json!({"id":id,"files":files,"local":[],"protectedState":protected_state(error)}),
+            );
+        }
+        return Ok(
+            json!({"activeWorkspaceId":"","workspaces":workspaces,"protectedState":protected_state(error)}),
+        );
+    }
     // READ_ONLY preserves WAL visibility. immutable=1 would incorrectly ignore
     // committed catalogue rows still present in a live WAL.
     let db = Connection::open_with_flags(
@@ -109,6 +126,14 @@ pub fn check_attachment(
     directory: &Path,
     attached: &HashMap<String, PathBuf>,
 ) -> Result<(), String> {
+    if database_absent(data)? {
+        if attached.iter().any(|(owner, path)| {
+            (owner == id && path != directory) || (owner != id && path == directory)
+        }) {
+            return Err("Project identity or directory is already registered".into());
+        }
+        return Ok(());
+    }
     let db = Connection::open_with_flags(
         data.join("local-state.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -156,6 +181,25 @@ pub fn check_attachment(
     Ok(())
 }
 
+// A first launch denied by Keychain must still render its protected-state UI.
+// Never create a replacement catalogue or ignore surviving SQLite sidecars.
+fn database_absent(data: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(data.join("local-state.sqlite3")) {
+        Ok(metadata) if metadata.is_file() => Ok(false),
+        Ok(_) => Err("Project catalogue is unavailable".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                match std::fs::symlink_metadata(data.join(format!("local-state.sqlite3{suffix}"))) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err("Project catalogue is unavailable".into()),
+                }
+            }
+            Ok(true)
+        }
+        Err(_) => Err("Project catalogue is unavailable".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +207,30 @@ mod tests {
         persistence::local_records::{LocalRecord, LocalStateStore},
         security::tests::MemoryRootKeyStore,
     };
+    #[test]
+    fn denied_first_launch_has_a_readonly_empty_catalogue_without_creating_a_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = load(
+            dir.path(),
+            &ProtectedError::denied("root-provider-access-denied"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(state["protectedState"]["status"], "denied");
+        assert_eq!(state["workspaces"], json!([]));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        std::fs::write(
+            dir.path().join("local-state.sqlite3-wal"),
+            b"unreadable surviving data",
+        )
+        .unwrap();
+        assert!(load(
+            dir.path(),
+            &ProtectedError::denied("root-provider-access-denied"),
+            &HashMap::new()
+        )
+        .is_err());
+    }
     #[test]
     fn readonly_catalogue_sees_live_wal_and_preserves_opaque_records_with_recovery_guards() {
         let dir = tempfile::tempdir().unwrap();
@@ -242,7 +310,9 @@ mod tests {
     fn unavailable_or_future_catalogues_are_not_recreated_or_migrated() {
         let dir = tempfile::tempdir().unwrap();
         let error = ProtectedError::unavailable("root-key-missing");
-        assert!(load(dir.path(), &error, &HashMap::new()).is_err());
+        let missing = load(dir.path(), &error, &HashMap::new()).unwrap();
+        assert_eq!(missing["protectedState"]["code"], "root-key-missing");
+        assert_eq!(missing["workspaces"], json!([]));
         assert!(!dir.path().join("local-state.sqlite3").exists());
         let db = Connection::open(dir.path().join("local-state.sqlite3")).unwrap();
         db.execute_batch("PRAGMA user_version=999").unwrap();

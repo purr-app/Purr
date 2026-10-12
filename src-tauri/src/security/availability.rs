@@ -4,8 +4,7 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProtectedStatus {
-    // Reserved for provider lock state; current file-root provider cannot be locked.
-    #[allow(dead_code)]
+    // Only confirmed OS provider lock state, never inferred from error text.
     Locked,
     Unavailable,
     Corrupt,

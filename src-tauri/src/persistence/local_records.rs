@@ -1,6 +1,8 @@
+#[cfg(test)]
+use crate::security::{inventory::EncryptedInventory, RootKeyStore};
 use crate::{
     persistence::response_bodies::{adopt_content, delete_execution_content},
-    security::{validate_secret_ref, LocalCipher, RootCiphers, RootKeyStore},
+    security::{validate_secret_ref, LocalCipher, RootCiphers},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -88,10 +90,23 @@ impl LocalStateStore {
     pub fn open(path: &Path, root_store: &dyn RootKeyStore) -> Result<Self, String> {
         Self::open_typed(path, root_store).map_err(|error| error.to_string())
     }
+    #[cfg(test)]
     pub fn open_typed(
         path: &Path,
         root_store: &dyn RootKeyStore,
     ) -> Result<Self, crate::security::ProtectedError> {
+        let inventory = EncryptedInventory::inspect_database(path)?;
+        let ciphers = RootCiphers::open_typed(root_store, inventory.has_encrypted_data(), true)?;
+        Self::open_with_ciphers(path, &ciphers)
+    }
+
+    pub fn open_with_ciphers(
+        path: &Path,
+        ciphers: &RootCiphers,
+    ) -> Result<Self, crate::security::ProtectedError> {
+        let _initialization = ciphers.storage_initialization.lock().map_err(|_| {
+            crate::security::ProtectedError::unavailable("storage-initialization-unavailable")
+        })?;
         let mut db = Connection::open(path).map_err(db_error)?;
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(db_error)?;
@@ -99,60 +114,35 @@ impl LocalStateStore {
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
         )
         .map_err(db_error)?;
-        Self::migrate(&mut db)?;
-        let mut has_encrypted_data = false;
-        for table in TABLES.iter().copied().chain([
-            "pending_commits",
-            "response_bodies",
-            "secret_values",
-            "response_content_chunks",
-            "history_attachments",
-            "secret_operations",
-            "workspace_cleanup",
-        ]) {
-            has_encrypted_data |= db
-                .query_row(
-                    &format!("SELECT EXISTS(SELECT 1 FROM {table})"),
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(db_error)?;
-        }
-        let uses_derived_keys = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM app_state WHERE key='crypto-key-derivation' AND value='hkdf-sha256-v1')",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(db_error)?;
-        let mut ciphers = RootCiphers::open_typed(
-            root_store,
-            has_encrypted_data,
-            has_encrypted_data && !uses_derived_keys,
-        )?;
-        if !uses_derived_keys {
-            if has_encrypted_data {
-                let legacy = ciphers
-                    .legacy_database
-                    .as_ref()
-                    .ok_or("Legacy local cipher is unavailable")?;
-                Self::upgrade_database_cipher(&mut db, legacy, &ciphers.database)?;
-            } else {
-                db.execute(
-                    "INSERT INTO app_state(key,value) VALUES('crypto-key-derivation','hkdf-sha256-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    [],
-                )
-                .map_err(db_error)?;
-            }
-        }
-        ciphers.legacy_database = None;
+        Self::initialize_database(&mut db, ciphers)?;
         let store = Self {
             db,
-            cipher: ciphers.database,
-            secret_cipher: ciphers.secrets,
+            cipher: ciphers.database.clone(),
+            secret_cipher: ciphers.secrets.clone(),
         };
         store.backfill_history_metadata()?;
         Ok(store)
+    }
+
+    // Both workers must finish the historical database-key migration before
+    // reading/writing records, even when response content initializes first.
+    pub(crate) fn initialize_database(
+        db: &mut Connection,
+        ciphers: &RootCiphers,
+    ) -> Result<(), String> {
+        Self::migrate(db)?;
+        let uses_derived_keys = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_state WHERE key='crypto-key-derivation' AND value='hkdf-sha256-v1')",
+            [], |row| row.get::<_, bool>(0),
+        ).map_err(db_error)?;
+        if !uses_derived_keys {
+            let legacy = ciphers
+                .legacy_database
+                .as_ref()
+                .unwrap_or(&ciphers.database);
+            Self::upgrade_database_cipher(db, legacy, &ciphers.database)?;
+        }
+        Ok(())
     }
     pub fn cipher(&self) -> &LocalCipher {
         &self.cipher
