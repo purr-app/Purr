@@ -133,7 +133,7 @@ test("duplicating a document creates an independent pinned draft without reusing
   source.saved = true; source.name = "Documented request";
   source.request.url = "https://example.test/users";
   source.request.documentation = "# Users\n\nReturns users.";
-  source.request.auth.secretRefs = { bearer: "purr/workspace/requests/source/bearer" };
+  source.request.auth.secretRefs = { bearer: "purr/workspace/credentials/requests/source/bearer" };
   source.request.auth.oauth2.token = { accessToken: "runtime-token", tokenType: "Bearer", obtainedAt: 1 };
   source.savedRequest = cloneRequestDraft(source.request);
 

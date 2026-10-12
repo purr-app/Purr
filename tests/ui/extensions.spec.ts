@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => installPersistenceMock(page));
 const shell = (query = "modules=1") => `/tests/fixtures/extensions/index.html?${query}`;
 const canonicalProjectContains = (page: Page, text: string) => page.evaluate(async (expected) => {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("purr-preview-v2");
+    const request = indexedDB.open("purr-preview-v3");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });

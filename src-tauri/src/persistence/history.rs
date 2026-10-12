@@ -70,7 +70,7 @@ impl LocalStateStore {
         for row in rows {
             let (workspace, id, payload) = row.map_err(db)?;
             let plain = self
-                .cipher()
+                .runtime_cipher(&workspace)?
                 .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?;
             let Ok(value) = serde_json::from_slice::<Value>(&plain) else {
                 continue;
@@ -79,7 +79,7 @@ impl LocalStateStore {
             if !valid_summary(&metadata) {
                 continue;
             }
-            let encrypted = self.cipher().encrypt(
+            let encrypted = self.runtime_cipher(&workspace)?.encrypt(
                 &serde_json::to_vec(&metadata).map_err(|_| "Invalid history metadata")?,
                 &format!("{workspace}/history-summary/{id}"),
             )?;
@@ -88,6 +88,7 @@ impl LocalStateStore {
         Ok(())
     }
     pub fn request_history(&mut self, workspace: &str, action: Value) -> Result<Value, String> {
+        self.runtime_cipher(workspace)?;
         let operation = action["operation"]
             .as_str()
             .ok_or("Invalid history operation")?;
@@ -118,7 +119,7 @@ impl LocalStateStore {
                     _ => SecretBatch::fresh(vec![])?,
                 };
                 batch.validate(Some(workspace))?;
-                let prefix = format!("purr/{workspace}/history/{id}/");
+                let prefix = format!("purr/{workspace}/runtime/history/{id}/");
                 if batch
                     .mutations
                     .iter()
@@ -199,14 +200,14 @@ impl LocalStateStore {
                     let (id, metadata, payload, pinned) = row.map_err(db)?;
                     let mut item = if let Some(metadata) = metadata {
                         let plain = self
-                            .cipher()
+                            .runtime_cipher(workspace)?
                             .decrypt(&metadata, &format!("{workspace}/history-summary/{id}"))?;
                         let Ok(metadata) = serde_json::from_slice::<Value>(&plain) else {
                             continue;
                         };
                         metadata
                     } else {
-                        let plain = self.cipher().decrypt(
+                        let plain = self.runtime_cipher(workspace)?.decrypt(
                             &payload.ok_or("Missing history payload")?,
                             &format!("{workspace}/request_executions/{id}"),
                         )?;
@@ -258,7 +259,7 @@ impl LocalStateStore {
                 };
                 let mut value: Value = serde_json::from_slice(
                     &self
-                        .cipher()
+                        .runtime_cipher(workspace)?
                         .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?,
                 )
                 .map_err(|_| "Damaged history entry")?;
@@ -338,6 +339,7 @@ impl LocalStateStore {
         Ok(value.and_then(|v| v.parse().ok()).unwrap_or(30))
     }
     pub fn prune_history(&mut self, workspace: &str) -> Result<(), String> {
+        self.runtime_cipher(workspace)?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "Invalid system clock")?
@@ -358,7 +360,7 @@ impl LocalStateStore {
         }
         let tx = self.db.transaction().map_err(db)?;
         for id in ids {
-            let secret_prefix = format!("purr/{workspace}/history/{id}/");
+            let secret_prefix = format!("purr/{workspace}/runtime/history/{id}/");
             tx.execute(
                 "DELETE FROM secret_values WHERE substr(reference,1,length(?1))=?1",
                 [secret_prefix],
@@ -413,7 +415,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let keys = MemoryRootKeyStore::default();
         let mut store = LocalStateStore::open(&directory.path().join("state.db"), &keys).unwrap();
-        let reference = "purr/workspace/history/execution/editor/auth/token";
+        let reference = "purr/workspace/runtime/history/execution/editor/auth/token";
         let secrets = json!({"operationId":"history-commit","mutations":[{"ref":reference,"expectedRevision":0,"value":"historical-token"}]});
         let mut value = entry("execution", "document", now());
         value["files"] = json!({"missing":{"native":true}});
@@ -571,11 +573,14 @@ mod tests {
             json!({"operation":"pin","id":"pinned","pinned":true}),
         );
         store
-            .set_secret("purr/workspace/history/old/editor/auth/token", "secret")
+            .set_secret(
+                "purr/workspace/runtime/history/old/editor/auth/token",
+                "secret",
+            )
             .unwrap();
         store
             .set_secret(
-                "purr/workspace/history/pinned/editor/auth/token",
+                "purr/workspace/runtime/history/pinned/editor/auth/token",
                 "retained",
             )
             .unwrap();
@@ -606,7 +611,7 @@ mod tests {
             Value::Null
         );
         assert!(store
-            .get_secret("purr/workspace/history/old/editor/auth/token")
+            .get_secret("purr/workspace/runtime/history/old/editor/auth/token")
             .unwrap()
             .is_none());
         assert_eq!(
@@ -618,7 +623,7 @@ mod tests {
             json!({"operation":"remove","filter":{"id":"pinned"}}),
         );
         assert!(store
-            .get_secret("purr/workspace/history/pinned/editor/auth/token")
+            .get_secret("purr/workspace/runtime/history/pinned/editor/auth/token")
             .unwrap()
             .is_none());
     }
@@ -730,7 +735,7 @@ mod tests {
         let mut store =
             LocalStateStore::open(&dir.path().join("state.db"), &MemoryRootKeyStore::default())
                 .unwrap();
-        store.db.execute("INSERT INTO response_contents(id,state,byte_length,created_at) VALUES('content','ready',3,0)",[]).unwrap();
+        store.db.execute("INSERT INTO response_contents(id,workspace_id,state,byte_length,created_at) VALUES('content','workspace','ready',3,0)",[]).unwrap();
         store.db.execute("INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES('content',0,0,3,1,X'00',X'00')",[]).unwrap();
         let mut value = entry("body", "draft", now());
         value["outcome"] = json!("response");

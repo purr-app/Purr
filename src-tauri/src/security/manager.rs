@@ -43,6 +43,8 @@ struct Metadata {
     keycheck: String,
     phase: Phase,
     new_vault: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope_registry_version: Option<u8>,
 }
 impl Metadata {
     fn aad(&self) -> String {
@@ -65,6 +67,8 @@ pub struct KeyManager {
     provider: Arc<dyn OsKeyStore>,
     state: Mutex<State>,
     generation: AtomicU64,
+    scoped_state: Mutex<Option<ResultCiphers>>,
+    scoped_generation: AtomicU64,
     #[cfg(test)]
     fail_at: Mutex<Option<&'static str>>,
 }
@@ -98,6 +102,8 @@ impl KeyManager {
             provider,
             state: Mutex::new(State::default()),
             generation: AtomicU64::new(0),
+            scoped_state: Mutex::new(None),
+            scoped_generation: AtomicU64::new(0),
             #[cfg(test)]
             fail_at: Mutex::new(None),
         }
@@ -107,6 +113,98 @@ impl KeyManager {
     }
     pub fn retry(&self) -> ResultCiphers {
         self.initialize(Some(self.generation.load(Ordering::Acquire)))
+    }
+    pub fn open_scoped(&self) -> ResultCiphers {
+        self.initialize_scoped(None)
+    }
+    pub fn retry_scoped(&self) -> ResultCiphers {
+        self.initialize_scoped(Some(self.scoped_generation.load(Ordering::Acquire)))
+    }
+    fn initialize_scoped(&self, retry_generation: Option<u64>) -> ResultCiphers {
+        let mut state = self
+            .scoped_state
+            .lock()
+            .map_err(|_| ProtectedError::unavailable("scope-manager-unavailable"))?;
+        if let Some(result) = &*state {
+            if result.is_ok()
+                || retry_generation != Some(self.scoped_generation.load(Ordering::Acquire))
+            {
+                return result.clone();
+            }
+        }
+        let result = (|| {
+            // The clean v2 profile must never adopt a copied, formerly plaintext
+            // installation key, or query the historical shared OS entry.
+            if self.allow_legacy {
+                return Err(recovery("scope-legacy-provider-disabled"));
+            }
+            match fs::symlink_metadata(self.directory.join(ROOT_KEY_FILE)) {
+                Ok(_) => return Err(recovery("scope-legacy-root-rejected")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(ProtectedError::unavailable("scope-root-unavailable")),
+            }
+            let mut registry_exists = false;
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                match fs::symlink_metadata(
+                    self.directory.join(format!("scope-keys.sqlite3{suffix}")),
+                ) {
+                    Ok(_) => registry_exists = true,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => {
+                        return Err(ProtectedError::unavailable(
+                            "scope-key-registry-unavailable",
+                        ))
+                    }
+                }
+            }
+            if registry_exists && self.read_metadata()?.is_none() {
+                return Err(recovery("root-metadata-missing"));
+            }
+            let root = if retry_generation.is_some() {
+                self.retry()?
+            } else {
+                self.open()?
+            };
+            let mut metadata = self
+                .read_metadata()?
+                .ok_or_else(|| recovery("root-metadata-invalid"))?;
+            if !metadata.new_vault {
+                return Err(recovery("scope-legacy-root-rejected"));
+            }
+            let keycheck = STANDARD
+                .decode(&metadata.keycheck)
+                .map_err(|_| recovery("root-metadata-invalid"))?;
+            if root.database.decrypt(&keycheck, &metadata.aad())? != CHECK {
+                return Err(recovery("root-key-conflict"));
+            }
+            if metadata.scope_registry_version.is_some()
+                && !self.directory.join("scope-keys.sqlite3").is_file()
+            {
+                return Err(recovery("scope-key-registry-missing"));
+            }
+            let scoped = root
+                .with_scope_keys_policy(
+                    &self.directory.join("scope-keys.sqlite3"),
+                    &metadata.vault_id,
+                    metadata.scope_registry_version.is_none(),
+                )
+                .map(Arc::new)
+                .map_err(|error| match error.as_str() {
+                    "scope-key-registry-missing" => recovery("scope-key-registry-missing"),
+                    "scope-key-registry-unavailable" => {
+                        ProtectedError::unavailable("scope-key-registry-unavailable")
+                    }
+                    _ => ProtectedError::corrupt("scope-key-registry-corrupt"),
+                })?;
+            if metadata.scope_registry_version.is_none() {
+                metadata.scope_registry_version = Some(1);
+                self.write_metadata(&metadata)?;
+            }
+            Ok(scoped)
+        })();
+        *state = Some(result.clone());
+        self.scoped_generation.fetch_add(1, Ordering::Release);
+        result
     }
     fn initialize(&self, retry_generation: Option<u64>) -> ResultCiphers {
         let mut state = self
@@ -257,6 +355,7 @@ impl KeyManager {
                 keycheck: String::new(),
                 phase: Phase::Prepared,
                 new_vault: generated,
+                scope_registry_version: None,
             };
             m.keycheck = STANDARD.encode(ciphers.database.encrypt(CHECK, &m.aad())?);
             self.write_metadata(&m)?;
@@ -346,6 +445,9 @@ impl KeyManager {
         }
         let m: Metadata =
             serde_json::from_slice(&bytes).map_err(|_| recovery("root-metadata-invalid"))?;
+        if m.scope_registry_version.is_some_and(|version| version != 1) {
+            return Err(recovery("root-metadata-invalid"));
+        }
         if m.version != 1
             || m.vault_id.len() != 32
             || !m.vault_id.bytes().all(|b| b.is_ascii_hexdigit())
@@ -951,5 +1053,195 @@ mod tests {
         assert_eq!(p.reads.load(Ordering::Relaxed), before + 1);
         *p.failure.lock().unwrap() = None;
         m.retry().unwrap();
+    }
+    fn scoped_manager(dir: &Path, provider: &Arc<Provider>) -> KeyManager {
+        KeyManager::with_provider(
+            dir.into(),
+            "test.purr.v2".into(),
+            "application-v2".into(),
+            false,
+            provider.clone(),
+        )
+    }
+    #[test]
+    fn scoped_manager_caches_reopens_and_never_recreates_missing_registry_or_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(Provider::default());
+        let envelope;
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            let keys = manager.open_scoped().unwrap();
+            assert!(Arc::ptr_eq(&keys, &manager.retry_scoped().unwrap()));
+            keys.provision_scope(super::super::ProtectionScope::WorkspaceCredential {
+                workspace_id: "a".into(),
+            })
+            .unwrap();
+            envelope = keys
+                .secrets
+                .for_scope(super::super::ProtectionScope::WorkspaceCredential {
+                    workspace_id: "a".into(),
+                })
+                .unwrap()
+                .encrypt(b"retained", "record")
+                .unwrap();
+        }
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            let keys = manager.open_scoped().unwrap();
+            assert_eq!(
+                keys.secrets
+                    .for_scope(super::super::ProtectionScope::WorkspaceCredential {
+                        workspace_id: "a".into()
+                    })
+                    .unwrap()
+                    .decrypt(&envelope, "record")
+                    .unwrap(),
+                b"retained"
+            );
+        }
+        std::fs::remove_file(dir.path().join("scope-keys.sqlite3")).unwrap();
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            assert_eq!(
+                error(manager.open_scoped()).code,
+                "scope-key-registry-missing"
+            );
+        }
+        assert!(!dir.path().join("scope-keys.sqlite3").exists());
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn scoped_profile_rejects_copied_plaintext_and_previously_relocated_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(Provider::default());
+        legacy_file(dir.path(), 9);
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            assert_eq!(
+                error(manager.open_scoped()).code,
+                "scope-legacy-root-rejected"
+            );
+        }
+        assert_eq!(provider.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.legacy_reads.load(Ordering::Relaxed), 0);
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 0);
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            manager.open().unwrap();
+        }
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            assert_eq!(
+                error(manager.open_scoped()).code,
+                "scope-legacy-root-rejected"
+            );
+        }
+        assert!(!dir.path().join("scope-keys.sqlite3").exists());
+    }
+    #[test]
+    fn scoped_bootstrap_resumes_empty_file_only_before_registry_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(Provider::default());
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            manager.open().unwrap();
+        }
+        std::fs::write(dir.path().join("scope-keys.sqlite3"), []).unwrap();
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            manager.open_scoped().unwrap();
+        }
+        std::fs::write(dir.path().join("scope-keys.sqlite3"), []).unwrap();
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            assert_eq!(
+                error(manager.open_scoped()).code,
+                "scope-key-registry-corrupt"
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(dir.path().join("scope-keys.sqlite3"))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn surviving_scope_registry_blocks_replacement_when_root_metadata_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(Provider::default());
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            manager.open_scoped().unwrap();
+        }
+        std::fs::remove_file(dir.path().join(METADATA)).unwrap();
+        let manager = scoped_manager(dir.path(), &provider);
+        assert_eq!(error(manager.open_scoped()).code, "root-metadata-missing");
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn scoped_registry_sidecars_without_metadata_never_create_an_os_key() {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = Arc::new(Provider::default());
+            std::fs::write(
+                dir.path().join(format!("scope-keys.sqlite3{suffix}")),
+                b"orphan",
+            )
+            .unwrap();
+            let manager = scoped_manager(dir.path(), &provider);
+            assert_eq!(error(manager.open_scoped()).code, "root-metadata-missing");
+            assert_eq!(provider.writes.load(Ordering::Relaxed), 0);
+        }
+    }
+    #[test]
+    fn scoped_registry_publication_failure_reuses_completed_wrapped_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Arc::new(Provider::default());
+        let before: Vec<String>;
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            manager.open().unwrap();
+            *manager.fail_at.lock().unwrap() = Some("before-complete");
+            assert_eq!(
+                error(manager.open_scoped()).code,
+                "root-metadata-write-failed"
+            );
+            assert!(manager
+                .read_metadata()
+                .unwrap()
+                .unwrap()
+                .scope_registry_version
+                .is_none());
+            let db = rusqlite::Connection::open(dir.path().join("scope-keys.sqlite3")).unwrap();
+            before = db
+                .prepare("SELECT key_id FROM wrapped_scope_keys ORDER BY key_id")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+        }
+        let manager = scoped_manager(dir.path(), &provider);
+        manager.open_scoped().unwrap();
+        let db = rusqlite::Connection::open(dir.path().join("scope-keys.sqlite3")).unwrap();
+        let after: Vec<String> = db
+            .prepare("SELECT key_id FROM wrapped_scope_keys ORDER BY key_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            manager
+                .read_metadata()
+                .unwrap()
+                .unwrap()
+                .scope_registry_version,
+            Some(1)
+        );
     }
 }

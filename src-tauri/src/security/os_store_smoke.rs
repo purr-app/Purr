@@ -2,7 +2,10 @@
 //! Each invocation owns an unpredictable service and a temporary profile only.
 use super::manager::KeyManager;
 use serde::Deserialize;
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,6 +17,7 @@ struct FixtureIdentity {
 
 struct SyntheticOsEntry {
     directory: tempfile::TempDir,
+    data_directory: PathBuf,
     app_id: String,
     profile: String,
     cleaned: bool,
@@ -23,15 +27,17 @@ impl SyntheticOsEntry {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).expect("generate isolated smoke identity");
         let suffix: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+        let directory = tempfile::tempdir().expect("create isolated smoke profile");
         Self {
-            directory: tempfile::tempdir().expect("create isolated smoke profile"),
+            data_directory: directory.path().into(),
+            directory,
             app_id: format!("app.purr.synthetic-os-smoke.{suffix}"),
             profile: "test".into(),
             cleaned: false,
         }
     }
     fn path(&self) -> &Path {
-        self.directory.path()
+        &self.data_directory
     }
     fn manager(&self) -> KeyManager {
         KeyManager::new(
@@ -72,12 +78,127 @@ impl SyntheticOsEntry {
             .map_err(|_| "cannot address synthetic smoke entry for cleanup")?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {
+                if !matches!(entry.get_password(), Err(keyring::Error::NoEntry)) {
+                    return Err("synthetic smoke OS entry remains after cleanup");
+                }
                 self.cleaned = true;
                 Ok(())
             }
             Err(_) => Err("cannot remove synthetic smoke OS entry"),
         }
     }
+}
+
+#[test]
+#[ignore = "opt-in: creates and removes one unique synthetic macOS Keychain entry for storage v2"]
+fn real_macos_scoped_storage_reopens_isolated_keys_without_touching_old_profile() {
+    use super::ProtectionScope;
+
+    let mut fixture = SyntheticOsEntry::new();
+    fixture.data_directory = fixture.directory.path().join("storage-v2");
+    let old_files = [
+        ("root-key-v1", b"synthetic old root sentinel".as_slice()),
+        (
+            "local-state.sqlite3",
+            b"synthetic old database sentinel".as_slice(),
+        ),
+        (
+            "legacy-workspaces.encrypted",
+            b"synthetic old archive sentinel".as_slice(),
+        ),
+    ];
+    for (name, bytes) in old_files {
+        std::fs::write(fixture.directory.path().join(name), bytes)
+            .expect("write isolated old-profile sentinel");
+    }
+    let scopes = [
+        ProtectionScope::WorkspaceCredential {
+            workspace_id: "alpha".into(),
+        },
+        ProtectionScope::WorkspaceRuntime {
+            workspace_id: "alpha".into(),
+        },
+        ProtectionScope::WorkspaceCredential {
+            workspace_id: "beta".into(),
+        },
+        ProtectionScope::WorkspaceRuntime {
+            workspace_id: "beta".into(),
+        },
+        ProtectionScope::GlobalCredential,
+        ProtectionScope::GlobalRuntime,
+    ];
+    let context = "synthetic/scoped-os-smoke/v2";
+    let plaintext = b"synthetic scope-isolated value";
+    let ciphertexts = {
+        let manager = fixture.manager();
+        let keys = manager
+            .open_scoped()
+            .expect("initialize fresh synthetic scoped OS root");
+        for scope in &scopes[..4] {
+            keys.provision_scope(scope.clone())
+                .expect("provision synthetic workspace scope");
+        }
+        let encrypted: Vec<_> = scopes
+            .iter()
+            .map(|scope| {
+                keys.secrets
+                    .for_scope(scope.clone())
+                    .unwrap()
+                    .encrypt(plaintext, context)
+                    .expect("encrypt synthetic scoped value")
+            })
+            .collect();
+        for _ in 0..16 {
+            assert!(Arc::ptr_eq(&keys, &manager.open_scoped().unwrap()));
+            assert!(Arc::ptr_eq(&keys, &manager.retry_scoped().unwrap()));
+        }
+        assert!(keys.secrets.encrypt(plaintext, context).is_err());
+        assert!(!fixture.path().join("root-key-v1").exists());
+        encrypted
+    }; // No manager or cipher survives: this reopen goes through the real OS adapter.
+    {
+        let manager = fixture.manager();
+        let keys = manager
+            .open_scoped()
+            .expect("reopen scoped root from synthetic OS entry");
+        for (index, (scope, ciphertext)) in scopes.iter().zip(&ciphertexts).enumerate() {
+            let selected = keys.secrets.for_scope(scope.clone()).unwrap();
+            assert_eq!(selected.decrypt(ciphertext, context).unwrap(), plaintext);
+            assert!(selected.decrypt(ciphertext, "different-context").is_err());
+            assert!(keys
+                .database
+                .for_scope(scope.clone())
+                .unwrap()
+                .decrypt(ciphertext, context)
+                .is_err());
+            for (other, other_scope) in scopes.iter().enumerate() {
+                if other != index {
+                    assert!(keys
+                        .secrets
+                        .for_scope(other_scope.clone())
+                        .unwrap()
+                        .decrypt(ciphertext, context)
+                        .is_err());
+                }
+            }
+        }
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.path().join("root-key-metadata-v1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["scopeRegistryVersion"], 1);
+        assert_eq!(metadata["newVault"], true);
+        assert!(!fixture.path().join("root-key-v1").exists());
+    }
+    for (name, bytes) in old_files {
+        assert_eq!(
+            std::fs::read(fixture.directory.path().join(name)).unwrap(),
+            bytes
+        );
+    }
+    fixture
+        .cleanup()
+        .expect("remove and verify absence of exact synthetic scoped OS entry");
 }
 impl Drop for SyntheticOsEntry {
     fn drop(&mut self) {

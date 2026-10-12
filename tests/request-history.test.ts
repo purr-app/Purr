@@ -120,7 +120,7 @@ test("pin protects automatic retention but manual removal deletes pinned records
   assert.equal((await service.settings("different")).retentionDays, 30);
   await service.remove("workspace", { id: pinned.id });
   assert.equal((await service.list("workspace")).items.length, 0);
-  assert.ok(deletedSecrets.includes(`purr/workspace/history/${pinned.id}/`));
+  assert.ok(deletedSecrets.includes(`purr/workspace/runtime/history/${pinned.id}/`));
 });
 
 test("history retains file bytes when source document is absent", async () => {

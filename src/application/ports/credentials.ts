@@ -20,7 +20,10 @@ export class SecretUnavailableError extends Error {
     this.name = "SecretUnavailableError";
   }
 }
-export type SecretMutation = { ref: SecretRef; expectedRevision: number; value: string | null };
+export type SecretProtectionScope =
+  | { owner: "workspace"; workspaceId: string; kind: "credentials" | "runtime" }
+  | { owner: "global"; kind: "credentials" | "runtime" };
+export type SecretMutation = { scope: SecretProtectionScope; ref: SecretRef; expectedRevision: number; value: string | null };
 /** Transient plaintext input to a native transaction; never a project/local payload. */
 export type SecretBatch = { operationId: string; mutations: SecretMutation[] };
 export type CommitState = { operationId: string; status: "committed" | "aborted" | "recovery-required" | "missing" };

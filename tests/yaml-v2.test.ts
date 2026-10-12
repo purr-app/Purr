@@ -52,7 +52,7 @@ test("legacy row identity retains explicit IDs, duplicates, ordering and disable
 test("v2 reader rejects plaintext protected auth and sensitive headers, including disabled rows", () => {
   assert.throws(() => deserializeResourceFile(request({ auth: { type: "basic", username: "public", password: { kind: "plain", value: "protected" } } }, 2)), /Invalid Purr resource/);
   assert.throws(() => deserializeResourceFile(request({ headers: [{ id: "header", name: "X", sensitive: true, enabled: false, value: { kind: "plain", value: "protected" } }] }, 2)), /Invalid Purr resource/);
-  assert.throws(() => deserializeResourceFile(request({ headers: [{ id: "header", name: "X", value: { kind: "secret", ref: "purr/workspace-one/request/header" } }] }, 2)), /Invalid Purr resource/);
+  assert.throws(() => deserializeResourceFile(request({ headers: [{ id: "header", name: "X", value: { kind: "secret", ref: "purr/workspace-one/credentials/request/header" } }] }, 2)), /Invalid Purr resource/);
 });
 
 test("v2 rejects missing header IDs, duplicate IDs, malformed templates and future versions", () => {
@@ -75,7 +75,7 @@ test("workspace header IDs/scopes and auth pure references migrate coherently", 
 
 test("v1 known secret schema headers retain classification and sidecar paths while ordinary names do not infer protection", () => {
   const source = stringify({ purr: 1, kind: "schema", id: "schema", name: "Schema", source: { type: "introspection" }, pinned: "schemas/schema.graphql",
-    introspectionHeaders: [{ id: "known", name: "Custom", value: { kind: "secret", ref: "purr/workspace-one/schemas/schema/known" } },
+    introspectionHeaders: [{ id: "known", name: "Custom", value: { kind: "secret", ref: "purr/workspace-one/credentials/schemas/schema/known" } },
       { id: "ordinary", name: "Authorization", value: { kind: "plain", value: "user-public" } }] });
   const decoded = deserializeResourceFile(source, () => "type Query { public: String }");
   assert.ok(decoded.value.kind === "schema");
@@ -109,7 +109,7 @@ test("legacy development conversion retains source version and migration metadat
 });
 
 test("v1 compatibility serializer cannot silently downgrade v2 protected request headers", () => {
-  const decoded = deserializeResourceFile(request({ headers: [{ id: "header", name: "X", sensitive: true, value: { kind: "secret", ref: "purr/workspace-one/request/header" } }] }, 2));
+  const decoded = deserializeResourceFile(request({ headers: [{ id: "header", name: "X", sensitive: true, value: { kind: "secret", ref: "purr/workspace-one/credentials/request/header" } }] }, 2));
   assert.throws(() => serializeResource(decoded.value, undefined, 1), /legacy format/);
 });
 

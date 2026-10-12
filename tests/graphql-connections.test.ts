@@ -66,7 +66,7 @@ test("detach and deletion materialize settings while preserving saved and dirty 
   request.request.graphql.query = "query Dirty { ping }";
   request.savedRequest.graphql!.query = "query Saved { ping }";
   connection.endpoint = "https://updated.example/graphql";
-  connection.auth.secretRefs = { bearer: "purr/workspace/schemas/connection/bearer" };
+  connection.auth.secretRefs = { bearer: "purr/workspace/credentials/schemas/connection/bearer" };
   const detached = detachGraphqlSchema(request.request, connection);
   assert.equal(detached.url, connection.endpoint); assert.equal(detached.auth.type, "bearer");
   assert.equal(detached.auth.secretRefs, undefined); // independent owner on the next projection

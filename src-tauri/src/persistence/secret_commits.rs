@@ -1,6 +1,6 @@
 //! CAS-protected credential mutations and encrypted, idempotent operation receipts.
 use super::local_records::{LocalRecord, LocalStateStore};
-use crate::security::{validate_secret_ref, LocalCipher};
+use crate::security::{scoped::ProtectionScope, validate_secret_ref, LocalCipher};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,6 +14,8 @@ const MAX_REVISION: i64 = 9_007_199_254_740_991;
 pub struct SecretMutation {
     #[serde(rename = "ref")]
     pub reference: String,
+    #[serde(default)]
+    pub scope: Option<ProtectionScope>,
     pub expected_revision: i64,
     pub value: Option<String>,
 }
@@ -77,6 +79,11 @@ impl SecretBatch {
         let mut seen = BTreeSet::new();
         for mutation in &self.mutations {
             validate_secret_ref(&mutation.reference)?;
+            if let Some(scope) = &mutation.scope {
+                if *scope != ProtectionScope::from_secret_ref(&mutation.reference)? {
+                    return Err("Secret scope does not match its reference".into());
+                }
+            }
             if prefix
                 .as_ref()
                 .is_some_and(|prefix| !mutation.reference.starts_with(prefix))
@@ -118,15 +125,29 @@ pub(super) fn apply_mutations(
     batch: &SecretBatch,
 ) -> Result<(), String> {
     batch.validate(None)?;
-    // Validate the entire batch before publishing even its first row.
+    // Prepare every required cipher before publishing even the first row.
+    let mut prepared = Vec::with_capacity(batch.mutations.len());
     for mutation in &batch.mutations {
+        let selected = if cipher.is_scoped() {
+            let scope = mutation
+                .scope
+                .clone()
+                .ok_or("Secret protection scope is required")?;
+            if scope != ProtectionScope::from_secret_ref(&mutation.reference)? {
+                return Err("Secret scope does not match its reference".into());
+            }
+            cipher.for_scope(scope)?
+        } else {
+            cipher.clone()
+        };
+        prepared.push(selected);
         if revision(tx, &mutation.reference)? != mutation.expected_revision {
             return Err("Secret changed since preparation; reload before saving".into());
         }
     }
-    for mutation in &batch.mutations {
+    for (mutation, selected) in batch.mutations.iter().zip(prepared) {
         if let Some(value) = &mutation.value {
-            let sealed = cipher.seal(
+            let sealed = selected.seal(
                 value.as_bytes(),
                 &format!("purr:secret:v1|{}", mutation.reference),
             )?;
@@ -356,6 +377,7 @@ mod tests {
         SecretBatch {
             operation_id: id.into(),
             mutations: vec![SecretMutation {
+                scope: None,
                 reference: reference.into(),
                 expected_revision: revision,
                 value: value.map(str::to_owned),
@@ -419,6 +441,7 @@ mod tests {
         let store = LocalStateStore::open(&dir.path().join("state.db"), &key).unwrap();
         let mut changes = batch("atomic", "purr/workspace/auth/first", 0, Some("first"));
         changes.mutations.push(SecretMutation {
+            scope: None,
             reference: "purr/workspace/auth/second".into(),
             expected_revision: 8,
             value: Some("second".into()),

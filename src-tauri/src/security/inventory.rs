@@ -110,7 +110,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| corrupt())?;
-    if !(0..=6).contains(&version) {
+    if !(0..=7).contains(&version) {
         return Err(corrupt());
     }
     let mut statement = db
@@ -207,6 +207,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
         match marker.as_deref() {
             None => false,
             Some("hkdf-sha256-v1") => true,
+            Some("scoped-envelope-v2") if version == 7 => true,
             _ => return Err(corrupt()),
         }
     } else {
@@ -628,7 +629,7 @@ mod tests {
         fs::write(dir.path().join(DATABASE), b"corrupt").unwrap();
         assert!(EncryptedInventory::inspect(dir.path()).is_err());
         let (dir, db, _) = fixture();
-        db.execute_batch("PRAGMA user_version=7").unwrap();
+        db.execute_batch("PRAGMA user_version=8").unwrap();
         assert!(EncryptedInventory::inspect(dir.path()).is_err());
         let (dir, db, _) = fixture();
         db.execute_batch("CREATE TABLE unknown_ciphertext(payload BLOB)")

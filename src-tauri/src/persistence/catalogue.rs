@@ -65,7 +65,7 @@ pub fn load(
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(|_| "Project catalogue is unavailable")?;
-    if !(1..=6).contains(&version) {
+    if !(1..=7).contains(&version) {
         return Err("Unsupported project catalogue version".into());
     }
     let tx = db
@@ -142,7 +142,7 @@ pub fn check_attachment(
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| "Project catalogue is unavailable")?;
-    if !(1..=6).contains(&version) {
+    if !(1..=7).contains(&version) {
         return Err("Unsupported project catalogue version".into());
     }
     let cleanup:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_cleanup')",[],|row|row.get(0)).map_err(|_|"Project catalogue is unavailable")?;

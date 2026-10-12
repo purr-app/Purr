@@ -52,7 +52,7 @@ test("dirty current document requires a choice; create draft preserves its chang
 test("existing drafts can be replaced; deleted sources become new drafts without history credential aliases", () => {
   for (const deleted of [false, true]) {
     const { workspace, source, historical } = fixture(false);
-    historical.request.auth.secretRefs = { "bearer.token": "purr/ws/history/execution/editor/token" };
+    historical.request.auth.secretRefs = { "bearer.token": "purr/ws/runtime/history/execution/editor/token" };
     if (deleted) workspace.documents = workspace.documents.filter((document) => document.id !== source.id);
     const promoted = historyWorkingCopy(workspace, historical);
     assert.equal(historyNeedsReplacement(workspace, historical), !deleted);

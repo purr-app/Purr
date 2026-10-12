@@ -165,7 +165,7 @@ impl<'a> Builder<'a> {
             return json!({"kind":"template","value":value});
         }
         let reference = format!(
-            "purr/{}/imports/postman/{}",
+            "purr/{}/credentials/imports/postman/{}",
             self.workspace_id,
             self.id("secret", path)
         );
@@ -178,7 +178,7 @@ impl<'a> Builder<'a> {
         match value.filter(|value| !value.is_null()) {
             Some(value) => self.credential(&text(Some(value)), path),
             None => {
-                json!({"kind":"secret","ref":format!("purr/{}/imports/postman/{}",self.workspace_id,self.id("secret",path))})
+                json!({"kind":"secret","ref":format!("purr/{}/credentials/imports/postman/{}",self.workspace_id,self.id("secret",path))})
             }
         }
     }
@@ -205,7 +205,7 @@ impl<'a> Builder<'a> {
             let mut definition = json!({"id":self.id("variable", &pointer),"name":name,"kind":"static","enabled":variable.get("enabled").and_then(Value::as_bool).unwrap_or(true) && !variable.get("disabled").and_then(Value::as_bool).unwrap_or(false),"sensitive":sensitive});
             if sensitive {
                 // Secret variables always have a vault entry, including empty values and templates.
-                let reference = format!("purr/{}/imports/postman/{}", self.workspace_id, self.id("variable", &pointer));
+                let reference = format!("purr/{}/credentials/imports/postman/{}", self.workspace_id, self.id("variable", &pointer));
                 if variable.get("value").is_some_and(|value|!value.is_null()) { self.result.secrets.push(json!({"ref":reference,"value":value})); }
                 definition["secretRef"] = json!(reference);
             } else { definition["value"] = json!(value); }
@@ -334,7 +334,7 @@ impl<'a> Builder<'a> {
             // Query/form models stay unchanged. An explicitly marked source
             // field uses a sensitive static variable, including pure templates.
             let reference = format!(
-                "purr/{}/imports/postman/{}",
+                "purr/{}/credentials/imports/postman/{}",
                 self.workspace_id,
                 self.id("secret", path)
             );

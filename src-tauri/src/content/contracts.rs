@@ -130,6 +130,7 @@ pub enum ContentOperationResult {
 #[allow(dead_code)] // Constructed by native HTTP capture starting in Phase 6.
 #[derive(Clone, Debug)]
 pub struct ContentMetadata {
+    pub workspace_id: String,
     pub media_type: Option<String>,
     pub charset: Option<String>,
 }

@@ -122,6 +122,7 @@ impl Default for HttpClient {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpRequest {
+    workspace_id: String,
     #[serde(skip)]
     injected_trace_headers: Vec<(String, String)>,
     #[serde(default)]
@@ -262,13 +263,14 @@ fn request_error(error: reqwest::Error) -> String {
     .into()
 }
 
-fn content_metadata(headers: &[(String, String)]) -> ContentMetadata {
+fn content_metadata(workspace_id: &str, headers: &[(String, String)]) -> ContentMetadata {
     let Some(value) = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
         .map(|(_, value)| value)
     else {
         return ContentMetadata {
+            workspace_id: workspace_id.into(),
             media_type: None,
             charset: None,
         };
@@ -287,6 +289,7 @@ fn content_metadata(headers: &[(String, String)]) -> ContentMetadata {
             .filter(|value| !value.is_empty())
     });
     ContentMetadata {
+        workspace_id: workspace_id.into(),
         media_type,
         charset,
     }
@@ -354,6 +357,10 @@ pub async fn perform_http_with_files(
     if *cancellation.borrow() {
         return Err("Request cancelled.".into());
     }
+    crate::content::store::validate_workspace(&request.workspace_id)?;
+    content
+        .ensure_workspace(request.workspace_id.clone())
+        .await?;
     let url = http_url(&request.url)?;
     let injected_trace_headers = request.injected_trace_headers;
     if request.response_storage.protection != ResponseContentProtection::Encrypted {
@@ -471,7 +478,9 @@ pub async fn perform_http_with_files(
         total_bytes,
     });
 
-    let staging = content.create_staging(content_metadata(&headers)).await?;
+    let staging = content
+        .create_staging(content_metadata(&request.workspace_id, &headers))
+        .await?;
     let content_id = staging.id;
     let capture = async {
         let mut pending_bytes = Vec::with_capacity(WRITE_BATCH_BYTES);
@@ -673,6 +682,7 @@ mod tests {
 
     fn request(url: String) -> HttpRequest {
         HttpRequest {
+            workspace_id: "workspace".into(),
             trace_propagation: Default::default(),
             trace_headers: vec![],
             injected_trace_headers: vec![],
@@ -687,8 +697,64 @@ mod tests {
     }
 
     #[test]
+    fn native_request_requires_workspace_and_response_metadata_preserves_it() {
+        assert!(serde_json::from_value::<HttpRequest>(serde_json::json!({
+            "url": "https://example.test", "method": "GET", "headers": [], "bodyBase64": null
+        }))
+        .is_err());
+        assert_eq!(
+            content_metadata("workspace-a", &[]).workspace_id,
+            "workspace-a"
+        );
+        let metadata = content_metadata(
+            "workspace-b",
+            &[("Content-Type".into(), "text/plain; charset=utf-8".into())],
+        );
+        assert_eq!(metadata.workspace_id, "workspace-b");
+        assert_eq!(metadata.charset.as_deref(), Some("utf-8"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_workspace_is_rejected_before_network_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let ciphers = crate::security::RootCiphers::from_root(&[74; 32], false)
+            .unwrap()
+            .with_scope_keys(
+                &directory.path().join("scope-keys.sqlite3"),
+                "synthetic-transport-vault",
+            )
+            .unwrap();
+        let store = ResponseContentStore::open_with_ciphers(
+            &directory.path().join("local-state.sqlite3"),
+            &ciphers,
+        )
+        .unwrap();
+        let content = ResponseContentHandle::for_test(store).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (_, cancellation) = watch::channel(false);
+        let result = perform_http(
+            request(format!(
+                "http://{}/must-not-send",
+                listener.local_addr().unwrap()
+            )),
+            &Client::new(),
+            &content,
+            cancellation,
+            |_| {},
+        )
+        .await;
+        assert!(result.unwrap_err().contains("scope-key"));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
     fn transport_settings_default_and_validate_at_the_native_boundary() {
         let legacy: HttpRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace",
             "url": "https://example.test", "method": "GET", "headers": [], "bodyBase64": null
         }))
         .unwrap();
@@ -707,7 +773,7 @@ mod tests {
         }
         assert!(
             serde_json::from_value::<TransportSettings>(serde_json::json!({
-                "httpVersion": "http3"
+            "httpVersion": "http3"
             }))
             .is_err()
         );
@@ -894,6 +960,7 @@ mod tests {
     #[test]
     fn response_storage_policy_defaults_encrypted_and_accepts_future_plaintext_value() {
         let encrypted: HttpRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace",
             "url": "https://example.com",
             "method": "GET",
             "headers": [],
@@ -905,6 +972,7 @@ mod tests {
             ResponseContentProtection::Encrypted
         );
         let plaintext: HttpRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace",
             "url": "https://example.com",
             "method": "GET",
             "headers": [],
@@ -962,6 +1030,7 @@ mod tests {
             let (_, cancellation) = watch::channel(false);
             let result = perform_http_with_files(
                 HttpRequest {
+                    workspace_id: "workspace".into(),
                     url: format!("http://{address}/upload"),
                     trace_propagation: Default::default(),
                     trace_headers: vec![],
@@ -1027,6 +1096,7 @@ mod tests {
         let (_, cancellation) = watch::channel(false);
         let result = perform_http_with_files(
             HttpRequest {
+                workspace_id: "workspace".into(),
                 url: format!("http://{address}/multipart"),
                 trace_propagation: Default::default(),
                 trace_headers: vec![],
@@ -1076,6 +1146,7 @@ mod tests {
         let (_, cancellation) = watch::channel(false);
         let error = perform_http(
             HttpRequest {
+                workspace_id: "workspace".into(),
                 response_storage: ResponseStoragePolicy {
                     protection: ResponseContentProtection::Plaintext,
                 },
@@ -1114,6 +1185,7 @@ mod tests {
         let emitted = events.clone();
         let result = perform_http(
             HttpRequest {
+                workspace_id: "workspace".into(),
                 url: format!("http://{address}/echo"),
                 trace_propagation: Default::default(),
                 trace_headers: vec![],

@@ -383,6 +383,7 @@ mod tests {
             SecretBatch {
                 operation_id: "operation-test".into(),
                 mutations: vec![SecretMutation {
+                    scope: None,
                     reference: REF.into(),
                     expected_revision: 1,
                     value: Some(MARKER.into()),
@@ -720,6 +721,7 @@ mod tests {
             "committed"
         );
         let globals = SecretBatch::fresh(vec![SecretMutation {
+            scope: None,
             reference: "purr/global/variables/id".into(),
             expected_revision: 0,
             value: Some("global-marker".into()),

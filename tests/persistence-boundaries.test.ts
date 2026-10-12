@@ -68,8 +68,8 @@ test("inactive environment secrets are resolved on demand and saving does not ov
   workspace.environments = [{ id: "staging", name: "Staging", variables: [{ id: "stable", name: "password", kind: "static", value: "retained-secret", loaded: true, sensitive: true, enabled: true }] }];
   const projected = await projectAndCommit(workspace, secure);
   const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
-  assert.deepEqual(restored.environments[0].variables[0], { id: "stable", name: "password", enabled: true, sensitive: true, kind: "static", secretRef: "purr/backend/environments/staging/stable", value: "", loaded: false,
-    secretState: { ref: "purr/backend/environments/staging/stable", status: "unresolved", edit: { kind: "keep" } } });
+  assert.deepEqual(restored.environments[0].variables[0], { id: "stable", name: "password", enabled: true, sensitive: true, kind: "static", secretRef: "purr/backend/credentials/environments/staging/stable", value: "", loaded: false,
+    secretState: { ref: "purr/backend/credentials/environments/staging/stable", status: "unresolved", edit: { kind: "keep" } } });
   await projectAndCommit(restored, secure);
   const resolved = await resolveEnvironmentSecrets(restored.environments[0], secure);
   assert.equal(resolved.variables[0].kind === "static" ? resolved.variables[0].value : "", "retained-secret");
@@ -503,7 +503,7 @@ test("strict manifests upgrade omitted defaults but reject unknown keys; externa
   assert.deepEqual(manifest.headers, []); assert.deepEqual(manifest.auth, []);
   assert.deepEqual(deserializeManifest(serializeManifest(manifest)), manifest);
   assert.throws(() => deserializeManifest("purr: 1\nworkspace:\n  id: project\n  name: Project\n  activeDocument: user\n"), /Invalid/);
-  assert.throws(() => validateProject({ workspace: manifest, resources: [{ kind: "environment", id: "env", name: "env", variables: [{ id: "bad", name: "bad", enabled: true, sensitive: true, kind: "static", secretRef: "purr/other/credential" }] }] }), /belong to this workspace/);
+  assert.throws(() => validateProject({ workspace: manifest, resources: [{ kind: "environment", id: "env", name: "env", variables: [{ id: "bad", name: "bad", enabled: true, sensitive: true, kind: "static", secretRef: "purr/other/credentials/credential" }] }] }), /belong to this workspace/);
 });
 
 test("an empty environment survives compact YAML serialization", () => {
@@ -540,7 +540,7 @@ defaults:
         type: bearer
         token:
           kind: secret
-          ref: purr/project/auth/auth/bearer
+          ref: purr/project/credentials/auth/auth/bearer
         prefix: Bearer
         response:
           documentId: source
@@ -587,8 +587,8 @@ variables:
 
 test("invalid importer credential scope is rejected before writing any secret or resource", async () => {
   const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
-  await assert.rejects(persistImport({ workspace: { id: "project", name: "Project", headers: [], auth: [] }, resources: [], diagnostics: [], secrets: [{ ref: "purr/other/token", value: "secret" }] }, persistence), /scoped/);
-  assert.equal(await secure.exists("purr/other/token"), false); assert.equal(backend.writes.length, 0);
+  await assert.rejects(persistImport({ workspace: { id: "project", name: "Project", headers: [], auth: [] }, resources: [], diagnostics: [], secrets: [{ ref: "purr/other/credentials/token", value: "secret" }] }, persistence), /scoped/);
+  assert.equal(await secure.exists("purr/other/credentials/token"), false); assert.equal(backend.writes.length, 0);
 });
 
 test("response bodies and sent request credentials belong only to local executions, never Git files", async () => {

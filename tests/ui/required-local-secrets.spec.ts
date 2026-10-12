@@ -26,11 +26,11 @@ test("required secrets editor never prefills stored values and distinguishes emp
   await expect(page.getByText("Local value saved.", { exact: true })).toBeVisible();
   await expect(page.getByText("Available locally", { exact: true })).toBeVisible();
   const saved = await page.evaluate(() => (window as unknown as { secretFixture: { events: unknown[] } }).secretFixture.events);
-  expect(saved).toEqual([{ ref: "purr/secret-fixture/variables/token", value: "" }]);
+  expect(saved).toEqual([{ ref: "purr/secret-fixture/credentials/variables/token", value: "" }]);
   await page.getByRole("button", { name: `Remove local value for ${owner}`, exact: true }).click();
   await expect(page.getByText("Missing locally", { exact: true })).toBeVisible();
   const removed = await page.evaluate(() => (window as unknown as { secretFixture: { events: unknown[] } }).secretFixture.events);
-  expect(removed).toEqual([{ ref: "purr/secret-fixture/variables/token", value: "" }, { ref: "purr/secret-fixture/variables/token", value: null }]);
+  expect(removed).toEqual([{ ref: "purr/secret-fixture/credentials/variables/token", value: "" }, { ref: "purr/secret-fixture/credentials/variables/token", value: null }]);
   await expect(page.getByRole("button", { name: `Set value for ${owner}`, exact: true })).toBeEnabled();
 });
 
@@ -41,4 +41,17 @@ test("unknown protected baseline disables editing while retaining owner and retr
   await expect(page.getByRole("button", { name: `Remove local value for ${owner}`, exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Open owner", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toBeEnabled();
+});
+
+
+test("legacy local references direct the user to the owning field without allowing unscoped writes", async ({ page }) => {
+  await page.evaluate(() => (window as unknown as { secretFixture: { renderLegacy(): void } }).secretFixture.renderLegacy());
+  await expect(page.getByText(/reference belongs to an older storage format/)).toBeVisible();
+  await expect(page.getByRole("button", { name: `Set value for ${owner}`, exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Open owner", exact: true }).click();
+  const result = await page.evaluate(() => {
+    const fixture = (window as unknown as { secretFixture: { events: unknown[]; owners: string[] } }).secretFixture;
+    return { events: fixture.events, owners: fixture.owners };
+  });
+  expect(result.events).toEqual([]); expect(result.owners).toEqual(["token"]);
 });

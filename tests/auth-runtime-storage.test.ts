@@ -84,7 +84,7 @@ test("missing and empty pre-migration auth runtime do not prevent configured wor
 
 test("malformed or future auth runtime remains opaque while canonical project data opens read-only", async () => {
   for (const value of [{ entries: {}, definitions: [] }, { entries: [], definitions: {} }, { version: 99, entries: [], definitions: [] },
-    { version: 1, entries: [{ id: "http-auth", definitionHash: "hash", unknownToken: { kind: "secret", ref: "purr/another-workspace/token" } }] }]) {
+    { version: 1, entries: [{ id: "http-auth", definitionHash: "hash", unknownToken: { kind: "secret", ref: "purr/another-workspace/credentials/token" } }] }]) {
     const { workspace, backend, secure } = await fixture();
     await backend.writeLocal(workspace.id, [{ table: "workspace_local_state", id: "auth-runtime", value }]);
     const files = structuredClone(backend.snapshot.workspaces[0].files);

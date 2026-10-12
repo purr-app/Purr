@@ -36,7 +36,6 @@ struct RuntimeStorage {
     watcher: RecommendedWatcher,
     projects: PathBuf,
     data: PathBuf,
-    migration_snapshot: Option<Value>,
 }
 
 const PROJECT_RESOURCE_ROOTS: [&str; 8] = [
@@ -109,6 +108,7 @@ fn ready_watcher_rescan(deferred: &mut bool, pending: bool, rescan: bool) -> Opt
 
 fn valid_id(id: &str) -> Result<(), String> {
     if id.is_empty()
+        || matches!(id, "global" | "__global__")
         || id.len() > 128
         || !id
             .bytes()
@@ -205,7 +205,6 @@ impl RuntimeStorage {
             watcher,
             projects: data.join("projects"),
             data,
-            migration_snapshot: None,
         };
         // Cleanup is independent of commit recovery and never blocks startup.
         if let Ok(workspaces) = result.local.cleanup_workspaces() {
@@ -263,8 +262,18 @@ impl RuntimeStorage {
     }
     fn workspace(&mut self, id: &str) -> Result<Value, String> {
         self.recover()?;
-        self.local.prune_history(id)?;
-        Ok(json!({ "id": id, "files": self.files(id)?.load()?, "local": self.local.read(id)? }))
+        let files = self.files(id)?.load()?;
+        let protected = (|| {
+            self.local.validate_owner_keys(id)?;
+            self.local.prune_history(id)?;
+            self.local.read(id)
+        })();
+        match protected {
+            Ok(local) => Ok(json!({ "id": id, "files": files, "local": local })),
+            Err(_) => Ok(
+                json!({ "id": id, "files": files, "local": [], "protectedState": {"status":"corrupt", "code":"workspace-scope-unavailable"} }),
+            ),
+        }
     }
 }
 
@@ -340,6 +349,7 @@ fn snapshot(
     for (id, directory) in attached {
         if !ids.contains(id) {
             workspace_cleanup::ensure_available(&storage.local, id, directory)?;
+            storage.local.prepare_workspace_keys(id)?;
             storage.watch(id, directory.clone())?;
             ids.insert(id.clone());
         }
@@ -348,14 +358,20 @@ fn snapshot(
         .iter()
         .map(|id| storage.workspace(id))
         .collect::<Result<Vec<_>, _>>()?;
-    let legacy = if storage.local.app("legacy-migrated")?.is_none() {
-        crate::persistence::legacy::load_legacy(&storage.data.join("workspaces"))?
-    } else {
-        Value::Null
+    let (global, global_state) = match storage
+        .local
+        .validate_owner_keys("__global__")
+        .and_then(|_| storage.local.read("__global__"))
+    {
+        Ok(records) => (records, json!({"status":"available"})),
+        Err(_) => (
+            Vec::new(),
+            json!({"status":"corrupt","code":"global-scope-unavailable"}),
+        ),
     };
-    storage.migration_snapshot = (!legacy.is_null()).then(|| legacy.clone());
+    let old = crate::security::layout::deprecated_directory(&storage.data);
     Ok(
-        json!({"activeWorkspaceId":storage.local.app("active-workspace")?.unwrap_or_default(),"workspaces":workspaces,"global":storage.local.read("__global__")?,"legacy":legacy,"protectedState":{"status":"available"}}),
+        json!({"activeWorkspaceId":storage.local.app("active-workspace")?.unwrap_or_default(),"workspaces":workspaces,"global":global,"globalProtectedState":global_state,"protectedState":{"status":"available"},"storageNotice":old.map(|directory| json!({"legacyDirectory":directory.to_string_lossy()}))}),
     )
 }
 
@@ -531,6 +547,7 @@ pub fn commit_project(
         storage.recover_before_commit()?;
         let store = storage.files(&id)?;
         workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
+        storage.local.prepare_workspace_keys(&id)?;
         storage.watch(&id, store.directory.clone())?;
         commit_coordinator::commit(&mut storage.local, &store, &id, &files, &local, &batch)
     })
@@ -681,48 +698,9 @@ pub fn finish_legacy_migration(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
 ) -> Result<(), String> {
-    access(&app, &state, |storage| {
-        if storage.local.app("legacy-migrated")?.is_some() {
-            return Ok(());
-        }
-        let expected = storage
-            .migration_snapshot
-            .as_ref()
-            .ok_or("Load legacy data before completing migration")?;
-        for workspace in expected["workspaces"]
-            .as_array()
-            .ok_or("Invalid legacy snapshot")?
-        {
-            let id = workspace["id"]
-                .as_str()
-                .ok_or("Invalid legacy workspace ID")?;
-            if !storage
-                .local
-                .workspaces()?
-                .iter()
-                .any(|(registered, _)| registered == id)
-                || storage.files(id)?.read("purr.yaml")?.is_none()
-            {
-                return Err(
-                    "Legacy workspace has not been persisted; original files are preserved".into(),
-                );
-            }
-        }
-        let legacy_root = storage.data.join("workspaces");
-        if legacy_root.exists() {
-            let archive = storage.data.join("legacy-workspaces.encrypted");
-            crate::persistence::legacy::archive_and_retire(
-                &legacy_root,
-                &archive,
-                storage.local.cipher(),
-                expected,
-            )?;
-        }
-        storage.local.set_app("legacy-migrated", "1")?;
-        storage.migration_snapshot = None;
-        Ok(())
-    })
+    access(&app, &state, |_storage| Ok(()))
 }
+
 pub fn open_project_folder(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
@@ -777,6 +755,7 @@ pub fn attach_project_directory(
             }
             workspace_cleanup::ensure_available(&storage.local, &id, &path)?;
             // Registration follows successful frontend validation via a separate commit.
+            storage.local.prepare_workspace_keys(&id)?;
             storage.watch(&id, path)?;
             storage.workspace(&id)
         })())
@@ -853,6 +832,7 @@ mod watcher_tests {
         let committed = SecretBatch {
             operation_id: "old-committed".into(),
             mutations: vec![SecretMutation {
+                scope: None,
                 reference: "purr/first/auth/token".into(),
                 expected_revision: 0,
                 value: Some("old-value".into()),
@@ -882,7 +862,6 @@ mod watcher_tests {
             watcher: notify::recommended_watcher(|_| {}).unwrap(),
             projects: dir.path().join("projects"),
             data: dir.path().into(),
-            migration_snapshot: None,
         };
         let mut differing = committed.clone();
         differing.mutations[0].value = Some("different attempted value".into());
@@ -1005,7 +984,6 @@ id: external
             watcher: notify::recommended_watcher(|_| {}).unwrap(),
             projects: dir.path().join("projects"),
             data: dir.path().into(),
-            migration_snapshot: None,
         };
         let result = snapshot(
             &mut storage,

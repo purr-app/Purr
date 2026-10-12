@@ -29,6 +29,11 @@ export async function installPersistenceMock(page: Page) {
             return previous.result;
           }
           const revision = (ref: string) => revisions[ref] ?? (ref in secrets ? 1 : 0);
+          const protectionScope = (ref: string) => {
+            const match = /^purr\/([a-zA-Z0-9_-]+)\/(credentials|runtime)\/[a-zA-Z0-9_/-]+$/.exec(ref);
+            if (!match) throw new Error("Secret reference requires explicit protection scope");
+            return match[1] === "global" ? { owner: "global", kind: match[2] } : { owner: "workspace", workspaceId: match[1], kind: match[2] };
+          };
           // Synchronous publication models native transaction visibility only;
           // Rust tests own real SQLite/filesystem atomicity and crash recovery.
           const transaction = (batch: any, request: any, publish: () => any) => {
@@ -47,6 +52,9 @@ export async function installPersistenceMock(page: Page) {
                 if (seen.has(mutation.ref) || !/^purr\/[a-zA-Z0-9_/-]+$/.test(mutation.ref)
                   || !Number.isSafeInteger(mutation.expectedRevision) || mutation.expectedRevision < 0)
                   throw new Error("Invalid secret mutation");
+                const scope = protectionScope(mutation.ref);
+                if (!mutation.scope || scope.owner !== mutation.scope.owner || scope.kind !== mutation.scope.kind
+                  || scope.owner === "workspace" && scope.workspaceId !== mutation.scope.workspaceId) throw new Error("Secret protection scope mismatch");
                 seen.add(mutation.ref);
                 if (revision(mutation.ref) !== mutation.expectedRevision) throw new Error("Credential changed externally");
               }
@@ -180,6 +188,7 @@ export async function installPersistenceMock(page: Page) {
             if (command === "secure_get") return secrets[args.reference] ?? null;
             if (command === "secure_exists") return args.reference in secrets;
             if (command !== "secure_set" && command !== "secure_delete") return original(command, args);
+            protectionScope(args.reference);
             const nextRevision = revision(args.reference) + 1;
             if (command === "secure_set") secrets[args.reference] = args.value;
             else delete secrets[args.reference];

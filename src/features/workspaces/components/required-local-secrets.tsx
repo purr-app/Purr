@@ -1,3 +1,4 @@
+import { secretProtectionScope } from "../../../storage/secrets";
 import { protectedStorageMessage } from "../model/protected-storage-message";
 import { useEffect, useMemo, useState } from "react";
 import type { Project } from "../../../domain/project";
@@ -78,7 +79,9 @@ export function RequiredLocalSecrets({ workspace, project, globalVariables, secu
     {!inventory.items.length ? <p className="text-ui-sm text-content-tertiary">No local secret references are declared in the current definitions or working copies.</p> : <ul className="m-ui-0 list-none space-y-ui-3 p-ui-0">
       {inventory.items.map((item) => {
         const owner = item.usages[0];
-        const canEdit = available && Boolean(item.ref) && ["available", "missing"].includes(item.status.status) && !busy;
+        let scoped = false;
+        if (item.ref) try { secretProtectionScope(item.ref); scoped = true; } catch { /* Old project refs require an owner edit to publish a scoped identity. */ }
+        const canEdit = available && scoped && ["available", "missing"].includes(item.status.status) && !busy;
         const open = editing === item.key && canEdit;
         return <li key={item.key} className="space-y-ui-3 rounded-ui-lg border border-border-subtle p-ui-3">
           <div className="flex flex-wrap items-start justify-between gap-ui-3">
@@ -91,6 +94,7 @@ export function RequiredLocalSecrets({ workspace, project, globalVariables, secu
               {item.ref ? <Button type="button" variant="ghost" size="sm" disabled={!canEdit || item.status.status !== "available"} aria-label={`Remove local value for ${owner.ownerLabel}`} onClick={() => void commit(item, null)}>Remove local value</Button> : null}
             </div>
           </div>
+          {item.ref && !scoped ? <p className="m-ui-0 text-ui-xs text-content-secondary">This reference belongs to an older storage format. Choose Open owner, enter the value in its field, then save to create a new local secret.</p> : null}
           <ul className="m-ui-0 list-none space-y-ui-1 p-ui-0 text-ui-xs text-content-tertiary">{item.usages.map((usage, index) => <li key={`${usage.ownerId}:${usage.field}:${usage.environmentId}:${index}`}>{usage.ownerLabel} · {usage.field}{usage.environmentLabel ? ` · ${usage.environmentLabel}` : ""}{!usage.enabled ? " · Disabled" : ""}</li>)}</ul>
           {open ? <form className="space-y-ui-3" onSubmit={(event) => { event.preventDefault(); void commit(item, value); }}>
             <FormField secret label={`New local value for ${owner.ownerLabel}`} value={value} onChange={(event) => setValue(event.target.value)} hint="An empty value is valid. Saving an empty value does not remove it." />

@@ -1,3 +1,5 @@
+import { integrationCredentialRef, integrationTokenRef, integrationTokenRecord, readIntegrationCredential } from "./auth-storage";
+import { secretProtectionScope } from "../storage/secrets";
 import type { ApplicationServices } from "../app/composition/application-services";
 import type { IntegrationDefinition } from "../domain/project";
 import { createRequestAuth, normalizeRequestAuth, resolveAuth, type AuthContext } from "../features/request-workbench/model/request-auth";
@@ -10,9 +12,9 @@ export async function prepareIntegrationConnection(integration: IntegrationDefin
   if (typeof integration.config.endpoint !== "string") return undefined;
   let auth = createRequestAuth();
   if (integration.config.auth === "request") {
-    const ref = `purr/${workspaceId}/integrations/${integration.id}/auth`;
+    const ref = integrationTokenRef(workspaceId, integration.id);
     const snapshot = await services.secureStore.read(ref);
-    const stored = snapshot.value;
+    const stored = await readIntegrationCredential(services.secureStore, workspaceId, integration.id, "auth");
     if (!stored) throw new Error("Integration authentication is unavailable. Open its settings to configure it.");
     auth = normalizeRequestAuth(JSON.parse(stored));
     const resolved = resolveAuth(auth, context);
@@ -28,13 +30,13 @@ export async function prepareIntegrationConnection(integration: IntegrationDefin
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         if (normalizeRequestAuth(JSON.parse(stored)).type !== "inherit") await services.secureStore.commit({
           operationId: crypto.randomUUID(),
-          mutations: [{ ref, value: JSON.stringify(auth), expectedRevision: snapshot.revision }],
+          mutations: [{ ref, scope: secretProtectionScope(ref), value: integrationTokenRecord(stored, next), expectedRevision: snapshot.revision }],
         });
       }
     }
   } else if (integration.config.auth === "bearer") {
     auth.type = "bearer";
-    auth.bearer.token = await services.secureStore.get(`purr/${workspaceId}/integrations/${integration.id}/apiToken`) ?? "";
+    auth.bearer.token = await services.secureStore.get(integrationCredentialRef(workspaceId, integration.id, "apiToken")) ?? "";
   }
   const { request } = await prepareWireRequest({ ...initialRequestDraft, url: integration.config.endpoint, auth }, context);
   if (signal.aborted) throw new DOMException("Cancelled", "AbortError");

@@ -1,3 +1,4 @@
+import { integrationCredentialRef, readIntegrationCredential, stageIntegrationCredential } from "../../../integrations/auth-storage";
 import { RequiredLocalSecrets, type RequiredLocalSecretsProps } from "./required-local-secrets";
 import type { SecretFieldState } from "../../../application/ports/credentials";
 import { Modal } from "../../../shared/components/ui/modal";
@@ -282,18 +283,18 @@ export function WorkspaceSettings({
                     onCancel={closeIntegrationEditor}
                     getCredential={async (key) => {
                       if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                      return editingSecrets.get(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`);
+                      return readIntegrationCredential(editingSecrets, workspaceId, editingIntegration.id, key);
                     }}
                     setCredential={async (key, value) => {
                       if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                      await editingSecrets.set(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`, value);
+                      await stageIntegrationCredential(editingSecrets, workspaceId, editingIntegration.id, key, value);
                     }}
                     onSave={async (value) => {
                       if (value.id !== editingIntegration.id || value.provider !== editingIntegration.provider) throw new Error("Integration identity cannot change");
                       const normalized = await observability.validateConfig(value.provider, value.configVersion, value.config);
                       const credentials = { ...value.credentials };
                       for (const key of integrationPresentation?.credentialKeys ?? []) {
-                        const ref = `purr/${workspaceId}/integrations/${value.id}/${key}`;
+                        const ref = integrationCredentialRef(workspaceId, value.id, key);
                         if (await editingSecrets.exists(ref)) credentials[key] = { kind: "secret", ref };
                       }
                       await onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }), editingSecrets);

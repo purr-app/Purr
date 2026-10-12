@@ -1,3 +1,4 @@
+import { workspaceHttpTransport } from "../request-workbench/services/workspace-http-transport";
 import { protectedStorageMessage } from "./model/protected-storage-message";
 import { invalidateSecretBuffers } from "../../application/invalidate-secret-buffers";
 import type { SecretPreparationStore } from "../../storage/secrets";
@@ -50,7 +51,7 @@ import { ImportReportDialog } from "./components/import-report-dialog";
 import { importEnvironment as importEnvironmentSource } from "../../application/import-environment";
 import type { ImportSource, ImportReport } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
-import { useApplicationServices } from "../../app/application-services-context";
+import { ApplicationServicesProvider, useApplicationServices } from "../../app/application-services-context";
 import { useExtensionRegistry } from "../../extension-api/extension-context";
 import {
   selectSidebarActivity,
@@ -146,9 +147,9 @@ function mergeVariableCache(workspace: Workspace, incoming: Workspace["dynamicVa
 export function WorkspaceWorkbench() {
   const updates = useUpdates();
   const [tabStates] = useState(() => new TabStateStore());
-  const services = useApplicationServices();
+  const rootServices = useApplicationServices();
   const extensions = useExtensionRegistry();
-  const { persistence } = services;
+  const { persistence } = rootServices;
   const historyRevision = useSyncExternalStore(persistence.history?.subscribe ?? noHistorySubscription, persistence.history?.getSnapshot ?? noHistoryRevision);
   const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage } = useWorkspaces();
   useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
@@ -173,6 +174,23 @@ export function WorkspaceWorkbench() {
   const { notify, dismiss } = useToasts();
   const [retryingSave, setRetryingSave] = useState(false);
   useEffect(() => {
+    if (!store) return;
+    const notice = persistence.getStorageNotice();
+    if (!notice) return;
+    const marker = `purr-storage-v2-notice:${notice.legacyDirectory}`;
+    try { if (localStorage.getItem(marker)) return; } catch { /* Notice remains dismissible for this session. */ }
+    notify({ id: "storage-v2-start", title: "Fresh protected storage", duration: 0,
+      description: `Purr now uses a new protected workspace store. Previous workspaces remain in ${notice.legacyDirectory}. You can create new workspaces or attach project folders; previous local secrets and history are not imported.`,
+      onClose: () => { try { localStorage.setItem(marker, "seen"); } catch { /* No storage fallback. */ } },
+    });
+  }, [store, persistence, notify]);
+  useEffect(() => {
+    if (!store) return;
+    const state = persistence.getGlobalProtectedState();
+    if (state.status === "available") { dismiss("global-storage-unavailable"); return; }
+    notify({ id: "global-storage-unavailable", title: "Global variables unavailable", variant: "warning", description: protectedStorageMessage(state) });
+  }, [store, persistence, notify, dismiss]);
+  useEffect(() => {
     if (!actionError) { dismiss("workspace-action-error"); return; }
     notify({ id: "workspace-action-error", title: "Action failed", description: actionError, variant: "error", onClose: () => setActionError("") });
   }, [actionError, notify, dismiss]);
@@ -186,6 +204,10 @@ export function WorkspaceWorkbench() {
     });
   }, [saveError, saveNeedsRecovery, retryingSave, retrySave, notify, dismiss]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  const services = useMemo(() => workspace?.id ? {
+    ...rootServices,
+    httpTransport: workspaceHttpTransport(rootServices.httpTransport, workspace.id),
+  } : rootServices, [rootServices, workspace?.id]);
   const workspaceStatus = workspace ? persistence.getWorkspaceStatus(workspace.id) : undefined;
   const writable = !workspaceStatus || workspaceStatus.protectedState.status === "available";
   useEffect(() => {
@@ -739,7 +761,7 @@ export function WorkspaceWorkbench() {
     setVariableScope(`environment:${imported.environmentId}`); setVariableSelection(null); setVariableDraft(null);
     setDialog(null); setImportResult(imported.report);
   };
-  return <div role="region" aria-label="Workspace" aria-busy={saving} className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
+  return <ApplicationServicesProvider services={services}><div role="region" aria-label="Workspace" aria-busy={saving} className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} variablesActive={workspace.ui.variablesTabActive} onCookies={openCookies} onVariables={() => openVariables("effective", null, null)}
       onNewWorkspace={() => setDialog("new-workspace")}
@@ -826,9 +848,10 @@ export function WorkspaceWorkbench() {
               if (result.cleanupPending) setActionError("Workspace removed. Its folder could not be cleaned up yet; Purr will retry on restart.");
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
-          : workspace.ui.variablesTabActive ? <VariablesExplorer onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
+          : workspace.ui.variablesTabActive ? <VariablesExplorer globalAvailable={persistence.getGlobalProtectedState().status === "available"} onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
             onSaveVariables={async (scope, variables) => {
               if (scope === "global") {
+                if (persistence.getGlobalProtectedState().status !== "available") throw new Error("Global protected storage is unavailable. Retry before editing global variables.");
                 const savedWorkspace = await saveWithConfirmation(workspace);
                 const renames = variableRenames(store.globalVariables, variables);
                 const globalVariables = renameVariableDefinitions(variables, renames);
@@ -999,8 +1022,10 @@ export function WorkspaceWorkbench() {
       </div>
     </Modal>}
     {dialog === "palette" && <CommandPalette workspace={workspace} actions={actions} onOpenDocument={(id) => update((current) => previewDocument(current, id))} onClose={() => setDialog(null)} />}
-    {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={(name) => {
+    {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={async (name) => {
       const created = createWorkspace(name);
+      await flush();
+      await persistence.save({ ...store, activeWorkspaceId: created.id, workspaces: [...store.workspaces, created] });
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
@@ -1034,5 +1059,5 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.id === folder.id && resource.kind === "folder" ? { ...resource, name } : resource) })); setDialog(null);
       }} /> : null;
     })()}
-  </div>;
+  </div></ApplicationServicesProvider>;
 }

@@ -69,6 +69,11 @@ impl ResponseContentHandle {
             .map_err(|_| "Response storage worker stopped")?
     }
 
+    pub async fn ensure_workspace(&self, workspace: String) -> Result<(), String> {
+        self.call(move |store| store.ensure_workspace(&workspace))
+            .await
+    }
+
     pub async fn create_staging(
         &self,
         metadata: ContentMetadata,

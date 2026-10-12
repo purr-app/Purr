@@ -26,7 +26,7 @@ test("memory protected snapshots preserve opaque records through unavailable loa
 test("native adapters preserve typed resolution, hide IPC errors, and refresh canonical cache on retry", async () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  const reference = "purr/workspace/credential";
+  const reference = "purr/workspace/credentials/credential";
   let result: SecretResolution = { status: "missing", revision: 3 };
   let fail = false;
   const seen: string[] = [];

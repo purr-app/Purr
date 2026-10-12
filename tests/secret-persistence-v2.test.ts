@@ -38,7 +38,7 @@ function legacySnapshot(): StorageSnapshot {
   const files: Record<string, string> = {
     "purr.yaml": "purr: 1\nworkspace:\n  id: legacy-secret\n  name: Legacy fixture\n",
     "documents/basic.yaml": "purr: 1\nkind: http\nid: legacy-basic\nname: Legacy Basic\nmethod: GET\nurl: http://127.0.0.1:18765/basic\nheaders:\n  - name: X-Public\n    value: '{{PUBLIC}}'\nauth:\n  type: basic\n  username: purr-test\n  password:\n    kind: plain\n    value: legacy-password-{{suffix}}\n",
-    "documents/untouched.yaml": "purr: 1\nkind: http\nid: untouched\nname: Untouched Bearer\nmethod: GET\nurl: http://127.0.0.1:18765/bearer\nauth:\n  type: bearer\n  token:\n    kind: secret\n    ref: purr/legacy-secret/requests/untouched/saved/bearer\n",
+    "documents/untouched.yaml": "purr: 1\nkind: http\nid: untouched\nname: Untouched Bearer\nmethod: GET\nurl: http://127.0.0.1:18765/bearer\nauth:\n  type: bearer\n  token:\n    kind: secret\n    ref: purr/legacy-secret/credentials/requests/untouched/saved/bearer\n",
     "integrations/opaque.yaml": "purr: 1\nkind: integration\nid: opaque\nname: Opaque provider\nprovider: private.example\nconfigVersion: 7\nconfig:\n  emptyList: []\n  nested: { enabled: true, body: { type: none } }\ncredentials: {}\n",
     "schemas/api.yaml": "purr: 1\nkind: api-schema\nid: original-api\nname: Original API\nformat: openapi-3\nsource: { type: text, location: fixture }\nschema: schemas/original.openapi\n",
     "schemas/original.openapi": "openapi: 3.0.3\ninfo: { title: Synthetic, version: 1.0.0 }\npaths: {}\n# preserve original source bytes\n",
@@ -127,7 +127,7 @@ test("missing refs survive unrelated saves; intentionally empty and explicit del
 
 test("v1 opening and layout autosave preserve canonical bytes and saved credential ownership", async () => {
   const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); backend.snapshot = legacySnapshot();
-  const reference = "purr/legacy-secret/requests/untouched/saved/bearer";
+  const reference = "purr/legacy-secret/credentials/requests/untouched/saved/bearer";
   await secure.set(reference, "synthetic-existing-token"); const before = await secure.read(reference);
   const original = structuredClone(backend.snapshot.workspaces[0].files);
   const persistence = new WorkspacePersistence(backend, secure); const store = await persistence.load();
@@ -138,7 +138,7 @@ test("v1 opening and layout autosave preserve canonical bytes and saved credenti
   await persistence.save(store);
   assert.deepEqual(backend.snapshot.workspaces[0].files, original); assert.equal(backend.writes.length, 0);
   assert.deepEqual(await secure.read(reference), before);
-  assert.equal(await secure.get("purr/legacy-secret/requests/legacy-basic/saved/password"), null);
+  assert.equal(await secure.get("purr/legacy-secret/credentials/requests/legacy-basic/saved/password"), null);
 });
 
 test("explicit v1 upgrade publishes every YAML at v2 together and a rejected commit leaves originals and secrets untouched", async () => {
@@ -149,7 +149,7 @@ test("explicit v1 upgrade publishes every YAML at v2 together and a rejected com
   backend.commit = async (...args) => { rejectedPlans.push(args); throw new CommitRejectedError("Injected upgrade rejection"); };
   await assert.rejects(persistence.upgradeWorkspace(workspace), /Injected upgrade rejection/);
   assert.deepEqual(backend.snapshot, before); assert.equal(persistence.getWorkspaceStatus(workspace.id).sourceVersion, 1);
-  assert.equal(await secure.get("purr/legacy-secret/requests/legacy-basic/saved/password"), null);
+  assert.equal(await secure.get("purr/legacy-secret/credentials/requests/legacy-basic/saved/password"), null);
   const plans: Parameters<typeof backend.commit>[] = [];
   backend.commit = async (...args) => { plans.push(args); return commit(...args); };
   await persistence.upgradeWorkspace(workspace);
@@ -174,7 +174,7 @@ test("explicit v1 upgrade publishes every YAML at v2 together and a rejected com
   assert.equal(persistence.getWorkspaceStatus(workspace.id).sourceVersion, 2);
   assert.equal(persistence.getWorkspaceStatus(workspace.id).migrationRequired, false);
   assert.ok(!JSON.stringify(backend.snapshot).includes("legacy-password-{{suffix}}"));
-  assert.equal(await secure.get("purr/legacy-secret/requests/legacy-basic/saved/password"), "legacy-password-{{suffix}}");
+  assert.equal(await secure.get("purr/legacy-secret/credentials/requests/legacy-basic/saved/password"), "legacy-password-{{suffix}}");
 });
 
 test("canonical-only degraded loading and autosave leave opaque local records and the vault untouched", async () => {

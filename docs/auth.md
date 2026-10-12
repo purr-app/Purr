@@ -128,3 +128,7 @@ A Schema Connection owns an auth configuration and uses the existing AuthEditor,
 A GraphQL request can use `auth: {type: inherit, source: schema}` with `graphql.schemaId`, inherit a workspace profile, supply its own credentials, or explicitly choose None. Connection auth can inherit a workspace profile. Explicit None is not replaced by GraphQL workspace defaults. Auth inheritance is resolved through the same cycle-checked resolver used for ordinary requests.
 
 Interactive OAuth acquisition updates the owning connection or inherited workspace profile; connection token runtime is protected in local session state and canonical YAML contains only configuration/SecretRefs. Dependency OAuth remains execution-local. Detaching a request copies current connection auth configuration into independent request ownership. Connection drafts and inactive auth forms are protected as well as saved definitions.
+
+## Credential and runtime ownership
+
+Saved auth expressions use the workspace credential scope. Draft/inactive/working/history copies, OAuth tokens and cookies use an independent workspace runtime scope. Integration auth configuration stores the active saved credential definition without OAuth tokens; a separate runtime snapshot preserves inactive editor values and tokens. Runtime tokens are merged only when their definition matches the current configuration, and refresh publishes to the runtime reference with revision preconditions. Workspace credential-key recovery cannot unlock these runtime records.

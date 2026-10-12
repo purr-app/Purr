@@ -29,11 +29,11 @@ pub fn adopt_content(
         .optional()
         .map_err(|_| "Cannot inspect response content")?;
     match existing {
-        // Phase 2 already preserved opaque references before the native store
-        // existed. Keep those records readable; only locally known content can
-        // be adopted and validated against its stored metadata.
-        None => Ok(()),
-        Some((None, None, length, state)) if state == "ready" && length == expected_length => {
+        // Adoption requires locally known content with authenticated ownership.
+        None => Err("Response content is unavailable".into()),
+        Some((Some(owner), None, length, state))
+            if owner == workspace && state == "ready" && length == expected_length =>
+        {
             let changed = transaction
                 .execute(
                     "UPDATE response_contents

@@ -32,6 +32,8 @@ export type StoredWorkspace = {
   protectedState?: ProtectedState;
 };
 export type StorageSnapshot = {
+  globalProtectedState?: ProtectedState;
+  storageNotice?: { legacyDirectory: string } | null;
   activeWorkspaceId: string;
   workspaces: StoredWorkspace[];
   global?: LocalRecord[];

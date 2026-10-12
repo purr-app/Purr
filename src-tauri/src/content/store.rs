@@ -10,7 +10,7 @@ use super::{
 use crate::security::{inventory::EncryptedInventory, RootKeyStore};
 use crate::{
     persistence::local_records::LocalStateStore,
-    security::{LocalCipher, RootCiphers},
+    security::{LocalCipher, ProtectionScope, RootCiphers},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use regex::bytes::RegexBuilder;
@@ -110,11 +110,38 @@ impl ResponseContentStore {
         Ok(store)
     }
 
+    pub fn ensure_workspace(&self, workspace: &str) -> Result<(), String> {
+        self.workspace_cipher(workspace).map(|_| ())
+    }
+
+    fn workspace_cipher(&self, workspace: &str) -> Result<LocalCipher, String> {
+        validate_workspace(workspace)?;
+        self.cipher.for_scope(ProtectionScope::WorkspaceRuntime {
+            workspace_id: workspace.into(),
+        })
+    }
+
+    fn workspace(&self, id: &str) -> Result<String, String> {
+        validate_id(id)?;
+        let owner: Option<String> = self
+            .db
+            .query_row(
+                "SELECT workspace_id FROM response_contents WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Cannot read response content ownership")?;
+        let workspace = owner.ok_or("Response content has no workspace owner")?;
+        validate_workspace(&workspace)?;
+        Ok(workspace)
+    }
+
     #[allow(dead_code)] // Native HTTP starts using the writer API in Phase 6.
     pub fn create_staging(
         &mut self,
         metadata: ContentMetadata,
     ) -> Result<ResponseContentRef, String> {
+        self.ensure_workspace(&metadata.workspace_id)?;
         self.cleanup_expired(now_seconds())?;
         let mut random = [0_u8; 16];
         getrandom::fill(&mut random).map_err(|_| "Cannot generate response content ID")?;
@@ -127,8 +154,8 @@ impl ResponseContentStore {
         );
         let created_at = now_seconds();
         self.db.execute(
-            "INSERT INTO response_contents(id,state,byte_length,media_type,charset,created_at,expires_at) VALUES(?1,'staging',0,?2,?3,?4,?5)",
-            params![id, metadata.media_type, metadata.charset, created_at, created_at + self.limits.staging_ttl_seconds],
+            "INSERT INTO response_contents(id,workspace_id,state,byte_length,media_type,charset,created_at,expires_at) VALUES(?1,?6,'staging',0,?2,?3,?4,?5)",
+            params![id, metadata.media_type, metadata.charset, created_at, created_at + self.limits.staging_ttl_seconds, metadata.workspace_id],
         ).map_err(|_| "Cannot create response content")?;
         self.reference(&id)
     }
@@ -139,6 +166,8 @@ impl ResponseContentStore {
         if bytes.is_empty() {
             return Ok(ContentWriteTiming::default());
         }
+        let workspace = self.workspace(id)?;
+        let cipher = self.workspace_cipher(&workspace)?;
         let started = Instant::now();
         let mut encryption = Duration::ZERO;
         let (state, mut offset): (String, u64) = self
@@ -183,9 +212,9 @@ impl ResponseContentStore {
             .map_err(|_| "Cannot write response content")?;
         for (relative_index, chunk) in bytes.chunks(self.limits.chunk_bytes).enumerate() {
             let index = first_index + relative_index as u64;
-            let aad = chunk_aad(id, index, offset, chunk.len() as u64);
+            let aad = chunk_aad(&workspace, id, index, offset, chunk.len() as u64);
             let encryption_started = Instant::now();
-            let sealed = self.cipher.seal(chunk, &aad)?;
+            let sealed = cipher.seal(chunk, &aad)?;
             encryption += encryption_started.elapsed();
             transaction.execute(
                 "INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6,?7)",
@@ -356,6 +385,8 @@ impl ResponseContentStore {
         let end = offset.saturating_add(length).min(reference.byte_length);
         let mut bytes = Vec::with_capacity((end.saturating_sub(offset)) as usize);
         let mut expected_offset = offset;
+        let workspace = self.workspace(id)?;
+        let cipher = self.workspace_cipher(&workspace)?;
         let mut statement = self.db.prepare(
             "SELECT chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext FROM response_content_chunks WHERE content_id=?1 AND plain_offset < ?3 AND plain_offset + plain_length > ?2 ORDER BY chunk_index",
         ).map_err(|_| "Cannot read response content")?;
@@ -374,11 +405,11 @@ impl ResponseContentStore {
         for row in chunks {
             let (index, offset, length, version, nonce, ciphertext) =
                 row.map_err(|_| "Cannot read response content")?;
-            let plain = self.cipher.open_sealed(
+            let plain = cipher.open_sealed(
                 version,
                 &nonce,
                 &ciphertext,
-                &chunk_aad(id, index, offset, length),
+                &chunk_aad(&workspace, id, index, offset, length),
             )?;
             if plain.len() as u64 != length {
                 return Err("Response content chunk is damaged".into());
@@ -749,7 +780,7 @@ impl ResponseContentStore {
             "xml" => "application/xml",
             _ => "text/plain",
         };
-        self.text_operation_result(output, media_type)
+        self.text_operation_result(id, output, media_type)
     }
 
     pub fn query(
@@ -778,7 +809,7 @@ impl ResponseContentStore {
         if encoded.len() <= INLINE_OPERATION_RESULT_BYTES {
             return Ok(ContentOperationResult::Value { value });
         }
-        self.derived_content_result(encoded, "application/json")
+        self.derived_content_result(id, encoded, "application/json")
     }
 
     fn read_operation_content(&self, id: &str) -> Result<Vec<u8>, String> {
@@ -802,6 +833,7 @@ impl ResponseContentStore {
 
     fn text_operation_result(
         &mut self,
+        source_id: &str,
         bytes: Vec<u8>,
         media_type: &str,
     ) -> Result<ContentOperationResult, String> {
@@ -817,15 +849,17 @@ impl ResponseContentStore {
                 },
             });
         }
-        self.derived_content_result(bytes, media_type)
+        self.derived_content_result(source_id, bytes, media_type)
     }
 
     fn derived_content_result(
         &mut self,
+        source_id: &str,
         bytes: Vec<u8>,
         media_type: &str,
     ) -> Result<ContentOperationResult, String> {
         let reference = self.create_staging(ContentMetadata {
+            workspace_id: self.workspace(source_id)?,
             media_type: Some(media_type.into()),
             charset: Some("utf-8".into()),
         })?;
@@ -896,9 +930,22 @@ fn now_seconds() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
-fn chunk_aad(id: &str, index: u64, offset: u64, length: u64) -> String {
-    format!("purr:response-content:v1|{id}|{index}|{offset}|{length}")
+fn chunk_aad(workspace: &str, id: &str, index: u64, offset: u64, length: u64) -> String {
+    format!("purr:response-content:v2|{workspace}|{id}|{index}|{offset}|{length}")
 }
+pub(crate) fn validate_workspace(workspace: &str) -> Result<(), String> {
+    if workspace.is_empty()
+        || workspace.len() > 128
+        || !workspace
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+    {
+        Err("Invalid response workspace identifier".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_id(id: &str) -> Result<(), String> {
     if id.starts_with("content-")
         && id.len() <= 128
@@ -931,6 +978,182 @@ mod tests {
         )
         .unwrap();
         (directory, root, store)
+    }
+
+    fn scoped_store() -> (tempfile::TempDir, RootCiphers, ResponseContentStore) {
+        let directory = tempfile::tempdir().unwrap();
+        let ciphers = RootCiphers::from_root(&[73; 32], false)
+            .unwrap()
+            .with_scope_keys(
+                &directory.path().join("scope-keys.sqlite3"),
+                "synthetic-content-vault",
+            )
+            .unwrap();
+        for workspace in ["workspace-a", "workspace-b"] {
+            ciphers
+                .provision_scope(ProtectionScope::WorkspaceRuntime {
+                    workspace_id: workspace.into(),
+                })
+                .unwrap();
+        }
+        let content = ResponseContentStore::open_with_ciphers(
+            &directory.path().join("local-state.sqlite3"),
+            &ciphers,
+        )
+        .unwrap();
+        (directory, ciphers, content)
+    }
+
+    fn owned_content(
+        store: &mut ResponseContentStore,
+        workspace: &str,
+        bytes: &[u8],
+    ) -> ResponseContentRef {
+        let reference = store
+            .create_staging(ContentMetadata {
+                workspace_id: workspace.into(),
+                media_type: Some("application/json".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        store.append(&reference.id, bytes).unwrap();
+        store.finish(&reference.id).unwrap()
+    }
+
+    #[test]
+    fn workspace_and_content_substitution_fail_with_scoped_chunks() {
+        let (_directory, _ciphers, mut store) = scoped_store();
+        let a = owned_content(&mut store, "workspace-a", b"private-a");
+        let b = owned_content(&mut store, "workspace-b", b"private-b");
+        let c = owned_content(&mut store, "workspace-a", b"private-c");
+        assert_eq!(store.workspace(&a.id).unwrap(), "workspace-a");
+        let version: i64 = store
+            .db
+            .query_row(
+                "SELECT crypto_version FROM response_content_chunks WHERE content_id=?1",
+                [&a.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 2);
+        store
+            .db
+            .execute(
+                "UPDATE response_contents SET workspace_id='workspace-b' WHERE id=?1",
+                [&a.id],
+            )
+            .unwrap();
+        assert!(store.read_plain_range(&a.id, 0, 9).is_err());
+        store
+            .db
+            .execute(
+                "UPDATE response_contents SET workspace_id='workspace-a' WHERE id=?1",
+                [&a.id],
+            )
+            .unwrap();
+        assert_eq!(store.read_plain_range(&a.id, 0, 9).unwrap(), b"private-a");
+        store.db.execute("UPDATE response_content_chunks SET nonce=(SELECT nonce FROM response_content_chunks WHERE content_id=?2),ciphertext=(SELECT ciphertext FROM response_content_chunks WHERE content_id=?2) WHERE content_id=?1", params![a.id,b.id]).unwrap();
+        assert!(store.read_plain_range(&a.id, 0, 9).is_err());
+        assert_eq!(store.read_plain_range(&b.id, 0, 9).unwrap(), b"private-b");
+        store.db.execute("UPDATE response_content_chunks SET nonce=(SELECT nonce FROM response_content_chunks WHERE content_id=?2),ciphertext=(SELECT ciphertext FROM response_content_chunks WHERE content_id=?2) WHERE content_id=?1", params![a.id,c.id]).unwrap();
+        assert!(
+            store.read_plain_range(&a.id, 0, 9).is_err(),
+            "same-workspace content IDs remain authenticated"
+        );
+        assert_eq!(store.read_plain_range(&c.id, 0, 9).unwrap(), b"private-c");
+    }
+
+    #[test]
+    fn large_derived_format_and_query_results_keep_source_workspace() {
+        let (_directory, _ciphers, mut store) = scoped_store();
+        let bytes = serde_json::to_vec(&vec!["synthetic large item"; 20_000]).unwrap();
+        let source = owned_content(&mut store, "workspace-a", &bytes);
+        let cancelled = AtomicBool::new(false);
+        let formatted = store
+            .format(
+                &source.id,
+                &FormatRequest {
+                    syntax: "json".into(),
+                    indent: 2,
+                },
+                &cancelled,
+            )
+            .unwrap();
+        let queried = store
+            .query(
+                &source.id,
+                &JsonQueryRequest {
+                    language: "jq".into(),
+                    expression: ".".into(),
+                },
+                &cancelled,
+            )
+            .unwrap();
+        for result in [formatted, queried] {
+            let ContentOperationResult::Content { reference } = result else {
+                panic!("large result must use chunk storage")
+            };
+            assert_eq!(store.workspace(&reference.id).unwrap(), "workspace-a");
+            assert!(reference.byte_length > INLINE_OPERATION_RESULT_BYTES as u64);
+            assert!(!store
+                .read_plain_range(&reference.id, 0, 32)
+                .unwrap()
+                .is_empty());
+            let maximum_chunk: i64 = store
+                .db
+                .query_row(
+                    "SELECT MAX(plain_length) FROM response_content_chunks WHERE content_id=?1",
+                    [&reference.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(maximum_chunk <= 256 * 1024);
+            store
+                .db
+                .execute(
+                    "UPDATE response_contents SET workspace_id='workspace-b' WHERE id=?1",
+                    [&reference.id],
+                )
+                .unwrap();
+            assert!(store.read_plain_range(&reference.id, 0, 32).is_err());
+        }
+    }
+
+    #[test]
+    fn staging_rejects_missing_or_unprovisioned_workspace_without_creating_content() {
+        let (_directory, _ciphers, mut store) = scoped_store();
+        for workspace in ["", "../invalid", "unprovisioned"] {
+            assert!(store
+                .create_staging(ContentMetadata {
+                    workspace_id: workspace.into(),
+                    media_type: None,
+                    charset: None
+                })
+                .is_err());
+        }
+        let count: i64 = store
+            .db
+            .query_row("SELECT COUNT(*) FROM response_contents", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+        let source = owned_content(&mut store, "workspace-a", b"body");
+        store
+            .db
+            .execute(
+                "UPDATE response_contents SET workspace_id=NULL WHERE id=?1",
+                [&source.id],
+            )
+            .unwrap();
+        assert!(store.read_plain_range(&source.id, 0, 4).is_err());
+        assert!(store
+            .derived_content_result(
+                &source.id,
+                vec![0; INLINE_OPERATION_RESULT_BYTES + 1],
+                "application/octet-stream"
+            )
+            .is_err());
     }
 
     #[test]
@@ -971,6 +1194,7 @@ mod tests {
             );
             let reference = content
                 .create_staging(ContentMetadata {
+                    workspace_id: "workspace".into(),
                     media_type: None,
                     charset: None,
                 })
@@ -1039,6 +1263,7 @@ mod tests {
                         ResponseContentStore::open_with_ciphers(&path, &ciphers).unwrap();
                     let response = store
                         .create_staging(ContentMetadata {
+                            workspace_id: "workspace".into(),
                             media_type: None,
                             charset: None,
                         })
@@ -1070,6 +1295,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1109,6 +1335,7 @@ mod tests {
         let (directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("application/octet-stream".into()),
                 charset: None,
             })
@@ -1133,6 +1360,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let giant = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1160,6 +1388,7 @@ mod tests {
 
         let many = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1192,6 +1421,7 @@ mod tests {
         let (_directory, _root, mut store) = store(ResponseLimits::default());
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1241,6 +1471,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: None,
             })
@@ -1287,6 +1518,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1338,6 +1570,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let json_reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1394,6 +1627,7 @@ mod tests {
 
         let ndjson_reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("application/x-ndjson".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1437,6 +1671,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1459,6 +1694,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let first = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1467,6 +1703,7 @@ mod tests {
         assert!(store.append(&first.id, b"9").is_err());
         let second = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1487,6 +1724,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1507,6 +1745,7 @@ mod tests {
 
         let reordered = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1527,6 +1766,7 @@ mod tests {
 
         let missing = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1565,6 +1805,7 @@ mod tests {
         let marker = b"purr-sensitive-response-marker";
         let reference = store
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1607,6 +1848,7 @@ mod tests {
         let (directory, root, mut content) = store(limits);
         let reference = content
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
             })
@@ -1615,6 +1857,7 @@ mod tests {
         let reference = content.finish(&reference.id).unwrap();
         let workspace_reference = content
             .create_staging(ContentMetadata {
+                workspace_id: "other_workspace".into(),
                 media_type: None,
                 charset: None,
             })
@@ -1716,6 +1959,7 @@ mod tests {
         let (directory, root, mut content) = store(limits);
         let reference = content
             .create_staging(ContentMetadata {
+                workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
             })

@@ -25,7 +25,7 @@ impl ScopedCredentials {
         key: &str,
         reference: &str,
     ) -> Result<()> {
-        if reference != format!("purr/{workspace}/integrations/{integration}/{key}") {
+        if reference != format!("purr/{workspace}/credentials/integrations/{integration}/{key}") {
             return Err(ObservabilityError::CredentialUnavailable);
         }
         Ok(())

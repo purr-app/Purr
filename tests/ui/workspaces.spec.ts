@@ -564,7 +564,7 @@ test("unavailable integrations preserve opaque config and support enable, disabl
       }],
     }));
     localStorage.setItem("purr-native-secure-test", JSON.stringify({
-      "purr/integration-fixture/integrations/private-observability/apiKey": "synthetic-private-token",
+      "purr/integration-fixture/credentials/integrations/private-observability/apiKey": "synthetic-private-token",
     }));
     sessionStorage.setItem("purr-phase-11-fixture-seeded", "true");
   }, { integration });
@@ -713,7 +713,7 @@ test("variables use explicit drafts, validate duplicate names without blocking t
   // in the actual browser backend before testing restoration after reload.
   await expect.poll(async () => {
     const manifests = await page.evaluate(() => new Promise<string[]>((resolve, reject) => {
-      const open = indexedDB.open("purr-preview-v2");
+      const open = indexedDB.open("purr-preview-v3");
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const db = open.result;
@@ -799,10 +799,10 @@ test("Secret is independent of reveal; browser preview persists ciphertext and r
   await saved(page); await page.reload();
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("Secure staging");
   const storage = await page.evaluate(async () => {
-    const db = await new Promise<IDBDatabase>((resolve) => { const request = indexedDB.open("purr-preview-v2"); request.onsuccess = () => resolve(request.result); });
+    const db = await new Promise<IDBDatabase>((resolve) => { const request = indexedDB.open("purr-preview-v3"); request.onsuccess = () => resolve(request.result); });
     const all = (name: string) => new Promise<any[]>((resolve) => { const request = db.transaction(name).objectStore(name).getAll(); request.onsuccess = () => resolve(request.result); });
     const projects = await all("projects"); const secrets = await all("secrets"); const keys = await all("keys"); db.close();
-    return { leaked: JSON.stringify(projects).includes("purr-test-secret-not-in-project"), encrypted: secrets.length > 0 && secrets.every((entry) => entry.data instanceof ArrayBuffer && entry.iv instanceof Uint8Array), exportable: keys.some((key) => key.extractable), legacy: localStorage.getItem("purr.workspaces.v1") };
+    return { leaked: JSON.stringify(projects).includes("purr-test-secret-not-in-project"), encrypted: secrets.length > 0 && secrets.every((entry) => entry.data instanceof ArrayBuffer && entry.iv instanceof Uint8Array), exportable: keys.some((entry) => entry.key?.extractable), legacy: localStorage.getItem("purr.workspaces.v1") };
   });
   expect(storage).toEqual({ leaked: false, encrypted: true, exportable: false, legacy: null });
 });
@@ -903,10 +903,11 @@ test("request code and form editing stay usable with an inactive file body", asy
   await expect(page.getByText("large.bin", { exact: true })).toBeVisible();
 });
 
-test("damaged workspace data is reported without overwriting the original", async ({ page }) => {
+test("clean preview ignores damaged legacy workspace data and preserves the original", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("purr.workspaces.v1", "broken-json"));
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Retry loading workspaces" })).toBeVisible();
+  await expect(page.getByLabel("Request URL", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry loading workspaces" })).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem("purr.workspaces.v1"))).toBe("broken-json");
 });
 

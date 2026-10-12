@@ -1,7 +1,10 @@
 pub mod availability;
 pub mod context;
 pub mod inventory;
+pub mod layout;
 pub mod manager;
+pub mod scoped;
+pub use scoped::ProtectionScope;
 #[cfg(all(test, target_os = "macos"))]
 mod os_store_smoke;
 mod platform;
@@ -133,13 +136,24 @@ fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
 }
 
 #[derive(Clone)]
-pub struct LocalCipher(Arc<Aes256Gcm>);
+pub struct LocalCipher(CipherBackend);
+#[derive(Clone)]
+enum CipherBackend {
+    Raw(Arc<Aes256Gcm>),
+    Scoped {
+        registry: Arc<scoped::ScopeRegistry>,
+        purpose: scoped::CipherPurpose,
+        scope: Option<ProtectionScope>,
+    },
+}
 pub struct RootCiphers {
     pub(crate) storage_initialization: std::sync::Mutex<()>,
     pub database: LocalCipher,
     pub secrets: LocalCipher,
     pub response_content: LocalCipher,
     pub legacy_database: Option<LocalCipher>,
+    wrapping: LocalCipher,
+    journal_seed: Arc<Zeroizing<[u8; 32]>>,
 }
 
 fn derive_key(root: &[u8], info: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
@@ -206,7 +220,10 @@ impl RootCiphers {
         let database_key = derive_key(root, DATABASE_KEY_INFO)?;
         let secrets_key = derive_key(root, SECRETS_KEY_INFO)?;
         let response_content_key = derive_key(root, RESPONSE_CONTENT_KEY_INFO)?;
+        let wrapping = derive_key(root, b"purr:installation-wrapping:v2")?;
         Ok(Self {
+            wrapping: LocalCipher::from_key(wrapping.as_slice())?,
+            journal_seed: Arc::new(derive_key(root, b"purr:installation-journal:v2")?),
             storage_initialization: std::sync::Mutex::new(()),
             database: LocalCipher::from_key(&database_key[..])?,
             secrets: LocalCipher::from_key(&secrets_key[..])?,
@@ -215,6 +232,47 @@ impl RootCiphers {
                 .then(|| LocalCipher::from_key(root))
                 .transpose()?,
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn with_scope_keys(&self, path: &Path, vault_id: &str) -> Result<Self, String> {
+        self.with_scope_keys_policy(path, vault_id, true)
+    }
+    pub(crate) fn with_scope_keys_policy(
+        &self,
+        path: &Path,
+        vault_id: &str,
+        allow_initialize: bool,
+    ) -> Result<Self, String> {
+        let registry = scoped::ScopeRegistry::open(
+            path,
+            vault_id,
+            self.wrapping.clone(),
+            self.journal_seed.clone(),
+            allow_initialize,
+        )?;
+        let routed = |purpose| {
+            LocalCipher(CipherBackend::Scoped {
+                registry: registry.clone(),
+                purpose,
+                scope: None,
+            })
+        };
+        Ok(Self {
+            storage_initialization: std::sync::Mutex::new(()),
+            database: routed(scoped::CipherPurpose::Database),
+            secrets: routed(scoped::CipherPurpose::Secrets),
+            response_content: routed(scoped::CipherPurpose::ResponseContent),
+            legacy_database: None,
+            wrapping: self.wrapping.clone(),
+            journal_seed: self.journal_seed.clone(),
+        })
+    }
+    pub fn is_scoped(&self) -> bool {
+        self.database.is_scoped()
+    }
+    #[cfg(test)]
+    pub fn provision_scope(&self, scope: ProtectionScope) -> Result<(), String> {
+        self.database.provision_scope(scope)
     }
 }
 
@@ -226,15 +284,75 @@ pub struct SealedValue {
 
 impl LocalCipher {
     fn from_key(key: &[u8]) -> Result<Self, String> {
-        Ok(Self(Arc::new(
+        Ok(Self(CipherBackend::Raw(Arc::new(
             Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid local encryption key")?,
-        )))
+        ))))
+    }
+    pub fn is_scoped(&self) -> bool {
+        matches!(self.0, CipherBackend::Scoped { .. })
+    }
+    pub fn for_scope(&self, scope: ProtectionScope) -> Result<Self, String> {
+        match &self.0 {
+            CipherBackend::Scoped {
+                registry, purpose, ..
+            } => {
+                registry.ensure_scope(&scope)?;
+                Ok(Self(CipherBackend::Scoped {
+                    registry: registry.clone(),
+                    purpose: *purpose,
+                    scope: Some(scope),
+                }))
+            }
+            CipherBackend::Raw(_) => {
+                #[cfg(test)]
+                {
+                    let _ = scope;
+                    Ok(self.clone())
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = scope;
+                    Err("scope-key-registry-required".into())
+                }
+            }
+        }
+    }
+    pub fn provision_scope(&self, scope: ProtectionScope) -> Result<(), String> {
+        match &self.0 {
+            CipherBackend::Scoped { registry, .. } => registry.provision(scope),
+            CipherBackend::Raw(_) => {
+                #[cfg(test)]
+                {
+                    let _ = scope;
+                    Ok(())
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = scope;
+                    Err("scope-key-registry-required".into())
+                }
+            }
+        }
     }
     pub fn seal(&self, bytes: &[u8], aad: &str) -> Result<SealedValue, String> {
+        let cipher = match &self.0 {
+            CipherBackend::Raw(cipher) => cipher,
+            CipherBackend::Scoped {
+                registry,
+                purpose,
+                scope,
+            } => {
+                return registry.seal(
+                    scope.as_ref().ok_or("scope-selection-required")?,
+                    *purpose,
+                    bytes,
+                    aad,
+                )
+            }
+        };
         let mut nonce = [0_u8; 12];
         getrandom::fill(&mut nonce).map_err(|_| "Cannot generate local encryption nonce")?;
-        let ciphertext = self
-            .0
+        let ciphertext = cipher
             .encrypt(
                 &nonce.into(),
                 Payload {
@@ -256,10 +374,27 @@ impl LocalCipher {
         ciphertext: &[u8],
         aad: &str,
     ) -> Result<Zeroizing<Vec<u8>>, String> {
+        let cipher = match &self.0 {
+            CipherBackend::Raw(cipher) => cipher,
+            CipherBackend::Scoped {
+                registry,
+                purpose,
+                scope,
+            } => {
+                return registry.open_sealed(
+                    scope.as_ref().ok_or("scope-selection-required")?,
+                    *purpose,
+                    version,
+                    nonce,
+                    ciphertext,
+                    aad,
+                )
+            }
+        };
         if version != 1 || nonce.len() != 12 {
             return Err("Invalid encrypted local data".into());
         }
-        self.0
+        cipher
             .decrypt(
                 &Nonce::try_from(nonce).map_err(|_| "Invalid encrypted local data")?,
                 Payload {
@@ -278,7 +413,7 @@ impl LocalCipher {
         Ok(envelope)
     }
     pub fn decrypt(&self, bytes: &[u8], context: &str) -> Result<Vec<u8>, String> {
-        if bytes.len() < 29 || bytes[0] != 1 {
+        if bytes.len() < 29 || ![1, 2].contains(&bytes[0]) {
             return Err("Invalid encrypted local data".into());
         }
         Ok(self

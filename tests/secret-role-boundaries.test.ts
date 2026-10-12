@@ -78,7 +78,7 @@ test("pending workspace protection preserves opaque extension config even when i
 });
 
 test("lazy pending workspace restoration leaves vendor marker-shaped JSON opaque", async () => {
-  const config = { sentinel: { __purrSecret: { kind: "secret", ref: "purr/vendor/opaque/value" } }, credentialStates: { public: "value" } };
+  const config = { sentinel: { __purrSecret: { kind: "secret", ref: "purr/vendor/credentials/opaque/value" } }, credentialStates: { public: "value" } };
   const workspace = createWorkspace("Opaque restore", "opaque-restore");
   workspace.documents = [createExtensionDocument("private.example", "Opaque extension", 1, config)];
   workspace.extraResources = [integrationDefinitionSchema.parse({ kind: "integration", id: "provider", name: "Provider", provider: "private.example", config })];
@@ -144,7 +144,7 @@ test("a new v1 OAuth profile and acquired token survive local autosave and resta
 
 test("v1 local autosave and restart preserve template credentials without declassifying an intentional SecretRef", async () => {
   const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
-  const reference = "purr/template-upgrade/requests/opaque/saved/bearer"; await secure.set(reference, "{{TOKEN}}");
+  const reference = "purr/template-upgrade/credentials/requests/opaque/saved/bearer"; await secure.set(reference, "{{TOKEN}}");
   const before = await secure.read(reference);
   const files = {
     "purr.yaml": "purr: 1\nworkspace: { id: template-upgrade, name: Legacy templates }\n",
@@ -182,7 +182,7 @@ test("new v1 registry schemas keep local credentials and typed templates without
   template.schemaSource = { type: "registry", provider: "example", resource: "fixture", credential: { kind: "template", value: "{{REGISTRY_TOKEN}}" } };
   store.workspaces[0].documents.push(literal, template); await persistence.save(store);
   assert.deepEqual(Object.keys(backend.snapshot.workspaces[0].files), ["purr.yaml"]);
-  assert.equal(await secure.get("purr/pending-schema/schemas/new-literal/registry/credential"), null);
+  assert.equal(await secure.get("purr/pending-schema/credentials/schemas/new-literal/registry/credential"), null);
   assert.ok(!JSON.stringify(backend.snapshot).includes("synthetic-new-registry"));
   const restarted = new WorkspacePersistence(backend, secure); const reopened = await restarted.load();
   const restoredTemplate = reopened.workspaces[0].documents.find((document) => document.id === template.id);

@@ -30,7 +30,7 @@ test("rename keeps saved and working requests distinct and leaves history, respo
   request.request.auth.bearer.token = "{{base}}";
   request.request.auth.basic.password = "{{base}}";
   request.request.auth.oauth2.clientSecret = "{{base}}";
-  request.request.auth.secretRefs = { "basic.password": "purr/workspace/auth/secret" };
+  request.request.auth.secretRefs = { "basic.password": "purr/workspace/credentials/auth/secret" };
   request.request.graphql = { query: 'query { user(id: "{{base}}") { id } }', variables: '{"id":"{{base}}"}', operationName: "{{base}}" };
   request.savedRequest = structuredClone(request.request);
   request.request.url = "{{base}}/working";

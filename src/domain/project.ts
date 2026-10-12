@@ -136,7 +136,7 @@ export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
   defaultGraphqlSchemaId: entityId.optional(),
   tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
-  id: entityId, name: z.string(), description: z.string().optional(),
+  id: entityId.refine((id) => id !== "global" && id !== "__global__", "Reserved workspace identifier"), name: z.string(), description: z.string().optional(),
   variables: z.array(variableDefinitionSchema).default([]),
   headers: z.array(headerDefinitionSchema.extend({ scope })).default([]),
   auth: z.array(z.strictObject({ id: entityId, name: z.string(), scope, enabled: z.boolean().default(true), config: authDefinitionSchema })).default([]),
@@ -186,6 +186,9 @@ export function validateProject(project: Project): Project {
   const checkRefs = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
     const object = value as Record<string, unknown>;
+    const reference = object.kind === "secret" ? object.ref : object.kind === "static" ? object.secretRef : undefined;
+    if (typeof reference === "string" && /^purr\/[^/]+\/runtime\//.test(reference))
+      throw new Error("Canonical definitions cannot reference local runtime secrets.");
     if (object.kind === "secret" && (typeof object.ref !== "string" || !object.ref.startsWith(`purr/${workspace.id}/`)))
       throw new Error("Secret references must belong to this workspace.");
     if (object.kind === "static" && object.sensitive === true

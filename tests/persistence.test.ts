@@ -53,7 +53,7 @@ test("integration envelopes migrate legacy endpoints and preserve unavailable pr
   const workspace = createWorkspace("Integration fixture", "integration-fixture");
   workspace.extraResources = [unavailable];
   const secure = new MemorySecureStore();
-  await secure.set("purr/integration-fixture/integrations/private-observability/apiKey", "synthetic-private-token");
+  await secure.set("purr/integration-fixture/credentials/integrations/private-observability/apiKey", "synthetic-private-token");
   const first = await projectAndCommit(workspace, secure);
   const yaml = first.project.resources.map((resource) => serializeResource(resource)).join("\n");
   assert.doesNotMatch(yaml, /synthetic-private-token/);
@@ -68,7 +68,7 @@ test("integration envelopes migrate legacy endpoints and preserve unavailable pr
   assert.deepEqual(enabled?.kind === "integration" ? enabled.config : undefined, config);
 
   const wrongWorkspace = structuredClone(unavailable);
-  wrongWorkspace.credentials.apiKey = { kind: "secret", ref: "purr/another-workspace/integrations/private-observability/apiKey" };
+  wrongWorkspace.credentials.apiKey = { kind: "secret", ref: "purr/another-workspace/credentials/integrations/private-observability/apiKey" };
   assert.throws(() => validateProject({ workspace: first.project.workspace, resources: [wrongWorkspace] }), /belong to this workspace/);
   assert.throws(() => deserializeResource(privateText.replace("commercial.datadog", "Commercial/Datadog")), /Invalid Purr resource/);
   assert.throws(() => deserializeResource(privateText.replace("apiKey:", "api.key:")), /Invalid Purr resource/);
@@ -233,7 +233,7 @@ test("first-class workspace variables are deterministic and secret values never 
   const yaml = serializeManifest(first.project.workspace);
   assert.equal(serializeManifest(first.project.workspace), yaml);
   assert.match(yaml, /kind: dynamic-request/);
-  assert.match(yaml, /secretRef: purr\/variables\/variables\/api-token/);
+  assert.match(yaml, /secretRef: purr\/variables\/credentials\/variables\/api-token/);
   assert.doesNotMatch(yaml, /local-only-value/);
   const restored = await restoreWorkspace(first.project, first.local, secure, {});
   assert.equal(restored.variables.find((variable) => variable.name === "api_token")?.kind === "static"
@@ -286,7 +286,7 @@ test("failed import commits remove transient secret values", async () => {
   backend.commit = async () => { throw new Error("Import commit failed"); };
   const secure = new MemorySecureStore();
   const persistence = new WorkspacePersistence(backend, secure);
-  const ref = "purr/failed-import/imports/openapi/access-token" as const;
+  const ref = "purr/failed-import/credentials/imports/openapi/access-token" as const;
   await assert.rejects(persistImport({
     workspace: { id: "failed-import", name: "Failed", headers: [], auth: [], variables: [
       { id: "access-token", name: "accessToken", enabled: true, sensitive: true, kind: "static", secretRef: ref },
@@ -299,7 +299,7 @@ test("failed import commits remove transient secret values", async () => {
 test("OpenAPI imports persist operation metadata and the source document as a schema sidecar", async () => {
   const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const schemaId = "api-schema-example";
-  const authRef = "purr/openapi-import/auth/bearer-auth/bearer" as const;
+  const authRef = "purr/openapi-import/credentials/auth/bearer-auth/bearer" as const;
   const result = {
     workspace: { id: "openapi-import", name: "Example API", headers: [], auth: [
       { id: "bearer-auth", name: "Bearer auth", enabled: true, scope: "all" as const,

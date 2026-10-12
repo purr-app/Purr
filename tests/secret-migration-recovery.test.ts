@@ -187,7 +187,7 @@ test("clean cached editor header refs cannot overwrite a newer saved vault value
   document.request.headers = [{ id: "protected-header", name: "X-Custom", value: "synthetic-header-A", enabled: true, secret: true }];
   document.savedRequest = cloneRequestDraft(document.request); await persistence.saveWorkspace(workspace);
   const savedRef = document.savedRequest.headers[0].secretState?.ref; assert.ok(savedRef);
-  const editorRef = `purr/${workspace.id}/editor/${document.id}/headers/protected-header/value`;
+  const editorRef = `purr/${workspace.id}/runtime/editor/${document.id}/headers/protected-header/value`;
   assert.notEqual(savedRef, editorRef); assert.equal(await secure.get(editorRef), "synthetic-header-A");
   const session = backend.snapshot.workspaces[0].local.find((record) => record.table === "document_session_state" && record.id === document.id);
   assert.ok(JSON.stringify(session?.value).includes(editorRef), "fixture retains the older independent editor credential");
@@ -224,7 +224,7 @@ test("duplicating saved auth and sensitive headers gives the copy independent cr
 });
 
 test("post-await invalidation preserves newer set/delete intents and opaque provider or extension JSON", async () => {
-  const ref = "purr/invalidation/variables/credential";
+  const ref = "purr/invalidation/credentials/variables/credential";
   const keep = { ref, status: "available", edit: { kind: "keep" } } as const;
   let latest = {
     auth: { basic: { password: "old-auth" }, credentialStates: { password: { ...keep } as SecretFieldState } },
@@ -303,7 +303,7 @@ test("import into an existing v1 workspace requires explicit upgrade before stag
   const snapshot = legacy(); const { secure, backend, persistence } = setup(snapshot); await persistence.load();
   const project = persistence.getProject(snapshot.id); assert.ok(project);
   const imported = { ...project, resources: [...project.resources, { kind: "environment" as const, id: "additional-environment", name: "Imported environment", variables: [] }] };
-  const ref = `purr/${snapshot.id}/environments/additional-environment/token`;
+  const ref = `purr/${snapshot.id}/credentials/environments/additional-environment/token`;
   const original = structuredClone(backend.snapshot); let reads = 0; let initialized = false;
   const read = secure.read.bind(secure); secure.read = async (...args) => { reads += 1; return read(...args); };
   await assert.rejects(persistence.saveProject(imported, (workspace) => { initialized = true; return workspace; }, [{ ref, value: "synthetic-import-secret" }]), /Upgrade this workspace to format v2 before importing/);

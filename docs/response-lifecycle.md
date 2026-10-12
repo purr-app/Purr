@@ -198,3 +198,7 @@ open on click. Execution controllers remain associated with in-memory request
 sessions while navigating, so Escape after returning cancels the original run.
 
 The pending-response clock and the Send button share a monotonic start timestamp in the current request session. Rerenders, layout changes, and returning to a running request do not reset it. A new execution starts a fresh clock; cancellation or completion stops the timer. This timestamp is transient UI state and is never projected into project files or persisted execution records.
+
+## Protection ownership
+
+Native HTTP requires the originating workspace identity before dispatch. Workspace-bound application services pass it through HttpTransportOptions to native HttpRequest; it is not an HTTP header or shareable protocol field. The runtime key must be available before the request can reach the network. Response staging/chunks and derived format/query results use that workspace runtime scope. Chunk AAD authenticates workspace, content ID, index, offset and length. History adoption rejects missing/unowned/cross-workspace content. Public ResponseContentRef remains unchanged; S04 retains encryption for all responses.

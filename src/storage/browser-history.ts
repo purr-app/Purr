@@ -39,7 +39,7 @@ export class BrowserHistory implements HistoryPort {
     return summaries;
   }
   async append(workspaceId: string, entry: HistoryEntry, batch?: SecretBatch) {
-    if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${workspaceId}/history/${entry.id}/`))) throw new Error("Secret changes must belong to the history entry");
+    if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${workspaceId}/runtime/history/${entry.id}/`))) throw new Error("Secret changes must belong to the history entry");
     if (batch && !this.storage.commit) throw new Error("Atomic history secret storage is unavailable");
     const identity = { kind: "history", workspaceId, entry };
     const items = await this.index(workspaceId);
@@ -88,7 +88,7 @@ export class BrowserHistory implements HistoryPort {
     if (!this.storage.remove) throw new Error("Atomic history deletion is unavailable");
     await this.storage.remove([{ key: indexKey(workspaceId), value: items.filter((item) => !ids.has(item.id)) },
       ...removed.map((item) => ({ key: entryKey(workspaceId, item.id) }))],
-    removed.map((item) => `purr/${workspaceId}/history/${item.id}/`), [{ key: indexKey(workspaceId), value: items }]);
+    removed.map((item) => `purr/${workspaceId}/runtime/history/${item.id}/`), [{ key: indexKey(workspaceId), value: items }]);
   }
   async remove(workspaceId: string, filter: { id?: string; documentId?: string }) {
     const items = await this.index(workspaceId);
@@ -127,7 +127,7 @@ export class BrowserHistory implements HistoryPort {
     if (!this.storage.remove) throw new Error("Atomic history deletion is unavailable");
     const items = await this.index(workspaceId);
     await this.storage.remove([{ key: indexKey(workspaceId) }, { key: settingsKey(workspaceId) },
-      ...items.map((item) => ({ key: entryKey(workspaceId, item.id) }))], [`purr/${workspaceId}/history/`],
+      ...items.map((item) => ({ key: entryKey(workspaceId, item.id) }))], [`purr/${workspaceId}/runtime/history/`],
     [{ key: indexKey(workspaceId), value: items }]);
   }
 }

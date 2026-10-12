@@ -1,3 +1,4 @@
+import { secretProtectionScope } from "../src/storage/secrets";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
@@ -33,7 +34,7 @@ async function savedFixture() {
   document.savedRequest = cloneRequestDraft(document.request);
   const store = { activeWorkspaceId: workspace.id, workspaces: [workspace], globalVariables: [] };
   await persistence.save(store);
-  const ref = `purr/${workspace.id}/requests/${document.id}/saved/password`;
+  const ref = `purr/${workspace.id}/credentials/requests/${document.id}/saved/password`;
   assert.equal(await secure.get(ref), "synthetic-password-A");
   return { secure, backend, persistence, workspace, document, store, ref };
 }
@@ -166,7 +167,7 @@ test("global secret-only edits commit even when definitions do not change and fa
   const persistence = new WorkspacePersistence(backend, secure);
   const variable: Variable = { id: "global-token", name: "token", kind: "static", sensitive: true, enabled: true, loaded: true, value: "synthetic-global-A" };
   const store = { activeWorkspaceId: "", workspaces: [], globalVariables: [variable] };
-  const ref = "purr/global/variables/global-token";
+  const ref = "purr/global/credentials/variables/global-token";
   await persistence.save(store);
   const before = structuredClone(backend.snapshot);
   const writeGlobal = backend.writeGlobal.bind(backend);
@@ -184,20 +185,20 @@ test("global secret-only edits commit even when definitions do not change and fa
 
 test("secret batches check every revision before publishing and replay without overwriting newer values", async () => {
   const secure = new MemorySecureStore();
-  const first = "purr/transactional/variables/first";
-  const second = "purr/transactional/variables/second";
+  const first = "purr/transactional/credentials/variables/first";
+  const second = "purr/transactional/credentials/variables/second";
   const initialFirst = await secure.read(first);
   const initialSecond = await secure.read(second);
   const batch = { operationId: crypto.randomUUID(), mutations: [
-    { ref: first, expectedRevision: initialFirst.revision, value: "synthetic-first-A" },
-    { ref: second, expectedRevision: initialSecond.revision, value: "synthetic-second-A" },
+    { ref: first, scope: secretProtectionScope(first), expectedRevision: initialFirst.revision, value: "synthetic-first-A" },
+    { ref: second, scope: secretProtectionScope(second), expectedRevision: initialSecond.revision, value: "synthetic-second-A" },
   ] };
   assert.equal((await secure.operationStatus(batch.operationId)).status, "missing");
   await secure.commit(batch);
   assert.equal((await secure.operationStatus(batch.operationId)).status, "committed");
   const committed = await secure.read(first);
   assert.ok(committed.revision > initialFirst.revision);
-  await secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref: first, expectedRevision: committed.revision, value: "synthetic-first-B" }] });
+  await secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref: first, scope: secretProtectionScope(first), expectedRevision: committed.revision, value: "synthetic-first-B" }] });
   await secure.commit(batch);
   assert.equal(await secure.get(first), "synthetic-first-B", "old operation replay must not restore its old value");
   await assert.rejects(secure.commit({ ...batch, mutations: [{ ...batch.mutations[0], value: "operation-id-reuse" }] }));
@@ -206,8 +207,8 @@ test("secret batches check every revision before publishing and replay without o
   const secondBefore = await secure.read(second);
   const staleOperationId = crypto.randomUUID();
   await assert.rejects(secure.commit({ operationId: staleOperationId, mutations: [
-    { ref: second, expectedRevision: secondBefore.revision, value: "must-not-be-published" },
-    { ref: first, expectedRevision: initialFirst.revision, value: "stale-write" },
+    { ref: second, scope: secretProtectionScope(second), expectedRevision: secondBefore.revision, value: "must-not-be-published" },
+    { ref: first, scope: secretProtectionScope(first), expectedRevision: initialFirst.revision, value: "stale-write" },
   ] }));
   assert.equal((await secure.operationStatus(staleOperationId)).status, "aborted");
   assert.deepEqual(await secure.read(second), secondBefore, "a late conflict cannot publish earlier mutations");
@@ -216,15 +217,15 @@ test("secret batches check every revision before publishing and replay without o
 
 test("deletion keeps revision history so an old missing snapshot cannot recreate a changed secret", async () => {
   const secure = new MemorySecureStore();
-  const ref = "purr/transactional/variables/deleted";
+  const ref = "purr/transactional/credentials/variables/deleted";
   const missing = await secure.read(ref);
-  await secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, expectedRevision: missing.revision, value: "synthetic-created" }] });
+  await secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, scope: secretProtectionScope(ref), expectedRevision: missing.revision, value: "synthetic-created" }] });
   const created = await secure.read(ref);
-  await secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, expectedRevision: created.revision, value: null }] });
+  await secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, scope: secretProtectionScope(ref), expectedRevision: created.revision, value: null }] });
   const deleted = await secure.read(ref);
   assert.equal(deleted.value, null);
   assert.ok(deleted.revision > created.revision);
-  await assert.rejects(secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, expectedRevision: missing.revision, value: "stale-recreation" }] }));
+  await assert.rejects(secure.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, scope: secretProtectionScope(ref), expectedRevision: missing.revision, value: "stale-recreation" }] }));
   assert.deepEqual(await secure.read(ref), deleted);
 });
 
@@ -248,7 +249,7 @@ test("failed history append cannot publish its prepared editor credentials", asy
     response: null, error: "Synthetic transport failure", outcome: "error", startedAt: Date.now(), durationMs: 1,
   }), /Injected history publication failure/);
   assert.ok(attemptedId);
-  assert.equal(await secure.get(`purr/${workspace.id}/history/${attemptedId}/editor/auth/bearer/token`), null);
+  assert.equal(await secure.get(`purr/${workspace.id}/runtime/history/${attemptedId}/editor/auth/bearer/token`), null);
   assert.equal(history.getSnapshot(), 0);
   assert.equal(values.size, 0);
 });
@@ -257,7 +258,7 @@ test("failed import leaves neither a new credential nor a compensation revision"
   const secure = new MemorySecureStore();
   const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure);
-  const ref = "purr/imported/variables/token";
+  const ref = "purr/imported/credentials/variables/token";
   const before = await secure.read(ref);
   const result: NormalizedImportResult = {
     adapter: "postman-environment", diagnostics: [],
@@ -279,7 +280,7 @@ test("external reconciliation prepares working credentials without changing the 
   await backend.commit(workspace.id, [{ path: "purr.yaml", expectedRevision: manifest.revision,
     content: manifest.content.replace("Transactional fixture", "Externally renamed workspace") }], []);
   editPassword(document, "synthetic-working-password");
-  const editorRef = `purr/${workspace.id}/drafts/${document.id}/request/auth/basic/password`;
+  const editorRef = `purr/${workspace.id}/runtime/drafts/${document.id}/request/auth/basic/password`;
   const before = await secure.read(editorRef);
   const reconciled = await persistence.reconcileExternalChanges(store);
   assert.equal(reconciled.workspaces[0].name, "Externally renamed workspace");
@@ -292,7 +293,7 @@ test("external reconciliation prepares working credentials without changing the 
 
 test("an integration editor retries an aborted save with a fresh operation and retains staged values", async () => {
   const { secure, backend, persistence, workspace } = await savedFixture();
-  const ref = `purr/${workspace.id}/integrations/fixture/auth`;
+  const ref = `purr/${workspace.id}/credentials/integrations/fixture/auth`;
   const prepared = new SecretPreparationStore(persistence.secure);
   await prepared.set(ref, "synthetic-integration-auth");
   workspace.extraResources = [{ kind: "integration", id: "fixture", name: "Fixture", provider: "jaeger", enabled: true,
@@ -319,7 +320,7 @@ test("selection preference failure cannot hide a successfully committed import",
   const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure);
   backend.setActiveWorkspace = async () => { throw new Error("Injected selection write failure"); };
-  const ref = "purr/import-selection/variables/token";
+  const ref = "purr/import-selection/credentials/variables/token";
   const result: NormalizedImportResult = {
     adapter: "postman-collection", diagnostics: [],
     workspace: { id: "import-selection", name: "Imported", headers: [], auth: [], variables: [
@@ -340,5 +341,5 @@ test("committed workspace deletion invalidates caches even while folder cleanup 
   assert.deepEqual(await persistence.deleteWorkspace(workspace.id), { committed: true, cleanupPending: true });
   await persistence.save(store);
   assert.equal(backend.snapshot.workspaces.length, 0, "stale runtime snapshots cannot resurrect committed deletion");
-  assert.equal(await secure.get(`purr/${workspace.id}/requests/${workspace.documents[0].id}/saved/password`), null);
+  assert.equal(await secure.get(`purr/${workspace.id}/credentials/requests/${workspace.documents[0].id}/saved/password`), null);
 });

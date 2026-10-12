@@ -1232,7 +1232,7 @@ fn variable_definition(
         stable_id("var", workspace_id, &variable.id)
     };
     if variable.sensitive {
-        let reference = format!("purr/{workspace_id}/imports/openapi/{id}");
+        let reference = format!("purr/{workspace_id}/credentials/imports/openapi/{id}");
         secrets.push(json!({"ref":reference,"value":variable.value}));
         json!({"id":id,"name":variable.name,"enabled":true,"sensitive":true,"kind":"static","secretRef":reference})
     } else {
@@ -1345,7 +1345,7 @@ fn imported_secret(
     field: &str,
     _secrets: &mut Vec<Value>,
 ) -> Value {
-    let reference = format!("purr/{workspace_id}/auth/{profile_id}/{field}");
+    let reference = format!("purr/{workspace_id}/credentials/auth/{profile_id}/{field}");
     // The schema declares a requirement, not an intentionally empty value.
     json!({"kind":"secret","ref":reference})
 }
@@ -1447,7 +1447,7 @@ fn build_project(mut model: OpenApiModel, workspace_id: &str) -> NormalizedImpor
             let sensitive=parameter.sensitive || parameter.name.trim().eq_ignore_ascii_case("cookie")||parameter.name.trim().eq_ignore_ascii_case("set-cookie");
             let value=if sensitive {
                 if postman::template_only(&parameter.value) {json!({"kind":"template","value":parameter.value})}
-                else {let reference=format!("purr/{workspace_id}/imports/openapi/{id}"); if parameter.value_present { secrets.push(json!({"ref":reference,"value":parameter.value})); } json!({"kind":"secret","ref":reference})}
+                else {let reference=format!("purr/{workspace_id}/credentials/imports/openapi/{id}"); if parameter.value_present { secrets.push(json!({"ref":reference,"value":parameter.value})); } json!({"kind":"secret","ref":reference})}
             } else {json!({"kind":"plain","value":parameter.value})};
             json!({"id":id,"name":parameter.name,"enabled":parameter.required,"sensitive":sensitive,"value":value})
         }).collect::<Vec<_>>();

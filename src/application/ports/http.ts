@@ -78,6 +78,8 @@ export type HttpTransportProgress = {
 };
 
 export type HttpTransportOptions = {
+  // Native response storage requires an owner; the workspace binds this context.
+  workspaceId?: string;
   signal?: AbortSignal;
   onProgress?: (progress: HttpTransportProgress) => void;
   responseStorage?: ResponseStoragePolicy;

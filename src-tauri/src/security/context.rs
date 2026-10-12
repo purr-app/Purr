@@ -12,9 +12,11 @@ pub struct NativeKeyState(Mutex<Option<Arc<KeyManager>>>);
 /// Tauri already scopes this directory by the host bundle identifier. Build
 /// optimization must not select a different vault for the same application.
 pub fn data_directory(app: &tauri::AppHandle) -> Result<PathBuf, ProtectedError> {
-    app.path()
+    let base = app
+        .path()
         .app_data_dir()
-        .map_err(|_| ProtectedError::unavailable("storage-directory-unavailable"))
+        .map_err(|_| ProtectedError::unavailable("storage-directory-unavailable"))?;
+    super::layout::prepare(&base)
 }
 
 impl NativeKeyState {
@@ -29,18 +31,18 @@ impl NativeKeyState {
         let manager_value = Arc::new(KeyManager::new(
             data_directory(app)?,
             app.config().identifier.clone(),
-            "application".into(),
-            true,
+            "application-v2".into(),
+            false,
         ));
         *manager = Some(manager_value.clone());
         Ok(manager_value)
     }
 
     pub fn open(&self, app: &tauri::AppHandle) -> Result<Arc<RootCiphers>, ProtectedError> {
-        self.manager(app)?.open()
+        self.manager(app)?.open_scoped()
     }
 
     pub fn retry(&self, app: &tauri::AppHandle) -> Result<Arc<RootCiphers>, ProtectedError> {
-        self.manager(app)?.retry()
+        self.manager(app)?.retry_scoped()
     }
 }

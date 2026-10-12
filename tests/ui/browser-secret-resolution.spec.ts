@@ -9,7 +9,7 @@ test("browser secret resolution distinguishes missing, empty and deleted values"
   const states = await page.evaluate(async () => {
     const modulePath = "/src/storage/browser-backend.ts";
     const { BrowserSecureStore } = await import(modulePath);
-    const secure = new BrowserSecureStore(); const ref = "purr/fixture/secret";
+    const secure = new BrowserSecureStore(); const ref = "purr/fixture/credentials/secret";
     const absent = await secure.resolve(ref);
     await secure.set(ref, ""); const empty = await secure.resolve(ref);
     await secure.delete(ref); const deleted = await secure.resolve(ref);
@@ -22,9 +22,9 @@ test("browser corrupted ciphertext is not reported as missing, even when marked 
   const state = await page.evaluate(async () => {
     const modulePath = "/src/storage/browser-backend.ts";
     const { BrowserSecureStore } = await import(modulePath);
-    const secure = new BrowserSecureStore(); const ref = "purr/fixture/secret";
+    const secure = new BrowserSecureStore(); const ref = "purr/fixture/credentials/secret";
     await secure.set(ref, "synthetic-value");
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v2"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v3"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction("secrets", "readwrite"); const store = transaction.objectStore("secrets"); const request = store.get(ref);
       request.onsuccess = () => { store.put({ ...request.result, deleted: true, data: new Uint8Array([0]).buffer }, ref); };
@@ -39,12 +39,12 @@ test("browser failed key initialization remains retryable and never leaks platfo
   const result = await page.evaluate(async () => {
     const modulePath = "/src/storage/browser-backend.ts";
     const { BrowserSecureStore } = await import(modulePath);
-    const secure = new BrowserSecureStore(); const ref = "purr/fixture/secret";
+    const secure = new BrowserSecureStore(); const ref = "purr/fixture/credentials/secret";
     const original = indexedDB.open.bind(indexedDB);
     indexedDB.open = () => { throw new Error("DO_NOT_EXPOSE_PLATFORM_DETAIL"); };
     const unavailable = await secure.resolve(ref);
     let failed = false;
-    try { await secure.commit({ operationId: "failed-key", mutations: [{ ref, expectedRevision: 0, value: "synthetic" }] }); } catch { failed = true; }
+    try { await secure.commit({ operationId: "failed-key", mutations: [{ ref, scope: { owner: "workspace", workspaceId: "fixture", kind: "credentials" }, expectedRevision: 0, value: "synthetic" }] }); } catch { failed = true; }
     indexedDB.open = original;
     await secure.set(ref, "recovered");
     return { unavailable, failed, recovered: await secure.resolve(ref) };
@@ -58,7 +58,7 @@ test("browser degraded load preserves canonical files and opaque local ciphertex
     const { BrowserPersistenceBackend } = await import(modulePath);
     const backend = new BrowserPersistenceBackend();
     await backend.commit("fixture", [{ path: "purr.yaml", content: "purr: 2", expectedRevision: null }], [{ table: "drafts", id: "draft", value: "synthetic-private-draft" }]);
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v2"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v3"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     let original: unknown;
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction("local", "readwrite"); const store = transaction.objectStore("local"); const request = store.get("fixture");

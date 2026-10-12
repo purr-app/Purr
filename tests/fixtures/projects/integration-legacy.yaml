@@ -8,4 +8,4 @@ endpoint: http://127.0.0.1:16686
 credentials:
   apiToken:
     kind: secret
-    ref: purr/integration-fixture/integrations/legacy-jaeger/apiToken
+    ref: purr/integration-fixture/credentials/integrations/legacy-jaeger/apiToken

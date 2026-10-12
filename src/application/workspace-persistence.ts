@@ -50,6 +50,10 @@ export class WorkspacePersistence {
   private storageState: ProtectedState = { status: "available" };
   private activeId = "";
   private globalSnapshot = "";
+  private globalState: ProtectedState = { status: "available" };
+  private storageNotice: { legacyDirectory: string } | null = null;
+  getStorageNotice() { return this.storageNotice; }
+  getGlobalProtectedState() { return this.globalState; }
   private globalVariables: Variable[] = [];
   private deleted = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -179,6 +183,8 @@ export class WorkspacePersistence {
     this.secure.clear();
     const stored = await this.backend.load(); const workspaces: Workspace[] = [];
     this.storageState = stored.protectedState ?? { status: "available" };
+    this.globalState = stored.globalProtectedState ?? this.storageState;
+    this.storageNotice = stored.storageNotice ?? null;
     for (const originalSnapshot of stored.workspaces) {
       // Retention runs before restoring last responses, so an expired body does
       // not return through the workspace session after a restart.
@@ -227,8 +233,8 @@ export class WorkspacePersistence {
     this.activeId = stored.activeWorkspaceId;
     const globalRecord = stored.global?.find((record) => record.table === "workspace_local_state" && record.id === "variables");
     let globalVariables: Variable[] = [];
-    if (this.storageState.status === "available") try { globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure, false); }
-    catch { this.storageState = { status: "corrupt", code: "global-variables-unreadable" }; for (const workspace of workspaces) workspace.protectedState = this.storageState; }
+    if (this.globalState.status === "available") try { globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure, false); }
+    catch { this.globalState = { status: "corrupt", code: "global-variables-unreadable" }; }
     this.globalVariables = globalVariables;
     this.globalSnapshot = JSON.stringify(globalRecord?.value ?? []);
     if (this.storageState.status === "available") { await this.save({ activeWorkspaceId, workspaces, globalVariables }); await this.backend.finishMigration(); }
@@ -238,16 +244,18 @@ export class WorkspacePersistence {
     const work = async () => {
       if (this.storageState.status !== "available") return;
       for (const workspace of store.workspaces) if (this.getWorkspaceStatus(workspace.id).protectedState.status === "available") await this.persist(workspace);
-      const preparedGlobal = new SecretPreparationStore(this.secure);
-      await this.prepareVariableRemoval(this.globalVariables, store.globalVariables ?? [], preparedGlobal);
-      const { definitions, secrets } = await projectGlobalVariables(store.globalVariables ?? [], preparedGlobal);
-      const serialized = JSON.stringify(definitions);
-      if (serialized !== this.globalSnapshot || secrets.mutations.length) {
-        await this.commitConfirmed(secrets, () => this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }], secrets), async () => undefined);
-        this.globalSnapshot = serialized;
+      if (this.globalState.status === "available") {
+        const preparedGlobal = new SecretPreparationStore(this.secure);
+        await this.prepareVariableRemoval(this.globalVariables, store.globalVariables ?? [], preparedGlobal);
+        const { definitions, secrets } = await projectGlobalVariables(store.globalVariables ?? [], preparedGlobal);
+        const serialized = JSON.stringify(definitions);
+        if (serialized !== this.globalSnapshot || secrets.mutations.length) {
+          await this.commitConfirmed(secrets, () => this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }], secrets), async () => undefined);
+          this.globalSnapshot = serialized;
+        }
+        preparedGlobal.acknowledge();
+        this.globalVariables = store.globalVariables ?? [];
       }
-      preparedGlobal.acknowledge();
-      this.globalVariables = store.globalVariables ?? [];
       if (this.activeId !== store.activeWorkspaceId && !this.deleted.has(store.activeWorkspaceId)) {
         try { await this.backend.setActiveWorkspace(store.activeWorkspaceId); this.activeId = store.activeWorkspaceId; }
         catch { /* Selection is retried independently of committed project data. */ }
@@ -289,6 +297,7 @@ export class WorkspacePersistence {
   setSecretValue(workspace: Workspace, ref: string, value: string | null): Promise<Workspace> {
     const next = this.queue.catch(() => {}).then(async () => {
       this.assertWritable(workspace.id);
+      if (ref.startsWith("purr/global/") && this.globalState.status !== "available") throw new Error("Global protected storage is unavailable. Retry before editing global secrets.");
       if (!ref.startsWith(`purr/${workspace.id}/`) && !ref.startsWith("purr/global/")) throw new Error("Credential does not belong to this workspace.");
       const prepared = new SecretPreparationStore(this.secure);
       if (value === null) await prepared.delete(ref); else await prepared.set(ref, value);
@@ -337,7 +346,7 @@ export class WorkspacePersistence {
     const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     for (const variable of previousVariables) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retainedRefs.has(variable.secretRef)
       && !currentVariables.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await prepared.delete(variable.secretRef);
-    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared); validateProject(project);
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { globalVariables: this.globalVariables }); validateProject(project);
     const refs = (value: unknown, found = new Set<string>()): Set<string> => {
       if (Array.isArray(value)) for (const child of value) refs(child, found);
       else if (value && typeof value === "object") {
@@ -349,7 +358,7 @@ export class WorkspacePersistence {
     };
     const nextCacheRefs = refs(projectedLocal);
     for (const ref of refs(this.snapshots.get(workspace.id)?.local)) {
-      if (ref.startsWith(`purr/${workspace.id}/dynamic-variables/`) && !nextCacheRefs.has(ref)) await prepared.delete(ref);
+      if (ref.startsWith(`purr/${workspace.id}/runtime/dynamic-variables/`) && !nextCacheRefs.has(ref)) await prepared.delete(ref);
     }
     const secrets = await prepared.batch();
     const local = this.backend.history ? projectedLocal.filter((record) => record.table !== "request_executions") : projectedLocal;

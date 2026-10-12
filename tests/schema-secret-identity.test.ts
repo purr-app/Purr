@@ -16,8 +16,8 @@ test("schema identity does not gate token-authenticated operations on acquisitio
 
 test("schema credential and header hydration retain stable cache identity by reference", async () => {
   const schema = createSchemaDocument(); schema.endpoint = "https://synthetic.test/graphql"; schema.auth.type = "basic";
-  schema.auth.credentialStates = { password: { ref: "purr/test/basic", status: "unresolved", edit: { kind: "keep" } } };
-  schema.introspectionHeaders = [{ id: "header", enabled: true, name: "Sensitive", value: "", secret: true, secretState: { ref: "purr/test/header", status: "unresolved", edit: { kind: "keep" } } }];
+  schema.auth.credentialStates = { password: { ref: "purr/test/credentials/basic", status: "unresolved", edit: { kind: "keep" } } };
+  schema.introspectionHeaders = [{ id: "header", enabled: true, name: "Sensitive", value: "", secret: true, secretState: { ref: "purr/test/credentials/header", status: "unresolved", edit: { kind: "keep" } } }];
   const config = createWorkspaceRequestConfig(); const original = await schemaConnectionIdentity(schema, config, {});
   schema.auth.basic.password = "synthetic-password"; schema.auth.credentialStates.password.status = "available";
   schema.introspectionHeaders[0].value = "synthetic-header"; schema.introspectionHeaders[0].secretState!.status = "available";

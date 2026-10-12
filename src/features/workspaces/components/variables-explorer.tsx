@@ -63,8 +63,9 @@ function usedBy(variable: Variable, documents: readonly DynamicVariableRequest[]
   return documents.filter((document) => JSON.stringify(document.request).includes(`{{${variable.name}}}`));
 }
 
-export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHistory, workspace, workspaces = [workspace], globalVariables, scope, selectedId, draft, documents,
+export function VariablesExplorer({ globalAvailable = true, onImportEnvironment, requestConfig, onOpenHistory, workspace, workspaces = [workspace], globalVariables, scope, selectedId, draft, documents,
   onSaveVariables, onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
+  globalAvailable?: boolean;
   onImportEnvironment?: () => void;
   requestConfig?: WorkspaceRequestConfig;
   onOpenHistory?: (id: string) => void;
@@ -106,7 +107,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   const filtered = variables.filter((variable) => (!search.trim() || `${variable.name} ${variableSummary(variable, workspace)}`.toLowerCase().includes(search.toLowerCase()))
     && (type === "all" || variable.kind === type));
 
-  const writable = !workspace.protectedState || workspace.protectedState.status === "available";
+  const writable = (!workspace.protectedState || workspace.protectedState.status === "available") && (scope !== "global" || globalAvailable);
   const replaceInScope = (next: Variable[]) => {
     if (!writable) return;
     if (scope === "workspace") onWorkspaceVariablesChange(next);

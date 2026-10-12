@@ -316,6 +316,9 @@ async function startHttp(
   options?: HttpTransportOptions,
 ): Promise<HttpTransportResponse> {
   options?.signal?.throwIfAborted();
+  const workspaceId = options?.workspaceId;
+  if (!workspaceId || !/^[a-zA-Z0-9_-]{1,128}$/.test(workspaceId))
+    throw new Error("A workspace is required for protected response storage.");
   const operationId = crypto.randomUUID();
   const invokedAt = performance.now();
   const cancel = () => {
@@ -338,6 +341,7 @@ async function startHttp(
       operationId,
       request: {
         ...request,
+        workspaceId,
         responseStorage: options?.responseStorage ?? defaultResponseStoragePolicy,
       },
       ...(channel ? { onEvent: channel } : {}),

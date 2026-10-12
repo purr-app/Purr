@@ -16,7 +16,7 @@ import type { ImportPort } from "../src/application/ports/platform";
 const source = { kind: "text" as const, name: "environment.json", content: "{}" };
 const staticVariable = (id: string, name: string, value: string, enabled = true) => ({ id, name, value, enabled, kind: "static" as const, sensitive: false });
 function environmentResult(workspaceId: string, id = "imported-env"): NormalizedImportResult {
-  const ref = `purr/${workspaceId}/imports/postman/${id}`;
+  const ref = `purr/${workspaceId}/credentials/imports/postman/${id}`;
   return { adapter: "postman-environment", workspace: { id: workspaceId, name: "Foreign name", headers: [], auth: [], variables: [] },
     resources: [{ id, name: "Local", kind: "environment", variables: [staticVariable(`${id}-url`, "baseUrl", "https://environment.test"),
       staticVariable(`${id}-disabled`, "disabled", "off", false), { id: `${id}-secret`, name: "token", kind: "static", sensitive: true, enabled: true, secretRef: ref }] }],
@@ -46,7 +46,7 @@ test("environment import is additive, renames collisions, preserves runtime and 
   assert.equal(result.workspace.environments[1].name, "Local (2)");
   assert.equal(result.report.counts.variables, 3); assert.equal(result.report.counts.secrets, 1);
   assert.equal(result.report.diagnostics[0].code, "duplicate-name");
-  assert.equal(await secure.get("purr/project/imports/postman/imported-env"), "private-test-token");
+  assert.equal(await secure.get("purr/project/credentials/imports/postman/imported-env"), "private-test-token");
   assert.ok(!JSON.stringify(backend.snapshot).includes("private-test-token"));
   const restored = (await new WorkspacePersistence(backend, secure).load()).workspaces[0];
   assert.equal(restored.environments.length, 2); assert.deepEqual(restored.ui, workspace.ui);
@@ -84,14 +84,14 @@ test("failed commit rolls back new credentials and leaves the existing workspace
   const { backend, persistence, secure, workspace } = await setup(); const before = structuredClone(backend.snapshot);
   backend.commit = async () => { throw new Error("Simulated revision conflict"); };
   await assert.rejects(importEnvironment(source, workspace, [], persistence, { normalize: async () => environmentResult("project") }), /revision conflict/);
-  assert.equal(await secure.exists("purr/project/imports/postman/imported-env"), false);
+  assert.equal(await secure.exists("purr/project/credentials/imports/postman/imported-env"), false);
   assert.deepEqual(backend.snapshot, before);
 });
 
 test("failed prepared secret publication preserves all values and existing refs cannot be overwritten", async () => {
   const { persistence, secure } = await setup();
   const result = environmentResult("project");
-  result.secrets.push({ ref: "purr/project/imports/postman/failing", value: "second" });
+  result.secrets.push({ ref: "purr/project/credentials/imports/postman/failing", value: "second" });
   const originalSet = secure.set.bind(secure);
   const originalCommit = secure.commitWith.bind(secure);
   secure.commitWith = async (batch, publish, identity) => {
