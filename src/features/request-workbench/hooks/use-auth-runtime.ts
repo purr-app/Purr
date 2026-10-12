@@ -17,7 +17,7 @@ import {
   authorizeOAuth,
   fetchOAuthToken,
   oauthIdentity,
-  resolvedOAuth,
+  resolveOAuthOperation,
 } from "../services/oauth-client";
 import { useApplicationServices } from "../../../app/application-services-context";
 
@@ -100,7 +100,7 @@ export function useAuthRuntime(
       // Defer until the pending job is registered, including synchronous validation errors.
       const promise = Promise.resolve().then(async () => {
         try {
-          const config = resolvedOAuth(sourceConfig, snapshot.context);
+          const config = await resolveOAuthOperation(effective.auth, snapshot.context, action);
           const token = isAuthorize
             ? await authorizeOAuth(
                 config,
@@ -121,7 +121,7 @@ export function useAuthRuntime(
           if (pending.current?.sessionId !== sessionId) return null;
           const update = (auth: RequestAuth) =>
             oauthIdentity(auth.oauth2) === key
-              ? { ...auth, oauth2: { ...auth.oauth2, token } }
+              ? { ...auth, oauth2: { ...auth.oauth2, token }, credentialStates: { ...auth.credentialStates, ...(auth.credentialStates?.["oauth-access-token"] ? { "oauth-access-token": { ...auth.credentialStates["oauth-access-token"], status: "available" as const, edit: { kind: "set" as const, value: token.accessToken } } } : {}), ...(auth.credentialStates?.["oauth-refresh-token"] ? { "oauth-refresh-token": { ...auth.credentialStates["oauth-refresh-token"], status: "available" as const, edit: { kind: "set" as const, value: token.refreshToken ?? "" } } } : {}) } }
               : auth;
           if (effective.source) {
             const updatedSourceAuth = update(effective.source.auth);
@@ -185,7 +185,7 @@ export function useAuthRuntime(
     resolved.auth.type === "oauth2" ? resolved.auth.oauth2.token : null;
   const config = resolved.auth.oauth2;
   const refreshable =
-    config.grantType === "client_credentials" || Boolean(token?.refreshToken);
+    config.grantType === "client_credentials" || Boolean(token?.refreshToken || resolved.auth.credentialStates?.["oauth-refresh-token"]);
   useEffect(() => {
     if (
       !identity ||

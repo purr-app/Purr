@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+import { credentialState } from "../../../application/resolve-request-secrets";
 import { CircleOff, GitBranch } from "lucide-react";
 import { AuthVariableField } from "./auth-variable-field";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
@@ -27,7 +29,7 @@ type Props = {
 
 export function AuthEditor({
   auth,
-  onAuthChange,
+  onAuthChange: publishAuth,
   context,
   runtime,
   allowInherit = true,
@@ -36,6 +38,39 @@ export function AuthEditor({
   ariaLabel,
   variableActions,
 }: Props) {
+  const current = useRef(auth);
+  current.current = auth;
+  const credentialValues = (value: RequestAuth): Record<string, string> => ({ bearer: value.bearer.token, password: value.basic.password, "api-key": value.apiKey.value, "client-secret": value.oauth2.clientSecret, "oauth-access-token": value.oauth2.token?.accessToken ?? "", "oauth-refresh-token": value.oauth2.token?.refreshToken ?? "" });
+  const onAuthChange = (next: RequestAuth) => {
+    const previousValues = credentialValues(auth);
+    const states = { ...next.credentialStates };
+    for (const [slot, value] of Object.entries(credentialValues(next))) if (previousValues[slot] !== value && credentialState(auth, slot)) states[slot] = { ...credentialState(auth, slot)!, status: "available", edit: { kind: "set", value } };
+    if (auth.oauth2.token && !next.oauth2.token) for (const slot of ["oauth-access-token", "oauth-refresh-token"]) if (credentialState(auth, slot)) states[slot] = { ...credentialState(auth, slot)!, status: "missing", edit: { kind: "delete" } };
+    publishAuth({ ...next, credentialStates: states });
+  };
+  useEffect(() => {
+    if (!context.secretStore) return;
+    const slots = auth.type === "bearer" ? ["bearer"] : auth.type === "basic" ? ["password"] : auth.type === "api-key" ? ["api-key"] : auth.type === "oauth2" ? ["client-secret", "oauth-access-token", "oauth-refresh-token"] : [];
+    const pending = slots.filter((slot) => credentialState(auth, slot)?.status === "unresolved" && !credentialState(auth, slot)?.edit?.kind?.match(/set|delete/));
+    if (!pending.length) return;
+    let active = true;
+    void Promise.all(pending.map(async (slot) => ({ slot, result: await context.secretStore!.resolve(credentialState(auth, slot)!.ref) }))).then((results) => {
+      if (!active || current.current !== auth) return;
+      const next = { ...auth, bearer: { ...auth.bearer }, basic: { ...auth.basic }, apiKey: { ...auth.apiKey }, oauth2: { ...auth.oauth2, token: auth.oauth2.token ? { ...auth.oauth2.token } : null }, credentialStates: { ...auth.credentialStates } };
+      for (const { slot, result } of results) {
+        next.credentialStates[slot] = { ...credentialState(auth, slot)!, status: result.status, edit: { kind: "keep" }, ...("code" in result ? { code: result.code } : {}) };
+        if (result.status !== "available") continue;
+        if (slot === "bearer") next.bearer.token = result.value;
+        if (slot === "password") next.basic.password = result.value;
+        if (slot === "api-key") next.apiKey.value = result.value;
+        if (slot === "client-secret") next.oauth2.clientSecret = result.value;
+        if (slot === "oauth-access-token" && next.oauth2.token) next.oauth2.token.accessToken = result.value;
+        if (slot === "oauth-refresh-token" && next.oauth2.token) next.oauth2.token.refreshToken = result.value;
+      }
+      publishAuth(next);
+    }).catch(() => { /* Operation-time resolution reports typed failures; no value is replaced. */ });
+    return () => { active = false; };
+  }, [auth, context.secretStore, publishAuth]);
   const resolved = resolveAuth(auth, context);
   const typeOptions = allowInherit
     ? authTypeOptions
@@ -104,6 +139,7 @@ export function AuthEditor({
               />
               <AuthVariableField variableActions={variableActions}
                 label="Password"
+                state={auth.credentialStates?.password}
                 secret
                 placeholder="Password"
                 value={auth.basic.password}
@@ -134,6 +170,7 @@ export function AuthEditor({
               />
               <AuthVariableField variableActions={variableActions}
                 label="Key value"
+                state={auth.credentialStates?.["api-key"]}
                 secret
                 placeholder="Enter API key"
                 value={auth.apiKey.value}

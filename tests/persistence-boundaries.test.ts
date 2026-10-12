@@ -14,6 +14,7 @@ import { executeHttp } from "../src/features/request-workbench/services/http-cli
 import { isInlineHttpResponse } from "../src/domain/http";
 import type { FileChange, LocalChange } from "../src/application/ports/persistence";
 import type { SecretBatch } from "../src/application/ports/credentials";
+import { resolveSecretField } from "../src/application/resolve-request-secrets";
 
 function savedWorkspace() {
   const workspace = createWorkspace("Backend", "backend"); const document = workspace.documents[0];
@@ -31,7 +32,7 @@ test("JSON payload whitespace, repeated disabled rows and inactive body drafts s
   document.savedRequest = cloneRequestDraft(document.request);
   const projected = await projectAndCommit(workspace, secure);
   const yaml = serializeResource(projected.project.resources[0]);
-  assert.ok(!yaml.includes("ui-1")); assert.ok(!yaml.includes("retained locally"));
+  assert.ok(yaml.includes("ui-1"), "v2 keeps stable header identities"); assert.ok(!yaml.includes("retained locally"));
   const resource = deserializeResource(yaml);
   assert.ok(resource.kind === "http"); assert.equal(resource.body.type, "json");
   assert.deepEqual(resource.body, { type: "json", data: document.request.body.json });
@@ -40,7 +41,7 @@ test("JSON payload whitespace, repeated disabled rows and inactive body drafts s
   assert.ok(isRequestDocument(restored.documents[0])); assert.equal(restored.documents[0].request.body.xml, document.request.body.xml);
 });
 
-test("every auth credential and runtime OAuth token uses SecureStore; explicit plain bearer remains supported", async () => {
+test("every auth credential and runtime OAuth token uses SecureStore; a legacy plain storage preference cannot bypass protection", async () => {
   for (const type of ["bearer", "basic", "api-key", "oauth2"] as const) {
     const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore();
     const auth = document.request.auth; auth.type = type;
@@ -57,7 +58,7 @@ test("every auth credential and runtime OAuth token uses SecureStore; explicit p
     assert.equal(restored.documents[0].request.auth.oauth2.token?.refreshToken, "secret-refresh");
     if (type === "bearer") {
       auth.credentialStorage = { bearer: "plain" }; document.savedRequest = cloneRequestDraft(document.request);
-      assert.ok(serializeResource((await projectAndCommit(workspace, secure)).project.resources[0]).includes("secret-bearer"));
+      assert.ok(!serializeResource((await projectAndCommit(workspace, secure)).project.resources[0]).includes("secret-bearer"));
     }
   }
 });
@@ -67,7 +68,8 @@ test("inactive environment secrets are resolved on demand and saving does not ov
   workspace.environments = [{ id: "staging", name: "Staging", variables: [{ id: "stable", name: "password", kind: "static", value: "retained-secret", loaded: true, sensitive: true, enabled: true }] }];
   const projected = await projectAndCommit(workspace, secure);
   const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
-  assert.deepEqual(restored.environments[0].variables[0], { id: "stable", name: "password", enabled: true, sensitive: true, kind: "static", secretRef: "purr/backend/environments/staging/stable", value: "", loaded: false });
+  assert.deepEqual(restored.environments[0].variables[0], { id: "stable", name: "password", enabled: true, sensitive: true, kind: "static", secretRef: "purr/backend/environments/staging/stable", value: "", loaded: false,
+    secretState: { ref: "purr/backend/environments/staging/stable", status: "unresolved", edit: { kind: "keep" } } });
   await projectAndCommit(restored, secure);
   const resolved = await resolveEnvironmentSecrets(restored.environments[0], secure);
   assert.equal(resolved.variables[0].kind === "static" ? resolved.variables[0].value : "", "retained-secret");
@@ -512,7 +514,7 @@ test("an empty environment survives compact YAML serialization", () => {
   assert.deepEqual(deserializeResource(serializeResource(environment)), environment);
 });
 
-test("known development-only variable and auth shapes are rewritten to canonical YAML during startup", async () => {
+test("known development-only variable and auth shapes are preserved at startup and normalized by an explicit upgrade", async () => {
   const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const manifest = `purr: 1
 workspace:
@@ -568,8 +570,12 @@ variables:
     "environments/local.yaml": { content: environment, revision: "environment" },
   } }] };
 
-  const loaded = await new WorkspacePersistence(backend, secure).load();
+  const persistence = new WorkspacePersistence(backend, secure); const loaded = await persistence.load();
   assert.equal(loaded.workspaces[0].variables[0].kind, "dynamic-request");
+  assert.equal(backend.snapshot.workspaces[0].files["purr.yaml"].content, manifest);
+  assert.equal(backend.snapshot.workspaces[0].files["environments/local.yaml"].content, environment);
+  assert.equal(backend.writes.length, 0);
+  await persistence.upgradeWorkspace(loaded.workspaces[0]);
   const savedManifest = backend.snapshot.workspaces[0].files["purr.yaml"].content;
   const savedEnvironment = backend.snapshot.workspaces[0].files["environments/local.yaml"].content;
   assert.doesNotMatch(savedManifest, /\n\s+response:/); assert.doesNotMatch(savedManifest, /\n\s+source:/);
@@ -622,6 +628,7 @@ test("clean editor snapshots cannot shadow a credential updated through SecureSt
   assert.ok(definition.kind === "http" && definition.auth.type === "bearer" && definition.auth.token.kind === "secret");
   await secure.set(definition.auth.token.ref, "updated-value");
   const restored = await new WorkspacePersistence(backend, secure).load(); const request = restored.workspaces[0].documents[0];
-  assert.ok(isRequestDocument(request)); assert.equal(request.request.auth.bearer.token, "updated-value");
+  assert.ok(isRequestDocument(request)); assert.equal(request.request.auth.bearer.token, "");
+  assert.equal(await resolveSecretField(request.request.auth.bearer.token, request.request.auth.credentialStates?.bearer, secure), "updated-value");
   assert.equal(request.request.auth.secretRefs?.bearer, definition.auth.token.ref);
 });

@@ -1,3 +1,6 @@
+import { useApplicationServices } from "../../../app/application-services-context";
+import type { SecretFieldState } from "../../../application/ports/credentials";
+import { Button } from "../../../shared/components/ui/button";
 import {
   Check,
   Eye,
@@ -35,6 +38,8 @@ export type KeyValueEntry = {
   readOnly?: boolean;
   readOnlyReason?: string;
   secret?: boolean;
+  secretRef?: string;
+  secretState?: SecretFieldState;
   fieldType?: "text" | "file";
   attachment?: File | null;
   contentType?: string;
@@ -46,6 +51,7 @@ export type KeyValueEntry = {
 };
 
 type KeyValueEditorProps = {
+  allowSensitive?: boolean;
   entries: KeyValueEntry[];
   onEntriesChange: (entries: KeyValueEntry[]) => void;
   createEmptyEntry: (entries: KeyValueEntry[]) => KeyValueEntry;
@@ -140,6 +146,7 @@ function getEntryRowId(
 
 export function KeyValueEditor({
   entries,
+  allowSensitive = false,
   onEntriesChange,
   createEmptyEntry,
   keyLabel,
@@ -159,6 +166,9 @@ export function KeyValueEditor({
   scopeLabel,
   variableActions,
 }: KeyValueEditorProps) {
+  const { secureStore } = useApplicationServices();
+  const resolving = useRef(new Set<string>());
+  const [displaySecrets, setDisplaySecrets] = useState<Record<string, { sourceValue: string; sourceStatus: SecretFieldState["status"]; value: string; state: SecretFieldState }>>({});
   const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
   const [dropTargetEntryId, setDropTargetEntryId] = useState<string | null>(
     null,
@@ -171,6 +181,22 @@ export function KeyValueEditor({
     entriesRef.current = entries;
   }, [entries]);
 
+  const resolveEntry = async (entry: KeyValueEntry) => {
+    const state = entry.secretState;
+    if (!state || state.status === "available" || state.edit?.kind === "set" || state.edit?.kind === "delete" || resolving.current.has(entry.id)) return;
+    resolving.current.add(entry.id);
+    try {
+      const result = await secureStore.resolve(state.ref);
+      const current = entriesRef.current.find((row) => row.id === entry.id);
+      if (!current || current.secretState !== state || current.value !== entry.value) return;
+      if (entry.readOnly) {
+        setDisplaySecrets((previous) => ({ ...previous, [entry.id]: { sourceValue: entry.value, sourceStatus: state.status, value: result.status === "available" ? result.value : entry.value, state: { ...state, status: result.status, edit: { kind: "keep" }, ...("code" in result ? { code: result.code } : {}) } } }));
+        return;
+      }
+      onEntriesChange(entriesRef.current.map((row) => row.id === entry.id ? { ...row, ...(result.status === "available" ? { value: result.value } : {}), secretState: { ...state, status: result.status, edit: { kind: "keep" }, ...("code" in result ? { code: result.code } : {}) } } : row));
+    } finally { resolving.current.delete(entry.id); }
+  };
+
   const updateEntry = (entryId: string, update: Partial<KeyValueEntry>) => {
     const previousEntry = entries.find((entry) => entry.id === entryId);
     if (previousEntry?.readOnly || (previousEntry?.keyReadOnly && "key" in update)) {
@@ -181,7 +207,8 @@ export function KeyValueEditor({
     const nextEntries = entries.map((entry) => {
       if (entry.id !== entryId) return entry;
 
-      const nextEntry = { ...entry, ...update };
+      const nextEntry = { ...entry, ...update, ...("value" in update && entry.secretState ? { secretState: { ...entry.secretState, status: "available" as const, edit: { kind: "set" as const, value: update.value! } } } : {}) };
+      if (allowSensitive && /^(cookie|set-cookie)$/i.test(nextEntry.key.trim())) nextEntry.secret = true;
       const isNewEntry = !hasEntryContent(entry) && hasEntryContent(nextEntry);
       return isNewEntry ? { ...nextEntry, enabled: true } : nextEntry;
     });
@@ -374,7 +401,9 @@ export function KeyValueEditor({
         {entries.map((entry) => (
           <KeyValueRow
             key={entry.id}
-            entry={entry}
+            entry={entry.readOnly && entry.secretState && displaySecrets[entry.id]?.state.ref === entry.secretState.ref && displaySecrets[entry.id].sourceValue === entry.value && displaySecrets[entry.id].sourceStatus === entry.secretState.status ? { ...entry, value: displaySecrets[entry.id].value, secretState: displaySecrets[entry.id].state } : entry}
+            allowSensitive={allowSensitive}
+            onResolve={() => { void resolveEntry(entry).catch(() => {}); }}
             multipart={multipart}
             keyLabel={keyLabel}
             keyTextClassName={keyTextClassName}
@@ -410,6 +439,8 @@ export function KeyValueEditor({
 }
 
 type KeyValueRowProps = {
+  allowSensitive: boolean;
+  onResolve: () => void;
   entry: KeyValueEntry;
   multipart: boolean;
   keyLabel: string;
@@ -439,6 +470,8 @@ type KeyValueRowProps = {
 
 function KeyValueRow({
   entry,
+  allowSensitive,
+  onResolve,
   multipart,
   keyLabel,
   keyTextClassName,
@@ -466,6 +499,7 @@ function KeyValueRow({
 }: KeyValueRowProps) {
   const valueInputRef = useRef<HTMLInputElement>(null);
   const hasContent = hasEntryContent(entry);
+  const mandatorySensitive = allowSensitive && /^(cookie|set-cookie)$/i.test(entry.key.trim());
 
   return (
     <div
@@ -553,13 +587,14 @@ function KeyValueRow({
         <KeyValueField
           className="flex-1"
           readOnly={entry.readOnly}
-          secret={entry.secret}
+          secret={entry.secret || mandatorySensitive}
           label={entry.key ? "Value for " + entry.key : keyLabel + " value"}
           font={valueFont}
           inputRef={valueInputRef}
+          onFocus={onResolve}
           muted={!entry.enabled}
           value={entry.value}
-          placeholder={valuePlaceholder}
+          placeholder={entry.secretState && entry.secretState.status !== "available" && entry.secretState.edit?.kind !== "set" ? `Local secret ${entry.secretState.status}` : valuePlaceholder}
           onChange={(value) => onChange({ value })}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -570,6 +605,7 @@ function KeyValueRow({
           variableActions={variableActions}
         />
       )}
+      {allowSensitive && !entry.readOnly ? <Button type="button" size="icon" variant="ghost" aria-label={`Sensitive ${entry.key || keyLabel}`} aria-pressed={Boolean(entry.secret || mandatorySensitive)} disabled={mandatorySensitive || Boolean(entry.secret && entry.secretState && entry.secretState.status !== "available" && entry.secretState.edit?.kind !== "set")} title={entry.secret ? "Sensitive value: encrypted locally" : "Mark value sensitive"} onClick={() => onChange({ secret: !entry.secret })}><LockKeyhole className={cn("size-ui-3-5", entry.secret && "text-action-brand")} /></Button> : null}
       {scopeOptions && entry.scope ? (
         <SelectField
           className="w-method-popover shrink-0"
@@ -883,7 +919,7 @@ function KeyValueField({
           type="button"
           aria-label={`${revealed ? "Hide" : "Reveal"} ${label ?? "secret"}`}
           aria-pressed={revealed}
-          onClick={() => setRevealed(!revealed)}
+          onClick={() => { if (!revealed) onFocus?.(); setRevealed(!revealed); }}
         >
           {revealed ? (
             <EyeOff className="size-ui-3-5" aria-hidden="true" />

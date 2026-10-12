@@ -6,7 +6,7 @@ use crate::{
         secret_commits::{OperationStatus, SecretBatch, SecretSnapshot},
         workspace_cleanup::{self, WorkspaceDeletionResult},
     },
-    security::PlatformRootKeyStore,
+    security::{PlatformRootKeyStore, ProtectedError, ProtectedStatus},
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
@@ -22,7 +22,11 @@ use tauri_plugin_opener::OpenerExt;
 use zeroize::Zeroizing;
 
 #[derive(Default)]
-pub struct PersistenceState(Mutex<Option<RuntimeStorage>>);
+pub struct PersistenceState(
+    Mutex<Option<RuntimeStorage>>,
+    Mutex<Option<ProtectedError>>,
+    Mutex<HashMap<String, PathBuf>>,
+);
 struct RuntimeStorage {
     local: LocalStateStore,
     roots: HashMap<String, PathBuf>,
@@ -113,14 +117,14 @@ fn valid_id(id: &str) -> Result<(), String> {
     }
 }
 impl RuntimeStorage {
-    fn open(app: &tauri::AppHandle) -> Result<Self, String> {
+    fn open(app: &tauri::AppHandle) -> Result<Self, ProtectedError> {
         let data = app
             .path()
             .app_data_dir()
             .map_err(|_| "Cannot locate application storage")?;
         fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
         let root_keys = PlatformRootKeyStore::new(&data);
-        let local = LocalStateStore::open(&data.join("local-state.sqlite3"), &root_keys)?;
+        let local = LocalStateStore::open_typed(&data.join("local-state.sqlite3"), &root_keys)?;
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);
@@ -263,16 +267,98 @@ impl RuntimeStorage {
     }
 }
 
+fn access_typed<T>(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    call: impl FnOnce(&mut RuntimeStorage) -> Result<T, ProtectedError>,
+) -> Result<T, ProtectedError> {
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| ProtectedError::unavailable("persistence-lock-unavailable"))?;
+    if guard.is_none() {
+        let mut failure = state
+            .1
+            .lock()
+            .map_err(|_| ProtectedError::unavailable("persistence-lock-unavailable"))?;
+        if let Some(error) = failure.as_ref() {
+            return Err(error.clone());
+        }
+        match RuntimeStorage::open(app) {
+            Ok(storage) => *guard = Some(storage),
+            Err(error) => {
+                *failure = Some(error.clone());
+                return Err(error);
+            }
+        }
+    }
+    call(
+        guard
+            .as_mut()
+            .ok_or_else(|| ProtectedError::unavailable("persistence-unavailable"))?,
+    )
+}
 fn access<T>(
     app: &tauri::AppHandle,
     state: &PersistenceState,
     call: impl FnOnce(&mut RuntimeStorage) -> Result<T, String>,
 ) -> Result<T, String> {
-    let mut guard = state.0.lock().map_err(|_| "Persistence is unavailable")?;
-    if guard.is_none() {
-        *guard = Some(RuntimeStorage::open(app)?);
+    // Existing mutation error markers are part of S01 reconciliation. Preserve
+    // them rather than flattening them into a generic availability failure.
+    access_typed(app, state, |storage| Ok(call(storage))).map_err(|error| error.to_string())?
+}
+fn degraded_snapshot(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    error: &ProtectedError,
+) -> Result<Value, String> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Cannot locate application storage")?;
+    let attached = state
+        .2
+        .lock()
+        .map_err(|_| "Project catalogue is unavailable")?;
+    super::catalogue::load(&data, error, &attached)
+}
+fn snapshot(
+    storage: &mut RuntimeStorage,
+    attached: &HashMap<String, PathBuf>,
+) -> Result<Value, ProtectedError> {
+    storage.recover().map_err(|_| {
+        ProtectedError::new(
+            ProtectedStatus::RecoveryRequired,
+            "project-recovery-required",
+            true,
+        )
+    })?;
+    let mut ids = storage
+        .local
+        .workspaces()?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect::<BTreeSet<_>>();
+    for (id, directory) in attached {
+        if !ids.contains(id) {
+            workspace_cleanup::ensure_available(&storage.local, id, directory)?;
+            storage.watch(id, directory.clone())?;
+            ids.insert(id.clone());
+        }
     }
-    call(guard.as_mut().ok_or("Persistence is unavailable")?)
+    let workspaces = ids
+        .iter()
+        .map(|id| storage.workspace(id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let legacy = if storage.local.app("legacy-migrated")?.is_none() {
+        crate::persistence::legacy::load_legacy(&storage.data.join("workspaces"))?
+    } else {
+        Value::Null
+    };
+    storage.migration_snapshot = (!legacy.is_null()).then(|| legacy.clone());
+    Ok(
+        json!({"activeWorkspaceId":storage.local.app("active-workspace")?.unwrap_or_default(),"workspaces":workspaces,"global":storage.local.read("__global__")?,"legacy":legacy,"protectedState":{"status":"available"}}),
+    )
 }
 
 pub fn secure_get(
@@ -349,30 +435,40 @@ pub fn load_persistence(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
 ) -> Result<Value, String> {
-    access(&app, &state, |storage| {
-        let workspaces = storage
-            .local
-            .workspaces()?
-            .iter()
-            .map(|(id, _)| storage.workspace(id))
-            .collect::<Result<Vec<_>, _>>()?;
-        let legacy = if storage.local.app("legacy-migrated")?.is_none() {
-            crate::persistence::legacy::load_legacy(&storage.data.join("workspaces"))?
-        } else {
-            Value::Null
-        };
-        storage.migration_snapshot = (!legacy.is_null()).then(|| legacy.clone());
-        Ok(
-            json!({ "activeWorkspaceId": storage.local.app("active-workspace")?.unwrap_or_default(), "workspaces": workspaces, "global": storage.local.read("__global__")?, "legacy": legacy }),
-        )
-    })
+    match access_typed(&app, &state, |storage| {
+        let attached = state
+            .2
+            .lock()
+            .map_err(|_| ProtectedError::unavailable("project-catalogue-unavailable"))?;
+        snapshot(storage, &attached)
+    }) {
+        Ok(value) => Ok(value),
+        Err(error) => degraded_snapshot(&app, &state, &error),
+    }
 }
+
 pub fn load_project(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
     id: String,
 ) -> Result<Value, String> {
-    access(&app, &state, |storage| storage.workspace(&id))
+    match access_typed(&app, &state, |storage| {
+        storage.recover().map_err(|_| {
+            ProtectedError::new(
+                ProtectedStatus::RecoveryRequired,
+                "project-recovery-required",
+                true,
+            )
+        })?;
+        storage.workspace(&id).map_err(ProtectedError::from)
+    }) {
+        Ok(value) => Ok(value),
+        Err(error) => degraded_snapshot(&app, &state, &error)?["workspaces"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == id))
+            .cloned()
+            .ok_or_else(|| "Workspace is not in the readable catalogue".into()),
+    }
 }
 
 pub fn read_attachment(
@@ -408,7 +504,18 @@ pub fn reload_project_file(
     id: String,
     path: String,
 ) -> Result<Option<ProjectFile>, String> {
-    access(&app, &state, |storage| storage.files(&id)?.read(&path))
+    match access_typed(&app, &state, |storage| Ok(storage.files(&id)?.read(&path))) {
+        Ok(value) => value,
+        Err(_) => {
+            let workspace = load_project(app, state, id)?;
+            workspace["files"]
+                .get(&path)
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| "Invalid project resource".into())
+        }
+    }
 }
 pub fn commit_project(
     app: tauri::AppHandle,
@@ -476,6 +583,39 @@ pub fn secure_read(
         storage.local.read_secret(&reference)
     })
 }
+pub fn secure_resolve(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    reference: String,
+) -> Value {
+    let result = access_typed(&app, &state, |storage| {
+        storage.local.read_secret_typed(&reference)
+    });
+    secret_resolution(result)
+}
+fn secret_resolution(result: Result<SecretSnapshot, ProtectedError>) -> Value {
+    match result {
+        Ok(value) => match value.value {
+            Some(text) => json!({"status":"available","value":text,"revision":value.revision}),
+            None => json!({"status":"missing","revision":value.revision}),
+        },
+        Err(error) => {
+            json!({"status":if error.status==ProtectedStatus::RecoveryRequired {ProtectedStatus::Unavailable}else{error.status},"code":error.code,"retryable":error.retryable})
+        }
+    }
+}
+pub fn retry_protected_storage(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+) -> Result<Value, String> {
+    {
+        let mut current = state.0.lock().map_err(|_| "Persistence is unavailable")?;
+        *current = None;
+        *state.1.lock().map_err(|_| "Persistence is unavailable")? = None;
+    }
+    load_persistence(app, state)
+}
+
 pub fn secure_commit(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
@@ -522,6 +662,9 @@ pub fn delete_project(
         let replay = storage.local.operation(&batch.operation_id)?.is_some();
         let result = workspace_cleanup::delete(&mut storage.local, &id, managed, &batch)?;
         if !replay {
+            if let Ok(mut attached) = state.2.lock() {
+                attached.remove(&id);
+            }
             storage.roots.remove(&id);
             let _ = storage.watcher.unwatch(&directory);
         }
@@ -598,33 +741,63 @@ pub fn attach_project_directory(
     directory: String,
 ) -> Result<Value, String> {
     valid_id(&id)?;
-    access(&app, &state, |storage| {
-        let path = fs::canonicalize(directory).map_err(|_| "Project directory does not exist")?;
-        if storage.data.starts_with(&path) {
-            return Err(
-                "A project directory cannot contain Purr's private application storage".into(),
-            );
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Cannot locate application storage")?;
+    let path = fs::canonicalize(directory).map_err(|_| "Project directory does not exist")?;
+    if data.starts_with(&path) {
+        return Err("A project directory cannot contain Purr's private application storage".into());
+    }
+    if !path.join("purr.yaml").is_file() {
+        return Err("The directory does not contain purr.yaml".into());
+    }
+    match access_typed(&app, &state, |storage| {
+        Ok((|| {
+            let path = path.clone();
+            if storage.data.starts_with(&path) {
+                return Err(
+                    "A project directory cannot contain Purr's private application storage".into(),
+                );
+            }
+            if !path.join("purr.yaml").is_file() {
+                return Err("The directory does not contain purr.yaml".into());
+            }
+            if storage.roots.get(&id).is_some_and(|root| root != &path) {
+                return Err("A workspace with this ID is already open".into());
+            }
+            if storage
+                .roots
+                .iter()
+                .any(|(other, root)| other != &id && root == &path)
+            {
+                return Err(
+                    "This directory is already registered with a different workspace ID".into(),
+                );
+            }
+            workspace_cleanup::ensure_available(&storage.local, &id, &path)?;
+            // Registration follows successful frontend validation via a separate commit.
+            storage.watch(&id, path)?;
+            storage.workspace(&id)
+        })())
+    }) {
+        Ok(result) => result,
+        Err(error) => {
+            let mut attached = state
+                .2
+                .lock()
+                .map_err(|_| "Project catalogue is unavailable")?;
+            super::catalogue::check_attachment(&data, &id, &path, &attached)?;
+            let files = FilesystemWorkspaceStore {
+                directory: path.clone(),
+            }
+            .load()?;
+            attached.insert(id.clone(), path);
+            Ok(
+                json!({"id":id,"files":files,"local":[],"protectedState":super::catalogue::protected_state(&error)}),
+            )
         }
-        if !path.join("purr.yaml").is_file() {
-            return Err("The directory does not contain purr.yaml".into());
-        }
-        if storage.roots.get(&id).is_some_and(|root| root != &path) {
-            return Err("A workspace with this ID is already open".into());
-        }
-        if storage
-            .roots
-            .iter()
-            .any(|(other, root)| other != &id && root == &path)
-        {
-            return Err(
-                "This directory is already registered with a different workspace ID".into(),
-            );
-        }
-        workspace_cleanup::ensure_available(&storage.local, &id, &path)?;
-        // Registration follows successful frontend validation via a separate commit.
-        storage.watch(&id, path)?;
-        storage.workspace(&id)
-    })
+    }
 }
 
 pub fn request_history(
@@ -747,6 +920,102 @@ mod watcher_tests {
         let own_error = storage.recover_before_commit().unwrap_err();
         assert!(own_error.contains("recovery-required"));
         assert!(own_error.starts_with("commit-rejected:"));
+    }
+
+    #[test]
+    fn resolution_preserves_missing_empty_corrupt_and_safe_provider_states_without_fake_revisions()
+    {
+        use super::{secret_resolution, ProtectedError, ProtectedStatus};
+        use crate::{
+            persistence::local_records::LocalStateStore, security::tests::MemoryRootKeyStore,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let local =
+            LocalStateStore::open(&dir.path().join("state.db"), &MemoryRootKeyStore::default())
+                .unwrap();
+        let reference = "purr/workspace/auth/token";
+        assert_eq!(
+            secret_resolution(local.read_secret_typed(reference)),
+            serde_json::json!({"status":"missing","revision":0})
+        );
+        local.set_secret(reference, "").unwrap();
+        assert_eq!(
+            secret_resolution(local.read_secret_typed(reference)),
+            serde_json::json!({"status":"available","revision":1,"value":""})
+        );
+        local.delete_secret(reference).unwrap();
+        assert_eq!(
+            secret_resolution(local.read_secret_typed(reference)),
+            serde_json::json!({"status":"missing","revision":2})
+        );
+        local
+            .set_secret(reference, "synthetic private value")
+            .unwrap();
+        local
+            .db
+            .execute(
+                "UPDATE secret_values SET ciphertext=?1 WHERE reference=?2",
+                rusqlite::params![b"broken".as_slice(), reference],
+            )
+            .unwrap();
+        let corrupt = secret_resolution(local.read_secret_typed(reference));
+        assert_eq!(corrupt["status"], "corrupt");
+        assert_eq!(corrupt["code"], "secret-ciphertext-invalid");
+        assert!(local.read_secret(reference).is_err());
+        assert!(corrupt.get("revision").is_none());
+        assert!(corrupt.get("value").is_none());
+        for status in [
+            ProtectedStatus::Locked,
+            ProtectedStatus::Unavailable,
+            ProtectedStatus::Denied,
+        ] {
+            let failure =
+                secret_resolution(Err(ProtectedError::new(status, "safe-provider-code", true)));
+            assert_eq!(failure["status"], serde_json::to_value(status).unwrap());
+            assert!(failure.get("revision").is_none());
+            assert!(failure.get("value").is_none());
+        }
+        let internal = secret_resolution(local.read_secret_typed(crate::security::ROOT_KEY_REF));
+        assert_eq!(internal["status"], "denied");
+    }
+
+    #[test]
+    fn recovered_snapshot_keeps_readonly_attached_project_without_registering_it_implicitly() {
+        use super::{snapshot, RuntimeStorage};
+        use crate::{
+            persistence::local_records::LocalStateStore, security::tests::MemoryRootKeyStore,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let local =
+            LocalStateStore::open(&dir.path().join("state.db"), &MemoryRootKeyStore::default())
+                .unwrap();
+        local.set_app("legacy-migrated", "1").unwrap();
+        let external = dir.path().join("external");
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(
+            external.join("purr.yaml"),
+            "purr: 1
+id: external
+",
+        )
+        .unwrap();
+        let mut storage = RuntimeStorage {
+            local,
+            roots: Default::default(),
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            projects: dir.path().join("projects"),
+            data: dir.path().into(),
+            migration_snapshot: None,
+        };
+        let result = snapshot(
+            &mut storage,
+            &std::collections::HashMap::from([("external".into(), external.clone())]),
+        )
+        .unwrap();
+        assert_eq!(result["protectedState"]["status"], "available");
+        assert_eq!(result["workspaces"][0]["id"], "external");
+        assert!(storage.local.workspaces().unwrap().is_empty());
+        assert_eq!(storage.files("external").unwrap().directory, external);
     }
 
     #[test]

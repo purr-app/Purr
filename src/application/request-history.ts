@@ -59,7 +59,7 @@ export class RequestHistory {
       const stored = {
         version: 1, id, documentId: entry.documentId, name: entry.name, kind: entry.kind,
         method: entry.kind === "graphql" ? "POST" : editor.method,
-        url: response?.timeline.displayRequest?.url ?? response?.timeline.request.url ?? editor.url,
+        url: response?.timeline.displayRequest?.url ?? (response ? "Request details unavailable" : editor.url),
         startedAt: Math.trunc(response?.timeline.startedAtMs ?? entry.startedAt), durationMs: Math.max(0, metadata?.durationMs ?? entry.durationMs),
         outcome: entry.outcome, status: metadata?.status ?? null,
         size: response ? isInlineHttpResponse(response) ? response.size : response.content.byteLength : 0,

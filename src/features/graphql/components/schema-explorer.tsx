@@ -1,3 +1,5 @@
+import type { SecretFieldState } from "../../../application/ports/credentials";
+import type { ProtectedState } from "../../../application/ports/persistence";
 import { Modal } from "../../../shared/components/ui/modal";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
@@ -75,14 +77,15 @@ function analysis(type: GraphQLNamedType) {
   return { fields: fields.length, deprecated: deprecatedPaths.length, lists: listPaths.length, depth: depthPath.length, depthPath, listPaths, deprecatedPaths };
 }
 
-export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar, onChange, onWorkspaceAuthChange, onCreateRequest, environmentId, isDefault, onDefaultChange }: {
+export function SchemaExplorer({ document, variables, variableStates, protectedState, workspaceConfig, cookieJar, onChange, onWorkspaceAuthChange, onCreateRequest, environmentId, isDefault, onDefaultChange }: {
+  variableStates?: Record<string, SecretFieldState>; protectedState?: ProtectedState;
   document: SchemaDocument; environmentId: string | null; isDefault: boolean; onDefaultChange: () => void; variables: Record<string, string>; cookieJar: SessionCookieJar;
   workspaceConfig: WorkspaceRequestConfig;
   onChange: (patch: Partial<SchemaDocument>) => void;
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
-  const { httpTransport, responseContent, requestBodies, downloads } = useApplicationServices();
+  const { httpTransport, responseContent, requestBodies, downloads, persistence } = useApplicationServices();
   const [downloading, setDownloading] = useState(false);
   const [settings, setSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "auth" | "headers">("general");
@@ -102,8 +105,8 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
   const workspaceAuth = useMemo(() => workspaceAuthEntry
     ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || "Workspace", auth: workspaceAuthEntry.value } : undefined,
   [workspaceAuthEntry]);
-  const [context, setContext] = useState<AuthContext>({ variables, workspace: workspaceAuth, workspaceProfiles });
-  useEffect(() => setContext((current) => ({ ...current, variables, workspace: workspaceAuth, workspaceProfiles })), [variables, workspaceAuth, workspaceProfiles]);
+  const [context, setContext] = useState<AuthContext>({ variables, variableStates, secretStore: persistence.secure, workspace: workspaceAuth, workspaceProfiles });
+  useEffect(() => setContext((current) => ({ ...current, variables, variableStates, secretStore: persistence.secure, workspace: workspaceAuth, workspaceProfiles })), [variables, variableStates, persistence.secure, workspaceAuth, workspaceProfiles]);
   const upload = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   const mounted = useRef(true);
@@ -131,7 +134,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
     const next = typeof change === "function" ? change(currentDraft) : change;
     changeRef.current({ endpoint: next.url, auth: next.auth, introspectionHeaders: next.headers, updatedAt: new Date().toISOString() });
   }, []);
-  const runtime = useAuthRuntime(schemaDraft, setSchemaDraft, context, setContext, onWorkspaceAuthChange);
+  const runtime = useAuthRuntime(!protectedState || protectedState.status === "available" ? schemaDraft : { ...schemaDraft, auth: { ...schemaDraft.auth, type: "none" } }, setSchemaDraft, context, setContext, onWorkspaceAuthChange);
   const parsed = useMemo(() => { try { return { schema: document.sdl ? parseGraphqlSchema(document.sdl) : undefined, error: "" }; } catch (cause) { return { schema: undefined, error: String(cause) }; } }, [document.sdl]);
   const schema = parsed.schema;
   const types = useMemo(() => schema ? Object.values(schema.getTypeMap()).filter((type) => !type.name.startsWith("__")) : [], [schema]);
@@ -153,6 +156,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
     onChange({ sdl, saved: true, source: sourceKind, sourceLabel, loadedAt, updatedAt: loadedAt, schemaSource, cacheIdentity }); setError("");
   };
   const introspect = async () => {
+    if (protectedState && protectedState.status !== "available") { setError("Protected storage is unavailable. Retry in Workspace settings → Secrets before fetching a schema."); return; }
     if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError(""); onChange({ fetchStatus: "loading", fetchError: undefined });
     const controller = new AbortController(); operation.current = controller;
     try {

@@ -1,3 +1,5 @@
+import { templateTokens } from "../../../domain/template-expression";
+import { SecretUnavailableError, type SecretFieldState, type SecureStore } from "../../../application/ports/credentials";
 import { resolveEnvironmentValue } from "../../../shared/lib/resolve-variables";
 
 export const authTypeOptions = [
@@ -32,6 +34,7 @@ export type OAuthConfig = {
 export type RequestAuth = {
   credentialStorage?: { bearer?: "plain" | "secret" };
   secretRefs?: Record<string, string>;
+  credentialStates?: Record<string, SecretFieldState>;
   type: AuthType;
   bearer: {
     token: string;
@@ -53,6 +56,8 @@ export type AuthContext = {
   workspaceProfiles?: AuthProfile[];
   environment?: AuthProfile;
   variables?: Record<string, string>;
+  variableStates?: Record<string, SecretFieldState>;
+  secretStore?: SecureStore;
   sensitiveVariableNames?: readonly string[];
   requestDocumentId?: string;
 };
@@ -144,6 +149,17 @@ export function resolveAuthValue(
   value: string,
   context: AuthContext = {},
 ): string {
+  const visited = new Set<string>();
+  const check = (expression: string) => {
+    for (const token of templateTokens(expression)) {
+      if (visited.has(token.name)) continue;
+      visited.add(token.name);
+      const state = context.variableStates?.[token.name];
+      if (state && state.edit?.kind !== "set" && (state.status !== "available" || state.edit?.kind === "delete")) throw new SecretUnavailableError(state.ref, state.edit?.kind === "delete" ? "missing" : state.status === "unresolved" || state.status === "available" ? "unavailable" : state.status);
+      check(context.variables?.[token.name] ?? "");
+    }
+  };
+  check(value);
   return resolveEnvironmentValue(value, context.variables ?? {});
 }
 
@@ -182,6 +198,9 @@ export function getAuthBinding(
   const read = (value: string) => resolveAuthValue(value, context);
   let binding: AuthBinding | undefined;
   try {
+    const slot = current.type === "bearer" ? "bearer" : current.type === "basic" ? "password" : current.type === "api-key" ? "api-key" : current.type === "oauth2" ? "oauth-access-token" : undefined;
+    const state = slot ? current.credentialStates?.[slot] : undefined;
+    if (state && state.edit?.kind !== "set" && (state.status !== "available" || state.edit?.kind === "delete")) throw new SecretUnavailableError(state.ref, state.edit?.kind === "delete" ? "missing" : state.status === "unresolved" || state.status === "available" ? "unavailable" : state.status);
     switch (current.type) {
       case "none":
         return {};
@@ -247,7 +266,7 @@ export function getAuthBinding(
         break;
       }
       case "oauth2": {
-        if (!current.oauth2.token)
+        if (!current.oauth2.token?.accessToken)
           return { error: "Get an access token to authorize this request." };
         binding = {
           target: "header",

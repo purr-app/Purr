@@ -16,6 +16,9 @@ export async function installPersistenceMock(page: Page) {
           const secrets = JSON.parse(localStorage.getItem("purr-native-secure-test") ?? "{}");
           const revisions = JSON.parse(localStorage.getItem("purr-native-secure-revisions-test") ?? "{}");
           const operations = JSON.parse(localStorage.getItem("purr-native-secure-operations-test") ?? "{}");
+          const protectedState = (window as any).__purrProtectedState ?? snapshot.protectedState ?? { status: "available" };
+          const stateFor = (id?: string) => snapshot.workspaces.find((workspace: any) => workspace.id === id)?.protectedState ?? protectedState;
+          const assertAvailable = (id?: string) => { const state = stateFor(id); if (state.status !== "available") throw new Error(state.code ?? "protected-storage-unavailable"); };
           const requestedBatch = command === "secure_commit" ? args.batch
             : command === "request_history" && args.action.operation === "append" ? args.action.secrets
               : command === "commit_project" || command === "write_global_state" ? args.secrets : undefined;
@@ -38,6 +41,7 @@ export async function installPersistenceMock(page: Page) {
               return previous.result;
             }
             try {
+              assertAvailable(request.args?.id);
               const seen = new Set();
               for (const mutation of batch?.mutations ?? []) {
                 if (seen.has(mutation.ref) || !/^purr\/[a-zA-Z0-9_/-]+$/.test(mutation.ref)
@@ -72,6 +76,7 @@ export async function installPersistenceMock(page: Page) {
           const prune = () => { history.entries = history.entries.filter((entry: any) => entry.pinned || entry.startedAt >= Date.now() - history.retentionDays * 86400000); };
           const saveHistory = () => { histories[args.id] = history; localStorage.setItem("purr-native-history-test", JSON.stringify(histories)); };
           if (command === "request_history") {
+            assertAvailable(args.id);
             const action = args.action;
             if (action.operation === "append") return transaction(action.secrets, { command, args }, () => {
               if ((window as any).__purrFailHistory) throw new Error("Synthetic history failure");
@@ -99,6 +104,8 @@ export async function installPersistenceMock(page: Page) {
           }
           const restoreHistory = (workspace: any) => {
             if (!workspace) return workspace;
+            const state = stateFor(workspace.id);
+            if (state.status !== "available") return { ...workspace, local: [], protectedState: state };
             const latest = new Map();
             for (const entry of [...(histories[workspace.id]?.entries ?? [])].sort((a: any, b: any) => b.startedAt - a.startedAt)) {
               if (entry.status != null && !latest.has(entry.documentId)) latest.set(entry.documentId, { table: "request_executions", id: entry.id, value: entry });
@@ -106,7 +113,13 @@ export async function installPersistenceMock(page: Page) {
             workspace.local = [...workspace.local.filter((item: any) => item.table !== "request_executions"), ...latest.values()];
             return workspace;
           };
-          if (command === "load_persistence") return { ...snapshot, workspaces: snapshot.workspaces.map(restoreHistory) };
+          if (command === "load_persistence" || command === "retry_protected_storage") {
+            if (command === "retry_protected_storage" && !(window as any).__purrNeedsRecovery) {
+              for (const operation of Object.values(operations) as any[]) if (operation.status === "recovery-required") operation.status = "aborted";
+              localStorage.setItem("purr-native-secure-operations-test", JSON.stringify(operations));
+            }
+            return { ...snapshot, protectedState, ...(protectedState.status === "available" ? {} : { global: [], legacy: undefined }), workspaces: snapshot.workspaces.map(restoreHistory) };
+          }
           if (command === "load_project") {
             // Turning the injection off models a successful recovery check that
             // confirms rollback, rather than replaying uncertain mutations.
@@ -151,6 +164,16 @@ export async function installPersistenceMock(page: Page) {
           if (command === "set_local_active_workspace") { snapshot.activeWorkspaceId = args.id; localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot)); return; }
           if (command === "finish_legacy_migration") return;
           if (command.startsWith("secure_")) {
+            if (command === "secure_resolve") {
+              const injected = (window as any).__purrSecretStates?.[args.reference];
+              if (injected) return injected;
+              const state = stateFor(args.reference.split("/")[1]);
+              if (state.status !== "available") return { status: state.status === "recovery-required" ? "unavailable" : state.status,
+                code: state.code ?? "protected-storage-unavailable", retryable: state.status !== "corrupt" };
+              return args.reference in secrets ? { status: "available", value: secrets[args.reference], revision: revision(args.reference) }
+                : { status: "missing", revision: revision(args.reference) };
+            }
+            if (["secure_read", "secure_get", "secure_exists", "secure_set", "secure_delete"].includes(command)) assertAvailable(args.reference.split("/")[1]);
             if (command === "secure_read") return { value: secrets[args.reference] ?? null, revision: revision(args.reference) };
             if (command === "secure_operation_status") return { operationId: args.operationId, status: operations[args.operationId]?.status ?? "missing" };
             if (command === "secure_commit") return transaction(args.batch, { command, args }, () => {});

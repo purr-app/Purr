@@ -8,8 +8,16 @@ import { CommitRejectedError, RecoveryRequiredError } from "../src/application/p
 import { MemorySecureStore, SecretPreparationStore } from "../src/storage/secrets";
 import { BrowserHistory } from "../src/storage/browser-history";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
-import { cloneRequestDraft, createWorkspace, isRequestDocument } from "../src/features/workspaces/model/workspace";
+import { cloneRequestDraft, createWorkspace, isRequestDocument, type RequestDocument, type Variable } from "../src/features/workspaces/model/workspace";
 import type { NormalizedImportResult } from "../src/importing/contracts";
+
+function editPassword(document: RequestDocument, value: string | null) {
+  const state = document.request.auth.credentialStates?.password;
+  assert.ok(state, "the saved fixture must retain its credential identity");
+  document.request.auth.basic.password = value ?? "";
+  document.request.auth.credentialStates = { ...document.request.auth.credentialStates,
+    password: { ...state, edit: value === null ? { kind: "delete" } : { kind: "set", value } } };
+}
 
 async function savedFixture() {
   const secure = new MemorySecureStore();
@@ -35,7 +43,7 @@ test("failed canonical save preserves the existing password and files; retry com
   const before = structuredClone(backend.snapshot);
   const commit = backend.commit.bind(backend);
   document.name = "Renamed request";
-  document.request.auth.basic.password = "synthetic-password-B";
+  editPassword(document, "synthetic-password-B");
   document.savedRequest = cloneRequestDraft(document.request);
   backend.commit = async () => { throw new Error("Injected canonical commit failure"); };
   await assert.rejects(persistence.save(store), /Injected canonical commit failure/);
@@ -54,7 +62,7 @@ test("failed canonical save preserves the existing password and files; retry com
 test("project validation failure after credential preparation leaves the vault unchanged", async () => {
   const { secure, backend, persistence, workspace, document, store, ref } = await savedFixture();
   const before = structuredClone(backend.snapshot);
-  document.request.auth.basic.password = "synthetic-invalid-project-password";
+  editPassword(document, "synthetic-invalid-project-password");
   document.savedRequest = cloneRequestDraft(document.request);
   workspace.documents.push({ ...document, request: cloneRequestDraft(document.request) });
   await assert.rejects(persistence.save(store), /Duplicate.*identifier/i);
@@ -73,7 +81,7 @@ test("a conflicting external file edit prevents a prepared credential deletion",
   const before = structuredClone(backend.snapshot);
   const credentialBefore = await secure.read(ref);
   document.name = "Conflicting local edit";
-  document.request.auth.basic.password = "";
+  editPassword(document, null);
   document.savedRequest = cloneRequestDraft(document.request);
   await assert.rejects(persistence.save(store), /conflict|externally/i);
   assert.deepEqual(await secure.read(ref), credentialBefore);
@@ -84,7 +92,7 @@ test("a lost acknowledgement after commit is reconciled without reporting a fals
   const { secure, backend, persistence, document, store, ref } = await savedFixture();
   const commit = backend.commit.bind(backend);
   document.name = "Committed before acknowledgement";
-  document.request.auth.basic.password = "synthetic-acknowledged-password";
+  editPassword(document, "synthetic-acknowledged-password");
   document.savedRequest = cloneRequestDraft(document.request);
   let commits = 0;
   backend.commit = async (...args) => {
@@ -103,7 +111,7 @@ test("an unreadable operation status reports recovery required and preserves the
   const { secure, backend, persistence, document, store, ref } = await savedFixture();
   const before = structuredClone(backend.snapshot);
   const credentialBefore = await secure.read(ref);
-  document.request.auth.basic.password = "synthetic-uncertain-password";
+  editPassword(document, "synthetic-uncertain-password");
   document.savedRequest = cloneRequestDraft(document.request);
   let attemptedOperationId = "";
   backend.commit = async (_id, _files, _local, batch) => {
@@ -125,7 +133,7 @@ test("a known prior recovery conflict cannot be hidden by a committed operation 
   const { secure, backend, persistence, document, store, ref } = await savedFixture();
   const before = structuredClone(backend.snapshot);
   const credentialBefore = await secure.read(ref);
-  document.request.auth.basic.password = "synthetic-rejected-recovery-password";
+  editPassword(document, "synthetic-rejected-recovery-password");
   document.savedRequest = cloneRequestDraft(document.request);
   backend.commit = async () => { throw new Error("commit-rejected: Commit recovery-required; synthetic prior operation conflict"); };
   let statusReads = 0;
@@ -144,7 +152,7 @@ test("a known prior recovery conflict cannot be hidden by a committed operation 
 test("projection returns protected records and a transient mutation plan without publishing credentials", async () => {
   const { secure, workspace, document, ref } = await savedFixture();
   const before = await secure.read(ref);
-  document.request.auth.basic.password = "synthetic-preview-password";
+  editPassword(document, "synthetic-preview-password");
   document.savedRequest = cloneRequestDraft(document.request);
   const projection = await projectWorkspace(workspace, secure);
   assert.deepEqual(await secure.read(ref), before);
@@ -156,13 +164,14 @@ test("global secret-only edits commit even when definitions do not change and fa
   const secure = new MemorySecureStore();
   const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure);
-  const variable = { id: "global-token", name: "token", kind: "static" as const, sensitive: true, enabled: true, loaded: true, value: "synthetic-global-A" };
+  const variable: Variable = { id: "global-token", name: "token", kind: "static", sensitive: true, enabled: true, loaded: true, value: "synthetic-global-A" };
   const store = { activeWorkspaceId: "", workspaces: [], globalVariables: [variable] };
   const ref = "purr/global/variables/global-token";
   await persistence.save(store);
   const before = structuredClone(backend.snapshot);
   const writeGlobal = backend.writeGlobal.bind(backend);
   variable.value = "synthetic-global-B";
+  variable.secretState = { ref, status: "available", edit: { kind: "set", value: variable.value } };
   backend.writeGlobal = async () => { throw new Error("Injected global commit failure"); };
   await assert.rejects(persistence.save(store), /Injected global commit failure/);
   assert.equal(await secure.get(ref), "synthetic-global-A");
@@ -269,7 +278,7 @@ test("external reconciliation prepares working credentials without changing the 
   const manifest = stored.files["purr.yaml"];
   await backend.commit(workspace.id, [{ path: "purr.yaml", expectedRevision: manifest.revision,
     content: manifest.content.replace("Transactional fixture", "Externally renamed workspace") }], []);
-  document.request.auth.basic.password = "synthetic-working-password";
+  editPassword(document, "synthetic-working-password");
   const editorRef = `purr/${workspace.id}/drafts/${document.id}/request/auth/basic/password`;
   const before = await secure.read(editorRef);
   const reconciled = await persistence.reconcileExternalChanges(store);

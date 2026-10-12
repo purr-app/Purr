@@ -1,3 +1,4 @@
+import { useApplicationServices } from "../../../app/application-services-context";
 import { variableRenameError } from "../model/rename-variable";
 import { DynamicDependencyChain } from "./dynamic-dependency-chain";
 import { DynamicVariableResolutionError, type DynamicExecutionStep } from "../services/dynamic-variable-resolver";
@@ -17,7 +18,7 @@ import { getHttpMethodStyle } from "../../../shared/model/http-method";
 import { secretRef } from "../../../storage/secrets";
 import type { DynamicVariableRequest } from "../services/dynamic-variable-resolver";
 import { dynamicVariableCacheKey, inspectDynamicVariableGraph } from "../services/dynamic-variable-resolver";
-import { getEffectiveVariables, type Environment, type Variable, type Workspace } from "../model/workspace";
+import { comparableDefinitionState, getEffectiveVariables, type Environment, type Variable, type Workspace } from "../model/workspace";
 
 export type VariableScope = "effective" | "workspace" | "global" | `environment:${string}`;
 type VariableKind = Variable["kind"];
@@ -63,7 +64,7 @@ function usedBy(variable: Variable, documents: readonly DynamicVariableRequest[]
 }
 
 export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHistory, workspace, workspaces = [workspace], globalVariables, scope, selectedId, draft, documents,
-  onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
+  onSaveVariables, onWorkspaceVariablesChange, onGlobalVariablesChange, onEnvironmentChange, onDeleteEnvironment, onOpenRequest, onResolveVariable, onScopeChange, onSelectionChange, onDraftChange }: {
   onImportEnvironment?: () => void;
   requestConfig?: WorkspaceRequestConfig;
   onOpenHistory?: (id: string) => void;
@@ -74,6 +75,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   selectedId: string | null;
   draft: Variable | null;
   documents: readonly DynamicVariableRequest[];
+  onSaveVariables?: (scope: VariableScope, variables: Variable[]) => Promise<void>;
   onWorkspaceVariablesChange: (variables: Variable[]) => void;
   onGlobalVariablesChange: (variables: Variable[]) => void;
   onEnvironmentChange: (environment: Environment) => void;
@@ -84,6 +86,8 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   onSelectionChange: (id: string | null) => void;
   onDraftChange: (draft: Variable | null) => void;
 }) {
+  const [saveError, setSaveError] = useState("");
+  const [savingDraft, setSavingDraft] = useState(false);
   const [search, setSearch] = useState("");
   const [type, setType] = useState<"all" | VariableKind>("all");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -102,7 +106,9 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   const filtered = variables.filter((variable) => (!search.trim() || `${variable.name} ${variableSummary(variable, workspace)}`.toLowerCase().includes(search.toLowerCase()))
     && (type === "all" || variable.kind === type));
 
+  const writable = !workspace.protectedState || workspace.protectedState.status === "available";
   const replaceInScope = (next: Variable[]) => {
+    if (!writable) return;
     if (scope === "workspace") onWorkspaceVariablesChange(next);
     else if (scope === "global") onGlobalVariablesChange(next);
     else if (selectedEnvironment) onEnvironmentChange({ ...selectedEnvironment, variables: next });
@@ -116,7 +122,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   };
   const add = () => { onSelectionChange(null); onDraftChange(createStaticVariable()); };
   const persisted = activeDraft ? variables.find((variable) => variable.id === activeDraft.id) : undefined;
-  const dirty = Boolean(activeDraft && (!persisted || JSON.stringify(activeDraft) !== JSON.stringify(persisted)));
+  const dirty = Boolean(activeDraft && (!persisted || JSON.stringify(comparableDefinitionState(activeDraft)) !== JSON.stringify(comparableDefinitionState(persisted))));
   const validateName = (variable: Variable) => {
     const error = validateVariableName(variable, scope, workspace, globalVariables);
     if (error) return error;
@@ -126,22 +132,27 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
     return variableRenameError(affected, variables.find((candidate) => candidate.id === variable.id), variable);
   };
   const nameError = activeDraft ? validateName(activeDraft) : "";
-  const canSave = Boolean(activeDraft?.name.trim() && !nameError
+  const canSave = Boolean(!savingDraft && writable && activeDraft?.name.trim() && !nameError
     && (activeDraft.kind !== "dynamic-request" || activeDraft.documentId && activeDraft.expression.trim()));
-  const saveDraft = () => {
+  const saveDraft = async () => {
     if (!activeDraft || !canSave || scope === "effective") return;
     let next = { ...structuredClone(activeDraft), name: activeDraft.name.trim() };
     if (next.kind === "static") {
       next = next.sensitive ? { ...next, secretRef: next.secretRef ?? variableSecretRef(scope, workspace, next.id), loaded: true }
         : { id: next.id, name: next.name.trim(), enabled: next.enabled, sensitive: false, kind: "static", value: next.value };
     } else next = { ...next, name: next.name.trim() };
-    replaceInScope(persisted ? variables.map((variable) => variable.id === next.id ? next : variable) : [...variables, next]);
-    onSelectionChange(next.id); onDraftChange(structuredClone(next));
+    const nextVariables = persisted ? variables.map((variable) => variable.id === next.id ? next : variable) : [...variables, next];
+    setSavingDraft(true); setSaveError("");
+    try {
+      if (onSaveVariables) await onSaveVariables(scope, nextVariables); else replaceInScope(nextVariables);
+      onSelectionChange(next.id); onDraftChange(null);
+    } catch (error) { setSaveError(error instanceof Error ? error.message : String(error)); }
+    finally { setSavingDraft(false); }
   };
   const cancelDraft = () => { onDraftChange(null); onSelectionChange(null); setConfirmDeleteId(null); };
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && dirty) { event.preventDefault(); saveDraft(); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && dirty) { event.preventDefault(); void saveDraft(); }
       if (event.key === "Escape" && activeDraft) { event.preventDefault(); cancelDraft(); }
     };
     window.addEventListener("keydown", keydown); return () => window.removeEventListener("keydown", keydown);
@@ -164,6 +175,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
   const showDetails = scope === "effective" ? Boolean(selected) : Boolean(activeDraft);
 
   return <section aria-label="Variables" className="h-full min-h-0 bg-purr-base p-ui-1">
+    {saveError && <p role="alert" className="text-ui-sm text-accent-red">{saveError}</p>}
     <div className={cn("grid h-full min-h-0 overflow-hidden rounded-ui-xl border border-border-subtle bg-purr-surface shadow-panel", showDetails ? "grid-cols-ui-variables" : "grid-cols-ui-variables-compact")}>
       <aside className="ui-subtle-scrollbar min-h-0 overflow-auto border-r border-border-subtle p-ui-2">
         <h1 className="mb-ui-2 mt-ui-0 flex items-center gap-ui-2 text-ui-lg font-medium"><Braces className="size-ui-4 text-action-brand" />Variables</h1>
@@ -194,7 +206,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
           {scope === "effective" ? <EffectiveTable variables={filtered} workspace={workspace} globalVariables={globalVariables} selectedId={selectedId}
               onSelect={(variable) => { onSelectionChange(variable.id); onDraftChange(null); }} onDefinition={(variable) => selectScope(definitionScope(variable, workspace, globalVariables), variable.id)} />
             : <ScopeTable variables={filtered} scope={scope} workspace={workspace} validateName={validateName}
-              detailsVariableId={activeDraft?.id ?? null} inlineDisabled={showDetails} onCreate={persistStatic} onStaticChange={(variable) => persistStatic(variable, true)}
+              detailsVariableId={activeDraft?.id ?? null} inlineDisabled={showDetails || !writable} onCreate={persistStatic} onStaticChange={(variable) => persistStatic(variable, true)}
               onInlineStart={() => { onSelectionChange(null); onDraftChange(null); }} onSelect={openVariable} onToggle={toggle}
               confirmDeleteId={confirmDeleteId} onConfirmDelete={setConfirmDeleteId} onDelete={remove} documents={documents} />}
         </div>
@@ -209,7 +221,7 @@ export function VariablesExplorer({ onImportEnvironment, requestConfig, onOpenHi
         {scope === "effective" ? <EffectiveDetails variable={selected} workspace={workspace} globalVariables={globalVariables} documents={documents} onDefinition={(variable) => selectScope(definitionScope(variable, workspace, globalVariables), variable.id)} onOpenRequest={onOpenRequest} />
           : activeDraft ? <VariableDetails key={activeDraft.id} requestConfig={requestConfig} onOpenHistory={onOpenHistory} onOpenVariable={(id) => selectScope("workspace", id)} variable={activeDraft} persisted={persisted} scope={scope} workspace={workspace} globalVariables={globalVariables}
             documents={documents} cached={cacheFor(activeDraft)} onChange={(variable) => onDraftChange(variable)} onToggle={(enabled) => persisted ? toggle(persisted, enabled) : onDraftChange({ ...activeDraft, enabled })}
-            onSave={saveDraft} onCancel={cancelDraft} canSave={canSave} dirty={dirty} nameError={nameError} onDelete={() => persisted && (confirmDeleteId === persisted.id ? remove(persisted) : setConfirmDeleteId(persisted.id))}
+            onSave={() => void saveDraft()} onCancel={cancelDraft} canSave={canSave} dirty={dirty} nameError={nameError} onDelete={() => persisted && (confirmDeleteId === persisted.id ? remove(persisted) : setConfirmDeleteId(persisted.id))}
             deletePending={confirmDeleteId === activeDraft.id} onOpenRequest={onOpenRequest} onResolve={onResolveVariable} />
           : null}
       </aside> : null}
@@ -338,9 +350,9 @@ function StaticVariableRow({ variable, validateName, selected, inlineDisabled, o
         if (event.key === "Escape") { event.preventDefault(); setName(variable.name); }
       }} />
       {error ? <p role="alert" className="mb-ui-0 mt-ui-1 text-ui-xs text-accent-red">{error}</p> : null}</div>
-    <Input variant="transparent" disabled={inlineDisabled} aria-label={`Variable value ${variable.name}`} className="ui-focus-ring h-control-sm rounded-ui-sm px-ui-2 font-code transition-colors duration-ui-fast focus:border-border-default focus:bg-purr-elevated" type={variable.sensitive ? "password" : "text"} value={variable.value}
-      onClick={(event) => event.stopPropagation()} onFocus={onInlineStart} onChange={(event) => onChange({ ...variable, value: event.target.value, loaded: true })} />
-    <Button variant="ghost" size="sm" disabled={inlineDisabled} aria-label={`Toggle ${variable.name} sensitive`} aria-pressed={variable.sensitive} className="justify-start" title={variable.sensitive ? "Encrypted in local secure storage" : "Mark as sensitive"}
+    <Input variant="transparent" disabled={inlineDisabled} aria-label={`Variable value ${variable.name}`} className="ui-focus-ring h-control-sm rounded-ui-sm px-ui-2 font-code transition-colors duration-ui-fast focus:border-border-default focus:bg-purr-elevated" type={variable.sensitive ? "password" : "text"} placeholder={variable.secretState && variable.secretState.status !== "available" && variable.secretState.edit?.kind !== "set" ? `Local secret ${variable.secretState.status}` : ""} value={variable.value}
+      onClick={(event) => event.stopPropagation()} onFocus={onInlineStart} onChange={(event) => onChange({ ...variable, value: event.target.value, loaded: true, ...(variable.secretState ? { secretState: { ...variable.secretState, status: "available", edit: { kind: "set", value: event.target.value } } } : {}) })} />
+    <Button variant="ghost" size="sm" disabled={inlineDisabled || Boolean(variable.sensitive && variable.secretState && variable.secretState.status !== "available" && variable.secretState.edit?.kind !== "set")} aria-label={`Toggle ${variable.name} sensitive`} aria-pressed={variable.sensitive} className="justify-start" title={variable.sensitive ? "Encrypted in local secure storage" : "Mark as sensitive"}
       onClick={(event) => { event.stopPropagation(); onInlineStart(); onChange({ ...variable, sensitive: !variable.sensitive }); }}><LockKeyhole className={cn("size-ui-3", variable.sensitive ? "text-accent-orange" : "opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible")} />Static</Button>
     <span className="flex justify-end" onClick={(event) => event.stopPropagation()}>{confirmDelete
       ? <Button variant="ghost" size="xs" className="text-accent-red" disabled={inlineDisabled} title={usages ? `Used by ${usages} requests` : "Delete variable"} onClick={onDelete}>Confirm</Button>
@@ -393,7 +405,20 @@ function VariableDetails({ requestConfig, onOpenHistory, onOpenVariable, variabl
 }
 
 function StaticFields({ variable, revealed, onReveal, onChange }: { variable: Extract<Variable, { kind: "static" }>; revealed: boolean; onReveal: () => void; onChange: (variable: Variable) => void }) {
-  return <><div className="space-y-ui-2"><span className="block text-ui-sm font-medium text-content-primary">Value</span><div className="flex items-center gap-ui-1"><Input aria-label="Variable value" className="min-w-0 flex-1 font-code" type={variable.sensitive && !revealed ? "password" : "text"} value={variable.value} placeholder="Value" autoComplete="off" onChange={(event) => onChange({ ...variable, value: event.target.value, loaded: true })} />{variable.sensitive ? <Button variant="ghost" size="icon" aria-label={revealed ? "Hide value" : "Reveal value"} onClick={onReveal}>{revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}</Button> : null}</div></div><SensitiveToggle checked={variable.sensitive} title="Sensitive & masked secret" description="Encrypt the value in Purr’s local secret vault. Excluded from workspace YAML, exports, and Git synchronization." onChange={(sensitive) => onChange({ ...variable, sensitive })} /></>;
+  const { persistence } = useApplicationServices();
+  const current = useRef(variable); current.current = variable;
+  const state = variable.secretState;
+  useEffect(() => {
+    if (!state || state.status !== "unresolved" || state.edit?.kind === "set" || state.edit?.kind === "delete") return;
+    let active = true;
+    void persistence.secure.resolve(state.ref).then((result) => {
+      if (!active || current.current !== variable) return;
+      onChange({ ...variable, ...(result.status === "available" ? { value: result.value, loaded: true } : {}), secretState: { ...state, status: result.status, edit: { kind: "keep" }, ...("code" in result ? { code: result.code } : {}) } });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [variable, state, persistence, onChange]);
+  const unavailable = Boolean(state && state.status !== "available" && state.edit?.kind !== "set");
+  return <><div className="space-y-ui-2"><span className="block text-ui-sm font-medium text-content-primary">Value</span><div className="flex items-center gap-ui-1"><Input aria-label="Variable value" className="min-w-0 flex-1 font-code" type={variable.sensitive && !revealed ? "password" : "text"} value={variable.value} placeholder={unavailable ? `Local secret ${state!.status}` : "Value"} autoComplete="off" onChange={(event) => onChange({ ...variable, value: event.target.value, loaded: true, ...(state ? { secretState: { ...state, status: "available", edit: { kind: "set", value: event.target.value } } } : {}) })} />{variable.sensitive ? <Button variant="ghost" size="icon" aria-label={revealed ? "Hide value" : "Reveal value"} onClick={onReveal}>{revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}</Button> : null}</div>{unavailable ? <p role="status" className="text-ui-xs text-accent-orange">Local secret {state!.status}. Provide a value or open Required local secrets. Empty values and removing a local value are separate actions.</p> : null}</div><SensitiveToggle disabled={variable.sensitive && unavailable} checked={variable.sensitive} title="Sensitive & masked secret" description="Encrypt the value in Purr’s local secret vault. Excluded from workspace YAML, exports, and Git synchronization." onChange={(sensitive) => onChange({ ...variable, sensitive })} /></>;
 }
 
 function VariableKindPicker({ value, allowDynamic, onChange }: { value: "static" | "dynamic-request"; allowDynamic: boolean; onChange: (kind: "static" | "dynamic-request") => void }) {
@@ -401,8 +426,8 @@ function VariableKindPicker({ value, allowDynamic, onChange }: { value: "static"
   return <section className="space-y-ui-2"><div className="flex items-center justify-between"><h3 className="m-ui-0 text-ui-sm font-medium">Variable kind</h3><span className="text-ui-xs text-content-tertiary">Select evaluation strategy</span></div><div role="tablist" aria-label="Variable kind" className={cn("grid overflow-hidden rounded-ui-lg border border-border bg-purr-codefield p-ui-1", allowDynamic ? "grid-cols-2" : "grid-cols-1")}>{options.map((option) => { const Icon = option.icon; const active = value === option.value; return <Button key={option.value} role="tab" aria-selected={active} variant="ghost" size="sm" className={cn("h-control-lg flex-1 rounded-ui-md border px-ui-2", active ? "border-action-brand bg-action-brand-surface text-content-primary" : "border-transparent text-content-tertiary")} onClick={() => onChange(option.value)}><Icon className={cn("size-ui-4", active && "text-action-brand")} />{option.label}</Button>; })}</div></section>;
 }
 
-function SensitiveToggle({ checked, title, description, onChange }: { checked: boolean; title: string; description: string; onChange: (checked: boolean) => void }) {
-  return <section className="flex items-center gap-ui-3 rounded-ui-xl border border-border bg-purr-codefield p-ui-4"><span className="flex size-ui-10 shrink-0 items-center justify-center rounded-ui-lg border border-border bg-purr-elevated text-accent-orange"><LockKeyhole className="size-ui-5" /></span><div className="min-w-0 flex-1"><h3 className="m-ui-0 text-ui-sm font-medium text-content-primary">{title}</h3><p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">{description}</p></div><Switch label={title} checked={checked} onCheckedChange={onChange} /></section>;
+function SensitiveToggle({ disabled, checked, title, description, onChange }: { disabled?: boolean; checked: boolean; title: string; description: string; onChange: (checked: boolean) => void }) {
+  return <section className="flex items-center gap-ui-3 rounded-ui-xl border border-border bg-purr-codefield p-ui-4"><span className="flex size-ui-10 shrink-0 items-center justify-center rounded-ui-lg border border-border bg-purr-elevated text-accent-orange"><LockKeyhole className="size-ui-5" /></span><div className="min-w-0 flex-1"><h3 className="m-ui-0 text-ui-sm font-medium text-content-primary">{title}</h3><p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">{description}</p></div><Switch disabled={disabled} label={title} checked={checked} onCheckedChange={onChange} /></section>;
 }
 
 function RequestMethodBadge({ document }: { document: DynamicVariableRequest }) {

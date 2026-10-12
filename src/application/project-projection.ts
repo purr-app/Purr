@@ -1,15 +1,17 @@
-import { credentialSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
+import { credentialSchema, resourceSchema, workspaceDefinitionSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
 import { responseForPersistence, restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
-import { serializeResource } from "../storage/yaml";
+import { serializeResource, deserializeResourceFile, normalizeLegacyResource, normalizeLegacyWorkspace } from "../storage/yaml";
 import { normalizeRequestAuth, createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
-import type { RequestDraft } from "../features/request-workbench/model/request";
+import type { RequestDraft, RequestHeader } from "../features/request-workbench/model/request";
 import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isExtensionDocument, isRequestDocument, validateWorkspace,
   type ExtensionDocument, type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
 import type { SecretBatch, SecureStore } from "./ports/credentials";
 import type { LocalRecord } from "./ports/persistence";
 import { decodeFiles, encodeFile, encodeFiles, type FileAttachmentLoader, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
-import { protectRuntime, resolveCredential, resolveRuntime, secretRef, storeCredential, SecretPreparationStore } from "../storage/secrets";
+import { protectRuntime, materializeCredential, resolveRuntime, secretRef, storeCredential, SecretPreparationStore } from "../storage/secrets";
+import { isPureTemplateReference } from "../domain/template-expression";
+import type { ProjectFormatVersion } from "../storage/yaml";
 
 type StoredOAuthToken = Omit<OAuthToken, "accessToken" | "refreshToken"> & { accessToken: Credential; refreshToken?: Credential };
 type WorkspaceAuthRuntime = { version: 1; entries: Array<{
@@ -57,18 +59,23 @@ async function valueHash(value: unknown): Promise<string> {
 }
 
 async function createWorkspaceAuthRuntime(entries: Workspace["requestConfig"]["auth"], definitions: Project["workspace"]["auth"],
-  secure: SecureStore, workspace: string): Promise<WorkspaceAuthRuntime> {
+  secure: SecureStore, workspace: string, allowPendingProfiles = false): Promise<WorkspaceAuthRuntime> {
   const stored = await Promise.all(entries.map(async (entry) => {
     const definition = definitions.find((candidate) => candidate.id === entry.id);
-    if (!definition) throw new Error("Workspace authentication definition is missing.");
+    if (!definition) {
+      // A v1 profile created locally has no canonical identity until upgrade.
+      // Its protected settings/token belong to the versioned definition overlay.
+      if (allowPendingProfiles) return null;
+      throw new Error("Workspace authentication definition is missing.");
+    }
     const token = entry.value.oauth2.token;
     const tokenMetadata = token ? { tokenType: token.tokenType, obtainedAt: token.obtainedAt,
       ...(token.expiresAt !== undefined ? { expiresAt: token.expiresAt } : {}), ...(token.scope !== undefined ? { scope: token.scope } : {}) } : undefined;
     const runtime = { id: entry.id, definitionHash: await valueHash(definition),
       ...(token && tokenMetadata ? { oauthToken: { ...tokenMetadata,
-        accessToken: await storeCredential(secure, secretRef(workspace, `auth-runtime/${entry.id}`, "oauth2/access-token"), token.accessToken),
-        ...(token.refreshToken ? { refreshToken: await storeCredential(secure,
-          secretRef(workspace, `auth-runtime/${entry.id}`, "oauth2/refresh-token"), token.refreshToken) } : {}) } } : {}) };
+        accessToken: await storeCredential(secure, secretRef(workspace, `auth-runtime/${entry.id}`, "oauth2/access-token"), token.accessToken, "secret", entry.value.credentialStates?.["oauth-access-token"]),
+        ...(token.refreshToken !== undefined ? { refreshToken: await storeCredential(secure,
+          secretRef(workspace, `auth-runtime/${entry.id}`, "oauth2/refresh-token"), token.refreshToken, "secret", entry.value.credentialStates?.["oauth-refresh-token"]) } : {}) } } : {}) };
     return runtime.oauthToken ? runtime : null;
   }));
   return { version: 1, entries: stored.filter((entry): entry is NonNullable<typeof entry> => entry !== null) };
@@ -78,16 +85,44 @@ export function migrateWorkspaceAuthRuntime(records: LocalRecord[], workspace: s
   const record = records.find((candidate) => candidate.table === "workspace_local_state" && candidate.id === "auth-runtime");
   if (!record) return records;
   try { parseWorkspaceAuthRuntime(record.value, workspace); return records; }
-  catch { return records.map((candidate) => candidate === record ? { ...candidate, value: { version: 1, entries: [] } } : candidate); }
+  catch {
+    const oldEntries = (value: unknown) => Array.isArray(value) && value.every((entry) => {
+      if (!isRecord(entry) || typeof entry.id !== "string" || !isRecord(entry.value)) return false;
+      const auth = entry.value;
+      return ["bearer", "basic", "apiKey", "oauth2", "inherit"].every((key) => isRecord(auth[key]));
+    });
+    const value = record.value;
+    const knownLegacy = oldEntries(value) || isRecord(value) && value.version === undefined && Array.isArray(value.definitions) && oldEntries(value.entries)
+      && Object.keys(value).every((key) => ["definitions", "entries"].includes(key));
+    // Only the two documented pre-canonical shapes are expendable runtime.
+    // Future or malformed records remain opaque and make the workspace read-only.
+    if (!knownLegacy) throw new Error("Unsupported or damaged workspace auth state. Existing data has not been changed.");
+    return records.map((candidate) => candidate === record ? { ...candidate, value: { version: 1, entries: [] } } : candidate);
+  }
 }
 
 export async function authToDefinition(auth: RequestAuth, secure: SecureStore, workspace: string, owner: string): Promise<AuthDefinition> {
-  const credential = (field: string, value: string, mode?: "plain" | "secret") => storeCredential(secure,
-    auth.secretRefs?.[field] ?? secretRef(workspace, owner, field), value, mode ?? (/{{[^{}]+}}/.test(value) ? "plain" : "secret"));
+  const credential = async (field: string, value: string): Promise<Credential> => {
+    const state = auth.credentialStates?.[field];
+    if ((!state || state.edit?.kind === "set") && isPureTemplateReference(value)) {
+      if (secure instanceof SecretPreparationStore) secure.onCommitted(() => {
+        if (auth.secretRefs) delete auth.secretRefs[field];
+        if (auth.credentialStates) delete auth.credentialStates[field];
+      });
+      return { kind: "template", value };
+    }
+    const ref = auth.secretRefs?.[field] ?? secretRef(workspace, owner, field);
+    const result = await storeCredential(secure, ref, value, "secret", state);
+    if (result.kind === "secret" && secure instanceof SecretPreparationStore) secure.onCommitted(() => {
+      auth.secretRefs = { ...auth.secretRefs, [field]: result.ref };
+      auth.credentialStates = { ...auth.credentialStates, [field]: { ref: result.ref, status: state?.edit?.kind === "delete" ? "missing" : state?.edit?.kind === "keep" && state.status !== "available" ? state.status : "available", edit: { kind: "keep" } } };
+    });
+    return result;
+  };
   switch (auth.type) {
     case "none": return { type: "none" };
     case "inherit": return { type: "inherit", ...(auth.inherit.source === "schema" ? { source: "schema" as const } : {}), ...(auth.inherit.profileId ? { profileId: auth.inherit.profileId } : {}) };
-    case "bearer": return { type: "bearer", token: await credential("bearer", auth.bearer.token, auth.credentialStorage?.bearer), prefix: auth.bearer.prefix };
+    case "bearer": return { type: "bearer", token: await credential("bearer", auth.bearer.token), prefix: auth.bearer.prefix };
     case "basic": return { type: "basic", username: auth.basic.username, password: await credential("password", auth.basic.password) };
     case "api-key": return { type: "api-key", name: auth.apiKey.name, placement: auth.apiKey.placement, value: await credential("api-key", auth.apiKey.value) };
     case "oauth2": return { type: "oauth2", grantType: auth.oauth2.grantType, tokenUrl: auth.oauth2.tokenUrl, clientId: auth.oauth2.clientId,
@@ -96,16 +131,18 @@ export async function authToDefinition(auth: RequestAuth, secure: SecureStore, w
       clientAuthentication: auth.oauth2.clientAuthentication, autoRefresh: auth.oauth2.autoRefresh };
   }
 }
-export async function authFromDefinition(value: AuthDefinition, secure: SecureStore): Promise<RequestAuth> {
+export async function authFromDefinition(value: AuthDefinition, secure: SecureStore, hydrate = true): Promise<RequestAuth> {
   const auth = createRequestAuth(); auth.type = value.type;
-  const remember = (key: string, credential: { kind: "plain"; value: string } | { kind: "secret"; ref: string }) => {
+  const remember = async (key: string, credential: Credential) => {
     if (credential.kind === "secret") auth.secretRefs = { ...auth.secretRefs, [key]: credential.ref };
-    return resolveCredential(secure, credential);
+    const field = await materializeCredential(secure, credential, hydrate);
+    if (field.secretState) auth.credentialStates = { ...auth.credentialStates, [key]: field.secretState };
+    return field.value;
   };
   switch (value.type) {
     case "inherit": auth.inherit = { source: value.source ?? "workspace", ...(value.profileId ? { profileId: value.profileId } : {}) }; break;
     case "bearer": auth.bearer = { ...auth.bearer, token: await remember("bearer", value.token), prefix: value.prefix };
-      auth.credentialStorage = { bearer: value.token.kind }; break;
+      break;
     case "basic": auth.basic = { username: value.username, password: await remember("password", value.password) }; break;
     case "api-key": auth.apiKey = { name: value.name, placement: value.placement, value: await remember("api-key", value.value) }; break;
     case "oauth2": {
@@ -117,6 +154,25 @@ export async function authFromDefinition(value: AuthDefinition, secure: SecureSt
 }
 const pairs = (rows: Array<{ key?: string; name?: string; value: string; enabled: boolean; readOnly?: boolean }>) => rows
   .filter((row) => !row.readOnly && Boolean(row.name || row.key || row.value)).map((row) => ({ name: row.name ?? row.key ?? "", value: row.value, enabled: row.enabled }));
+async function headerToDefinition(header: RequestHeader, secure: SecureStore, workspace: string, owner: string) {
+  const sensitive = header.secret === true || ["cookie", "set-cookie"].includes(header.name.trim().toLowerCase());
+  const state = header.secretState;
+  const credential: Credential = !sensitive ? { kind: "plain", value: header.value }
+    : (!state || state.edit?.kind === "set") && isPureTemplateReference(header.value) ? { kind: "template", value: header.value }
+    : await storeCredential(secure, header.secretRef ?? secretRef(workspace, `${owner}/${header.id}`, "value"), header.value, "secret", state);
+  if (secure instanceof SecretPreparationStore) secure.onCommitted(() => {
+    if (credential.kind === "secret") {
+      header.secretRef = credential.ref;
+      header.secretState = { ref: credential.ref, status: state?.edit?.kind === "delete" ? "missing" : state?.edit?.kind === "keep" && state.status !== "available" ? state.status : "available", edit: { kind: "keep" } };
+    } else { delete header.secretRef; delete header.secretState; }
+  });
+  return { id: header.id, name: header.name, value: credential, enabled: header.enabled, sensitive };
+}
+async function headerFromDefinition(header: Project["workspace"]["headers"][number] | SchemaDefinition["introspectionHeaders"][number] | RequestDefinition["headers"][number], secure: SecureStore, hydrate: boolean): Promise<RequestHeader> {
+  const field = await materializeCredential(secure, header.value, hydrate);
+  return { id: header.id, name: header.name, enabled: header.enabled, value: field.value, secret: header.sensitive,
+    ...(field.secretState ? { secretRef: field.secretState.ref, secretState: field.secretState } : {}) };
+}
 function schemaDefinitionIdentity(definition: SchemaDefinition) {
   return valueHash({ endpoint: definition.endpoint, source: definition.source, auth: definition.auth, introspectionHeaders: definition.introspectionHeaders });
 }
@@ -126,14 +182,26 @@ function schemaSource(document: SchemaDocument): SchemaDefinition["source"] {
   if (source?.type === "sdl-file" || source?.type === "introspection-json") return { type: source.type, ...(source.location ? { location: source.location } : {}) };
   return document.source === "file" ? { type: "sdl-file", location: document.sourceLabel } : { type: "introspection" };
 }
+async function protectedSchemaSource(document: SchemaDocument, secure: SecureStore, workspace: string): Promise<SchemaDefinition["source"]> {
+  const source = schemaSource(document);
+  if (source.type !== "registry" || !source.credential || source.credential.kind === "secret" || source.credential.kind === "template") return source;
+  const credential = isPureTemplateReference(source.credential.value) ? { kind: "template" as const, value: source.credential.value }
+    : await storeCredential(secure, secretRef(workspace, `schemas/${document.id}/registry`, "credential"), source.credential.value);
+  return { ...source, credential };
+}
 
 async function variableToDefinition(variable: Variable, secure: SecureStore, workspace: string, owner: string): Promise<VariableDefinition> {
   const common = { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: variable.sensitive };
   if (variable.kind === "static") {
     if (!variable.sensitive) return { ...common, kind: "static", value: variable.value };
-    return { ...common, kind: "static", secretRef: variable.loaded === false && variable.secretRef
-      ? variable.secretRef
-      : (await storeCredential(secure, variable.secretRef ?? secretRef(workspace, owner, variable.id), variable.value, "secret") as { kind: "secret"; ref: string }).ref };
+    const credential = variable.loaded === false && variable.secretRef && (!variable.secretState || variable.secretState.edit?.kind !== "set" && variable.secretState.edit?.kind !== "delete")
+      ? { kind: "secret" as const, ref: variable.secretRef }
+      : await storeCredential(secure, variable.secretRef ?? secretRef(workspace, owner, variable.id), variable.value, "secret", variable.secretState);
+    if (credential.kind === "secret" && secure instanceof SecretPreparationStore) secure.onCommitted(() => {
+      variable.secretRef = credential.ref;
+      variable.secretState = { ref: credential.ref, status: variable.secretState?.edit?.kind === "delete" ? "missing" : variable.secretState?.edit?.kind === "keep" && variable.secretState.status !== "available" ? variable.secretState.status : "available", edit: { kind: "keep" } };
+    });
+    return { ...common, kind: "static", secretRef: credential.kind === "secret" ? credential.ref : variable.secretRef };
   }
   if (variable.kind === "dynamic-request") return { ...common, kind: variable.kind, documentId: variable.documentId,
     expression: variable.expression, language: variable.language, refresh: variable.refresh,
@@ -144,8 +212,9 @@ async function variableToDefinition(variable: Variable, secure: SecureStore, wor
 async function variableFromDefinition(variable: VariableDefinition, secure: SecureStore, loadSecret: boolean): Promise<Variable> {
   if (variable.kind !== "static") return variable;
   if (!variable.sensitive) return { ...variable, kind: "static", value: variable.value ?? "" };
+  const field = variable.secretRef ? await materializeCredential(secure, { kind: "secret", ref: variable.secretRef }, loadSecret) : { value: "" };
   return { id: variable.id, name: variable.name, enabled: variable.enabled, sensitive: true, kind: "static",
-    secretRef: variable.secretRef, value: loadSecret && variable.secretRef ? await secure.get(variable.secretRef) ?? "" : "", loaded: loadSecret };
+    secretRef: variable.secretRef, loaded: field.secretState?.status === "available", ...field };
 }
 
 async function protectDynamicVariableCache(cache: Workspace["dynamicVariableCache"], variables: readonly Variable[], secure: SecureStore, workspace: string) {
@@ -153,8 +222,9 @@ async function protectDynamicVariableCache(cache: Workspace["dynamicVariableCach
     const variableId = key.split(":", 1)[0];
     const variable = variables.find((candidate) => candidate.id === variableId);
     if (!variable?.sensitive || entry.status !== "success" || entry.value === undefined) return [key, entry];
-    const credential = await storeCredential(secure, secretRef(workspace, `dynamic-variables/${variableId}`, `cache/${entry.environmentId ?? "none"}`), entry.value);
-    return [key, { ...entry, value: { __purrSecret: credential } }];
+    const credential = await storeCredential(secure, secretRef(workspace, `dynamic-variables/${variableId}`, `cache/${entry.environmentId ?? "none"}`), entry.value, "secret", entry.secretState);
+    const { secretState: _state, ...metadata } = entry;
+    return [key, { ...metadata, value: { __purrSecret: credential } }];
   })));
 }
 
@@ -164,14 +234,14 @@ export async function projectGlobalVariables(variables: readonly Variable[], sou
   return { definitions, secrets: await secure.batch() };
 }
 
-export async function restoreGlobalVariables(value: unknown, secure: SecureStore): Promise<Variable[]> {
+export async function restoreGlobalVariables(value: unknown, secure: SecureStore, hydrate = true): Promise<Variable[]> {
   const definitions = variableDefinitionSchema.array().parse(value ?? []);
   const names = definitions.map((variable) => variable.name.trim());
   if (new Set(names).size !== names.length || new Set(definitions.map((variable) => variable.id)).size !== definitions.length)
     throw new Error("Global variable names and identifiers must be unique.");
   if (definitions.some((variable) => variable.kind !== "static"))
     throw new Error("Global variables must be static.");
-  return Promise.all(definitions.map((variable) => variableFromDefinition(variable, secure, true)));
+  return Promise.all(definitions.map((variable) => variableFromDefinition(variable, secure, hydrate)));
 }
 async function requestDefinition(document: RequestDocument, workspace: string, secure: SecureStore, assets: Record<string, string>): Promise<RequestDefinition> {
   const draft = document.savedRequest ?? document.request;
@@ -191,7 +261,9 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     ...(draft.tracing ? { tracing: draft.tracing } : {}),
     ...(draft.settings ? { settings: draft.settings } : {}),
     ...(draft.tracePropagation ? { tracePropagation: draft.tracePropagation } : {}),
-    method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []), headers: pairs(draft.headers), body: payload,
+    method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []),
+    headers: await Promise.all(draft.headers.filter((header) => !header.readOnly && (header.name || header.value || header.secretRef))
+      .map((header) => headerToDefinition(header, secure, workspace, `requests/${document.id}/saved/headers`))), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
     ...(!draft.workspace.headersEnabled || !draft.workspace.authEnabled || !draft.useCookieJar || Object.values(draft.workspace.headerOverrides).some((value) => !value)
       ? { overrides: { headers: draft.workspace.headersEnabled, auth: draft.workspace.authEnabled, cookies: draft.useCookieJar,
@@ -201,7 +273,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     : { ...common, kind: "http" };
 }
 
-export async function projectWorkspace(workspace: Workspace, source: SecureStore): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
+export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { localOnlyBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
   const secure = source instanceof SecretPreparationStore ? source : new SecretPreparationStore(source);
   // Historical tabs are views of local executions, never saved documents or drafts.
   const historicalIds = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.historical).map((document) => document.id));
@@ -217,7 +289,13 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
     activeDocumentId: currentTabId(workspace.ui.activeDocumentId),
     previewDocumentId: historicalIds.has(workspace.ui.previewDocumentId ?? "") ? null : workspace.ui.previewDocumentId,
   } };
-  const resources: ProjectResource[] = [...(workspace.extraResources ?? [])];
+  const baseline = options.localOnlyBaseline;
+  const resources: ProjectResource[] = [...(baseline ? baseline.resources.filter((item) => item.kind === "folder" || item.kind === "integration" || item.kind === "api-schema") : workspace.extraResources ?? [])];
+  if (!baseline) for (let index = 0; index < resources.length; index++) {
+    const resource = resources[index];
+    if (resource.kind === "integration") resources[index] = { ...resource, credentials: Object.fromEntries(await Promise.all(Object.entries(resource.credentials).map(async ([key, credential]) =>
+      [key, credential.kind === "secret" ? credential : await storeCredential(secure, secretRef(workspace.id, `integrations/${resource.id}`, key), credential.value)]))) };
+  }
   const assets: Record<string, string> = {};
   const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();
   const allVariables = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)];
@@ -225,39 +303,40 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
     { table: "workspace_local_state", id: "state", value: { ui: workspace.ui, activeEnvironmentId: workspace.activeEnvironmentId } },
     { table: "workspace_local_state", id: "dynamic-variable-cache", value: await protectDynamicVariableCache(workspace.dynamicVariableCache, allVariables, secure, workspace.id) },
   ];
-  for (const environment of workspace.environments) resources.push({ id: environment.id, kind: "environment", name: environment.name,
+  if (!baseline) for (const environment of workspace.environments) resources.push({ id: environment.id, kind: "environment", name: environment.name,
     ...(environment.description ? { description: environment.description } : {}), ...(environment.folderId ? { folderId: environment.folderId } : {}),
     variables: await Promise.all(environment.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, `environments/${environment.id}`))) });
-  const auth = await Promise.all(workspace.requestConfig.auth.map(async (entry) => ({ id: entry.id, name: entry.name, scope: entry.scope, enabled: entry.enabled,
+  const auth = baseline?.workspace.auth ?? await Promise.all(workspace.requestConfig.auth.map(async (entry) => ({ id: entry.id, name: entry.name, scope: entry.scope, enabled: entry.enabled,
     config: await authToDefinition(entry.value, secure, workspace.id, `auth/${entry.id}`) })));
   // Only acquired tokens are runtime state. Saved credentials remain canonical
   // definitions backed by SecureStore and inactive editor forms stay in session state.
-  local.push({ table: "workspace_local_state", id: "auth-runtime", value: await createWorkspaceAuthRuntime(workspace.requestConfig.auth, auth, secure, workspace.id) });
+  local.push({ table: "workspace_local_state", id: "auth-runtime", value: await createWorkspaceAuthRuntime(workspace.requestConfig.auth, auth, secure, workspace.id, Boolean(baseline)) });
   for (const document of workspace.documents) {
     if (isRequestDocument(document)) {
-      const definition = document.saved ? await requestDefinition(document, workspace.id, secure, assets) : undefined;
+      const definition = document.saved ? baseline?.resources.find((item): item is RequestDefinition => item.id === document.id && (item.kind === "http" || item.kind === "graphql"))
+        ?? (!baseline ? await requestDefinition(document, workspace.id, secure, assets) : undefined) : undefined;
       if (definition) resources.push(definition);
       if (!document.saved || isDocumentDirty(document)) local.push({ table: "drafts", id: document.id, value: await encodeFiles(await protectRuntime({
-        ...document, lastResponse: null, sentAt: null, base: definition ?? null,
+        ...document, lastResponse: null, sentAt: null, base: baseline ? null : definition ?? null,
+        ...(baseline && definition ? { baseFingerprint: await valueHash(serializeResource(definition, undefined, 1)) } : {}),
       }, secure, workspace.id, `drafts/${document.id}`), attachments) });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
-        ...(definition ? { definition: serializeResource(definition), editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`), attachments) } : {}) } });
+        ...(definition ? { ...(baseline ? { definitionHash: await valueHash(serializeResource(definition, undefined, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definition: serializeResource(definition, undefined, options.sourceVersion ?? 2) }),
+          editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`), attachments) } : {}) } });
       if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: responseForPersistence(document.lastResponse) } });
     } else if (document.kind === "schema") {
-      const auth = await authToDefinition({ ...document.auth, credentialStorage: { bearer: "secret" } }, secure, workspace.id, `schemas/${document.id}`);
-      const introspectionHeaders = await Promise.all(document.introspectionHeaders.map(async (header) => ({ id: header.id, name: header.name, enabled: header.enabled,
-        value: await storeCredential(secure, secretRef(workspace.id, `schemas/${document.id}/headers`, header.id), header.value,
-          header.secret || /authorization|cookie|api[-_]?key|token|secret/i.test(header.name) ? "secret" : "plain") })));
-      const definition: SchemaDefinition = { id: document.id, kind: "schema", name: document.name,
-        ...(document.description ? { description: document.description } : {}), source: schemaSource(document),
+      const previousSchema = baseline?.resources.find((item): item is SchemaDefinition => item.kind === "schema" && item.id === document.id);
+      const auth = previousSchema?.auth ?? (!baseline ? await authToDefinition(document.auth, secure, workspace.id, `schemas/${document.id}`) : { type: "none" as const });
+      const introspectionHeaders = previousSchema?.introspectionHeaders ?? (!baseline ? await Promise.all(document.introspectionHeaders.map((header) => headerToDefinition(header, secure, workspace.id, `schemas/${document.id}/headers`))) : []);
+      const definition: SchemaDefinition = previousSchema ?? { id: document.id, kind: "schema", name: document.name,
+        ...(document.description ? { description: document.description } : {}), source: baseline ? schemaSource(document) : await protectedSchemaSource(document, secure, workspace.id),
         endpoint: document.endpoint, auth, introspectionHeaders, pin: document.pinned !== false,
         ...(document.pinned !== false && document.sdl ? { pinnedSdl: document.sdl } : {}) };
       if (document.saved) resources.push(definition);
-      else local.push({ table: "drafts", id: document.id, value: await protectRuntime({ ...document,
-        introspectionHeaders: document.introspectionHeaders.map((header) => ({ ...header, secret: header.secret || /authorization|cookie|api[-_]?key|token|secret/i.test(header.name) })) }, secure, workspace.id, `schema-drafts/${document.id}`) });
-      local.push({ table: "schema_cache", id: document.id, value: { version: 2, definitionHash: await schemaDefinitionIdentity(definition), sdl: document.sdl, loadedAt: document.loadedAt, source: schemaSource(document), cacheIdentity: document.cacheIdentity } });
+      else local.push({ table: "drafts", id: document.id, value: await protectRuntime(document, secure, workspace.id, `schema-drafts/${document.id}`) });
+      local.push({ table: "schema_cache", id: document.id, value: { version: 2, definitionHash: await schemaDefinitionIdentity(definition), sdl: document.sdl, loadedAt: document.loadedAt, source: await protectRuntime(schemaSource(document), secure, workspace.id, `schema-cache/${document.id}/source`), cacheIdentity: document.cacheIdentity } });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt,
-        authDefinition: JSON.stringify(auth), auth: await protectRuntime(document.auth, secure, workspace.id, `schema-auth/${document.id}`) } });
+        ...(baseline ? { authDefinitionHash: await valueHash(auth) } : { authDefinition: JSON.stringify(auth) }), auth: await protectRuntime(document.auth, secure, workspace.id, `schema-auth/${document.id}`) } });
     } else {
       const definition: ProjectResource = { id: document.id, kind: "extension", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
@@ -268,16 +347,26 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt } });
     }
   }
+  if (baseline) {
+    // This versioned local definition overlay deliberately excludes the runtime
+    // aggregate: UI, cookies, history and caches already have their own records.
+    const definitions = { name: workspace.name, description: workspace.description, defaultGraphqlSchemaId: workspace.defaultGraphqlSchemaId,
+      variables: workspace.variables, environments: workspace.environments, requestConfig: workspace.requestConfig, extraResources: workspace.extraResources,
+      documents: workspace.documents.map((document) => isRequestDocument(document) ? { ...document, lastResponse: null, sentAt: null } : document) };
+    local.push({ table: "workspace_local_state", id: "legacy-definition-draft", value: { version: 1, sourceRevisions: options.sourceRevisions ?? {},
+      definitions: await encodeFiles(await protectRuntime(definitions, secure, workspace.id, "legacy-definition-draft"), attachments) } });
+  }
   for (const [id, value] of attachments) local.push({ table: "attachments", id, value });
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
-  return { project: { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
+  return { project: baseline ?? { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
     ...(workspace.defaultGraphqlSchemaId ? { defaultGraphqlSchemaId: workspace.defaultGraphqlSchemaId } : {}),
     ...(workspace.requestConfig.tracePropagation ? { tracePropagation: workspace.requestConfig.tracePropagation } : {}),
     variables: await Promise.all(workspace.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, "variables"))),
-    headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets, secrets: await secure.batch() };
+    headers: await Promise.all(workspace.requestConfig.headers.filter((row) => row.name || row.value || row.secretRef)
+      .map(async (header) => ({ ...await headerToDefinition(header, secure, workspace.id, "headers"), scope: header.scope }))), auth }, resources }, local, assets, secrets: await secure.batch() };
 }
 
-async function requestFromDefinition(resource: RequestDefinition, secure: SecureStore, assets: Record<string, string>): Promise<RequestDocument> {
+async function requestFromDefinition(resource: RequestDefinition, secure: SecureStore, assets: Record<string, string>, hydrate: boolean): Promise<RequestDocument> {
   const document = resource.kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
   const body = createRequestBody(); body.type = resource.body.type;
   const file = (ref: { id: string; name: string; mediaType: string }) => {
@@ -295,13 +384,13 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
     rows.push({ id: "field-empty", key: "", value: "", enabled: false });
     if (resource.body.type === "form-data") body.formData = rows; else body.urlEncoded = rows;
   }
-  const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure),
+  const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure, hydrate),
     tracing: resource.tracing,
     settings: resource.settings,
     tracePropagation: resource.tracePropagation,
     params: [...resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })), { id: "param-empty", key: "", value: "", enabled: false }],
     pathParams: resource.pathParams.map((row, index) => ({ id: `path-param-${index}`, key: row.name, value: row.value, enabled: row.enabled })),
-    headers: [...resource.headers.map((row, index) => ({ id: `header-${index}`, ...row })), { id: "header-empty", name: "", value: "", enabled: false }],
+    headers: [...await Promise.all(resource.headers.map((header) => headerFromDefinition(header, secure, hydrate))), { id: "header-empty", name: "", value: "", enabled: false }],
     useCookieJar: resource.overrides?.cookies ?? true, environmentId: resource.environmentId,
     workspace: { headersEnabled: resource.overrides?.headers ?? true, authEnabled: resource.overrides?.auth ?? true,
       headerOverrides: Object.fromEntries((resource.overrides?.excludedHeaderIds ?? []).map((id) => [id, false])) },
@@ -315,20 +404,30 @@ export async function restoreWorkspace(
   secure: SecureStore,
   assets: Record<string, string>,
   loadAttachment?: FileAttachmentLoader,
+  options: { hydrateSecrets?: boolean; sourceVersion?: ProjectFormatVersion } = {},
 ): Promise<Workspace> {
+  const hydrate = options.hydrateSecrets ?? true;
+  // Public application consumers may still provide v1 in-memory rows. This is
+  // a read boundary only; strict v2 serializers never accept their wire shape.
+  const oldHeader = (header: { value: unknown }) => typeof header.value === "string";
+  if (project.workspace.headers.some(oldHeader) || project.resources.some((resource) => (resource.kind === "http" || resource.kind === "graphql") && resource.headers.some(oldHeader))) {
+    project = { workspace: workspaceDefinitionSchema.parse(normalizeLegacyWorkspace(project.workspace as unknown as Record<string, unknown>)),
+      resources: project.resources.map((resource) => resourceSchema.parse(normalizeLegacyResource(resource as unknown as Record<string, unknown>))) };
+  }
   const workspace = createWorkspace(project.workspace.name, project.workspace.id); workspace.documents = [];
   workspace.description = project.workspace.description ?? "";
   workspace.defaultGraphqlSchemaId = project.workspace.defaultGraphqlSchemaId;
   workspace.extraResources = project.resources.filter((item) => item.kind === "folder" || item.kind === "integration" || item.kind === "api-schema");
-  workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, true)));
-  workspace.requestConfig = { headers: project.workspace.headers, auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure) }))) };
+  workspace.variables = await Promise.all(project.workspace.variables.map((variable) => variableFromDefinition(variable, secure, hydrate)));
+  workspace.requestConfig = { headers: await Promise.all(project.workspace.headers.map(async (header) => ({ ...await headerFromDefinition(header, secure, hydrate), scope: header.scope }))),
+    auth: await Promise.all(project.workspace.auth.map(async (entry) => ({ id: entry.id, name: entry.name, enabled: entry.enabled, scope: entry.scope, value: await authFromDefinition(entry.config, secure, hydrate) }))) };
   workspace.requestConfig.tracePropagation = project.workspace.tracePropagation;
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
   const attachments = new Map(records.filter((item) => item.table === "attachments").map((item) => [item.id, item.value]));
   const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null } | undefined;
   if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; }
   else workspace.ui = { ...workspace.ui, openDocumentIds: [], activeDocumentId: null };
-  workspace.dynamicVariableCache = await resolveRuntime(get("workspace_local_state", "dynamic-variable-cache") ?? {}, secure) as Workspace["dynamicVariableCache"];
+  workspace.dynamicVariableCache = await resolveRuntime(get("workspace_local_state", "dynamic-variable-cache") ?? {}, secure, hydrate) as Workspace["dynamicVariableCache"];
   const runtimeAuth = parseWorkspaceAuthRuntime(get("workspace_local_state", "auth-runtime"), workspace.id);
   workspace.requestConfig.auth = await Promise.all(workspace.requestConfig.auth.map(async (entry) => {
     const runtime = runtimeAuth.entries.find((item) => item.id === entry.id);
@@ -337,16 +436,21 @@ export async function restoreWorkspace(
       const oauth = runtime.oauthToken;
       const oauthMetadata = oauth ? { tokenType: oauth.tokenType, obtainedAt: oauth.obtainedAt,
         ...(oauth.expiresAt !== undefined ? { expiresAt: oauth.expiresAt } : {}), ...(oauth.scope !== undefined ? { scope: oauth.scope } : {}) } : undefined;
+      const access = oauth ? await materializeCredential(secure, oauth.accessToken, hydrate) : undefined;
+      const refresh = oauth?.refreshToken ? await materializeCredential(secure, oauth.refreshToken, hydrate) : undefined;
       entry.value = { ...entry.value,
-        oauth2: { ...entry.value.oauth2, token: oauth && oauthMetadata ? { ...oauthMetadata, accessToken: await resolveCredential(secure, oauth.accessToken),
-          ...(oauth.refreshToken ? { refreshToken: await resolveCredential(secure, oauth.refreshToken) } : {}) } : null } };
+        credentialStates: { ...entry.value.credentialStates,
+          ...(access?.secretState ? { "oauth-access-token": access.secretState } : {}),
+          ...(refresh?.secretState ? { "oauth-refresh-token": refresh.secretState } : {}) },
+        oauth2: { ...entry.value.oauth2, token: oauth && oauthMetadata && access ? { ...oauthMetadata, accessToken: access.value,
+          ...(refresh ? { refreshToken: refresh.value } : {}) } : null } };
     }
     return entry;
   }));
   for (const resource of project.resources) {
     if (resource.kind === "environment") workspace.environments.push({ id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId,
-      variables: await Promise.all(resource.variables.map((variable) => variableFromDefinition(variable, secure, workspace.activeEnvironmentId === resource.id))) });
-    if (resource.kind === "http" || resource.kind === "graphql") workspace.documents.push(await requestFromDefinition(resource, secure, assets));
+      variables: await Promise.all(resource.variables.map((variable) => variableFromDefinition(variable, secure, hydrate && workspace.activeEnvironmentId === resource.id))) });
+    if (resource.kind === "http" || resource.kind === "graphql") workspace.documents.push(await requestFromDefinition(resource, secure, assets, hydrate));
     if (resource.kind === "extension") workspace.documents.push({ id: resource.id, kind: "extension", name: resource.name,
       description: resource.description, folderId: resource.folderId, saved: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       extensionType: resource.extensionType, configVersion: resource.configVersion, config: structuredClone(resource.config),
@@ -359,8 +463,8 @@ export async function restoreWorkspace(
       workspace.documents.push({ ...createSchemaDocument(), id: resource.id, name: resource.name, description: resource.description, folderId: resource.folderId, saved: true,
         source: source.type === "introspection" ? "introspection" : "file", schemaSource: source,
         connectionVersion: resource.endpoint !== undefined ? 1 : undefined,
-        auth: resource.auth ? await authFromDefinition(resource.auth, secure) : createRequestAuth(),
-        introspectionHeaders: await Promise.all((resource.introspectionHeaders ?? []).map(async (header) => ({ ...header, value: await resolveCredential(secure, header.value), secret: header.value.kind === "secret" }))),
+        auth: resource.auth ? await authFromDefinition(resource.auth, secure, hydrate) : createRequestAuth(),
+        introspectionHeaders: await Promise.all((resource.introspectionHeaders ?? []).map((header) => headerFromDefinition(header, secure, hydrate))),
         cacheIdentity: cache?.definitionHash && cache.definitionHash !== await schemaDefinitionIdentity(resource) ? "changed" : typeof cache?.cacheIdentity === "string" ? cache.cacheIdentity : undefined,
         endpoint: resource.endpoint ?? ("endpoint" in source ? source.endpoint ?? "" : ""), sourceRequestId: source.type === "introspection" ? source.requestId ?? "" : "",
         sourceLabel: source.type === "introspection" ? resource.endpoint ?? source.endpoint ?? "" : "location" in source ? source.location ?? "" : "", pinned: resource.pin,
@@ -368,15 +472,18 @@ export async function restoreWorkspace(
     }
   }
   for (const record of records.filter((item) => item.table === "drafts")) {
-    const draft = await resolveRuntime(decodeFiles(record.value, attachments, workspace.id, loadAttachment), secure) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null };
+    const draft = await resolveRuntime(decodeFiles(record.value, attachments, workspace.id, loadAttachment), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
     if (index < 0 && !draft.saved) workspace.documents.push(draft);
     else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
       const definition = project.resources.find((item) => item.id === draft.id);
-      const baseAtCanonicalLocation = draft.base && definition
-        ? { ...draft.base, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }
+      if (draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)))
+        throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
+      const normalizedBase = draft.base && options.sourceVersion === 1 ? resourceSchema.parse(normalizeLegacyResource(draft.base as unknown as Record<string, unknown>)) : draft.base;
+      const baseAtCanonicalLocation = normalizedBase && definition
+        ? { ...normalizedBase, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }
         : draft.base;
-      if (baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation) !== serializeResource(definition))
+      if (baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation, undefined, options.sourceVersion ?? 2) !== serializeResource(definition, undefined, options.sourceVersion ?? 2))
         throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
       // documents/ owns hierarchy. Preserve the dirty request editor state but
       // always take its location from the canonical filesystem projection.
@@ -390,34 +497,43 @@ export async function restoreWorkspace(
     ? { ...document, folderId: undefined }
     : document);
   workspace.documents = await Promise.all(workspace.documents.map(async (document) => {
-    const session = get("document_session_state", document.id) as (Partial<typeof document> & { editor?: unknown; definition?: string }) | undefined;
+    const session = get("document_session_state", document.id) as (Partial<typeof document> & { editor?: unknown; definition?: string; definitionHash?: string }) | undefined;
     const result = { ...document, ...(session ? { ui: session.ui ?? document.ui, createdAt: session.createdAt ?? document.createdAt, updatedAt: session.updatedAt ?? document.updatedAt } : {}) } as WorkspaceDocument;
     if (result.kind === "schema") {
-      const schemaSession = session as { auth?: unknown; authDefinition?: string } | undefined;
+      const schemaSession = session as { auth?: unknown; authDefinition?: string; authDefinitionHash?: string } | undefined;
       const resource = project.resources.find((item) => item.id === result.id);
       if (isRecord(schemaSession?.auth) && ["bearer", "basic", "apiKey", "oauth2", "inherit"].every((key) => isRecord((schemaSession.auth as Record<string, unknown>)[key]))
-        && resource?.kind === "schema" && schemaSession.authDefinition === JSON.stringify(resource.auth)) {
-        const restoredAuth = normalizeRequestAuth(await resolveRuntime(schemaSession.auth, secure) as RequestAuth);
+        && resource?.kind === "schema" && (schemaSession.authDefinition === JSON.stringify(resource.auth) || schemaSession.authDefinitionHash === await valueHash(resource.auth))) {
+        const restoredAuth = normalizeRequestAuth(await resolveRuntime(schemaSession.auth, secure, hydrate) as RequestAuth);
         const token = restoredAuth.oauth2.token;
         if (token && (typeof token.accessToken !== "string" || typeof token.obtainedAt !== "number" || token.tokenType !== "Bearer")) restoredAuth.oauth2.token = null;
         const active = result.auth;
         const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[active.type];
-        result.auth = { ...restoredAuth, type: active.type, secretRefs: active.secretRefs, credentialStorage: active.credentialStorage,
+        result.auth = { ...restoredAuth, type: active.type, secretRefs: active.secretRefs, credentialStorage: active.credentialStorage, credentialStates: { ...restoredAuth.credentialStates, ...active.credentialStates },
           ...(group ? { [group]: active[group as keyof RequestAuth] } : {}),
           ...(active.type === "oauth2" ? { oauth2: { ...active.oauth2, token: restoredAuth.oauth2.token } } : {}) };
       }
     }
     if (isRequestDocument(result)) {
       const definition = project.resources.find((item) => item.id === result.id);
-      if (session?.editor && definition && session.definition === serializeResource(definition) && !records.some((record) => record.table === "drafts" && record.id === result.id)) {
+      const sessionMatches = session?.definitionHash && definition ? session.definitionHash === await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) : session?.definition && definition && (() => {
+        try { return serializeResource(deserializeResourceFile(session.definition).value, undefined, options.sourceVersion ?? 2) === serializeResource(definition, undefined, options.sourceVersion ?? 2); }
+        catch { return false; }
+      })();
+      if (session?.editor && definition && sessionMatches && !records.some((record) => record.table === "drafts" && record.id === result.id)) {
         const canonicalAuth = result.request.auth;
-        const editor = await resolveRuntime(decodeFiles(session.editor, attachments, workspace.id, loadAttachment), secure) as RequestDraft;
+        const canonicalHeaders = result.request.headers;
+        const editor = await resolveRuntime(decodeFiles(session.editor, attachments, workspace.id, loadAttachment), secure, hydrate) as RequestDraft;
         // Cached editor modes must not shadow a credential changed in SecureStore.
         // Dirty working copies use their own local refs until explicitly saved.
         const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[canonicalAuth.type] as "bearer" | "basic" | "apiKey" | "oauth2" | "inherit" | null;
-        editor.auth = { ...editor.auth, type: canonicalAuth.type, secretRefs: canonicalAuth.secretRefs, credentialStorage: canonicalAuth.credentialStorage,
+        editor.auth = { ...editor.auth, type: canonicalAuth.type, secretRefs: canonicalAuth.secretRefs, credentialStorage: canonicalAuth.credentialStorage, credentialStates: { ...editor.auth.credentialStates, ...canonicalAuth.credentialStates },
           ...(group ? { [group]: canonicalAuth[group] } : {}),
           ...(canonicalAuth.type === "oauth2" ? { oauth2: { ...canonicalAuth.oauth2, token: editor.auth.oauth2.token } } : {}) };
+        // Clean session copies never own saved header credentials. A stale editor
+        // ref must not overwrite a newer canonical vault value on startup autosave.
+        editor.headers = [...canonicalHeaders.filter((header) => header.name || header.value || header.secretRef),
+          ...editor.headers.filter((header) => !header.name && !header.value && !header.secretRef && !header.secretState)];
         result.request = editor;
         result.savedRequest = result.request;
       }
@@ -433,5 +549,19 @@ export async function restoreWorkspace(
   const documentIndexes = new Map(documentOrder.map((id, index) => [id, index]));
   workspace.documents.sort((left, right) => (documentIndexes.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (documentIndexes.get(right.id) ?? Number.MAX_SAFE_INTEGER));
   workspace.cookies = records.filter((record) => record.table === "cookie_jar").map((record) => record.value as Workspace["cookies"][number]);
+  const pending = get("workspace_local_state", "legacy-definition-draft");
+  if (pending != null) {
+    if (!isRecord(pending) || pending.version !== 1 || !isRecord(pending.sourceRevisions) || !isRecord(pending.definitions)
+      || options.sourceVersion !== 1 || Object.keys(pending).some((key) => !["version", "sourceRevisions", "definitions"].includes(key)))
+      throw new Error("Unsupported legacy definition overlay. Existing local data has not been changed.");
+    const definitions = await resolveRuntime(decodeFiles(pending.definitions, attachments, workspace.id, loadAttachment), secure, hydrate) as Record<string, unknown>;
+    if (Object.keys(definitions).some((key) => !["name", "description", "defaultGraphqlSchemaId", "variables", "environments", "requestConfig", "extraResources", "documents"].includes(key)) || !Array.isArray(definitions.documents))
+      throw new Error("Unsupported legacy definition overlay. Existing local data has not been changed.");
+    const documents = (definitions.documents as WorkspaceDocument[]).map((document) => {
+      const restored = workspace.documents.find((item) => item.id === document.id);
+      return isRequestDocument(document) && restored && isRequestDocument(restored) ? { ...document, lastResponse: restored.lastResponse, sentAt: restored.sentAt, ui: restored.ui } : document;
+    });
+    Object.assign(workspace, definitions, { documents });
+  }
   return validateWorkspace(workspace);
 }

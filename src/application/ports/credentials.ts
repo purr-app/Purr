@@ -1,6 +1,25 @@
 import type { Credential, SecretRef } from "../../domain/project";
 
 export type SecretSnapshot = { value: string | null; revision: number };
+export type SecretFailureStatus = "locked" | "unavailable" | "corrupt" | "denied";
+export type SecretResolution =
+  | { status: "available"; value: string; revision: number }
+  | { status: "missing"; revision: number }
+  | { status: SecretFailureStatus; code: string; retryable: boolean };
+export type CredentialEdit = { kind: "keep" } | { kind: "set"; value: string } | { kind: "delete" };
+/** Transient editor state. Never serialize this metadata as a credential value. */
+export type SecretFieldState = {
+  ref: SecretRef;
+  status: "unresolved" | SecretResolution["status"];
+  edit?: CredentialEdit;
+  code?: string;
+};
+export class SecretUnavailableError extends Error {
+  constructor(readonly reference: SecretRef, readonly status: "missing" | SecretFailureStatus, readonly code = "credential-unavailable") {
+    super(`Local credential is ${status}. Open Required local secrets to provide it or retry.`);
+    this.name = "SecretUnavailableError";
+  }
+}
 export type SecretMutation = { ref: SecretRef; expectedRevision: number; value: string | null };
 /** Transient plaintext input to a native transaction; never a project/local payload. */
 export type SecretBatch = { operationId: string; mutations: SecretMutation[] };
@@ -31,6 +50,7 @@ export class RecoveryRequiredError extends Error {
 export interface SecureStore {
   get(ref: SecretRef): Promise<string | null>;
   read(ref: SecretRef): Promise<SecretSnapshot>;
+  resolve(ref: SecretRef): Promise<SecretResolution>;
   commit(batch: SecretBatch): Promise<void>;
   operationStatus(operationId: string): Promise<CommitState>;
   set(ref: SecretRef, value: string): Promise<void>;

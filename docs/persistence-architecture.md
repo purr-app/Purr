@@ -14,7 +14,7 @@ Local data is machine/session/editor specific or potentially large: drafts, inac
 
 ### Secret store
 
-Credential-bearing values never belong in project files. Canonical definitions contain stable `SecretRef`s. On macOS one user-only application-storage root key derives separate database and secret-vault AES-GCM keys; individual values live in SQLite `secret_values`.
+In canonical format v2, protected literal and mixed-expression values never belong in project files. Definitions contain stable `SecretRef`s or explicit pure-template credentials. Public user-classified inputs remain public; a reference to a public variable does not encrypt that variable. Legacy v1 files can still contain credential literals until their explicit upgrade succeeds. On macOS one user-only application-storage root key derives separate database and secret-vault AES-GCM keys; individual values live in SQLite `secret_values`.
 
 `Secret ≠ masked`: asterisks in UI are not a persistence boundary.
 
@@ -40,7 +40,7 @@ Credential-bearing values never belong in project files. Canonical definitions c
 | Global variable definition | `WorkspaceStore.globalVariables` | encrypted global `workspace_local_state/variables` | No | Maybe | App-local, not owned by one project |
 | Dynamic variable definition | workspace `Variable` | `purr.yaml` | Yes | Definition only | Shareable dependency/extraction contract |
 | Dynamic variable cache | `Workspace.dynamicVariableCache` | encrypted `workspace_local_state/dynamic-variable-cache`; sensitive values use vault refs | No | Maybe | Environment/session/TTL-specific runtime result |
-| Shared headers | `Workspace.requestConfig.headers` | `purr.yaml` | Yes | Should use variables for secrets | Project-wide request definition |
+| Shared headers | `Workspace.requestConfig.headers` | `purr.yaml` | Yes | Marked values use refs/templates | Stable header identity and explicit sensitivity |
 | Request transport/cookie policy | `RequestDraft.settings` and `useCookieJar` | Optional `settings` and `overrides.cookies` in saved HTTP/GraphQL YAML | Yes | No | Saved baseline only; unsaved overrides remain in encrypted drafts |
 | Trace propagation preference | Workspace request config / saved request | Optional `tracePropagation` format ID in workspace/request YAML | Yes | No | Definition only; absent means off/inherit, generated IDs never enter canonical definitions |
 | Observability integration | `Workspace.extraResources` | `integrations/*.yaml`, opaque versioned config + scoped SecretRefs | Yes | Reference only | Native descriptor validates config; credential values stay in the vault |
@@ -100,6 +100,28 @@ HTTP and GraphQL request resources share `documents/`. Directory hierarchy is ca
 
 Pinned GraphQL schemas have a YAML definition plus SDL sidecar. Imported OpenAPI schemas use an `api-schema` YAML definition plus a `.openapi` UTF-8 source sidecar. Request attachments are content-addressed binary assets. `WorkspacePersistence` preserves existing safe basenames/paths where possible and owns referenced schema sidecars until their resource is explicitly removed.
 
+## Format v2 and explicit upgrade
+
+Readers accept canonical `purr: 1` and `purr: 2`; writers default to v2. A decoder returns source-version/migration metadata beside the normalized model. V1 normalization is pure: legacy literal credentials remain available to the migration planner without writing the vault. Unsupported future markers and mixed-version workspaces are rejected without rewriting their files.
+
+V2 credentials are `secret {ref}`, `template {value}` or, only for public fields, `plain {value}`. A protected credential is a template only when the shared parser finds exactly one nonempty reference with whitespace outside it; the original expression is preserved. Additional references, nested/malformed braces, or literal segments require protection of the whole expression. Bearer, Basic password, API-key value, OAuth client secret and declared integration credentials cannot be public literals in v2. Public auth configuration such as username/client ID remains public.
+
+Request, shared and introspection headers have `{id, name, enabled, sensitive, value: Credential}`. Existing IDs survive conversion; rows without IDs receive `legacy-header-<originalIndex>` once during legacy normalization, scoped by their owning resource. Later reordering/renaming never changes the persisted ID or ref. Duplicate names and disabled rows remain distinct. Explicit sensitivity persists; exact Cookie/Set-Cookie roles are protected, while arbitrary Authorization or custom API-key names are not classified by a save-time heuristic. Provider-owned opaque config and schema/assets remain outside generic secret detection.
+
+Opening v1, changing layout, automatic flush and application close do not authorize an upgrade. The first explicit Save confirms the workspace-wide compatibility change. Its S01 commit upgrades all owned canonical YAML markers together, including untouched resources, plus their required secret/local changes. Failed or uncertain publication does not clear the migration flag or publish new caches. Saved and dirty copies retain separate ownership. Local-only persistence may continue when its protected baseline is readable; it cannot replace v1 files with normalized defaults. Upgrade repairs current definitions, not existing Git history or external copies.
+
+While v1 remains open, `projectWorkspace` writes pending definition edits to the encrypted `workspace_local_state/legacy-definition-draft` record as a versioned definition overlay. `restoreWorkspace` reads that DTO; it is not a serialized runtime `Workspace`. Workspace UI, cookies and dynamic caches retain their separate local owners. The overlay records the complete source-file list and revisions, including schema sidecars and assets. External changes, additions or removals prevent applying the old overlay and enter `recovery-required` with `legacy-definition-conflict` without overwriting either source. Future or malformed overlay versions remain opaque and read-only. Importing resources into an existing v1 workspace also requires its explicit upgrade before imported credentials are staged.
+
+## Availability and required local secrets
+
+`StoredWorkspace`/`StorageSnapshot.protectedState` distinguishes available storage from locked, unavailable, corrupt, denied or recovery-required state. Canonical-only fallback is read-only for protected writes: an empty placeholder `local` array is not authoritative, and drafts, history, cookies and caches are preserved. `retry_protected_storage` reopens storage and rehydrates the owning snapshot; it is not a reset or key replacement. Independent plaintext runtime operation is a later storage-policy phase, not a guarantee of degraded mode.
+
+Restoration retains unresolved refs/field states instead of fetching every credential. Send/OAuth/introspection/resolved-code operations resolve only enabled required fields and their transitive variables. An absent value is actionable rather than silently substituted with an empty string; an intentionally stored empty value remains available, although protocol validation can still reject it.
+
+Required local secrets inventories canonical definitions and current typed working copies, including transitive environment/global dependencies. It does not enumerate the vault, cookies, tokens or execution history. Status inspection discards returned values; available expression text is used transiently to discover further dependencies. Unreadable expressions may conceal additional dependencies until restored. Set value starts blank, accepts empty, and Remove local value is explicit; unknown/corrupt baselines disable editing.
+
+Its configuration sharing preview counts public credential/header/static-variable fields, omitted secret refs and missing/unavailable declarations. It preserves declarations conceptually and warns about v1 literals; it creates no configuration archive. Workspace/environment/global/Postman configuration export is not implemented. Selective encrypted transfer and key recovery remain S06, with global dependencies excluded from workspace files by default.
+
 ## Projection boundary
 
 `projectWorkspace` and `restoreWorkspace` in `src/application/project-projection.ts` are the only supported runtime/persistence conversion:
@@ -110,7 +132,7 @@ Workspace
   → LocalRecord[]                    (session/editor/cache/history)
       → attachments/<digest>         (encrypted local working-copy bytes)
   → assets Record<path, base64>      (reproducible file payloads)
-  → SecureStore writes/SecretRefs    (credential values)
+  → prepared SecretBatch/SecretRefs (credential values; publication is separate)
 ```
 
 Projection intentionally:
@@ -161,7 +183,7 @@ The Rust watcher uses `RecursiveMode::Recursive` for each registered project roo
 
 Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated legacy `response_bodies`, `cookie_metadata`, `secret_values`, `history_attachments`, `history_attachment_links`, and the Phase 5 `response_contents`/`response_content_chunks` store. SQLite runs with WAL, full synchronous behavior, foreign keys, and a busy timeout.
 
-SQLite migration 6 adds `secret_revisions` (monotonic revision tombstones), encrypted `secret_operations` receipts and encrypted `workspace_cleanup` jobs. Existing credentials begin at revision 1; absence begins at revision 0. Insert/update/delete, including history/workspace cleanup, advances revisions so a stale save cannot recreate a deleted value using an old absence check. Batch set-to-empty and delete are distinct; existing editor helpers retain their empty-input convention until availability semantics are migrated separately. Browser preview uses equivalent IndexedDB transactions and encrypted receipts; it does not compensate failed publication with a later deletion.
+SQLite migration 6 adds `secret_revisions` (monotonic revision tombstones), encrypted `secret_operations` receipts and encrypted `workspace_cleanup` jobs. Existing credentials begin at revision 1; absence begins at revision 0. Insert/update/delete, including history/workspace cleanup, advances revisions so a stale save cannot recreate a deleted value using an old absence check. Set-to-empty and delete are distinct throughout the editor contract: clearing a credential stores an available empty string; Remove local value explicitly creates a missing value while preserving its declaration. Browser preview uses equivalent IndexedDB transactions and encrypted receipts; it does not compensate failed publication with a later deletion.
 
 Workspace deletion publishes local/vault removal and an encrypted managed-directory cleanup intent atomically. Directory cleanup then quarantines unchanged files and runs independently; a filesystem failure reports committed deletion with cleanup pending, clears runtime caches and retries on startup. Only a filesystem NotFound result counts as absence; permission or I/O errors cannot acknowledge cleanup. Pending cleanup reserves its workspace ID/path and never deletes an externally recreated source directory. An unreadable cleanup intent does not block existing workspace startup/reads; it conservatively blocks new saves/attachments when reserved paths cannot be checked. Externally attached project directories remain user-owned. Browser workspace/history deletion joins metadata removal and secret tombstones in one IndexedDB transaction, including namespace membership checks against concurrent additions.
 
@@ -187,11 +209,11 @@ Retention defaults to 30 days and is stored locally per workspace. Pinned execut
 
 ## Secure store
 
-`SecureStore` supplies CRUD convenience methods plus versioned `read`, transactional `commit`, and `operationStatus`. Native adapters map them to `secure_read`, `secure_commit` and `secure_operation_status`; legacy CRUD commands remain supported and route mutations through the same primitive.
+`SecureStore` supplies CRUD convenience methods plus versioned `read`, typed `resolve`, transactional `commit`, and `operationStatus`. Native adapters map these to `secure_read`, `secure_resolve`, `secure_commit` and `secure_operation_status`; legacy CRUD commands remain supported and route mutations through the same primitive. Resolution distinguishes `available(value, revision)`, `missing(revision)`, `locked`, `unavailable`, `corrupt` and `denied`. Failure codes are stable and safe; adapters do not infer presence from empty text or parse platform error messages. Editor changes carry keep/set/delete intent, so an unreadable or unresolved value is never an inferred overwrite/delete.
 
 `SecretPreparationStore` overlays private staged values on read-only source snapshots. `projectWorkspace` and global projection return mutations separately from persisted project/local/assets. External reconciliation and previews use the overlay without publishing. `storeCredential` operates on this preparation context during projection. Imports hydrate against staged values, then publish through the owning commit. Integration editors retain staged credentials until validated Save; Cancel leaves the vault unchanged. OAuth integration refresh uses the pre-request credential revision so it cannot overwrite a concurrent configuration edit. History append atomically adopts its execution content and immutable credential snapshot. The UI distinguishes an ordinary rejected save from Save needs recovery; Check and retry rechecks storage before preparing another publication.
 
-On macOS `PlatformRootKeyStore` stores one 32-byte root in the application data directory with user-only `0600` permissions. HKDF derives separate database, credential-vault, and response-content keys. The native storage worker reads the root when it starts and retains only its derived ciphers. Versions before 0.1.2 used Keychain service `app.purr.credentials`; if a file key is absent, Purr reads that legacy entry once and writes the user-only file. This migration can require one final macOS authorization for an existing unsigned installation. If encrypted data exists and neither key is available, startup fails closed and does not generate a replacement key that would make old data unreadable.
+On macOS `PlatformRootKeyStore` stores one 32-byte root in the application data directory with user-only `0600` permissions. HKDF derives separate database, credential-vault, and response-content keys. The native storage worker reads the root when it starts and retains only its derived ciphers. Versions before 0.1.2 used Keychain service `app.purr.credentials`; if a file key is absent, Purr reads that legacy entry once and writes the user-only file. This migration can require one final macOS authorization for an existing unsigned installation. If encrypted data exists and neither key is available, protected access fails closed and no replacement key is generated. Where the canonical workspace registry/files remain readable, the application can show their definitions in degraded mode. This classification/availability work does not move the installation root into an OS-only store; that change is S03.
 
 Other native platforms currently fail closed because no root-key adapter is configured.
 
@@ -206,14 +228,14 @@ There are distinct migration responsibilities:
 - encrypted envelope/key migration in native secure/local modules;
 - runtime record payload migration before strict restoration.
 
-The last category is currently incomplete. Workspace auth runtime has an explicit `version: 1` parser and resets invalid runtime tokens safely. Request execution restore validates both legacy inline responses and `protocolVersion: 2` opaque-content descriptors; malformed execution records are skipped so they cannot block the workspace. Drafts, document session state, workspace UI state, dynamic cache, cookie records, and schema cache do not all have equivalent application-level shape versions. A schema-incompatible value in one of those records can still make `restoreWorkspace`/`validateWorkspace` reject the whole workspace. Any change to these record shapes must add tolerant decoding/migration and a regression fixture; deleting user state is not an acceptable automatic migration.
+The last category is currently incomplete. Workspace auth runtime has an explicit `version: 1` parser. Only the two known pre-canonical shapes (the auth-entry array and the unversioned definitions/entries object) migrate to an empty v1 runtime record. Future versions, malformed v1 records and unknown object fields remain unchanged and make that workspace read-only. Request execution restore validates both legacy inline responses and `protocolVersion: 2` opaque-content descriptors; malformed execution records are skipped so they cannot block the workspace. Drafts, document session state, workspace UI state, dynamic cache, cookie records, and schema cache do not all have equivalent application-level shape versions. A schema-incompatible value in one of those records can still reject local restoration. The workspace falls back to canonical-only navigation with a nonavailable protected state; original local records remain opaque and autosave of substitute defaults is suppressed. Any change to these record shapes must add tolerant decoding/migration and a regression fixture; deleting user state is not an acceptable automatic migration.
 
 ## Failure and recovery rules
 
 - Invalid canonical YAML/project data is rejected without modifying source files.
 - Missing attachment assets reject load rather than fabricate request data.
 - External/dirty conflicts preserve both sources and stop the merge.
-- Missing root key with existing encrypted data fails closed.
+- Missing root key with existing encrypted data fails closed for protected access; readable canonical definitions can remain navigable without authorizing local-state replacement.
 - Failed preparation or terminally aborted publication preserves the previous active vault. Unknown outcomes are reported as recovery-required until reconciled; never fall back to plaintext or erase committed values as compensation.
 - Autosave/flush failures stay visible. A failed revision-checked final save does not block native window close and does not overwrite the external file.
 - Recovery must be explicit and minimal; do not silently discard drafts, cookies, history, or credentials.

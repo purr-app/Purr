@@ -84,7 +84,14 @@ impl LocalStateStore {
         }))
     }
 
+    #[cfg(test)]
     pub fn open(path: &Path, root_store: &dyn RootKeyStore) -> Result<Self, String> {
+        Self::open_typed(path, root_store).map_err(|error| error.to_string())
+    }
+    pub fn open_typed(
+        path: &Path,
+        root_store: &dyn RootKeyStore,
+    ) -> Result<Self, crate::security::ProtectedError> {
         let mut db = Connection::open(path).map_err(db_error)?;
         db.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(db_error)?;
@@ -118,7 +125,7 @@ impl LocalStateStore {
                 |row| row.get::<_, bool>(0),
             )
             .map_err(db_error)?;
-        let mut ciphers = RootCiphers::open(
+        let mut ciphers = RootCiphers::open_typed(
             root_store,
             has_encrypted_data,
             has_encrypted_data && !uses_derived_keys,
@@ -353,7 +360,16 @@ impl LocalStateStore {
     }
 
     pub fn get_secret(&self, reference: &str) -> Result<Option<String>, String> {
-        validate_secret_ref(reference)?;
+        self.get_secret_typed(reference)
+            .map_err(|error| error.to_string())
+    }
+    pub fn get_secret_typed(
+        &self,
+        reference: &str,
+    ) -> Result<Option<String>, crate::security::ProtectedError> {
+        use crate::security::ProtectedError;
+        validate_secret_ref(reference)
+            .map_err(|_| ProtectedError::denied("invalid-secret-reference"))?;
         let stored = self
             .db
             .query_row(
@@ -368,19 +384,17 @@ impl LocalStateStore {
                 },
             )
             .optional()
-            .map_err(db_error)?;
+            .map_err(|_| ProtectedError::unavailable("secret-database-unavailable"))?;
         let Some((version, nonce, ciphertext)) = stored else {
             return Ok(None);
         };
-        let plaintext = self.secret_cipher.open_sealed(
-            version,
-            &nonce,
-            &ciphertext,
-            &Self::secret_aad(reference),
-        )?;
+        let plaintext = self
+            .secret_cipher
+            .open_sealed(version, &nonce, &ciphertext, &Self::secret_aad(reference))
+            .map_err(|_| ProtectedError::corrupt("secret-ciphertext-invalid"))?;
         String::from_utf8(plaintext.to_vec())
             .map(Some)
-            .map_err(|_| "Invalid secret value".into())
+            .map_err(|_| ProtectedError::corrupt("secret-value-invalid"))
     }
 
     pub fn set_secret(&self, reference: &str, value: &str) -> Result<(), String> {
@@ -389,11 +403,17 @@ impl LocalStateStore {
         self.commit_secrets(&SecretBatch::fresh(vec![SecretMutation {
             reference: reference.into(),
             expected_revision: revision(&self.db, reference)?,
-            value: (!value.is_empty()).then(|| value.into()),
+            value: Some(value.into()),
         }])?)
     }
     pub fn delete_secret(&self, reference: &str) -> Result<(), String> {
-        self.set_secret(reference, "")
+        use super::secret_commits::{revision, SecretBatch, SecretMutation};
+        validate_secret_ref(reference)?;
+        self.commit_secrets(&SecretBatch::fresh(vec![SecretMutation {
+            reference: reference.into(),
+            expected_revision: revision(&self.db, reference)?,
+            value: None,
+        }])?)
     }
 
     pub fn secret_exists(&self, reference: &str) -> Result<bool, String> {

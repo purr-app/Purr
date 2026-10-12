@@ -49,7 +49,7 @@ pub fn integrations(
             return Err("Integration limit exceeded".into());
         }
         let value: Value = serde_yaml::from_slice(&bytes).map_err(|_| "Invalid integration")?;
-        if value["purr"] != 1 {
+        if !matches!(value["purr"].as_u64(), Some(1 | 2)) {
             return Err("Unsupported project format".into());
         }
         if value["kind"] != "integration" {
@@ -185,6 +185,14 @@ mod tests {
             json!([1, false])
         );
         assert!(integrations(&store).unwrap()[0].enabled);
+        let original = fs::read_to_string(&file).unwrap();
+        fs::write(&file, original.replacen("purr: 1", "purr: 2", 1)).unwrap();
+        assert_eq!(
+            integrations(&store).unwrap()[0].config["nested"],
+            json!([1, false])
+        );
+        fs::write(&file, original.replacen("purr: 1", "purr: 999", 1)).unwrap();
+        assert!(integrations(&store).is_err());
         fs::write(file, vec![b'x'; 65537]).unwrap();
         assert!(integrations(&store).is_err());
     }

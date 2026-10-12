@@ -46,6 +46,8 @@ const registeredCommands = [
   "open_project_folder",
   "attach_project_directory",
   "secure_read",
+  "secure_resolve",
+  "retry_protected_storage",
   "secure_commit",
   "secure_operation_status",
   "secure_get",

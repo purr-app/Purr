@@ -554,8 +554,8 @@ function ResponseHeadersPanel({ response }: { response: ResponseDetails }) {
 
 function ResponseRequestPanel({ response }: { response: ResponseDetails }) {
   const [revealed, setRevealed] = useState(false);
-  const request = revealed ? response.timeline.request : response.timeline.displayRequest ?? response.timeline.request;
-  const value = useMemo(() => formatHttpRequest(request), [request]);
+  const request = revealed ? response.timeline.request : response.timeline.displayRequest;
+  const value = useMemo(() => request ? formatHttpRequest(request) : "", [request]);
   return <div className="flex h-full min-h-0 flex-col bg-purr-codefield">
     <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-ui-3 py-ui-2">
       <span className="font-code text-ui-xs text-content-tertiary">HTTP/1.1 message</span>
@@ -563,7 +563,7 @@ function ResponseRequestPanel({ response }: { response: ResponseDetails }) {
         {revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}
       </Button><CopyResponseButton value={value} label="Copy HTTP request" /></div>
     </div>
-    <div className="min-h-0 flex-1"><ResponseCodeViewer value={value} language="text" ariaLabel="HTTP request viewer" /></div>
+    <div className="min-h-0 flex-1">{request ? <ResponseCodeViewer value={value} language="text" ariaLabel="HTTP request viewer" /> : <p role="status" className="p-ui-4 text-ui-sm text-content-secondary">A redacted preview is unavailable for this older execution. Reveal explicitly to inspect its recorded request.</p>}</div>
   </div>;
 }
 

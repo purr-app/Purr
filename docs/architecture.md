@@ -84,9 +84,9 @@ Rust modules provide narrow privileged boundaries:
 3. Storage adapters implement contracts; projection decides what belongs to project files, local records, and the secret vault.
 4. Rust accepts final transport/file/secret operations. It does not reconstruct a `RequestDraft`, resolve template variables, apply workspace inheritance, choose auth, or serialize logical body modes.
    Credential projection prepares mutations without changing the active vault. Persistence submits versioned batches with operation IDs; native publication joins secret/local changes in one SQLite transaction after recoverable filesystem application. Separate runtime credential writes use the same transactional primitive.
-5. Canonical definitions remain deterministic and Git-friendly. Runtime/session data and secret values must not leak into them.
+5. Canonical definitions remain deterministic and Git-friendly. V2 uses stable header identities and explicit plain/template/SecretRef representations; protected literals and mixed expressions do not enter YAML. V1 stays readable without an automatic rewrite; first explicit Save confirms a coherent workspace-wide upgrade. Runtime/session data and secret values must not leak into canonical definitions.
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
-7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.
+7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open. Typed secret availability and protected-storage capability are separate from value content: available empty is not missing. Canonical-only degraded state preserves opaque local records and suppresses writes of substitute defaults; Retry rehydrates, never resets.
 8. Response protection is resolved by the TypeScript application layer before transport. Future workspace/folder/document preferences are local-only and default to encrypted; shared project files cannot disable encryption, and response policy never applies to credentials or secrets.
 9. Observability execution is Rust-owned. React may render normalized bounded trace/log DTOs and issue typed lookup/search/cancel commands; it must not perform provider HTTP, parse vendor DTOs, resolve provider credentials, extract correlation, or own the authoritative provider cache.
 
@@ -167,7 +167,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 
 - Native responses at or above 1 MiB, or with a line at or above 64 KiB, use virtualized logical-line previews, with long line middles explicitly hidden and subsequent rows loaded on scroll. JSON up to 10 MiB opens in native Pretty using the regular code typography; the full-body IPC threshold stays unchanged. Native search, Pretty, jq/JSONPath, and GraphQL field extraction return bounded values or another encrypted content handle. Direct handle download and range-capable image/audio/video preview avoid body IPC; full-body clipboard copy remains unavailable for opaque large content.
 - GraphQL introspection responses may cross the inline boundary: schema installation reads a native content reference in bounded windows, releases it, and normalizes the complete source in a cancellable Web Worker. The UI still builds one `GraphQLSchema` from normalized SDL for CodeMirror and `graphql-language-service`; current measurements do not justify a second Rust schema model.
-- Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payload changes can prevent workspace restoration; changes to these shapes need a migration or tolerant decoder.
+- Most encrypted local-record payloads do not carry their own application-level shape version. Only workspace auth runtime has explicit shape recovery. Incompatible draft/session payloads can force canonical-only degraded navigation, preserving opaque local records; shape changes still require migration or tolerant decoding.
 - Execution history has workspace/document browsers, immutable historical tabs, current-context replay, pinning and configurable retention; metadata lists do not hydrate response bodies.
 - The jq/JSONPath evaluator is an intentional subset, not either language’s complete implementation.
 - Attached external project directories have application/native support but no current UI.
@@ -176,7 +176,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 ## Desktop release follow-ups
 
 - The OSS Tauri configuration currently has no production CSP. Define and validate one before distributing production binaries, including the native `purr-content` image/media protocol, editors, dialogs, and OAuth flows.
-- Secure storage currently requires macOS; other platforms need native root-key adapters before they are supported.
+- Secure storage currently requires macOS; other platforms need native root-key adapters before they are supported. S02 changes classification/availability, not root-key custody: the user-only macOS root-key file remains until S03. Required local secrets is an omission/availability preview, not an implemented encrypted transfer/export flow.
 - Official distribution still requires signing/notarization configuration and verification of bundle identifiers, release channels, and Keychain migration. Validate fresh installations, upgrades, and missing/corrupt local storage before a release.
 
 ## Documentation ownership

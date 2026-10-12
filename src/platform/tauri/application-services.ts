@@ -18,7 +18,7 @@ import type {
   StoredWorkspace,
   WorkspaceDeletionResult,
 } from "../../application/ports/persistence";
-import { commitRejection, isCommitRejected, RecoveryRequiredError, type CommitState, type SecretBatch, type SecretSnapshot, type SecureStore } from "../../application/ports/credentials";
+import { commitRejection, isCommitRejected, RecoveryRequiredError, type CommitState, type SecretBatch, type SecretResolution, type SecretSnapshot, type SecureStore } from "../../application/ports/credentials";
 import type {
   FormatRequest,
   JsonQueryRequest,
@@ -32,6 +32,10 @@ import { tauriObservability } from "./observability";
 import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
+  async resolve(reference: SecretRef): Promise<SecretResolution> {
+    try { return await invoke<SecretResolution>("secure_resolve", { reference }); }
+    catch { return { status: "unavailable", code: "secure-resolution-unavailable", retryable: true }; }
+  }
   read(reference: SecretRef) { return invoke<SecretSnapshot>("secure_read", { reference }); }
   operationStatus(operationId: string) { return invoke<CommitState>("secure_operation_status", { operationId }); }
   async commit(batch: SecretBatch) { await confirmedCommit(() => invoke<void>("secure_commit", { batch }), batch); }
@@ -76,6 +80,13 @@ class TauriPersistence implements PersistencePort {
     return snapshot;
   }
 
+  async retryProtectedStorage() {
+    const snapshot = await invoke<StorageSnapshot>("retry_protected_storage");
+    this.cache.clear();
+    for (const workspace of snapshot.workspaces) this.cache.set(workspace.id, workspace.files);
+    return snapshot;
+  }
+
   async loadWorkspace(id: string) {
     const workspace = await invoke<StoredWorkspace>("load_project", { id });
     this.cache.set(id, workspace.files);
@@ -83,7 +94,10 @@ class TauriPersistence implements PersistencePort {
   }
 
   async readLocal(id: string) {
-    return (await this.loadWorkspace(id)).local;
+    const workspace = await this.loadWorkspace(id);
+    if (workspace.protectedState && workspace.protectedState.status !== "available")
+      throw new Error(workspace.protectedState.code);
+    return workspace.local;
   }
 
   async commit(id: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch = { operationId: crypto.randomUUID(), mutations: [] }) {

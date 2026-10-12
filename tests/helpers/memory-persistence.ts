@@ -8,11 +8,28 @@ export class MemoryPersistenceBackend implements PersistenceBackend {
   snapshot: StorageSnapshot = { activeWorkspaceId: "", workspaces: [] };
   writes: FileChange[] = [];
   listener?: (id: string, paths: string[]) => void;
-  async load() { return structuredClone(this.snapshot); }
-  async loadWorkspace(id: string) { return structuredClone(this.snapshot.workspaces.find((item) => item.id === id) ?? { id, files: {}, local: [] }); }
-  async readLocal(id: string) { return (await this.loadWorkspace(id)).local; }
+  async load() {
+    const snapshot = structuredClone(this.snapshot);
+    if (snapshot.protectedState && snapshot.protectedState.status !== "available") { snapshot.global = []; delete snapshot.legacy; }
+    snapshot.workspaces = await Promise.all(snapshot.workspaces.map((workspace) => this.loadWorkspace(workspace.id)));
+    return snapshot;
+  }
+  async retryProtectedStorage() { return this.load(); }
+  async loadWorkspace(id: string) {
+    const workspace = structuredClone(this.snapshot.workspaces.find((item) => item.id === id) ?? { id, files: {}, local: [] });
+    const state = workspace.protectedState ?? this.snapshot.protectedState;
+    if (state && state.status !== "available") { workspace.local = []; workspace.protectedState = state; }
+    return workspace;
+  }
+  async readLocal(id: string) {
+    const workspace = await this.loadWorkspace(id);
+    if (workspace.protectedState && workspace.protectedState.status !== "available") throw new Error(workspace.protectedState.code);
+    return workspace.local;
+  }
   async commit(id: string, files: FileChange[], local: LocalChange[], batch?: SecretBatch) {
     const publish = () => {
+      const state = this.snapshot.workspaces.find((workspace) => workspace.id === id)?.protectedState ?? this.snapshot.protectedState;
+      if (state && state.status !== "available") throw new Error(state.code);
       if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${id}/`))) throw new Error("Secret changes must belong to the workspace");
       const workspace: StoredWorkspace = structuredClone(this.snapshot.workspaces.find((item) => item.id === id) ?? { id, files: {}, local: [] });
       for (const file of files) if ((workspace.files[file.path]?.revision ?? null) !== file.expectedRevision) throw new Error("External file conflict");
@@ -42,6 +59,7 @@ export class MemoryPersistenceBackend implements PersistenceBackend {
   async setActiveWorkspace(id: string) { this.snapshot.activeWorkspaceId = id; }
   async writeGlobal(local: LocalChange[], batch?: SecretBatch) {
     const publish = () => {
+      if (this.snapshot.protectedState && this.snapshot.protectedState.status !== "available") throw new Error(this.snapshot.protectedState.code);
       if (batch?.mutations.some((mutation) => !mutation.ref.startsWith("purr/global/"))) throw new Error("Secret changes must belong to global scope");
       const records = new Map((this.snapshot.global ?? []).map((record) => [`${record.table}/${record.id}`, record]));
       for (const change of local) {
@@ -59,6 +77,9 @@ export class MemoryPersistenceBackend implements PersistenceBackend {
       if (this.snapshot.activeWorkspaceId === id) this.snapshot.activeWorkspaceId = "";
     });
   }
-  async finishMigration() { delete this.snapshot.legacy; }
+  async finishMigration() {
+    if (this.snapshot.protectedState && this.snapshot.protectedState.status !== "available") throw new Error(this.snapshot.protectedState.code);
+    delete this.snapshot.legacy;
+  }
   async watchChanges(listener: (id: string, paths: string[]) => void) { this.listener = listener; return () => { this.listener = undefined; }; }
 }

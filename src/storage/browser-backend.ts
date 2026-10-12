@@ -1,18 +1,25 @@
-import type { CommitState, SecretBatch, SecretSnapshot, SecureStore } from "../application/ports/credentials";
-import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, StorageSnapshot, StoredWorkspace } from "../application/ports/persistence";
+import type { CommitState, SecretBatch, SecretResolution, SecretSnapshot, SecureStore } from "../application/ports/credentials";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, ProtectedState, StorageSnapshot, StoredWorkspace } from "../application/ports/persistence";
 import { secretRefSchema, type SecretRef } from "../domain/project";
 import { BrowserHistory } from "./browser-history";
+
+class BrowserProtectedError extends Error {
+  constructor(readonly status: "unavailable" | "corrupt", readonly code: string) { super(code); }
+}
+const storageFailure = () => new BrowserProtectedError("unavailable", "browser-storage-unavailable");
+const protectedFailure = (error: unknown): ProtectedState => error instanceof BrowserProtectedError
+  ? { status: error.status, code: error.code } : { status: "unavailable", code: "browser-storage-unavailable" };
 
 // Browser preview only; desktop always uses SQLite + the native secure store.
 const database = () => new Promise<IDBDatabase>((resolve, reject) => {
   const open = indexedDB.open("purr-preview-v2", 2);
   open.onupgradeneeded = () => { for (const name of ["projects", "local", "secrets", "app", "keys", "operations"]) if (!open.result.objectStoreNames.contains(name)) open.result.createObjectStore(name); };
-  open.onsuccess = () => resolve(open.result); open.onerror = () => reject(new Error("Cannot open browser preview storage"));
+  open.onsuccess = () => resolve(open.result); open.onerror = () => reject(storageFailure());
 });
 async function read<T>(store: string, key: string): Promise<T | undefined> {
   const db = await database();
   try { return await new Promise<T | undefined>((resolve, reject) => {
-    const request = db.transaction(store).objectStore(store).get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(new Error("Cannot read browser preview storage"));
+    const request = db.transaction(store).objectStore(store).get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(storageFailure());
   }); } finally { db.close(); }
 }
 async function keys(store: string): Promise<string[]> {
@@ -20,7 +27,7 @@ async function keys(store: string): Promise<string[]> {
   try { return await new Promise<string[]>((resolve, reject) => {
     const request = db.transaction(store).objectStore(store).getAllKeys();
     request.onsuccess = () => resolve(request.result.filter((value): value is string => typeof value === "string"));
-    request.onerror = () => reject(new Error("Cannot read browser preview storage"));
+    request.onerror = () => reject(storageFailure());
   }); } finally { db.close(); }
 }
 async function writeMany(changes: Array<{ store: string; key: string; value?: unknown }>) {
@@ -44,15 +51,16 @@ const key = () => keyPromise ??= (async () => {
     transaction.oncomplete = () => resolve(selected);
     transaction.onabort = transaction.onerror = () => reject(new Error("Cannot initialize browser encryption key"));
   }); } finally { db.close(); }
-})();
+})().catch(() => { keyPromise = undefined; throw storageFailure(); });
 async function seal(value: unknown, context: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(context) }, await key(), new TextEncoder().encode(JSON.stringify(value)));
   return { iv, data };
 }
 async function unseal<T>(value: { iv: Uint8Array<ArrayBuffer>; data: ArrayBuffer }, context: string): Promise<T> {
-  try { return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: value.iv, additionalData: new TextEncoder().encode(context) }, await key(), value.data))); }
-  catch { throw new Error("Cannot decrypt browser preview data"); }
+  const encryptionKey = await key();
+  try { return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: value.iv, additionalData: new TextEncoder().encode(context) }, encryptionKey, value.data))); }
+  catch { throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt"); }
 }
 type StoredSecret = Awaited<ReturnType<typeof seal>> & { revision?: number; deleted?: boolean };
 type BrowserReceipt = CommitState & { request: Awaited<ReturnType<typeof seal>> };
@@ -161,10 +169,31 @@ async function historyChecks(expected: { key: string; value?: unknown }[]): Prom
   }));
 }
 export class BrowserSecureStore implements SecureStore {
+  async resolve(ref: SecretRef): Promise<SecretResolution> {
+    secretRefSchema.parse(ref);
+    let data: StoredSecret | undefined;
+    try { data = await read<StoredSecret>("secrets", ref); }
+    catch { return { status: "unavailable", code: "browser-storage-unavailable", retryable: true }; }
+    if (data === undefined) return { status: "missing", revision: 0 };
+    try {
+      const value = await unseal<unknown>(data, ref);
+      const revision = secretRevision(data);
+      if (!Number.isSafeInteger(revision) || revision < 0 || typeof value !== "string" && value !== null)
+        throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+      return value === null ? { status: "missing", revision } : { status: "available", value, revision };
+    } catch (error) {
+      return error instanceof BrowserProtectedError ? { status: error.status, code: error.code, retryable: error.status === "unavailable" }
+        : { status: "corrupt", code: "browser-protected-data-corrupt", retryable: false };
+    }
+  }
   async read(ref: SecretRef): Promise<SecretSnapshot> {
     secretRefSchema.parse(ref);
     const data = await read<StoredSecret>("secrets", ref);
-    return { value: data ? await unseal<string | null>(data, ref) : null, revision: secretRevision(data) };
+    if (data === undefined) return { value: null, revision: 0 };
+    const value = await unseal<unknown>(data, ref); const revision = secretRevision(data);
+    if (!Number.isSafeInteger(revision) || revision < 0 || typeof value !== "string" && value !== null)
+      throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+    return { value, revision };
   }
   async get(ref: SecretRef) { return (await this.read(ref)).value; }
   async commit(batch: SecretBatch) { await publish([], batch); }
@@ -212,10 +241,24 @@ export class BrowserPersistenceBackend implements PersistencePort {
     if (raw && !await read("app", "migrated")) {
       try { legacy = JSON.parse(raw); } catch { throw new Error("Unsupported or damaged workspace index. The original data has not been changed."); }
     }
-    return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces: await Promise.all(ids.map((id) => this.loadWorkspace(id))), global: await this.readLocal("__global__"), legacy };
+    const workspaces = await Promise.all(ids.map((id) => this.loadWorkspace(id)));
+    let global: LocalRecord[] = []; let protectedState: ProtectedState = { status: "available" };
+    try { global = await this.readLocal("__global__"); } catch (error) { protectedState = protectedFailure(error); }
+    return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces, global, legacy, protectedState };
   }
-  async loadWorkspace(id: string): Promise<StoredWorkspace> { return { id, files: await read<Record<string, ProjectFile>>("projects", id) ?? {}, local: await this.readLocal(id) }; }
-  private async readRawLocal(id: string): Promise<LocalRecord[]> { const data = await read<Awaited<ReturnType<typeof seal>>>("local", id); return data ? unseal(data, id) : []; }
+  async retryProtectedStorage() { keyPromise = undefined; return this.load(); }
+  async loadWorkspace(id: string): Promise<StoredWorkspace> {
+    const files = await read<Record<string, ProjectFile>>("projects", id) ?? {};
+    try { return { id, files, local: await this.readLocal(id), protectedState: { status: "available" } }; }
+    catch (error) { return { id, files, local: [], protectedState: protectedFailure(error) }; }
+  }
+  private async readRawLocal(id: string): Promise<LocalRecord[]> {
+    const data = await read<Awaited<ReturnType<typeof seal>>>("local", id);
+    if (data === undefined) return [];
+    const value = await unseal<unknown>(data, id);
+    if (!Array.isArray(value)) throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+    return value as LocalRecord[];
+  }
   async readLocal(id: string): Promise<LocalRecord[]> {
     const local = await this.readRawLocal(id);
     return id === "__global__" ? local : [...local.filter((record) => record.table !== "request_executions"), ...await this.history.latestExecutions(id)];

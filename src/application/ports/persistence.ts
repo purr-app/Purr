@@ -1,6 +1,8 @@
 import type { HistoryPort } from "./history";
 import type { SecretBatch } from "./credentials";
 
+export type ProtectedState = { status: "available" } | { status: "locked" | "unavailable" | "corrupt" | "denied" | "recovery-required"; code: string };
+
 export type ProjectFile = { content: string; revision: string };
 export type FileChange = {
   path: string;
@@ -26,12 +28,15 @@ export type StoredWorkspace = {
   id: string;
   files: Record<string, ProjectFile>;
   local: LocalRecord[];
+  /** Absence means available for old adapters. Non-available local is opaque, not empty. */
+  protectedState?: ProtectedState;
 };
 export type StorageSnapshot = {
   activeWorkspaceId: string;
   workspaces: StoredWorkspace[];
   global?: LocalRecord[];
   legacy?: unknown;
+  protectedState?: ProtectedState;
 };
 export type WorkspaceDeletionResult = { committed: true; cleanupPending: boolean };
 
@@ -88,4 +93,5 @@ export interface PersistencePort
     id: string,
     directory: string,
   ): Promise<StoredWorkspace>;
+  retryProtectedStorage?(): Promise<StorageSnapshot>;
 }

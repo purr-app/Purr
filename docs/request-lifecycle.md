@@ -18,7 +18,7 @@ This document is the source of truth for request models, effective request const
 
 ### Canonical saved request
 
-`RequestDefinition` in `src/domain/project.ts` is the Git-friendly form. `requestDefinition` in `src/application/project-projection.ts` projects only the saved snapshot (`savedRequest`) when a saved document has unsaved edits; it projects the current request when saving a new or updated document. Empty editor rows, managed rows, inactive body/auth forms, responses, and UI state are excluded.
+`RequestDefinition` in `src/domain/project.ts` is the Git-friendly form. `requestDefinition` in `src/application/project-projection.ts` projects only the saved snapshot (`savedRequest`) when a saved document has unsaved edits; it projects the current request when saving a new or updated document. Synthetic empty editor rows, managed rows, inactive body/auth forms, responses, and UI state are excluded. V2 header rows preserve stable identity, explicit sensitivity and credential-valued data, including duplicate names and disabled rows. Explicitly stored empty credentials are values, not synthetic rows or deletions.
 
 An OpenAPI-created request may also carry canonical `origin` metadata: the imported API-schema resource ID, JSON pointer to the operation, and the source `operationId` when present. This metadata is identity/navigation context; it does not create an alternative request-composition path.
 
@@ -164,7 +164,11 @@ Editor autosave has a separate lifetime. A working-copy `File` is encoded once i
 
 For native file bodies, both request snapshots carry only a byte-free `bodySummary` (kind, filename, media type, byte count, and multipart part count). This summary remains in encrypted local execution state and never enters project YAML. The opaque transport handle never enters response history or any persisted request snapshot, while Response → Request can still show that a file or multipart body was sent.
 
-The redacted representation is the default in Request Code and Response → Request. Revealing is an explicit UI action. Do not log the real request or replace display usage with the transport object.
+The redacted representation is the default in Request Code and Response → Request. Revealing is an explicit UI action. Do not log the real request or replace display usage with the transport object. A missing historical display snapshot is never treated as permission to fall back to exact wire bytes.
+
+`src/application/resolve-request-secrets.ts` shares active-field discovery, transitive variable dependencies and sensitivity provenance. Send and resolved-code modes require available enabled dependencies; missing/locked/denied/corrupt values fail before transport. Redacted-code mode uses placeholders without falsely resolving them as empty credentials. Disabled rows, inactive modes and unrelated missing variables cannot block an independent request. Intentionally stored empty values still pass storage availability checks and remain subject to normal protocol validation.
+
+Sensitivity describes the resolved use: a public URL, body or unmarked header consuming a sensitive variable keeps its original canonical template while its sensitive wire content receives protection/redaction. A user-marked header remains sensitive through literal/template edits, duplication, reordering and disable/enable. The ordinary save path does not guess sensitivity from Authorization/custom API-key names; exact Cookie/Set-Cookie and generated auth bindings are known protected protocol roles.
 
 ## Cookies and redirects
 
@@ -220,18 +224,18 @@ Implemented mapping:
 - URL: positional URL or `--url`;
 - method: `-X/--request`, `-I/--head`, `-G/--get`, or inferred GET/POST;
 - headers: `-H/--header`, `-A/--user-agent`, `-e/--referer`;
-- auth: `-u/--user`, `Authorization: Basic`, token-style Authorization, `--oauth2-bearer`, and a recognized API-key header/query name;
+- auth: `-u/--user`, `Authorization: Basic`, token-style Authorization, and `--oauth2-bearer`; arbitrary API-key-looking names do not silently select auth;
 - cookies: inline `-b/--cookie` becomes a manual Cookie header; cookie-jar files are not read;
 - body: `-d/--data`, `--data-raw`, `--data-binary`, and `--data-urlencode`; fragments join with `&`; content type selects JSON, URL-encoded, or text mode;
 - `-m/--max-time`, `--connect-timeout`, and `--proxy` values are consumed but not represented.
 
-Other options are currently ignored, often silently. File upload and `@file` semantics are not implemented. Imported auth credentials enter the auth model and are secured by normal projection. Sensitive headers that do not map to auth are immediately replaced with newly created sensitive workspace variables before persistence.
+Other options are currently ignored, often silently. File upload and `@file` semantics are not implemented. Imported auth credentials enter the auth model and are secured by normal projection. Known credential/protocol headers that do not map to auth are replaced with newly created sensitive workspace variables before persistence. Their explicit sensitive marker remains attached when the user later replaces the reference with a literal. Other custom names remain ordinary rows unless the user marks them sensitive.
 
 ## Copy as cURL / wget / HTTP
 
 `RequestCodeDialog` receives the workspace-effective draft and calls `prepareWireRequest`; it then applies current jar cookies. Generated output therefore includes resolved static templates, shared headers/auth, managed content type, and cookies. It does not run the dynamic dependency resolver, so a dynamic placeholder not already available in its context cannot be materialized there.
 
-The default output uses `displayRequest`; secrets and cookie values are masked. The user must explicitly Reveal before Copy can place the real values on the clipboard. `formatRequestCode` supports POSIX-style cURL quoting, wget, and an HTTP/1.1 representation. Text bodies are included. File and file-bearing multipart bodies use byte-free filename/media-type/size summaries, so opening Request Code never reads, stages, or renders the selected file. Binary inline compatibility bodies use a non-executable `<binary body: N bytes>` placeholder.
+The dialog prepares redacted or resolved output according to the current Reveal state; it does not require every secret to be available merely to show redacted placeholders. Resolved output fails with an actionable unavailable-field state instead of copying empty credentials. The default output uses `displayRequest`; secrets and cookie values are masked. The user must explicitly Reveal before Copy can place the real values on the clipboard. `formatRequestCode` supports POSIX-style cURL quoting, wget, and an HTTP/1.1 representation. Text bodies are included. File and file-bearing multipart bodies use byte-free filename/media-type/size summaries, so opening Request Code never reads, stages, or renders the selected file. Binary inline compatibility bodies use a non-executable `<binary body: N bytes>` placeholder.
 
 ## Failure and cancellation points
 

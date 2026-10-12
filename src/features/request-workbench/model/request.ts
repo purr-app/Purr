@@ -1,3 +1,4 @@
+import type { SecretFieldState } from "../../../application/ports/credentials";
 import { traceHeaderPreview } from "./request-tracing";
 import { defaultRequestSettings, normalizeRequestSettings, type RequestSettings } from "../../../domain/request-settings";
 import type { HttpMethod } from "../../../shared/model/http-method";
@@ -35,6 +36,8 @@ export type RequestHeader = {
   readOnlyReason?: string;
   secret?: boolean;
   workspaceHeaderId?: string;
+  secretRef?: string;
+  secretState?: SecretFieldState;
 };
 
 export type RequestQueryParam = {

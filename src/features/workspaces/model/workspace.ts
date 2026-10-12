@@ -1,4 +1,6 @@
 import type { DynamicExecutionMetadata } from "../../../application/ports/history";
+import type { SecretFieldState } from "../../../application/ports/credentials";
+import type { ProtectedState } from "../../../application/ports/persistence";
 import { defaultRequestSettings, normalizeRequestSettings } from "../../../domain/request-settings";
 import { createRequestAuth, normalizeRequestAuth } from "../../request-workbench/model/request-auth";
 import { authTypeOptions } from "../../request-workbench/model/request-auth";
@@ -20,7 +22,7 @@ export type DocumentKind = "http" | "graphql" | "schema" | "extension" | "trace"
 export type DynamicVariableRefresh = "every-time" | "session" | "cache";
 type VariableBase = { id: string; name: string; enabled: boolean; sensitive: boolean };
 export type Variable = VariableBase & (
-  | { kind: "static"; value: string; secretRef?: SecretRef; loaded?: boolean }
+  | { kind: "static"; value: string; secretRef?: SecretRef; loaded?: boolean; secretState?: SecretFieldState }
   | { kind: "dynamic-request"; documentId: string; expression: string; language: "jsonpath" | "jq"; refresh: DynamicVariableRefresh;
       cacheTtlSeconds?: number; environment: { type: "current" } | { type: "specific"; environmentId: string } }
   | { kind: "external-secret"; provider: string; key: string }
@@ -35,6 +37,7 @@ export type DynamicVariableCacheEntry = {
   durationMs: number;
   environmentId: string | null;
   fingerprint: string;
+  secretState?: SecretFieldState;
 };
 type DocumentBase = {
   id: string;
@@ -102,6 +105,9 @@ export function getDocumentGroup(document: WorkspaceDocument) {
 }
 export type Workspace = {
   schemaVersion: 1;
+  /** Ephemeral capabilities; never project into canonical definitions. */
+  projectFormatVersion?: 1 | 2;
+  protectedState?: ProtectedState;
   id: string;
   name: string;
   description: string;
@@ -333,26 +339,54 @@ export function duplicateDocument(workspace: Workspace, id: string): Workspace {
     const created = createSchemaDocument();
     const duplicate: SchemaDocument = { ...created, saved: true, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
       folderId: source.folderId, sourceRequestId: source.sourceRequestId, endpoint: source.endpoint, sdl: source.sdl, source: source.source,
-      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders), cacheIdentity: source.cacheIdentity,
+      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders).map((header) => ({ ...header, secretRef: undefined })), cacheIdentity: source.cacheIdentity,
       sourceLabel: source.sourceLabel, loadedAt: source.loadedAt, schemaSource: source.schemaSource, pinned: source.pinned, ui: { ...source.ui } };
     return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
   }
   const created: RequestDocument = source.kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
   const request = cloneRequestDraft(source.request);
   request.auth = { ...request.auth, secretRefs: undefined, oauth2: { ...request.auth.oauth2, token: null } };
+  request.headers = request.headers.map((header) => ({ ...header, secretRef: undefined }));
   const duplicate: RequestDocument = { ...created, kind: source.kind, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
     folderId: source.folderId, request, ui: { ...source.ui } };
   return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
 }
 
-function comparableRequest(value: unknown): unknown {
+/** Resolution changes editor buffers, not definitions. Keep compares the source identity. */
+export function comparableDefinitionState(value: unknown): unknown {
   if (typeof File !== "undefined" && value instanceof File)
     return { name: value.name, size: value.size, type: value.type, lastModified: value.lastModified };
-  if (Array.isArray(value)) return value.map(comparableRequest);
-  if (value && typeof value === "object") return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, comparableRequest(child)]),
-  );
-  return value;
+  if (Array.isArray(value)) return value.map(comparableDefinitionState);
+  if (!value || typeof value !== "object") return value;
+  const record = { ...value } as Record<string, unknown>;
+  const comparableCredential = (state: SecretFieldState) => state.edit?.kind === "set"
+    ? { credential: "set", value: state.edit.value }
+    : state.edit?.kind === "delete"
+      ? { credential: "delete", ref: state.ref }
+      : { credential: "keep", ref: state.ref };
+  const state = record.secretState as SecretFieldState | undefined;
+  if (state) record.value = comparableCredential(state);
+  const states = record.credentialStates as Record<string, SecretFieldState> | undefined;
+  if (states) {
+    const replace = (section: string, field: string, slot: string) => {
+      if (states[slot] && record[section] && typeof record[section] === "object")
+        record[section] = { ...record[section] as object, [field]: comparableCredential(states[slot]) };
+    };
+    replace("bearer", "token", "bearer");
+    replace("basic", "password", "password");
+    replace("apiKey", "value", "api-key");
+    replace("oauth2", "clientSecret", "client-secret");
+    const oauth = record.oauth2 as Record<string, unknown> | undefined;
+    if (oauth?.token && typeof oauth.token === "object") {
+      const token = { ...oauth.token } as Record<string, unknown>;
+      if (states["oauth-access-token"]) token.accessToken = comparableCredential(states["oauth-access-token"]);
+      if (states["oauth-refresh-token"]) token.refreshToken = comparableCredential(states["oauth-refresh-token"]);
+      record.oauth2 = { ...oauth, token };
+    }
+  }
+  return Object.fromEntries(Object.entries(record)
+    .filter(([key]) => !["secretRefs", "secretRef", "credentialStorage", "credentialStates", "secretState", "loaded"].includes(key))
+    .map(([key, child]) => [key, comparableDefinitionState(child)]));
 }
 
 export function isDocumentDirty(document: WorkspaceDocument): boolean {
@@ -361,8 +395,8 @@ export function isDocumentDirty(document: WorkspaceDocument): boolean {
   if (!isRequestDocument(document)) return false;
   if (document.historical) return false;
   if (!document.saved) return isMeaningfulDraft(document);
-  return JSON.stringify(comparableRequest(document.request)) !==
-    JSON.stringify(comparableRequest(document.savedRequest ?? document.request));
+  return JSON.stringify(comparableDefinitionState(document.request)) !==
+    JSON.stringify(comparableDefinitionState(document.savedRequest ?? document.request));
 }
 
 export function isMeaningfulDraft(document: WorkspaceDocument): boolean {

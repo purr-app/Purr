@@ -1,12 +1,13 @@
-import { validateProject, type Project, type ProjectResource } from "../domain/project";
-import { createWorkspace, validateWorkspace, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
+import { entityId, validateProject, type Project, type ProjectResource } from "../domain/project";
+import { createWorkspace, validateWorkspace, isRequestDocument, isDocumentDirty, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
 import { decodeFiles } from "../storage/file-codec";
 import { commitRejection, isCommitRejected, RecoveryRequiredError, type SecretBatch, type SecureStore } from "./ports/credentials";
-import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace, WorkspaceDeletionResult } from "./ports/persistence";
-import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource } from "../storage/yaml";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace, WorkspaceDeletionResult, ProtectedState } from "./ports/persistence";
+import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource, type ProjectFormatVersion } from "../storage/yaml";
 import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, restoreGlobalVariables, restoreWorkspace } from "./project-projection";
 import { CachedSecureStore, SecretPreparationStore } from "../storage/secrets";
 import type { Variable } from "../features/workspaces/model/workspace";
+import { invalidateSecretBuffers } from "./invalidate-secret-buffers";
 import { RequestHistory } from "./request-history";
 import { legacyHistoryEntry } from "./history-legacy";
 
@@ -31,12 +32,22 @@ function generatedFolderId(path: string, used: Set<string>) {
   while (used.has(id)) id = `${stem}-${suffix++}`;
   used.add(id); return id;
 }
+class LegacyDefinitionConflict extends Error {
+  constructor() { super("External project changes conflict with pending legacy definitions. Both sources are preserved."); }
+}
+function assertLegacyBaseline(snapshot: StoredWorkspace, revisions: Record<string, string>) {
+  if (Object.keys(revisions).length !== Object.keys(snapshot.files).length || Object.entries(revisions).some(([path, revision]) => snapshot.files[path]?.revision !== revision))
+    throw new LegacyDefinitionConflict();
+}
 export class WorkspacePersistence {
   private snapshots = new Map<string, StoredWorkspace>();
   private projects = new Map<string, Project>();
   private paths = new Map<string, Map<string, string>>();
   private sdlPaths = new Map<string, Map<string, string>>();
   private developmentRewrites = new Map<string, Set<string>>();
+  private formats = new Map<string, ProjectFormatVersion>();
+  private protectedStates = new Map<string, ProtectedState>();
+  private storageState: ProtectedState = { status: "available" };
   private activeId = "";
   private globalSnapshot = "";
   private globalVariables: Variable[] = [];
@@ -54,6 +65,15 @@ export class WorkspacePersistence {
     return this.backend.readAttachment
       ? (attachmentId: string) => this.backend.readAttachment!(id, attachmentId)
       : undefined;
+  }
+  getWorkspaceStatus(id: string) {
+    const sourceVersion = this.formats.get(id) ?? 2;
+    return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState: this.storageState.status === "available" ? this.protectedStates.get(id) ?? this.storageState : this.storageState };
+  }
+  getProject(id: string) { return this.projects.get(id); }
+  private assertWritable(id: string) {
+    const state = this.getWorkspaceStatus(id).protectedState;
+    if (state.status !== "available") throw new Error("Protected storage is unavailable. This workspace is read-only; retry before saving.");
   }
   private async commitConfirmed<T>(batch: SecretBatch, work: () => Promise<T>, readCommitted: () => Promise<T>): Promise<T> {
     try { return await work(); }
@@ -75,7 +95,19 @@ export class WorkspacePersistence {
     if (manifest.developmentRewrite) developmentRewrites.add("purr.yaml");
     const resources = Object.entries(snapshot.files).filter(([path]) => path !== "purr.yaml" && path.endsWith(".yaml")).map(([path, file]) => {
       const decoded = deserializeResourceFile(file.content, (sdl) => { const value = snapshot.files[sdl]; if (!value) throw new Error(); return value.content; });
+      if (decoded.sourceVersion !== manifest.sourceVersion) throw new Error("Workspace contains mixed Purr format versions. Files are preserved; resolve the incomplete format change before saving.");
       const resource = decoded.value; if (decoded.developmentRewrite) developmentRewrites.add(path);
+      if (manifest.sourceVersion === 1 && snapshot.protectedState?.status !== "locked" && (resource.kind === "http" || resource.kind === "graphql")
+        && !snapshot.local.some((record) => record.table === "drafts" && record.id === resource.id)) {
+        const session = snapshot.local.find((record) => record.table === "document_session_state" && record.id === resource.id)?.value as { editor?: { headers?: Array<{ id?: string; name: string; value?: unknown; enabled: boolean; secret?: boolean; readOnly?: boolean }> }; definition?: string; legacySourceRevision?: string } | undefined;
+        let matches = session?.legacySourceRevision === file.revision;
+        if (!matches && session?.definition) try { matches = serializeResource(deserializeResourceFile(session.definition).value, undefined, 1) === serializeResource(resource, undefined, 1); } catch { /* An unverified editor cannot classify canonical data. */ }
+        const rows = session?.editor?.headers?.filter((row) => !row.readOnly && Boolean(row.name || row.value));
+        if (matches && rows && rows.length === resource.headers.length && rows.every((row, index) => row.name === resource.headers[index].name && row.enabled === resource.headers[index].enabled)
+          && rows.every((row) => entityId.safeParse(row.id).success) && new Set(rows.map((row) => row.id)).size === rows.length) {
+          resource.headers = resource.headers.map((header, index) => ({ ...header, id: rows[index].id!, sensitive: header.sensitive || rows[index].secret === true }));
+        }
+      }
       paths.set(resource.id, path); return resource;
     });
     // documents/ is the hierarchy's source of truth. Folder marker files keep
@@ -139,21 +171,44 @@ export class WorkspacePersistence {
     const project = validateProject({ workspace, resources });
     if (index) {
       this.paths.set(snapshot.id, paths); this.sdlPaths.set(snapshot.id, sdlPaths);
+      this.formats.set(snapshot.id, manifest.sourceVersion);
       if (developmentRewrites.size) this.developmentRewrites.set(snapshot.id, developmentRewrites); else this.developmentRewrites.delete(snapshot.id);
     } return project;
   }
   async load(): Promise<WorkspaceStore> {
     this.secure.clear();
     const stored = await this.backend.load(); const workspaces: Workspace[] = [];
+    this.storageState = stored.protectedState ?? { status: "available" };
     for (const originalSnapshot of stored.workspaces) {
       // Retention runs before restoring last responses, so an expired body does
       // not return through the workspace session after a restart.
-      if (this.backend.history) await this.backend.history.prune(originalSnapshot.id);
-      const snapshot = this.backend.history ? { ...originalSnapshot, local: await this.backend.readLocal(originalSnapshot.id) } : originalSnapshot;
+      let protectedState = originalSnapshot.protectedState ?? this.storageState;
+      let snapshot = originalSnapshot;
+      if (protectedState.status === "available" && this.backend.history) {
+        try { await this.backend.history.prune(originalSnapshot.id); snapshot = { ...originalSnapshot, local: await this.backend.readLocal(originalSnapshot.id) }; }
+        catch { protectedState = { status: "corrupt", code: "local-history-unreadable" }; }
+      }
+      this.protectedStates.set(snapshot.id, protectedState);
       if (!snapshot.files["purr.yaml"] && !Object.keys(snapshot.files).length && !snapshot.local.length) continue;
-      const project = this.readProject(snapshot);
-      const local = migrateWorkspaceAuthRuntime(snapshot.local, snapshot.id);
-      const workspace = await restoreWorkspace(project, local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id));
+      let project: Project;
+      try { project = this.readProject({ ...snapshot, ...(protectedState.status !== "available" ? { local: [] } : {}) }); }
+      catch {
+        // One malformed/future workspace must not hide the rest of the catalogue.
+        protectedState = { status: "recovery-required", code: "project-format-unreadable" }; this.protectedStates.set(snapshot.id, protectedState);
+        const workspace = createWorkspace("Workspace needs recovery", snapshot.id); workspace.documents = []; workspace.protectedState = protectedState;
+        this.snapshots.set(snapshot.id, snapshot); workspaces.push(workspace); continue;
+      }
+      const local = protectedState.status === "available" ? snapshot.local : [];
+      let workspace: Workspace;
+      try {
+        const pending = local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-definition-draft")?.value as { sourceRevisions?: Record<string, string> } | undefined;
+        if (pending?.sourceRevisions) assertLegacyBaseline(snapshot, pending.sourceRevisions);
+        workspace = await restoreWorkspace(project, migrateWorkspaceAuthRuntime(local, snapshot.id), this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id), { hydrateSecrets: false, sourceVersion: this.formats.get(snapshot.id) });
+      } catch (error) {
+        protectedState = error instanceof LegacyDefinitionConflict ? { status: "recovery-required", code: "legacy-definition-conflict" } : { status: "corrupt", code: "local-record-unreadable" }; this.protectedStates.set(snapshot.id, protectedState);
+        workspace = await restoreWorkspace(project, [], this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id), { hydrateSecrets: false, sourceVersion: this.formats.get(snapshot.id) });
+      }
+      workspace.projectFormatVersion = this.formats.get(snapshot.id); workspace.protectedState = protectedState;
       this.snapshots.set(snapshot.id, snapshot); this.projects.set(snapshot.id, project); workspaces.push(workspace);
     }
     const legacy = stored.legacy as WorkspaceStore | undefined;
@@ -171,15 +226,18 @@ export class WorkspacePersistence {
     const activeWorkspaceId = workspaces.some((item) => item.id === candidate) ? candidate! : workspaces[0].id;
     this.activeId = stored.activeWorkspaceId;
     const globalRecord = stored.global?.find((record) => record.table === "workspace_local_state" && record.id === "variables");
-    const globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure);
+    let globalVariables: Variable[] = [];
+    if (this.storageState.status === "available") try { globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure, false); }
+    catch { this.storageState = { status: "corrupt", code: "global-variables-unreadable" }; for (const workspace of workspaces) workspace.protectedState = this.storageState; }
     this.globalVariables = globalVariables;
     this.globalSnapshot = JSON.stringify(globalRecord?.value ?? []);
-    await this.save({ activeWorkspaceId, workspaces, globalVariables }); await this.backend.finishMigration();
+    if (this.storageState.status === "available") { await this.save({ activeWorkspaceId, workspaces, globalVariables }); await this.backend.finishMigration(); }
     return { activeWorkspaceId, workspaces, globalVariables };
   }
   save(store: WorkspaceStore): Promise<void> {
     const work = async () => {
-      for (const workspace of store.workspaces) await this.persist(workspace);
+      if (this.storageState.status !== "available") return;
+      for (const workspace of store.workspaces) if (this.getWorkspaceStatus(workspace.id).protectedState.status === "available") await this.persist(workspace);
       const preparedGlobal = new SecretPreparationStore(this.secure);
       await this.prepareVariableRemoval(this.globalVariables, store.globalVariables ?? [], preparedGlobal);
       const { definitions, secrets } = await projectGlobalVariables(store.globalVariables ?? [], preparedGlobal);
@@ -188,6 +246,7 @@ export class WorkspacePersistence {
         await this.commitConfirmed(secrets, () => this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }], secrets), async () => undefined);
         this.globalSnapshot = serialized;
       }
+      preparedGlobal.acknowledge();
       this.globalVariables = store.globalVariables ?? [];
       if (this.activeId !== store.activeWorkspaceId && !this.deleted.has(store.activeWorkspaceId)) {
         try { await this.backend.setActiveWorkspace(store.activeWorkspaceId); this.activeId = store.activeWorkspaceId; }
@@ -209,20 +268,70 @@ export class WorkspacePersistence {
     const next = this.queue.catch(() => {}).then(remove); this.queue = next;
     try { return await next; } catch (cause) { this.deleted.delete(id); throw cause; }
   }
-  saveWorkspace(workspace: Workspace, prepared: SecretPreparationStore): Promise<void> {
-    const attempt = prepared.fork();
-    const next = this.queue.catch(() => {}).then(() => this.persist(workspace, undefined, attempt));
+  saveWorkspace(workspace: Workspace, prepared?: SecretPreparationStore, options: { intent: "automatic" | "explicit" } = { intent: "explicit" }): Promise<Workspace> {
+    const attempt = prepared?.fork() ?? new SecretPreparationStore(this.secure);
+    const next = this.queue.catch(() => {}).then(async () => {
+      this.assertWritable(workspace.id);
+      await this.persist(workspace, undefined, attempt, options.intent);
+      return { ...workspace, projectFormatVersion: this.formats.get(workspace.id) ?? 2, protectedState: { status: "available" as const } };
+    });
     this.queue = next;
     return next;
+  }
+  upgradeWorkspace(workspace: Workspace): Promise<Workspace> { return this.saveWorkspace(workspace, undefined, { intent: "explicit" }); }
+  async retryProtectedStorage(): Promise<WorkspaceStore> {
+    await this.queue.catch(() => {});
+    await this.backend.retryProtectedStorage?.();
+    this.secure.clear(); this.snapshots.clear(); this.projects.clear(); this.paths.clear(); this.sdlPaths.clear(); this.formats.clear(); this.protectedStates.clear(); this.developmentRewrites.clear();
+    return this.load();
+  }
+  getGlobalVariables() { return this.globalVariables; }
+  setSecretValue(workspace: Workspace, ref: string, value: string | null): Promise<Workspace> {
+    const next = this.queue.catch(() => {}).then(async () => {
+      this.assertWritable(workspace.id);
+      if (!ref.startsWith(`purr/${workspace.id}/`) && !ref.startsWith("purr/global/")) throw new Error("Credential does not belong to this workspace.");
+      const prepared = new SecretPreparationStore(this.secure);
+      if (value === null) await prepared.delete(ref); else await prepared.set(ref, value);
+      const batch = await prepared.batch();
+      if (batch.mutations.length) await this.commitConfirmed(batch,
+        async () => { if (ref.startsWith("purr/global/")) await this.backend.writeGlobal([], batch); else await this.backend.commit(workspace.id, [], [], batch); }, async () => undefined);
+      this.globalVariables = invalidateSecretBuffers(this.globalVariables, ref);
+      return invalidateSecretBuffers(workspace, ref);
+    });
+    this.queue = next; return next;
   }
   private async prepareVariableRemoval(before: readonly Variable[], after: readonly Variable[], secure: SecretPreparationStore) {
     const retained = new Set(after.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     for (const variable of before) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retained.has(variable.secretRef)
       && !after.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await secure.delete(variable.secretRef);
   }
-  private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure)) {
+  private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure), intent: "automatic" | "explicit" = "automatic") {
     if (this.deleted.has(workspace.id)) return;
+    this.assertWritable(workspace.id);
     const previous = this.projects.get(workspace.id);
+    const upgrading = this.formats.get(workspace.id) === 1;
+    if (upgrading && intent === "automatic" && previous) {
+      const snapshot = this.snapshots.get(workspace.id)!;
+      const legacyRevisions = Object.fromEntries([...this.paths.get(workspace.id) ?? []].map(([id, path]) => [id, snapshot.files[path].revision]));
+      const projection = await projectWorkspace(workspace, prepared, { localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
+        sourceRevisions: Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.revision])) });
+      const local = projection.local.filter((record) => !this.backend.history || record.table !== "request_executions");
+      const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source").map((record) => [key(record), record]));
+      for (const record of local) retained.set(key(record), record);
+      if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local) if (record.table === "attachments" && !retained.has(key(record))) retained.set(key(record), record);
+      const old = new Map(snapshot.local.map((record) => [key(record), record]));
+      const changes: LocalChange[] = [];
+      for (const id of new Set([...old.keys(), ...retained.keys()])) {
+        if (this.backend.history && id.startsWith("request_executions/")) continue;
+        const before = old.get(id), after = retained.get(id);
+        if (JSON.stringify(before) !== JSON.stringify(after)) changes.push(after ?? { ...before!, value: null });
+      }
+      const secrets = await prepared.batch();
+      if (changes.length || secrets.mutations.length) await this.commitConfirmed(secrets, () => this.backend.commit(workspace.id, [], changes, secrets), async () => undefined);
+      this.snapshots.set(workspace.id, { ...snapshot, local: [...retained.values()] }); prepared.acknowledge();
+      return;
+    }
+    const cleanDocuments = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.saved && !isDocumentDirty(document)).map((document) => document.id));
     const previousVariables = [...(previous?.workspace.variables ?? []), ...(previous?.resources.flatMap((resource) => resource.kind === "environment" ? resource.variables : []) ?? [])];
     const currentVariables = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)];
     const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
@@ -289,9 +398,9 @@ export class WorkspacePersistence {
       if (resource.kind === "schema" && resource.pinnedSdl !== undefined) desired[sdlPath] = resource.pinnedSdl;
       if (resource.kind === "api-schema") desired[sdlPath] = resource.document;
       const previous = previousProject?.resources.find((item) => item.id === resource.id);
-      if (previous && serializeResource(previous, sdlPath) === desired[path] && snapshot.files[path] && !developmentRewrites.has(path)) desired[path] = snapshot.files[path].content;
+      if (!upgrading && previous && serializeResource(previous, sdlPath) === desired[path] && snapshot.files[path] && !developmentRewrites.has(path)) desired[path] = snapshot.files[path].content;
     }
-    if (previousProject && serializeManifest(previousProject.workspace) === desired["purr.yaml"] && snapshot.files["purr.yaml"] && !developmentRewrites.has("purr.yaml")) desired["purr.yaml"] = snapshot.files["purr.yaml"].content;
+    if (!upgrading && previousProject && serializeManifest(previousProject.workspace) === desired["purr.yaml"] && snapshot.files["purr.yaml"] && !developmentRewrites.has("purr.yaml")) desired["purr.yaml"] = snapshot.files["purr.yaml"].content;
     const changes: FileChange[] = [];
     for (const path of new Set([...Object.keys(snapshot.files), ...Object.keys(desired)])) {
       const content = desired[path] ?? null;
@@ -321,6 +430,22 @@ export class WorkspacePersistence {
     }
     this.developmentRewrites.delete(workspace.id);
     this.projects.set(workspace.id, project); this.paths.set(workspace.id, paths);
+    this.formats.set(workspace.id, 2); prepared.acknowledge();
+    for (const document of workspace.documents) if (isRequestDocument(document) && document.savedRequest && cleanDocuments.has(document.id)) {
+      // Consume the committed credential intent on both clean editor buffers.
+      // Inactive auth modes remain local and retain their independent refs.
+      const saved = document.savedRequest.auth;
+      const slot = { bearer: "bearer", basic: "password", "api-key": "api-key", oauth2: "client-secret", inherit: null, none: null }[saved.type];
+      if (slot) {
+        document.request.auth.secretRefs = { ...document.request.auth.secretRefs, ...(saved.secretRefs?.[slot] ? { [slot]: saved.secretRefs[slot] } : {}) };
+        document.request.auth.credentialStates = { ...document.request.auth.credentialStates, ...(saved.credentialStates?.[slot] ? { [slot]: saved.credentialStates[slot] } : {}) };
+        if (!saved.credentialStates?.[slot]) { delete document.request.auth.credentialStates[slot]; delete document.request.auth.secretRefs[slot]; }
+      }
+      for (const header of document.request.headers) {
+        const savedHeader = document.savedRequest.headers.find((row) => row.id === header.id);
+        if (savedHeader) { header.secretState = savedHeader.secretState; header.secretRef = savedHeader.secretRef; }
+      }
+    }
   }
   private async reconcileWorkspace(id: string, paths: string[], working?: Workspace): Promise<Workspace | null> {
     const previous = this.snapshots.get(id); if (!previous) return null;
@@ -333,23 +458,33 @@ export class WorkspacePersistence {
       changed = true; if (file) files[path] = file; else delete files[path];
     }
     if (!changed) return null;
-    const snapshot = { ...previous, files }; const project = this.readProject(snapshot, false);
+    const snapshot = { ...previous, files };
+    let project: Project;
+    try { project = this.readProject(snapshot, false); }
+    catch (error) { this.protectedStates.set(id, { status: "recovery-required", code: "project-format-unreadable" }); throw error; }
+    const sourceVersion = deserializeManifestFile(files["purr.yaml"].content).sourceVersion;
+    const legacyDraft = previous.local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-definition-draft")?.value as { sourceRevisions?: Record<string, string> } | undefined;
+    if (legacyDraft?.sourceRevisions) try { assertLegacyBaseline(snapshot, legacyDraft.sourceRevisions); }
+    catch (error) { this.protectedStates.set(id, { status: "recovery-required", code: "legacy-definition-conflict" }); throw error; }
+    const state = this.protectedStates.get(id);
+    if (state?.status === "recovery-required" && ["project-format-unreadable", "legacy-definition-conflict"].includes(state.code)) this.protectedStates.set(id, { status: "available" });
     const prepared = new SecretPreparationStore(this.secure);
-    const projected = working ? await projectWorkspace(working, prepared) : undefined;
+    const projected = working && this.getWorkspaceStatus(id).protectedState.status === "available" ? await projectWorkspace(working, prepared,
+      sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) : undefined;
     const local = projected?.local ?? previous.local;
     const baseline = this.projects.get(id);
     const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
     if (baseline && projected) {
-      const localManifest = serializeManifest(projected.project.workspace);
-      if (localManifest !== serializeManifest(baseline.workspace)) {
-        if (serializeManifest(project.workspace) !== serializeManifest(baseline.workspace) && localManifest !== serializeManifest(project.workspace)) throw new Error("Concurrent workspace settings edits");
+      const localManifest = serializeManifest(projected.project.workspace, sourceVersion);
+      if (localManifest !== serializeManifest(baseline.workspace, sourceVersion)) {
+        if (serializeManifest(project.workspace, sourceVersion) !== serializeManifest(baseline.workspace, sourceVersion) && localManifest !== serializeManifest(project.workspace, sourceVersion)) throw new Error("Concurrent workspace settings edits");
         merged.workspace = projected.project.workspace;
       }
       for (const resourceId of new Set([...baseline.resources, ...projected.project.resources].map((item) => item.id))) {
         const before = baseline.resources.find((item) => item.id === resourceId);
         const localResource = projected.project.resources.find((item) => item.id === resourceId);
         const external = project.resources.find((item) => item.id === resourceId);
-        const signature = (value?: ProjectResource) => value ? serializeResource(value, value.kind === "schema" ? `schemas/${value.id}.graphql` : value.kind === "api-schema" ? `schemas/${value.id}.openapi` : undefined)
+        const signature = (value?: ProjectResource) => value ? serializeResource(value, value.kind === "schema" ? `schemas/${value.id}.graphql` : value.kind === "api-schema" ? `schemas/${value.id}.openapi` : undefined, sourceVersion)
           + (value.kind === "schema" ? value.pinnedSdl ?? "" : value.kind === "api-schema" ? value.document : "") : null;
         if (signature(localResource) === signature(before)) continue;
         if (signature(external) !== signature(before) && signature(external) !== signature(localResource)) throw new Error("Concurrent resource edits");
@@ -359,8 +494,9 @@ export class WorkspacePersistence {
       // Removing a saved definition must not discard an unsaved working copy.
       if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
     }
-    const workspace = await restoreWorkspace(merged, local, prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
-    this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project); return workspace;
+    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).protectedState.status === "available" ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion });
+    this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
+    workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; return workspace;
   }
   reconcileExternalChanges(store: WorkspaceStore): Promise<WorkspaceStore> {
     const reconcile = async () => {
@@ -387,13 +523,16 @@ export class WorkspacePersistence {
     importedSecrets: readonly { ref: string; value: string }[] = []): Promise<Workspace> {
     const work = async () => {
       validateProject(project);
+      this.assertWritable(project.workspace.id);
+      if (this.formats.get(project.workspace.id) === 1) throw new Error("Upgrade this workspace to format v2 before importing additional resources. Existing files and local edits are preserved.");
       const prepared = new SecretPreparationStore(this.secure);
       for (const secret of importedSecrets) {
         if (!secret.ref.startsWith(`purr/${project.workspace.id}/`) || await prepared.exists(secret.ref)) throw new Error("Import credentials must not overwrite existing secrets.");
         await prepared.set(secret.ref, secret.value);
       }
       const snapshot = this.snapshots.get(project.workspace.id);
-      const restored = await restoreWorkspace(project, snapshot?.local ?? [], prepared, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])), this.attachmentLoader(project.workspace.id));
+      this.assertWritable(project.workspace.id);
+      const restored = await restoreWorkspace(project, snapshot?.local ?? [], prepared, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])), this.attachmentLoader(project.workspace.id), { hydrateSecrets: false, sourceVersion: this.formats.get(project.workspace.id) ?? 2 });
       const workspace = initialize(restored);
       await this.persist(workspace, undefined, prepared);
       // Selection is a separate local preference. Its failure cannot turn a
@@ -419,8 +558,10 @@ export class WorkspacePersistence {
     if (this.snapshots.has(id)) throw new Error("This workspace is already open.");
     this.deleted.delete(id);
     const snapshot = await this.backend.attachDirectory(id, directory);
-    const project = this.readProject(snapshot, false);
-    const workspace = await restoreWorkspace(project, snapshot.local, this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
+    const project = this.readProject(snapshot);
+    this.protectedStates.set(id, snapshot.protectedState ?? this.storageState);
+    const workspace = await restoreWorkspace(project, this.getWorkspaceStatus(id).protectedState.status === "available" ? snapshot.local : [], this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion: this.formats.get(id) });
+    workspace.projectFormatVersion = this.formats.get(id); workspace.protectedState = this.getWorkspaceStatus(id).protectedState;
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     await this.save({ activeWorkspaceId: id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }

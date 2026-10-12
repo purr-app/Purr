@@ -1,3 +1,4 @@
+import type { ProtectedState } from "../../application/ports/persistence";
 import type { DynamicRequestCodeContext } from "./model/dynamic-request-code";
 import { createDependencyAuthRuntime } from "./services/dependency-auth-runtime";
 import { DynamicExecutionBadge } from "../history/dynamic-execution-badge";
@@ -109,7 +110,8 @@ export type DynamicSourceRequestDocument = {
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schemaSelector, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schemaSelector, schema, onOpenSchema, onOpenGraphqlType }: {
+  protectedState?: ProtectedState;
   dynamicExecution?: DynamicExecutionMetadata;
   onOpenDependency?: (id: string) => void;
   onReplay?: (operationName?: string) => void;
@@ -161,9 +163,11 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
   const workspaceAuth = useMemo(() => draft.workspace.authEnabled && workspaceAuthEntry
     ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || workspaceName, auth: workspaceAuthEntry.value } : undefined,
   [draft.workspace.authEnabled, workspaceAuthEntry, workspaceName]);
+  const protectedAvailable = !protectedState || protectedState.status === "available";
+  const variableStates = useMemo(() => Object.fromEntries(runtimeVariables.flatMap((variable) => variable.kind === "static" && variable.enabled && variable.secretState ? [[variable.name.trim(), variable.secretState]] : [])), [runtimeVariables]);
   const sensitiveVariableNames = useMemo(() => runtimeVariables.filter((variable) => variable.sensitive).map((variable) => variable.name), [runtimeVariables]);
-  const [authContext, setAuthContext] = useState<AuthContext>(withSchemaAuthContext(draft, workspaceConfig, { variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId }));
-  useEffect(() => setAuthContext((previous) => withSchemaAuthContext(draft, workspaceConfig, { ...previous, variables, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId })), [variables, sensitiveVariableNames, workspaceAuth, workspaceProfiles, documentId, draft.graphql?.schemaId, workspaceConfig]);
+  const [authContext, setAuthContext] = useState<AuthContext>(withSchemaAuthContext(draft, workspaceConfig, { variables, variableStates, secretStore: persistence.secure, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId }));
+  useEffect(() => setAuthContext((previous) => withSchemaAuthContext(draft, workspaceConfig, { ...previous, variables, variableStates, secretStore: persistence.secure, sensitiveVariableNames, workspace: workspaceAuth, workspaceProfiles, requestDocumentId: documentId })), [variables, variableStates, persistence.secure, sensitiveVariableNames, workspaceAuth, workspaceProfiles, documentId, draft.graphql?.schemaId, workspaceConfig]);
   const [codeOpen, setCodeOpen] = useState(false);
   const [urlInvalid, setUrlInvalid] = useState(false);
   const effectiveDraft = useMemo(() => applyWorkspaceRequestConfig(draft, requestKind, workspaceConfig), [draft, requestKind, workspaceConfig]);
@@ -187,16 +191,18 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
   const [progress, setProgress] = useState<HttpTransportProgress | null>(null);
   useEffect(() => setUrlInvalid(false), [documentId, draft.url]);
   const authRuntime = useAuthRuntime(
-    draft,
+    protectedAvailable ? draft : { ...draft, auth: { ...draft.auth, type: "none" } },
     setDraft,
     authContext,
     setAuthContext,
     onWorkspaceAuthChange,
   );
 
-  const contextFor = useCallback((request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames): AuthContext => withSchemaAuthContext(request, workspaceConfig, {
+  const contextFor = useCallback((request: RequestDraft, kind: RequestKind, id: string, resolvedVariables = variables, sensitiveNames = sensitiveVariableNames, scopedVariables = runtimeVariables): AuthContext => withSchemaAuthContext(request, workspaceConfig, {
     ...authContext,
     variables: resolvedVariables,
+    secretStore: persistence.secure,
+    variableStates: Object.fromEntries(scopedVariables.flatMap((variable) => variable.kind === "static" && variable.enabled && variable.secretState ? [[variable.name.trim(), variable.secretState]] : [])),
     sensitiveVariableNames: sensitiveNames,
     requestDocumentId: id,
     workspaceProfiles: getWorkspaceAuthProfiles(workspaceConfig, kind).map((entry) => ({ id: entry.id, name: entry.name || workspaceName, auth: entry.value })),
@@ -206,12 +212,12 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
         ? { id: entry.id, name: entry.name || workspaceName, auth: entry.value }
         : undefined;
     })(),
-  }), [authContext, variables, sensitiveVariableNames, workspaceConfig, workspaceName]);
+  }), [authContext, variables, runtimeVariables, persistence.secure, sensitiveVariableNames, workspaceConfig, workspaceName]);
   const dynamicCodeContext = useMemo<DynamicRequestCodeContext>(() => ({
     rootId: documentId, environmentId, documents: sourceDocuments, variablesForEnvironment, workspaceConfig,
     contextForDocument: async (document, sourceEnvironmentId) => {
       const scoped = await variablesForEnvironment(sourceEnvironmentId);
-      return contextFor(document.request, document.kind, document.id, Object.fromEntries(scoped.filter((item) => item.kind === "static" && item.enabled).map((item) => [item.name, item.kind === "static" ? item.value : ""])), scoped.filter((item) => item.sensitive).map((item) => item.name));
+      return contextFor(document.request, document.kind, document.id, Object.fromEntries(scoped.filter((item) => item.kind === "static" && item.enabled).map((item) => [item.name, item.kind === "static" ? item.value : ""])), scoped.filter((item) => item.sensitive).map((item) => item.name), scoped);
     },
   }), [documentId, environmentId, sourceDocuments, variablesForEnvironment, workspaceConfig, contextFor]);
   const resolveFor = async (
@@ -220,10 +226,11 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     execution?: { signal: AbortSignal; onProgress: (value: HttpTransportProgress) => void },
   ) => resolveDynamicVariables({
     root,
+    secretStore: persistence.secure,
     workspaceConfig,
     signal: execution?.signal,
     onSteps: (steps) => { if (!execution?.signal.aborted) onSessionChange({ dependencySteps: steps }); },
-    onExecuted: async (record) => persistence.history?.append(workspaceId, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: snapshotSchemaRequest(record.document.request, workspaceConfig, contextFor(record.document.request, record.document.kind, record.document.id)) }),
+    onExecuted: async (record) => persistence.history?.append(workspaceId, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: { ...record.document.request, ...(record.document.request.graphql ? { graphql: { ...record.document.request.graphql, schemaId: undefined } } : {}) } }),
     onHistoryError: () => onHistoryError?.("Could not save dependency history."),
     environmentId: rootEnvironmentId,
     documents: sourceDocuments,
@@ -234,13 +241,14 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     execute: async (document, resolvedVariables, sourceEnvironmentId, dispatch) => {
       const scoped = await variablesForEnvironment(sourceEnvironmentId);
       const sensitive = scoped.filter((variable) => variable.sensitive).map((variable) => variable.name);
-      const sourceContext = contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive);
+      const sourceContext = contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive, scoped);
       const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig);
-      return executeRequest(outgoing, sourceContext, cookieJar, createDependencyAuthRuntime(outgoing, sourceContext, httpTransport, responseContent, execution?.signal), httpTransport, responseContent, { ...execution, onDispatch: dispatch.onDispatch }, requestBodies);
+      return executeRequest(outgoing, sourceContext, cookieJar, createDependencyAuthRuntime(outgoing, sourceContext, httpTransport, responseContent, execution?.signal), httpTransport, responseContent, { ...execution, onDispatch: dispatch.onDispatch, onPrepared: dispatch.onPrepared }, requestBodies);
     },
   });
   const send = async (graphqlOperationName?: string) => {
     if (sendingRef.current || sending) return;
+    if (!protectedAvailable) { setError(`Protected storage is ${protectedState!.status}. Open Workspace settings → Secrets and retry before sending.`); setCanvasFocus("response"); return; }
     if (!effectiveDraft.url.trim()) {
       setCanvasFocus("request");
       setUrlInvalid(true);
@@ -270,7 +278,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
     onSessionChange({ dependencySteps: [], dependencyFailure: false, resolvingDependencies: true });
     setError("");
     const startedAt = Date.now();
-    const editor = cloneRequestDraft(snapshotSchemaRequest(draft, workspaceConfig, authContext));
+    let editor = cloneRequestDraft(snapshotSchemaRequest(draft, workspaceConfig, authContext));
     if (graphqlOperationName && editor.graphql) editor.graphql.operationName = graphqlOperationName;
     const releaseAttachments = persistence.history?.retainAttachments(workspaceId);
     let dispatched = false;
@@ -309,7 +317,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
-      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress, onDispatch: () => { dispatched = true; } }, requestBodies);
+      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress, onPrepared: (snapshot) => { editor = cloneRequestDraft({ ...snapshot, ...(snapshot.graphql ? { graphql: { ...snapshot.graphql, schemaId: undefined } } : {}) }); }, onDispatch: () => { dispatched = true; } }, requestBodies);
       if (execution !== executionRef.current) return;
       setResponse(result);
       record("response", result);
@@ -357,6 +365,7 @@ export function RequestWorkbench({ dynamicExecution, onOpenDependency, historyEn
   const canvasCompose = view === "canvas" && !hasActivity && !canvasCollapsed;
   const requestPane = (
     <RequestComposer
+      readOnly={!protectedAvailable}
       schema={schema}
       onOpenSchema={onOpenSchema}
       onOpenGraphqlType={onOpenGraphqlType}

@@ -183,13 +183,26 @@ impl LocalStateStore {
             .map_err(db_error)
     }
     pub fn read_secret(&self, reference: &str) -> Result<SecretSnapshot, String> {
-        validate_secret_ref(reference)?;
-        let tx = self.db.unchecked_transaction().map_err(db_error)?;
+        self.read_secret_typed(reference)
+            .map_err(|error| error.to_string())
+    }
+    pub fn read_secret_typed(
+        &self,
+        reference: &str,
+    ) -> Result<SecretSnapshot, crate::security::ProtectedError> {
+        use crate::security::ProtectedError;
+        validate_secret_ref(reference)
+            .map_err(|_| ProtectedError::denied("invalid-secret-reference"))?;
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|_| ProtectedError::unavailable("secret-database-unavailable"))?;
         let result = SecretSnapshot {
-            value: self.get_secret(reference)?,
+            value: self.get_secret_typed(reference)?,
             revision: revision(&self.db, reference)?,
         };
-        tx.rollback().map_err(db_error)?;
+        tx.rollback()
+            .map_err(|_| ProtectedError::unavailable("secret-database-unavailable"))?;
         Ok(result)
     }
 

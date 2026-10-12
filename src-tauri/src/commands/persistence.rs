@@ -205,3 +205,19 @@ fn commit_error(error: String) -> String {
         format!("commit-rejected: {error}")
     }
 }
+
+#[tauri::command]
+pub fn secure_resolve(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    reference: String,
+) -> Value {
+    runtime::secure_resolve(app, state, reference)
+}
+#[tauri::command]
+pub fn retry_protected_storage(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+) -> Result<Value, String> {
+    runtime::retry_protected_storage(app, state)
+}

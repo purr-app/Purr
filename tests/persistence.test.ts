@@ -10,6 +10,7 @@ import { deserializeManifest, deserializeResource, deserializeResourceFile, seri
 import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { persistImport } from "../src/application/import-project";
+import { resolveEnvironmentSecrets } from "../src/application/environment-secrets";
 
 test("versioned YAML fixtures round-trip with disabled params and stable references", async () => {
   for (const fixture of ["get-user", "get-customer"]) {
@@ -132,7 +133,7 @@ test("unknown extension documents preserve canonical config and local edits with
   assert.equal(reloadedDocument.config.message, "local working copy");
 });
 
-test("workspace load rewrites legacy integration YAML to the canonical envelope", async () => {
+test("workspace load preserves legacy integration YAML until an explicit canonical upgrade", async () => {
   const backend = new MemoryPersistenceBackend();
   const legacy = await readFile(new URL("./fixtures/projects/integration-legacy.yaml", import.meta.url), "utf8");
   backend.snapshot = {
@@ -150,6 +151,9 @@ test("workspace load rewrites legacy integration YAML to the canonical envelope"
   const store = await persistence.load();
   const integration = store.workspaces[0].extraResources?.find((resource) => resource.id === "legacy-jaeger");
   assert.equal(integration?.kind === "integration" ? integration.config.endpoint : undefined, "http://127.0.0.1:16686");
+  assert.equal(backend.snapshot.workspaces[0].files["integrations/legacy-jaeger.yaml"].content, legacy);
+  assert.equal(backend.writes.length, 0);
+  await persistence.upgradeWorkspace(store.workspaces[0]);
   const rewritten = backend.snapshot.workspaces[0].files["integrations/legacy-jaeger.yaml"].content;
   assert.doesNotMatch(rewritten, /^endpoint:/m);
   assert.match(rewritten, /configVersion: 1/);
@@ -250,7 +254,8 @@ test("legacy workspace migrates once; UI saves do not rewrite project files, ren
   loaded.workspaces[0].documents[0].name = "Renamed request"; await persistence.save(loaded);
   assert.deepEqual(Object.keys(backend.snapshot.workspaces[0].files), paths);
   const reloaded = await new WorkspacePersistence(backend, secure).load();
-  assert.equal(reloaded.workspaces[0].environments[0].variables[0].kind === "static" ? reloaded.workspaces[0].environments[0].variables[0].value : "", "do-not-export");
+  const resolvedEnvironment = await resolveEnvironmentSecrets(reloaded.workspaces[0].environments[0], secure);
+  assert.equal(resolvedEnvironment.variables[0].kind === "static" ? resolvedEnvironment.variables[0].value : "", "do-not-export");
   assert.equal(reloaded.workspaces[0].environments[0].variables[0].name, "renamed_password");
 });
 
@@ -258,7 +263,11 @@ test("external malformed YAML cannot destroy existing resources", async () => {
   const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const loaded = await persistence.load(); const snapshot = backend.snapshot.workspaces[0];
   snapshot.files["purr.yaml"] = { content: "purr: [ broken-secret", revision: "external" };
-  await assert.rejects(new WorkspacePersistence(backend, secure).load(), /Invalid/);
+  const reopened = new WorkspacePersistence(backend, secure); const catalogue = await reopened.load();
+  assert.equal(catalogue.workspaces[0].id, snapshot.id);
+  assert.deepEqual(reopened.getWorkspaceStatus(snapshot.id).protectedState, { status: "recovery-required", code: "project-format-unreadable" });
+  await reopened.save(catalogue);
+  await assert.rejects(reopened.saveWorkspace(catalogue.workspaces[0]), /protected|recovery|read.only/i);
   loaded.workspaces[0].name = "Changed";
   await assert.rejects(persistence.save(loaded), /conflict/);
   assert.equal(snapshot.files["purr.yaml"].content, "purr: [ broken-secret");

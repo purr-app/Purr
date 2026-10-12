@@ -31,7 +31,7 @@ global → workspace → selected environment
 
 Disabled variables are omitted from the effective value map. If a request explicitly references a disabled definition, `resolveDynamicVariables` reports it instead of treating it as missing or falling back silently.
 
-The active environment ID is workspace-local state. A dynamic variable may use the request’s current environment or a specific environment ID. Changing the active environment lazily unlocks that environment’s sensitive values and clears document OAuth tokens.
+The active environment ID is workspace-local state. A dynamic variable may use the request’s current environment or a specific environment ID. Changing the active environment changes the resolution context and clears document OAuth tokens. It does not bulk-fetch every sensitive value; an operation resolves only its required dependency graph.
 
 ## Static interpolation
 
@@ -83,7 +83,7 @@ Cache keys are `${variableId}:${environmentId ?? "none"}`. The definition’s JS
 
 Errors are recorded with message, timestamp, duration, environment, and fingerprint, but never used as successful hits. Editing/deleting variables or environments prunes invalid entries. A forced Execute from the Variables UI bypasses an existing hit for that variable.
 
-Sensitive successful cache values are replaced with secret-backed envelopes by `protectDynamicVariableCache` before the local record is encrypted. They are restored transiently through `resolveRuntime` when the workspace opens.
+Sensitive successful cache values are replaced with secret-backed envelopes by `protectDynamicVariableCache` before the local record is encrypted. Restoration retains secret-backed state; required cached values are resolved when the dependency is actually used, without making missing caches into available empty values.
 
 ## Secret is not masked
 
@@ -102,6 +102,16 @@ runtime Variable.value
 
 On macOS, `NativeSecureStore` calls Rust `secure_*` commands. A root encryption key with user-only file permissions lives in application storage; individual secret values live in the separately keyed AES-GCM SQLite vault. Legacy Keychain roots migrate once. Non-macOS native secure storage currently fails closed. Browser development uses its preview secure adapter and is not the desktop security contract.
 
+## Availability, editing and sharing
+
+Sensitive literals and mixed expressions stay in the vault, even when their text contains template syntax. A pure reference in a protected auth/header field preserves its original template source; this does not silently reclassify the referenced variable. Sensitivity propagates through nested static variables and dynamic results to resolved wire fields, including public URL/body templates that consume sensitive variables. The canonical URL/body expression itself remains public.
+
+`SecureStore.resolve` distinguishes available (including `""`), missing, locked, unavailable, corrupt and denied. Runtime fields retain their stable refs and explicit keep/set/delete intent. Unrelated saves preserve unresolved values. Clearing an input means set-to-empty; Remove local value is a separate operation. The active dependency graph, not the entire variable list, determines whether Send or resolved code must stop.
+
+Workspace settings → Required local secrets lists declaration owners, environments, global dependencies and local availability. It offers Set value, Remove local value, Retry/Unlock and owner navigation. Set starts with a blank user-entry field; existing values are not prefilled. Unreadable protected storage disables value editing until its baseline is readable. Retry rehydrates state instead of replacing opaque drafts/caches with defaults.
+
+The configuration sharing preview explains public values and omitted/missing secrets, including the fact that a v1 workspace can still contain legacy literals before explicit upgrade. This is a preview, not workspace/environment/global or Postman export. Downloadable configuration/credential transfer is deferred; a Git clone carries refs and definitions, not the referenced local values.
+
 ## External secret providers
 
 `external-secret {provider,key}` is present in the canonical type so future integrations need not change request templates. The Phase 12 integration registry does not register external-secret providers, and there is currently no resolver, authentication flow, or UI capable of producing this value. Treat it as reserved and fail explicitly if execution would require it. When a provider becomes real, document its lookup, cache, permission, error, and redaction boundaries in [Imports and integrations](imports-and-integrations.md).
@@ -119,7 +129,7 @@ See [Persistence architecture](persistence-architecture.md) for the full ownersh
 
 ## Invariants
 
-- Do not serialize runtime secret values into YAML, drafts, logs, history metadata, or clipboard output.
+- Do not serialize runtime secret values into YAML, plaintext drafts, logs, history metadata or default clipboard output. Explicit Reveal/copy and protected local snapshots are separate, intentional boundaries.
 - Preserve stable variable IDs and secret refs when editing; deleting a definition should release unused refs.
 - Dynamic source documents must be saved canonical requests.
 - Environment variables remain static until the canonical validator, resolver, UX, and documentation change together.

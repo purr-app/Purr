@@ -29,6 +29,7 @@ import { ColorizedUrlInput } from "./colorized-url-input";
 import { isCurlCommand } from "../model/curl-import";
 
 type RequestComposerProps = {
+  readOnly?: boolean;
   historyAction?: ReactNode;
   historical?: boolean;
   historyStartedAt?: number;
@@ -59,7 +60,7 @@ type RequestComposerProps = {
 };
 
 export function RequestComposer({
-  historyAction, historical,
+  readOnly = false, historyAction, historical,
   historyStartedAt,
   draft,
   onDraftChange,
@@ -103,8 +104,8 @@ export function RequestComposer({
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-ui-xl border shadow-panel"
       aria-label="Request composer"
     >
-      <div
-        className="flex h-request-toolbar shrink-0 items-center gap-ui-2 border-b border-border-subtle bg-purr-elevated p-ui-1"
+      <fieldset disabled={readOnly}
+        className="m-ui-0 min-w-0 border-0 flex h-request-toolbar shrink-0 items-center gap-ui-2 border-b border-border-subtle bg-purr-elevated p-ui-1"
         data-request-url-bar
       >
         <form
@@ -166,7 +167,7 @@ export function RequestComposer({
             </Button>
           </div>
         </form>
-      </div>
+      </fieldset>
       <RequestSectionTabs
           graphql={Boolean(draft.graphql)}
           activeSection={activeSection}
@@ -198,7 +199,7 @@ export function RequestComposer({
         aria-hidden={detailsCollapsed}
         inert={detailsCollapsed}
       >
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <fieldset disabled={readOnly} className="m-ui-0 min-w-0 border-0 p-ui-0 min-h-0 flex-1 overflow-hidden">
             <RequestSectionPanel
               schema={schema}
               onOpenGraphqlType={onOpenGraphqlType}
@@ -211,7 +212,7 @@ export function RequestComposer({
               effectiveDraft={effectiveDraft}
               variableActions={variableActions}
             />
-        </div>
+        </fieldset>
       </div>
     </section>
   );

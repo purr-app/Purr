@@ -70,6 +70,8 @@ struct ImportParameter {
     location: String,
     required: bool,
     value: String,
+    value_present: bool,
+    sensitive: bool,
 }
 #[derive(Clone)]
 struct ImportBody {
@@ -714,7 +716,13 @@ fn parameter(source: &LoadedSource, base: &str, value: &Value) -> Option<ImportP
     let schema = value
         .get("schema")
         .map(|schema| resolved(source, &base, schema).1);
+    let supplied = value
+        .get("example")
+        .or_else(|| schema.as_ref().and_then(|schema| schema.get("default")))
+        .or_else(|| schema.as_ref().and_then(|schema| schema.get("example")));
     Some(ImportParameter {
+        value_present: supplied.is_some_and(|value| !value.is_null()),
+        sensitive: value.get("x-sensitive") == Some(&Value::Bool(true)),
         name: value.get("name")?.as_str()?.to_string(),
         location: value.get("in")?.as_str()?.to_string(),
         required: value
@@ -1335,10 +1343,10 @@ fn imported_secret(
     workspace_id: &str,
     profile_id: &str,
     field: &str,
-    secrets: &mut Vec<Value>,
+    _secrets: &mut Vec<Value>,
 ) -> Value {
     let reference = format!("purr/{workspace_id}/auth/{profile_id}/{field}");
-    secrets.push(json!({"ref":reference,"value":""}));
+    // The schema declares a requirement, not an intentionally empty value.
     json!({"kind":"secret","ref":reference})
 }
 fn auth_definition(
@@ -1434,6 +1442,15 @@ fn build_project(mut model: OpenApiModel, workspace_id: &str) -> NormalizedImpor
         let parameters = |location: &str| {
             operation.parameters.iter().filter(|parameter| parameter.location == location).map(|parameter| json!({"name":parameter.name,"value":parameter.value,"enabled":parameter.required})).collect::<Vec<_>>()
         };
+        let headers=operation.parameters.iter().enumerate().filter(|(_,parameter)|parameter.location=="header").map(|(index,parameter)| {
+            let id=stable_id("header",workspace_id,&format!("{}:header:{index}",operation.pointer));
+            let sensitive=parameter.sensitive || parameter.name.trim().eq_ignore_ascii_case("cookie")||parameter.name.trim().eq_ignore_ascii_case("set-cookie");
+            let value=if sensitive {
+                if postman::template_only(&parameter.value) {json!({"kind":"template","value":parameter.value})}
+                else {let reference=format!("purr/{workspace_id}/imports/openapi/{id}"); if parameter.value_present { secrets.push(json!({"ref":reference,"value":parameter.value})); } json!({"kind":"secret","ref":reference})}
+            } else {json!({"kind":"plain","value":parameter.value})};
+            json!({"id":id,"name":parameter.name,"enabled":parameter.required,"sensitive":sensitive,"value":value})
+        }).collect::<Vec<_>>();
         let (body, body_docs) = body_definition(&operation.body);
         let documentation = request_documentation(operation, body_docs);
         let mut origin =
@@ -1445,7 +1462,7 @@ fn build_project(mut model: OpenApiModel, workspace_id: &str) -> NormalizedImpor
                 .insert("operationId".into(), json!(operation_id));
         }
         let folder_id = &folder_ids[&operation.folder.to_ascii_lowercase()].1;
-        let mut request = json!({"id":stable_id("request", workspace_id, &operation.pointer),"name":operation.name,"kind":"http","folderId":folder_id,"method":operation.method,"url":format!("{{{{baseUrl}}}}{}", operation.path),"params":parameters("query"),"pathParams":parameters("path"),"headers":parameters("header"),"body":body,"auth":auth,"origin":origin});
+        let mut request = json!({"id":stable_id("request", workspace_id, &operation.pointer),"name":operation.name,"kind":"http","folderId":folder_id,"method":operation.method,"url":format!("{{{{baseUrl}}}}{}", operation.path),"params":parameters("query"),"pathParams":parameters("path"),"headers":headers,"body":body,"auth":auth,"origin":origin});
         request
             .as_object_mut()
             .unwrap()
@@ -1636,9 +1653,10 @@ paths:
         assert_eq!(profile["name"], "bearerAuth");
         assert_eq!(profile["config"]["type"], "bearer");
         assert_eq!(profile["config"]["token"]["kind"], "secret");
-        assert!(result.secrets.iter().any(|secret| {
-            secret["ref"] == profile["config"]["token"]["ref"] && secret["value"] == ""
-        }));
+        assert!(!result
+            .secrets
+            .iter()
+            .any(|secret| secret["ref"] == profile["config"]["token"]["ref"]));
         let request = result
             .resources
             .iter()

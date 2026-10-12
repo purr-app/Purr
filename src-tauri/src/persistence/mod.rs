@@ -10,3 +10,5 @@ pub use runtime::PersistenceState;
 pub(crate) mod commit_coordinator;
 pub mod secret_commits;
 pub mod workspace_cleanup;
+
+pub mod catalogue;

@@ -1,5 +1,6 @@
 import { secretRefSchema, type Credential, type SecretRef } from "../domain/project";
-import type { CommitState, SecretBatch, SecretSnapshot, SecureStore } from "../application/ports/credentials";
+import { isPureTemplateReference } from "../domain/template-expression";
+import { SecretUnavailableError, type CommitState, type SecretBatch, type SecretSnapshot, type SecureStore, type SecretResolution, type SecretFieldState } from "../application/ports/credentials";
 
 export function secretRef(workspace: string, owner: string, field: string): SecretRef {
   return secretRefSchema.parse(`purr/${workspace}/${owner}/${field}`);
@@ -10,6 +11,7 @@ export class MemorySecureStore implements SecureStore {
   private operations = new Map<string, { identity: string; status: CommitState["status"] }>();
   async get(ref: SecretRef) { return this.values.get(ref) ?? null; }
   async read(ref: SecretRef): Promise<SecretSnapshot> { secretRefSchema.parse(ref); return { value: await this.get(ref), revision: this.revisions.get(ref) ?? 0 }; }
+  async resolve(ref: SecretRef): Promise<SecretResolution> { const snapshot = await this.read(ref); return snapshot.value === null ? { status: "missing", revision: snapshot.revision } : { status: "available", ...snapshot, value: snapshot.value }; }
   async operationStatus(operationId: string): Promise<CommitState> { return { operationId, status: this.operations.get(operationId)?.status ?? "missing" }; }
   async commitWith<T>(batch: SecretBatch, publish: () => T, identity: unknown = batch): Promise<T | undefined> {
     const request = JSON.stringify({ batch, identity });
@@ -54,22 +56,51 @@ export class MemorySecureStore implements SecureStore {
   async delete(ref: SecretRef) { const snapshot = await this.read(ref); await this.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, value: null, expectedRevision: snapshot.revision }] }); }
   async exists(ref: SecretRef) { return this.values.has(ref); }
 }
-export async function storeCredential(store: SecureStore, ref: SecretRef, value: string, mode: "plain" | "secret" = "secret"): Promise<Credential> {
+export async function storeCredential(store: SecureStore, ref: SecretRef, value: string, mode: "plain" | "secret" = "secret", state?: SecretFieldState): Promise<Credential> {
   if (mode === "plain") return { kind: "plain", value };
+  if (state?.edit?.kind === "keep" && state.ref === ref) return { kind: "secret", ref };
+  if (state?.edit?.kind === "delete") {
+    if (await store.get(ref) !== null) await store.delete(ref);
+    return { kind: "secret", ref };
+  }
+  if (state && (state.edit?.kind ?? "keep") === "keep" && state.ref !== ref) {
+    const result = await store.resolve(state.ref);
+    if (result.status !== "available") return { kind: "secret", ref: state.ref };
+    value = result.value;
+  } else if (state?.edit?.kind === "set") value = state.edit.value;
   const existing = await store.get(ref);
-  if (!value) {
-    if (existing !== null) await store.delete(ref);
-  } else if (existing !== value) await store.set(ref, value);
+  if (existing !== value) await store.set(ref, value);
   return { kind: "secret", ref };
 }
 export async function resolveCredential(store: SecureStore, value: Credential): Promise<string> {
-  return value.kind === "plain" ? value.value : await store.get(value.ref) ?? "";
+  if (value.kind !== "secret") return value.value;
+  const result = await store.resolve(value.ref);
+  if (result.status === "available") return result.value;
+  throw new SecretUnavailableError(value.ref, result.status, "code" in result ? result.code : "credential-missing");
+}
+/** Materialization may be lazy; the empty buffer always carries its actual state. */
+export async function materializeCredential(store: SecureStore, credential: Credential, hydrate = true): Promise<{ value: string; secretState?: SecretFieldState }> {
+  if (credential.kind !== "secret") return { value: credential.value };
+  if (!hydrate && store instanceof SecretPreparationStore) {
+    const staged = store.preparedValue(credential.ref);
+    if (staged) return { value: staged.value ?? "", secretState: { ref: credential.ref, status: staged.value === null ? "missing" : "available", edit: staged.value === null ? { kind: "delete" } : { kind: "set", value: staged.value } } };
+  }
+  if (!hydrate) return { value: "", secretState: { ref: credential.ref, status: "unresolved", edit: { kind: "keep" } } };
+  const result = await store.resolve(credential.ref);
+  return { value: result.status === "available" ? result.value : "", secretState: { ref: credential.ref, status: result.status, edit: { kind: "keep" }, ...("code" in result ? { code: result.code } : {}) } };
 }
 export class CachedSecureStore implements SecureStore {
   private values = new Map<SecretRef, SecretSnapshot>();
   constructor(private source: SecureStore) {}
   async read(ref: SecretRef) { if (!this.values.has(ref)) this.values.set(ref, await this.source.read(ref)); return { ...this.values.get(ref)! }; }
   async get(ref: SecretRef) { return (await this.read(ref)).value; }
+  async resolve(ref: SecretRef): Promise<SecretResolution> {
+    const result = await this.source.resolve(ref);
+    if (result.status === "available") this.values.set(ref, { value: result.value, revision: result.revision });
+    else if (result.status === "missing") this.values.set(ref, { value: null, revision: result.revision });
+    else this.values.delete(ref);
+    return result;
+  }
   async commit(batch: SecretBatch) { try { await this.source.commit(batch); } finally { this.clear(); } }
   operationStatus(operationId: string) { return this.source.operationStatus(operationId); }
   async set(ref: SecretRef, value: string) { try { await this.source.set(ref, value); } finally { this.clear(); } }
@@ -82,6 +113,7 @@ export class CachedSecureStore implements SecureStore {
 export class SecretPreparationStore implements SecureStore {
   private snapshots = new Map<SecretRef, Promise<SecretSnapshot>>();
   private staged = new Map<SecretRef, string | null>();
+  private acknowledgements: Array<() => void> = [];
   readonly operationId = crypto.randomUUID();
   constructor(private source: SecureStore) {}
   /** A new Save attempt retains its baseline and editor values, with a new ID. */
@@ -101,6 +133,14 @@ export class SecretPreparationStore implements SecureStore {
     return { revision: baseline.revision, value: this.staged.has(ref) ? this.staged.get(ref)! : baseline.value };
   }
   async get(ref: SecretRef) { return (await this.read(ref)).value; }
+  async resolve(ref: SecretRef): Promise<SecretResolution> {
+    if (!this.staged.has(ref)) return this.source.resolve(ref);
+    const snapshot = await this.read(ref);
+    return snapshot.value === null ? { status: "missing", revision: snapshot.revision } : { status: "available", value: snapshot.value, revision: snapshot.revision };
+  }
+  onCommitted(callback: () => void) { this.acknowledgements.push(callback); }
+  preparedValue(ref: SecretRef): { value: string | null } | undefined { return this.staged.has(ref) ? { value: this.staged.get(ref)! } : undefined; }
+  acknowledge() { for (const callback of this.acknowledgements) callback(); this.acknowledgements = []; }
   async set(ref: SecretRef, value: string) { await this.baseline(ref); this.staged.set(ref, value); }
   async delete(ref: SecretRef) { await this.baseline(ref); this.staged.set(ref, null); }
   async exists(ref: SecretRef) { return (await this.get(ref)) !== null; }
@@ -119,32 +159,113 @@ export class SecretPreparationStore implements SecureStore {
 // Only credential-bearing fields are replaced. This also protects inactive editor
 // modes and unsaved credentials, which must never be copied to SQLite plaintext.
 export async function protectRuntime(value: unknown, store: SecureStore, workspace: string, owner: string): Promise<unknown> {
-  if (Array.isArray(value)) return Promise.all(value.map((item, i) => protectRuntime(item, store, workspace, `${owner}/${i}`)));
+  if (Array.isArray(value)) return Promise.all(value.map((item, i) => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : undefined;
+    const identity = row && typeof row.id === "string" && ("name" in row || "key" in row) ? row.id : String(i);
+    return protectRuntime(item, store, workspace, `${owner}/${identity}`);
+  }));
   if (!value || typeof value !== "object" || value instanceof File) return value;
   const object = value as Record<string, unknown>;
-  if (object.secret === true && typeof object.value === "string" && typeof object.name === "string") {
-    return { ...object, value: { __purrSecret: await storeCredential(store, secretRef(workspace, owner, "value"), object.value) } };
+  if (object.kind === "extension") return object;
+  const envelope = async (ref: SecretRef, text: string, state?: SecretFieldState, allowTemplate = false) => {
+    const history = owner.startsWith("history/");
+    let credential: Credential;
+    if (allowTemplate && (!state || state.edit?.kind === "set") && isPureTemplateReference(state?.edit?.kind === "set" ? state.edit.value : text))
+      credential = { kind: "template", value: state?.edit?.kind === "set" ? state.edit.value : text };
+    else if (history && state && state.status !== "available" && state.edit?.kind !== "set") credential = { kind: "secret", ref };
+    else if (history) credential = await storeCredential(store, ref, state?.edit?.kind === "set" ? state.edit.value : text);
+    else if (state && (state.edit?.kind ?? "keep") === "keep") credential = { kind: "secret", ref: state.ref };
+    else credential = await storeCredential(store, ref, text, "secret", state);
+    return { __purrSecret: credential, ...(state?.edit?.kind === "delete" && !history ? { __purrEdit: "delete" } : {}) };
+  };
+  if (object.kind === "integration" && object.credentials && typeof object.credentials === "object") {
+    const credentials = Object.fromEntries(await Promise.all(Object.entries(object.credentials).map(async ([key, input]) => {
+      const credential = input as Credential;
+      return [key, credential.kind === "secret" ? credential : await storeCredential(store, secretRef(workspace, `${owner}/credentials`, key), credential.value)];
+    })));
+    // Provider configuration is user-owned opaque JSON, not a credential map.
+    return { ...object, credentials };
+  }
+  if (object.type === "registry" && object.credential && typeof object.credential === "object") {
+    const credential = object.credential as Credential;
+    return { ...object, credential: credential.kind !== "plain" ? credential : isPureTemplateReference(credential.value) ? { kind: "template", value: credential.value }
+      : await storeCredential(store, secretRef(workspace, owner, "credential"), credential.value) };
+  }
+  if ((object.secret === true && typeof object.name === "string" || typeof object.name === "string" && ["cookie", "set-cookie"].includes(object.name.trim().toLowerCase()) || object.kind === "static" && object.sensitive === true || object.secretState)
+    && typeof object.value === "string") {
+    const { secretState, ...rest } = object;
+    const stored = await envelope(secretRef(workspace, owner, "value"), object.value, secretState as SecretFieldState | undefined, object.kind !== "static" && typeof object.name === "string");
+    if (store instanceof SecretPreparationStore && !owner.startsWith("history/")) store.onCommitted(() => {
+      const ref = stored.__purrSecret.kind === "secret" ? stored.__purrSecret.ref : undefined;
+      if (ref) object.secretState = { ref, status: secretState && (secretState as SecretFieldState).edit?.kind === "delete" ? "missing" : secretState && (secretState as SecretFieldState).edit?.kind === "keep" ? (secretState as SecretFieldState).status : "available", edit: { kind: "keep" } };
+      else { delete object.secretState; delete object.secretRef; }
+    });
+    return { ...rest, value: stored };
   }
   const auth = "bearer" in object && "oauth2" in object && "inherit" in object;
   if (auth) {
-    const copy = structuredClone(object) as Record<string, Record<string, unknown>>;
-    for (const [group, keys] of Object.entries({ bearer: ["token"], basic: ["password"], apiKey: ["value"], oauth2: ["clientSecret"] })) {
-      for (const key of keys) {
-        const text = copy[group]?.[key];
-        if (typeof text === "string" && text) copy[group][key] = { __purrSecret: (await storeCredential(store, secretRef(workspace, owner, `${group}/${key}`), text)) };
+    const { credentialStates, ...source } = object;
+    const states = credentialStates as Record<string, SecretFieldState> | undefined;
+    const copy = structuredClone(source) as Record<string, Record<string, unknown>>;
+    for (const [group, key, slot] of [["bearer", "token", "bearer"], ["basic", "password", "password"], ["apiKey", "value", "api-key"], ["oauth2", "clientSecret", "client-secret"]]) {
+      const text = copy[group]?.[key];
+      if (typeof text === "string" && (text || states?.[slot])) {
+        const stored = await envelope(secretRef(workspace, owner, `${group}/${key}`), text, states?.[slot], true); copy[group][key] = stored;
+        if (store instanceof SecretPreparationStore && !owner.startsWith("history/")) store.onCommitted(() => {
+          if (stored.__purrSecret.kind === "secret") object.credentialStates = { ...(object.credentialStates as Record<string, SecretFieldState> | undefined), [slot]: { ref: stored.__purrSecret.ref, status: states?.[slot]?.edit?.kind === "delete" ? "missing" : states?.[slot]?.edit?.kind === "keep" ? states[slot].status : "available", edit: { kind: "keep" } } };
+          else {
+            if (object.credentialStates) delete (object.credentialStates as Record<string, SecretFieldState>)[slot];
+            if (object.secretRefs) delete (object.secretRefs as Record<string, string>)[slot];
+          }
+        });
       }
     }
     const token = copy.oauth2.token as Record<string, unknown> | null;
     if (token) for (const key of ["accessToken", "refreshToken"]) if (typeof token[key] === "string")
-      token[key] = { __purrSecret: await storeCredential(store, secretRef(workspace, owner, `oauth2/${key}`), token[key]) };
+      token[key] = await envelope(secretRef(workspace, owner, `oauth2/${key}`), token[key], states?.[key === "accessToken" ? "oauth-access-token" : "oauth-refresh-token"]);
     return copy;
   }
-  return Object.fromEntries(await Promise.all(Object.entries(object).map(async ([key, child]) => [key, await protectRuntime(child, store, workspace, `${owner}/${key}`)])));
+  // Availability/edit metadata is transient and can contain a staged plaintext
+  // value. Credential envelopes above own persistence of those values.
+  return Object.fromEntries(await Promise.all(Object.entries(object).filter(([key]) => key !== "secretState" && key !== "credentialStates")
+    .map(async ([key, child]) => [key, await protectRuntime(child, store, workspace, `${owner}/${key}`)])));
 }
-export async function resolveRuntime(value: unknown, store: SecureStore): Promise<unknown> {
-  if (Array.isArray(value)) return Promise.all(value.map((item) => resolveRuntime(item, store)));
+export async function resolveRuntime(value: unknown, store: SecureStore, hydrate = true): Promise<unknown> {
+  if (Array.isArray(value)) return Promise.all(value.map((item) => resolveRuntime(item, store, hydrate)));
   if (!value || typeof value !== "object" || value instanceof File) return value;
   const object = value as Record<string, unknown>;
-  if (Object.keys(object).length === 1 && object.__purrSecret) return resolveCredential(store, object.__purrSecret as Credential);
-  return Object.fromEntries(await Promise.all(Object.entries(object).map(async ([key, child]) => [key, await resolveRuntime(child, store)])));
+  if (object.kind === "integration" || object.kind === "extension") return object;
+  if (object.__purrSecret) return (await materializeCredential(store, object.__purrSecret as Credential, hydrate)).value;
+  const marker = (candidate: unknown) => candidate && typeof candidate === "object" && "__purrSecret" in candidate ? candidate as { __purrSecret: Credential; __purrEdit?: "delete" } : undefined;
+  if ("bearer" in object && "oauth2" in object && "inherit" in object) {
+    const copy = structuredClone(object);
+    const states: Record<string, SecretFieldState> = {};
+    for (const [group, key, slot] of [["bearer", "token", "bearer"], ["basic", "password", "password"], ["apiKey", "value", "api-key"], ["oauth2", "clientSecret", "client-secret"]]) {
+      const fields = copy[group] as Record<string, unknown> | undefined;
+      const stored = marker(fields?.[key]);
+      if (!stored) continue;
+      const field = await materializeCredential(store, stored.__purrSecret, hydrate);
+      fields![key] = field.value;
+      if (field.secretState) states[slot] = { ...field.secretState, ...(stored.__purrEdit ? { edit: { kind: "delete" as const } } : {}) };
+      else if (copy.secretRefs) delete (copy.secretRefs as Record<string, string>)[slot];
+    }
+    const token = (copy.oauth2 as Record<string, unknown>).token as Record<string, unknown> | null;
+    if (token) for (const key of ["accessToken", "refreshToken"]) {
+      const stored = marker(token[key]);
+      if (!stored) continue;
+      const field = await materializeCredential(store, stored.__purrSecret, hydrate); token[key] = field.value;
+      if (field.secretState) states[key === "accessToken" ? "oauth-access-token" : "oauth-refresh-token"] = field.secretState;
+    }
+    return { ...copy, ...(Object.keys(states).length ? { credentialStates: states } : {}) };
+  }
+  const storedValue = marker(object.value);
+  if (storedValue) {
+    const field = await materializeCredential(store, storedValue.__purrSecret, hydrate);
+    if (!field.secretState) {
+      const { secretState: _state, secretRef: _ref, ...source } = object;
+      return { ...source, value: field.value };
+    }
+    return { ...object, value: field.value, ...(field.secretState ? { secretState: { ...field.secretState, ...(storedValue.__purrEdit ? { edit: { kind: "delete" } } : {}) } } : {}) };
+  }
+  return Object.fromEntries(await Promise.all(Object.entries(object).map(async ([key, child]) => [key, await resolveRuntime(child, store, hydrate)])));
 }

@@ -51,9 +51,12 @@ export function HeadersEditor({
     readOnly: header.readOnly,
     readOnlyReason: header.readOnlyReason,
     secret: header.secret,
+    secretRef: header.secretRef,
+    secretState: header.secretState,
     hideReadOnlyIndicator: Boolean(header.workspaceHeaderId),
   });
   const editor = (source: RequestHeader[]) => <KeyValueEditor
+    allowSensitive
     fillHeight={fillHeight}
     entries={source.map(toEntry)}
     onEntriesChange={(nextEntries) =>
@@ -66,6 +69,8 @@ export function HeadersEditor({
           readOnly: entry.readOnly,
           readOnlyReason: entry.readOnlyReason,
           secret: entry.secret,
+          secretRef: entry.secretRef,
+          secretState: entry.secretState,
         })),
       )
     }

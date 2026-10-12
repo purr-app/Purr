@@ -33,14 +33,15 @@ Workspace shared auth entries have `all`, `http`, or `graphql` scope. Multiple e
 
 ## Credential storage and redaction
 
-`authToDefinition` converts credential-bearing fields to `Credential` values:
+`authToDefinition` converts protected auth slots to a stable `{kind: "secret", ref}` or an explicit `{kind: "template", value}`. A template is exactly one nonempty `{{name}}` reference with optional surrounding whitespace, preserved verbatim. Literal passwords and mixed expressions such as `prefix-{{suffix}}` are stored wholly in the vault; multiple references are also mixed. The public-literal Bearer storage choice is retired. Legacy v1 literals remain readable until an explicitly confirmed whole-workspace v2 upgrade succeeds.
 
-- `{kind: "secret", ref: SecretRef}` by default;
-- bearer tokens may explicitly use `{kind: "plain", value}` when configured or when a templated value must remain shareable as a template.
+Basic username, OAuth client ID/endpoints/scopes and other public auth configuration remain public. A credential template may intentionally reference a public variable: the source remains user-public while the resolved auth wire value is sensitive. Ordinary user headers are classified only by their explicit sensitivity marker; auth-generated bindings and exact Cookie/Set-Cookie fields are known protected roles.
 
-Passwords, API keys, OAuth client secrets, acquired access/refresh tokens, and ordinary literal bearer tokens use the secure path. Project YAML contains refs/definitions, not their values. User-only application storage owns one root key; encrypted SQLite `secret_values` owns individual ref values. See [Persistence architecture](persistence-architecture.md).
+Ref presence and local availability are separate. Restoration retains unresolved field states. Enabled auth dependencies are resolved when the operation needs them; unrelated missing or disabled fields do not block a request. Typed missing/locked/unavailable/corrupt/denied outcomes never become empty passwords. Clearing an editor input sets an available empty string; Required local secrets → Remove local value explicitly removes the value and retains the ref. Protocol rules can reject an available empty value even though storage accepts it.
 
-`prepareWireRequest` builds a real and a masked display request. Response → Request, Timeline, and Request Code default to the masked version. Copy can expose credentials only after an explicit Reveal action. Native error strings are sanitized and OAuth token response bodies are never included in user-facing errors.
+`prepareWireRequest` supports send, resolved-code and redacted-code purposes. Request Code and Response → Request default to redacted output; revealing resolved code requires available dependencies. Redacted code can retain placeholders for unavailable secrets without emitting usable empty credentials. A missing historical display snapshot is not permission to show its exact wire request. Native error strings are sanitized and OAuth token response bodies are never included in user-facing errors.
+
+User-only application storage still owns the macOS root-key file, and encrypted SQLite owns individual values. S02 does not implement the planned OS-only root-key migration, cross-platform unlock providers or encrypted credential transfer; see [Persistence architecture](persistence-architecture.md).
 
 ## OAuth 2.0 lifecycle
 

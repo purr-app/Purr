@@ -1,3 +1,4 @@
+import { resolveRequestSecrets, type RequestCompositionPurpose, type SecretUsage } from "../../../application/resolve-request-secrets";
 import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import { getAuthBindingForRequest, resolveAuth, type AuthContext } from "../model/request-auth";
 import { applyRequestPathParamsToUrl, applyRequestQueryParamsToUrl, getRequestHeaders, getRequestQueryParams, getRequestSettings, normalizeRequestUrlProtocol, type RequestDraft } from "../model/request";
@@ -104,6 +105,7 @@ export async function prepareWireRequest(
   draft: RequestDraft,
   context: AuthContext,
   options: {
+    purpose?: RequestCompositionPurpose;
     fileMode?: "inline" | "native" | "summary";
     requestBodies?: RequestBodyPort;
   } = {},
@@ -113,8 +115,14 @@ export async function prepareWireRequest(
   sensitiveHeaders: string[];
   sensitiveQueryParams: string[];
   bodyReferences: RequestFileRef[];
+  editorSnapshot: RequestDraft;
+  provenance: SecretUsage[];
+  sensitiveBody: boolean;
 }> {
-  const resolved = resolveRequestEnvironment(draft, context.variables ?? {});
+  const secrets = await resolveRequestSecrets(draft, context, options.purpose);
+  draft = secrets.draft;
+  context = secrets.context;
+  const resolved = resolveRequestEnvironment(draft, context.variables ?? {}, { redacted: options.purpose === "redacted-code" });
   const outgoing = prepareGraphqlRequest({
     ...resolved,
     url: applyRequestPathParamsToUrl(
@@ -125,7 +133,7 @@ export async function prepareWireRequest(
   const maskedVariables = Object.fromEntries(Object.entries(context.variables ?? {}).map(([name, value]) => [name,
     context.sensitiveVariableNames?.includes(name) ? "********" : value]));
   const maskedContext = { ...context, variables: maskedVariables };
-  const maskedResolved = resolveRequestEnvironment(draft, maskedVariables);
+  const maskedResolved = resolveRequestEnvironment(draft, maskedVariables, { redacted: true });
   const maskedOutgoing = prepareGraphqlRequest({
     ...maskedResolved,
     url: applyRequestPathParamsToUrl(
@@ -185,13 +193,17 @@ export async function prepareWireRequest(
         ...(bodySummary ? { bodySummary } : {}),
       };
     };
-    const request = await makeRequest(outgoing, context, false);
+    const displayRequest = await makeRequest(maskedOutgoing, maskedContext, true);
+    const request = options.purpose === "redacted-code" ? displayRequest : await makeRequest(outgoing, context, false);
     return {
       request: { ...request, ...(outgoing.traceHeaderTemplates?.length ? { traceHeaders: outgoing.traceHeaderTemplates.map(({ name, value }): [string, string] => [name, value]) } : {}), ...(outgoing.tracePropagation ? { tracePropagation: outgoing.tracePropagation } : {}), ...(preparedBody.bodySource ? { bodySource: preparedBody.bodySource } : {}) },
-      displayRequest: await makeRequest(maskedOutgoing, maskedContext, true),
-      sensitiveHeaders: authResult.binding?.target === "header" ? [authResult.binding.name] : [],
-      sensitiveQueryParams: authResult.binding?.target === "query" ? [authResult.binding.name] : [],
+      displayRequest,
+      sensitiveHeaders: [...new Set([...(authResult.binding?.target === "header" ? [authResult.binding.name] : []), ...outgoing.headers.filter((header) => header.enabled && (header.secret || secrets.provenance.some((usage) => usage.field.startsWith("header") && usage.rowId === (header.workspaceHeaderId ?? header.id)))).map((header) => header.name)])],
+      sensitiveQueryParams: [...new Set([...(authResult.binding?.target === "query" ? [authResult.binding.name] : []), ...outgoing.params.filter((param) => param.enabled && (param.secret || secrets.provenance.some((usage) => usage.field === "url" || (usage.field.startsWith("query") && usage.rowId === param.id)))).map((param) => param.key)])],
       bodyReferences: preparedBody.references,
+      editorSnapshot: secrets.draft,
+      provenance: secrets.provenance,
+      sensitiveBody: secrets.sensitiveBody,
     };
   } catch (cause) {
     if (options.requestBodies)
@@ -209,7 +221,7 @@ export async function executeRequest(
   runtime: AuthRuntime,
   transport: HttpTransportPort,
   content?: ResponseContentPort,
-  execution?: HttpTransportOptions & { onDispatch?: () => void },
+  execution?: HttpTransportOptions & { onDispatch?: () => void; onPrepared?: (editor: RequestDraft) => void },
   requestBodies?: RequestBodyPort,
 ) {
   let effective = resolveAuth(draft.auth, context);
@@ -217,13 +229,15 @@ export async function executeRequest(
   if (effective.auth.type === "oauth2") {
     const config = effective.auth.oauth2;
     let token = config.token;
+    let acquired = false;
     if (!token || (config.autoRefresh && token.expiresAt !== undefined && token.expiresAt <= Date.now())) {
       if (!token && config.grantType === "authorization_code") throw new Error("Open Auth and authorize in your browser first.");
       token = await runtime.run(token ? "refresh" : "initial");
+      acquired = true;
       if (!token) throw new Error("Could not obtain an access token. See Auth for details.");
     }
     if (token.expiresAt !== undefined && token.expiresAt <= Date.now()) throw new Error("Access token expired. Refresh it in Auth before sending.");
-    effective = { ...effective, auth: { ...effective.auth, oauth2: { ...config, token } } };
+    effective = { ...effective, auth: { ...effective.auth, oauth2: { ...config, token }, ...(acquired && effective.auth.credentialStates?.["oauth-access-token"] ? { credentialStates: { ...effective.auth.credentialStates, "oauth-access-token": { ...effective.auth.credentialStates["oauth-access-token"], status: "available", edit: { kind: "set", value: token.accessToken } } } } : {}) } };
   }
   const prepared = await prepareWireRequest(
     { ...draft, auth: effective.auth },
@@ -235,6 +249,7 @@ export async function executeRequest(
   );
   try {
     if (execution?.signal?.aborted) throw new DOMException("Request canceled", "AbortError");
+    execution?.onPrepared?.(prepared.editorSnapshot);
     execution?.onDispatch?.();
     return await executeHttp(prepared.request, {
       transport,
