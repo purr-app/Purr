@@ -1,7 +1,10 @@
 use crate::{
     persistence::{
+        commit_coordinator,
         local_records::{LocalAttachment, LocalRecord, LocalStateStore},
         project_files::{FileChange, FilesystemWorkspaceStore, ProjectFile},
+        secret_commits::{OperationStatus, SecretBatch, SecretSnapshot},
+        workspace_cleanup::{self, WorkspaceDeletionResult},
     },
     security::PlatformRootKeyStore,
 };
@@ -86,6 +89,17 @@ fn project_change_paths(root: &Path, paths: &[PathBuf], rescan: bool) -> Vec<Str
     changes.into_iter().collect()
 }
 
+// A pending commit suppresses partial reads, but retains unrelated external
+// events as one wildcard rescan that can be delivered without another OS event.
+fn ready_watcher_rescan(deferred: &mut bool, pending: bool, rescan: bool) -> Option<bool> {
+    if pending {
+        *deferred = true;
+        None
+    } else {
+        Some(rescan | std::mem::take(deferred))
+    }
+}
+
 fn valid_id(id: &str) -> Result<(), String> {
     if id.is_empty()
         || id.len() > 128
@@ -114,15 +128,28 @@ impl RuntimeStorage {
         .map_err(|_| "Cannot watch project directory")?;
         let handle = app.clone();
         std::thread::spawn(move || {
-            while let Ok(first) = receiver.recv() {
+            let mut deferred_rescan = false;
+            loop {
+                let first = if deferred_rescan {
+                    match receiver.recv_timeout(Duration::from_millis(180)) {
+                        Ok(event) => Some(event),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                } else {
+                    match receiver.recv() {
+                        Ok(event) => Some(event),
+                        Err(_) => break,
+                    }
+                };
                 let mut paths = Vec::new();
-                let mut rescan = false;
+                let mut rescan = deferred_rescan;
                 match first {
-                    Ok(event) if !matches!(event.kind, notify::EventKind::Access(_)) => {
+                    Some(Ok(event)) if !matches!(event.kind, notify::EventKind::Access(_)) => {
                         rescan |= event.need_rescan();
                         paths.extend(event.paths);
                     }
-                    Err(_) => rescan = true,
+                    Some(Err(_)) => rescan = true,
                     _ => {}
                 }
                 while let Ok(event) = receiver.recv_timeout(Duration::from_millis(180)) {
@@ -139,6 +166,14 @@ impl RuntimeStorage {
                     let state = handle.state::<PersistenceState>();
                     if let Ok(guard) = state.0.lock() {
                         if let Some(storage) = guard.as_ref() {
+                            // Never rehydrate a partially applied or conflicted commit.
+                            let Some(rescan) = ready_watcher_rescan(
+                                &mut deferred_rescan,
+                                storage.local.has_pending_commit().unwrap_or(true),
+                                rescan,
+                            ) else {
+                                continue;
+                            };
                             let changes: Vec<Value> = storage
                                 .roots
                                 .iter()
@@ -167,24 +202,39 @@ impl RuntimeStorage {
             data,
             migration_snapshot: None,
         };
+        // Cleanup is independent of commit recovery and never blocks startup.
+        if let Ok(workspaces) = result.local.cleanup_workspaces() {
+            for id in workspaces {
+                if workspace_cleanup::retry(&result.local, &id).is_err() {
+                    let _ = app.emit("project-cleanup-pending", json!({"workspaceId":id}));
+                }
+            }
+        }
+        // These registrations already existed before cleanup was queued. Do not
+        // decrypt unrelated cleanup jobs while restoring their watches; guards
+        // belong to new save/attach operations, where path reuse is possible.
         for (id, directory) in result.local.workspaces()? {
             result.watch(&id, PathBuf::from(directory))?;
         }
-        result.recover()?;
+        // Keep operation-status/recovery APIs reachable when external edits
+        // prevent rollback. Workspace reads and writes still enforce recovery.
+        let _ = result.recover();
         Ok(result)
     }
     fn recover(&mut self) -> Result<(), String> {
         for (id, pending) in self.local.pending()? {
-            let files: Vec<FileChange> = serde_json::from_value(pending["files"].clone())
-                .map_err(|_| "Damaged pending project commit")?;
-            let local: Vec<LocalRecord> = serde_json::from_value(pending["local"].clone())
-                .map_err(|_| "Damaged pending project commit")?;
             let store = self.files(&id)?;
-            store.preflight(&files, true)?;
-            store.apply(&files)?;
-            self.local.write(&id, &local)?;
+            commit_coordinator::recover(&mut self.local, &store, &id, pending)
+                .map_err(|error| format!("Commit recovery-required; {error}"))?;
         }
         Ok(())
+    }
+    fn recover_before_commit(&mut self) -> Result<(), String> {
+        // No part of this incoming request has been attempted yet. In
+        // particular, an unrelated recovery failure cannot acknowledge an old
+        // receipt for a reused ID before request-fingerprint validation runs.
+        self.recover()
+            .map_err(|error| format!("commit-rejected: {error}"))
     }
     fn watch(&mut self, id: &str, directory: PathBuf) -> Result<(), String> {
         if !self.roots.contains_key(id) {
@@ -207,6 +257,7 @@ impl RuntimeStorage {
         })
     }
     fn workspace(&mut self, id: &str) -> Result<Value, String> {
+        self.recover()?;
         self.local.prune_history(id)?;
         Ok(json!({ "id": id, "files": self.files(id)?.load()?, "local": self.local.read(id)? }))
     }
@@ -269,6 +320,7 @@ pub fn secure_set(
 ) -> Result<(), String> {
     let value = Zeroizing::new(value);
     access(&app, &state, |storage| {
+        storage.recover()?;
         storage.local.set_secret(&reference, &value)
     })
 }
@@ -279,6 +331,7 @@ pub fn secure_delete(
     reference: String,
 ) -> Result<(), String> {
     access(&app, &state, |storage| {
+        storage.recover()?;
         storage.local.delete_secret(&reference)
     })
 }
@@ -363,24 +416,18 @@ pub fn commit_project(
     id: String,
     files: Vec<FileChange>,
     local: Vec<LocalRecord>,
+    secrets: Option<SecretBatch>,
 ) -> Result<BTreeMap<String, Option<ProjectFile>>, String> {
+    valid_id(&id)?;
+    let batch = secrets
+        .map(Ok)
+        .unwrap_or_else(|| SecretBatch::fresh(vec![]))?;
     access(&app, &state, |storage| {
-        storage.recover()?;
+        storage.recover_before_commit()?;
         let store = storage.files(&id)?;
-        store.preflight(&files, false)?;
-        storage.local.register(&id, &store.directory)?;
+        workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
         storage.watch(&id, store.directory.clone())?;
-        if !files.is_empty() {
-            storage
-                .local
-                .journal(&id, &json!({ "files":files, "local":local }))?;
-        }
-        store.apply(&files)?;
-        storage.local.write(&id, &local)?;
-        files
-            .iter()
-            .map(|change| Ok((change.path.clone(), store.read(&change.path)?)))
-            .collect()
+        commit_coordinator::commit(&mut storage.local, &store, &id, &files, &local, &batch)
     })
 }
 pub fn set_local_active_workspace(
@@ -398,9 +445,55 @@ pub fn write_global_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
     local: Vec<LocalRecord>,
+    secrets: Option<SecretBatch>,
+) -> Result<(), String> {
+    let batch = secrets
+        .map(Ok)
+        .unwrap_or_else(|| SecretBatch::fresh(vec![]))?;
+    access(&app, &state, |storage| {
+        storage.recover_before_commit()?;
+        let store = FilesystemWorkspaceStore {
+            directory: PathBuf::new(),
+        };
+        commit_coordinator::commit(
+            &mut storage.local,
+            &store,
+            "__global__",
+            &[],
+            &local,
+            &batch,
+        )
+        .map(|_| ())
+    })
+}
+
+pub fn secure_read(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    reference: String,
+) -> Result<SecretSnapshot, String> {
+    access(&app, &state, |storage| {
+        storage.local.read_secret(&reference)
+    })
+}
+pub fn secure_commit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    batch: SecretBatch,
 ) -> Result<(), String> {
     access(&app, &state, |storage| {
-        storage.local.write("__global__", &local)
+        storage.recover_before_commit()?;
+        storage.local.commit_secrets(&batch)
+    })
+}
+pub fn secure_operation_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    operation_id: String,
+) -> Result<OperationStatus, String> {
+    access(&app, &state, |storage| {
+        let _ = storage.recover();
+        storage.local.operation_status(&operation_id)
     })
 }
 
@@ -408,20 +501,34 @@ pub fn delete_project(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
     id: String,
-) -> Result<(), String> {
+    operation_id: Option<String>,
+) -> Result<WorkspaceDeletionResult, String> {
     valid_id(&id)?;
+    let batch = match operation_id {
+        Some(operation_id) => SecretBatch {
+            operation_id,
+            mutations: vec![],
+        },
+        None => SecretBatch::fresh(vec![])?,
+    };
     access(&app, &state, |storage| {
+        storage.recover_before_commit()?;
         let directory = storage
             .roots
-            .remove(&id)
+            .get(&id)
+            .cloned()
             .unwrap_or_else(|| storage.projects.join(&id));
-        let managed_directory = directory == storage.projects.join(&id);
-        let _ = storage.watcher.unwatch(&directory);
-        storage.local.delete_workspace(&id)?;
-        if managed_directory && directory.exists() {
-            fs::remove_dir_all(&directory).map_err(|_| "Cannot delete workspace directory")?;
+        let managed = (directory == storage.projects.join(&id)).then_some(directory.as_path());
+        let replay = storage.local.operation(&batch.operation_id)?.is_some();
+        let result = workspace_cleanup::delete(&mut storage.local, &id, managed, &batch)?;
+        if !replay {
+            storage.roots.remove(&id);
+            let _ = storage.watcher.unwatch(&directory);
         }
-        Ok(())
+        if result.cleanup_pending {
+            let _ = app.emit("project-cleanup-pending", json!({"workspaceId":id}));
+        }
+        Ok(result)
     })
 }
 pub fn finish_legacy_migration(
@@ -513,6 +620,7 @@ pub fn attach_project_directory(
                 "This directory is already registered with a different workspace ID".into(),
             );
         }
+        workspace_cleanup::ensure_available(&storage.local, &id, &path)?;
         // Registration follows successful frontend validation via a separate commit.
         storage.watch(&id, path)?;
         storage.workspace(&id)
@@ -527,14 +635,119 @@ pub fn request_history(
 ) -> Result<Value, String> {
     valid_id(&id)?;
     access(&app, &state, |storage| {
+        storage.recover_before_commit()?;
         storage.local.request_history(&id, action)
     })
 }
 
 #[cfg(test)]
 mod watcher_tests {
-    use super::project_change_paths;
+    use super::{project_change_paths, ready_watcher_rescan};
+
+    #[test]
+    fn pending_commit_defers_unrelated_changes_until_a_timer_rescan() {
+        let mut deferred = false;
+        assert_eq!(ready_watcher_rescan(&mut deferred, true, false), None);
+        assert_eq!(ready_watcher_rescan(&mut deferred, true, true), None);
+        let rescan = ready_watcher_rescan(&mut deferred, false, false).unwrap();
+        for root in ["/committing-workspace", "/externally-edited-workspace"] {
+            assert_eq!(
+                project_change_paths(&PathBuf::from(root), &[], rescan),
+                vec!["*"]
+            );
+        }
+        assert!(!deferred);
+        assert_eq!(
+            ready_watcher_rescan(&mut deferred, false, false),
+            Some(false)
+        );
+    }
     use std::path::PathBuf;
+
+    #[test]
+    fn recovery_failure_rejects_incoming_payload_before_old_receipt_can_acknowledge_it() {
+        use super::RuntimeStorage;
+        use crate::persistence::{
+            local_records::LocalStateStore,
+            secret_commits::{record_operation, SecretBatch, SecretMutation},
+        };
+        use crate::security::tests::MemoryRootKeyStore;
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let local =
+            LocalStateStore::open(&dir.path().join("state.db"), &MemoryRootKeyStore::default())
+                .unwrap();
+        let committed = SecretBatch {
+            operation_id: "old-committed".into(),
+            mutations: vec![SecretMutation {
+                reference: "purr/first/auth/token".into(),
+                expected_revision: 0,
+                value: Some("old-value".into()),
+            }],
+        };
+        local.commit_secrets(&committed).unwrap();
+        let project = dir.path().join("projects/blocked");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("purr.yaml"), "external edit").unwrap();
+        let pending = SecretBatch {
+            operation_id: "pending-own-operation".into(),
+            mutations: vec![],
+        };
+        let request = json!({"synthetic":"pending request"});
+        local.journal("blocked",&json!({"version":2,"directory":project,"files":[{"path":"purr.yaml","content":"desired","expectedRevision":null}],"previous":{"purr.yaml":null},"local":[],"secrets":pending,"request":request})).unwrap();
+        record_operation(
+            &local.db,
+            &local.cipher,
+            &pending.operation_id,
+            "prepared",
+            &json!({"request":request,"result":null}),
+        )
+        .unwrap();
+        let mut storage = RuntimeStorage {
+            local,
+            roots: Default::default(),
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            projects: dir.path().join("projects"),
+            data: dir.path().into(),
+            migration_snapshot: None,
+        };
+        let mut differing = committed.clone();
+        differing.mutations[0].value = Some("different attempted value".into());
+        let incoming = storage
+            .recover_before_commit()
+            .and_then(|_| storage.local.commit_secrets(&differing));
+        let error = incoming.unwrap_err();
+        assert!(error.starts_with("commit-rejected:"));
+        assert!(error.contains("recovery-required"));
+        assert_eq!(
+            storage
+                .local
+                .operation_status(&committed.operation_id)
+                .unwrap()
+                .status,
+            "committed"
+        );
+        assert_eq!(
+            storage
+                .local
+                .read_secret("purr/first/auth/token")
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("old-value")
+        );
+        assert_eq!(
+            storage
+                .local
+                .operation_status(&pending.operation_id)
+                .unwrap()
+                .status,
+            "recovery-required"
+        );
+        let own_error = storage.recover_before_commit().unwrap_err();
+        assert!(own_error.contains("recovery-required"));
+        assert!(own_error.starts_with("commit-rejected:"));
+    }
 
     #[test]
     fn documents_events_always_rescan_the_canonical_tree() {

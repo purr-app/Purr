@@ -1,10 +1,10 @@
 import type { DynamicExecutionMetadata, HistoryEntry, HistoryOutcome, HistoryPort, HistoryQuery } from "./ports/history";
-import type { SecureStore } from "./ports/credentials";
+import { commitRejection, isCommitRejected, RecoveryRequiredError, type SecureStore } from "./ports/credentials";
 import { isInlineHttpResponse, responseForPersistence, type StoredHttpResponse } from "../domain/http";
 import type { RequestDraft } from "../features/request-workbench/model/request";
 import { cloneRequestDraft } from "../features/workspaces/model/workspace";
 import { decodeFiles, encodeFiles, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
-import { protectRuntime, resolveRuntime } from "../storage/secrets";
+import { protectRuntime, resolveRuntime, SecretPreparationStore } from "../storage/secrets";
 
 export type HistoryExecution = {
   documentId: string;
@@ -52,10 +52,11 @@ export class RequestHistory {
     const entry = { ...execution, editor, response, dynamicExecution: execution.dynamicExecution ? structuredClone(execution.dynamicExecution) : undefined };
     return this.enqueue(async () => {
       const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();
-      const protectedEditor = await protectRuntime(editor, this.secure, workspaceId, `history/${id}/editor`);
+      const prepared = new SecretPreparationStore(this.secure);
+      const protectedEditor = await protectRuntime(editor, prepared, workspaceId, `history/${id}/editor`);
       const encodedEditor = await encodeFiles(protectedEditor, attachments);
       const metadata = response && (isInlineHttpResponse(response) ? response : response.response);
-      await this.port.append(workspaceId, {
+      const stored = {
         version: 1, id, documentId: entry.documentId, name: entry.name, kind: entry.kind,
         method: entry.kind === "graphql" ? "POST" : editor.method,
         url: response?.timeline.displayRequest?.url ?? response?.timeline.request.url ?? editor.url,
@@ -65,7 +66,19 @@ export class RequestHistory {
         pinned: false, editor: encodedEditor, response, error: entry.error,
         files: Object.fromEntries(attachments),
         ...(entry.dynamicExecution ? { dynamicExecution: entry.dynamicExecution } : {}),
-      });
+      } satisfies HistoryEntry;
+      const batch = await prepared.batch();
+      try { await this.port.append(workspaceId, stored, batch); }
+      catch (error) {
+        if (isCommitRejected(error)) throw commitRejection(error);
+        let state;
+        try { state = await this.secure.operationStatus(batch.operationId); }
+        catch { throw new RecoveryRequiredError(batch.operationId); }
+        if (state.status === "recovery-required") throw new RecoveryRequiredError(batch.operationId);
+        if (state.status !== "committed") throw error;
+      } finally {
+        if ("clear" in this.secure && typeof this.secure.clear === "function") this.secure.clear();
+      }
       this.changed();
       // Resolves only after the storage adapter has adopted response content.
       return id;

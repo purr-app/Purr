@@ -128,7 +128,13 @@ Projection intentionally:
 
 `src-tauri/src/persistence/project_files.rs` accepts only managed relative paths, rejects traversal and symlink escapes, and calculates SHA-256 revisions. Writes use same-directory temporary files, flush/sync, and atomic persist/rename. Deletes target individual resolved files; empty directories can remain.
 
-Each `FileChange` includes `expectedRevision`. A mismatch aborts rather than overwriting an external edit. `src-tauri/src/persistence/runtime.rs` journals a cross-file/local commit in encrypted `pending_commits`, applies it, and clears the journal. Startup replays recoverable pending commits.
+Each `FileChange` includes `expectedRevision`. A mismatch aborts rather than overwriting an external edit. Projection prepares canonical/local/asset changes and a transient `SecretBatch`; it never updates the active vault. Mutations carry the expected monotonic credential revision and an operation ID.
+
+`persistence/commit_coordinator.rs` validates and prepares all changes before making an encrypted version-2 `pending_commits` journal containing file preimages and staged mutations. Files are applied first. Local records, secret values/revisions, workspace registration, committed receipt and journal removal then publish in one SQLite transaction. Secret-only and global commits use the same path. Preparation uses a rolled-back SQLite transaction to validate local records and content/attachment adoption before touching project files.
+
+A handled failure conditionally restores only files whose current revision still matches this operation's output. An external edit or unsafe rollback leaves an explicit recovery-required operation; it is never overwritten to simulate an abort. Startup rolls back unpublished version-2 operations without later silently publishing their credentials. Older version-1 journals retain their legacy replay behavior. The filesystem and SQLite are not one atomic visibility boundary for external tools; application access is serialized and recovery provides a coherent result.
+
+An encrypted terminal receipt retains the full-request fingerprint and result, not staged secret values. Reusing an operation ID for a different request is rejected. Lost acknowledgements are checked through `secure_operation_status`; known native rejections are not reinterpreted as successes. Caches change only after confirmed publication and are invalidated on uncertain/failed operations. A separate active-workspace selection failure cannot turn a committed import into a failed import.
 
 Workspace roots live in the local registry. Deleting a Purr-managed workspace deletes its managed project directory; deleting an attached external workspace unregisters it without deleting its external project files. Attach-directory support exists below the UI boundary only.
 
@@ -155,6 +161,12 @@ The Rust watcher uses `RecursiveMode::Recursive` for each registered project roo
 
 Additional internal tables include `app_state`, `workspaces`, encrypted `pending_commits`, separated legacy `response_bodies`, `cookie_metadata`, `secret_values`, `history_attachments`, `history_attachment_links`, and the Phase 5 `response_contents`/`response_content_chunks` store. SQLite runs with WAL, full synchronous behavior, foreign keys, and a busy timeout.
 
+SQLite migration 6 adds `secret_revisions` (monotonic revision tombstones), encrypted `secret_operations` receipts and encrypted `workspace_cleanup` jobs. Existing credentials begin at revision 1; absence begins at revision 0. Insert/update/delete, including history/workspace cleanup, advances revisions so a stale save cannot recreate a deleted value using an old absence check. Batch set-to-empty and delete are distinct; existing editor helpers retain their empty-input convention until availability semantics are migrated separately. Browser preview uses equivalent IndexedDB transactions and encrypted receipts; it does not compensate failed publication with a later deletion.
+
+Workspace deletion publishes local/vault removal and an encrypted managed-directory cleanup intent atomically. Directory cleanup then quarantines unchanged files and runs independently; a filesystem failure reports committed deletion with cleanup pending, clears runtime caches and retries on startup. Only a filesystem NotFound result counts as absence; permission or I/O errors cannot acknowledge cleanup. Pending cleanup reserves its workspace ID/path and never deletes an externally recreated source directory. An unreadable cleanup intent does not block existing workspace startup/reads; it conservatively blocks new saves/attachments when reserved paths cannot be checked. Externally attached project directories remain user-owned. Browser workspace/history deletion joins metadata removal and secret tombstones in one IndexedDB transaction, including namespace membership checks against concurrent additions.
+
+Watcher changes arriving during pending recovery are deferred to a wildcard rescan instead of discarded. Commit serialization is per application process; this is not an OS-wide filesystem lock. Journals are bounded at 256 MiB and cleanup snapshots at 100,000 entries. Terminal receipts remain durable for idempotent reconciliation; they are not a second plaintext credential store.
+
 Native response content has an explicit `staging`, `ready`, or `adopted` state. Chunks are at most 256 KiB and independently encrypted with AAD bound to their content identity and position. The content worker groups up to 8 MiB of chunks per transaction and accepts at most two transport write batches in flight, allowing encryption/SQLite work to overlap network reads without unbounded buffering. It uses WAL `synchronous=NORMAL`: response bodies are reconstructible local runtime data, while canonical/local-record commits keep `synchronous=FULL`. The content worker removes expired unowned records. Persisting a v2 execution adopts matching ready content in the same SQLite transaction; deleting that execution or workspace deletes its metadata and cascading chunks. Legacy inline `response_bodies` remain readable and are not deleted by the schema migration.
 
 Native HTTP now creates staging content after receiving headers and appends through a bounded worker queue. Completion IPC returns only metadata, line-count/maximum-line hints, and the opaque reference. Cancellation, read failure, size-limit failure, or small-response compatibility-materialization failure releases the unadopted content; successful execution persistence adopts it. Responses at or above 1 MiB, plus smaller responses with pathological lines, remain references in runtime and are restored into the bounded viewer without a full-body WebView read. Large native format/query results are stored as temporary encrypted `ready` content and released when the presentation changes or unmounts; they do not add a plaintext table or filesystem cache.
@@ -175,7 +187,9 @@ Retention defaults to 30 days and is stored locally per workspace. Pinned execut
 
 ## Secure store
 
-`SecureStore` is a typed frontend contract. `NativeSecureStore` maps it to `secure_get/set/delete/exists`. `storeCredential` writes a value and returns either a plain credential (only when explicitly allowed) or a secret ref.
+`SecureStore` supplies CRUD convenience methods plus versioned `read`, transactional `commit`, and `operationStatus`. Native adapters map them to `secure_read`, `secure_commit` and `secure_operation_status`; legacy CRUD commands remain supported and route mutations through the same primitive.
+
+`SecretPreparationStore` overlays private staged values on read-only source snapshots. `projectWorkspace` and global projection return mutations separately from persisted project/local/assets. External reconciliation and previews use the overlay without publishing. `storeCredential` operates on this preparation context during projection. Imports hydrate against staged values, then publish through the owning commit. Integration editors retain staged credentials until validated Save; Cancel leaves the vault unchanged. OAuth integration refresh uses the pre-request credential revision so it cannot overwrite a concurrent configuration edit. History append atomically adopts its execution content and immutable credential snapshot. The UI distinguishes an ordinary rejected save from Save needs recovery; Check and retry rechecks storage before preparing another publication.
 
 On macOS `PlatformRootKeyStore` stores one 32-byte root in the application data directory with user-only `0600` permissions. HKDF derives separate database, credential-vault, and response-content keys. The native storage worker reads the root when it starts and retains only its derived ciphers. Versions before 0.1.2 used Keychain service `app.purr.credentials`; if a file key is absent, Purr reads that legacy entry once and writes the user-only file. This migration can require one final macOS authorization for an existing unsigned installation. If encrypted data exists and neither key is available, startup fails closed and does not generate a replacement key that would make old data unreadable.
 
@@ -200,13 +214,13 @@ The last category is currently incomplete. Workspace auth runtime has an explici
 - Missing attachment assets reject load rather than fabricate request data.
 - External/dirty conflicts preserve both sources and stop the merge.
 - Missing root key with existing encrypted data fails closed.
-- Failed secure writes may leave an unused secret ref/value, but code must never fall back to plaintext project/local storage.
+- Failed preparation or terminally aborted publication preserves the previous active vault. Unknown outcomes are reported as recovery-required until reconciled; never fall back to plaintext or erase committed values as compensation.
 - Autosave/flush failures stay visible. A failed revision-checked final save does not block native window close and does not overwrite the external file.
 - Recovery must be explicit and minimal; do not silently discard drafts, cookies, history, or credentials.
 
 ## Imports and persistence
 
-`persistImport` validates a normalized canonical project before committing it. Import is additive, rejects duplicate resource IDs and invalid/cross-workspace secret refs, writes transient secret values to `SecureStore`, then uses the normal `WorkspacePersistence` save path. No importer may bypass projection/storage safety or invent a parallel file layout. Full status is in [Imports and integrations](imports-and-integrations.md).
+`persistImport` validates a normalized canonical project before committing it. Import is additive, rejects duplicate resource IDs and invalid/cross-workspace secret refs, stages transient values in a private overlay, then publishes canonical/local/credential changes through the normal commit. No importer may bypass projection/storage safety or invent a parallel file layout. Full status is in [Imports and integrations](imports-and-integrations.md).
 
 ## Invariants for changes
 
@@ -244,7 +258,7 @@ released on tab close and does not add project fields or local database records.
 
 ## Postman import ownership
 
-Postman adapters normalize natively into existing canonical resources. The source JSON, scripts, and response examples are not stored. Collection import creates a workspace; environment import adds a resource to an existing workspace through the same validation and revision-checked commit, preserving current document drafts and UI/session state. Per-import IDs prevent collisions on repeated imports. Secret values are transient import payloads passed to SecureStore, while project variables/auth retain only SecretRefs; new vault entries are rolled back on failed import writes/commit. Workspace/environment name overlap is now valid and uses environment precedence; this relaxes validation without changing the YAML shape or requiring a format migration.
+Postman adapters normalize natively into existing canonical resources. The source JSON, scripts, and response examples are not stored. Collection import creates a workspace; environment import adds a resource through the same prepared, revision-checked commit, preserving current drafts and UI/session state. Per-import IDs prevent collisions. Secret values remain transient until the owning commit publishes; no write-then-delete compensation is used. Workspace/environment name overlap is valid and uses environment precedence without a canonical format migration.
 
 ## GraphQL connection format transition
 

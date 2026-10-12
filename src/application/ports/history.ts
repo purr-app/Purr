@@ -1,4 +1,5 @@
 import type { StoredHttpResponse } from "../../domain/http";
+import type { SecretBatch } from "./credentials";
 
 export type HistoryOutcome = "response" | "error" | "cancelled";
 /** Execution provenance only: never include resolved variable or credential values. */
@@ -41,7 +42,7 @@ export type HistoryEntry = HistorySummary & {
 export type HistoryQuery = { documentId?: string; cursor?: { startedAt: number; id: string }; limit?: number; search?: string };
 export type HistoryPage = { items: HistorySummary[]; cursor: HistoryQuery["cursor"] | null };
 export interface HistoryPort {
-  append(workspaceId: string, entry: HistoryEntry): Promise<void>;
+  append(workspaceId: string, entry: HistoryEntry, secrets?: SecretBatch): Promise<void>;
   list(workspaceId: string, query: HistoryQuery): Promise<HistoryPage>;
   read(workspaceId: string, id: string): Promise<HistoryEntry | null>;
   existing(workspaceId: string, ids: string[]): Promise<string[]>;

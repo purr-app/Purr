@@ -13,22 +13,12 @@ export async function persistImport(result: NormalizedImportResult, persistence:
     if (await persistence.secure.exists(secret.ref)) throw new Error("Import credentials must not overwrite existing secrets.");
     refs.add(secret.ref);
   }
-  const writtenSecrets: typeof result.secrets = [];
-  try {
-    for (const secret of result.secrets) {
-      await persistence.secure.set(secret.ref, secret.value);
-      writtenSecrets.push(secret);
-    }
-    return await persistence.saveProject(project, (workspace) => {
-      if (initialize) return initialize(workspace);
-      if (result.activeEnvironmentId && workspace.environments.some((environment) => environment.id === result.activeEnvironmentId))
-        workspace.activeEnvironmentId = result.activeEnvironmentId;
-      const firstDocument = workspace.documents.find((document) => document.saved);
-      if (firstDocument) workspace.ui = { ...workspace.ui, openDocumentIds: [firstDocument.id], activeDocumentId: firstDocument.id };
-      return workspace;
-    });
-  } catch (cause) {
-    await Promise.allSettled(writtenSecrets.map((secret) => persistence.secure.delete(secret.ref)));
-    throw cause;
-  }
+  return await persistence.saveProject(project, (workspace) => {
+    if (initialize) return initialize(workspace);
+    if (result.activeEnvironmentId && workspace.environments.some((environment) => environment.id === result.activeEnvironmentId))
+      workspace.activeEnvironmentId = result.activeEnvironmentId;
+    const firstDocument = workspace.documents.find((document) => document.saved);
+    if (firstDocument) workspace.ui = { ...workspace.ui, openDocumentIds: [firstDocument.id], activeDocumentId: firstDocument.id };
+    return workspace;
+  }, result.secrets);
 }

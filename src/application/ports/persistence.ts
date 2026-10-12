@@ -1,4 +1,5 @@
 import type { HistoryPort } from "./history";
+import type { SecretBatch } from "./credentials";
 
 export type ProjectFile = { content: string; revision: string };
 export type FileChange = {
@@ -32,6 +33,7 @@ export type StorageSnapshot = {
   global?: LocalRecord[];
   legacy?: unknown;
 };
+export type WorkspaceDeletionResult = { committed: true; cleanupPending: boolean };
 
 export interface FilesystemWorkspaceStore {
   loadWorkspace(id: string): Promise<StoredWorkspace>;
@@ -61,9 +63,8 @@ export interface LocalStateStore {
   writeLocal(id: string, changes: LocalChange[]): Promise<void>;
 }
 
-// The native implementation journals a commit spanning files and DB. Secrets
-// are stored first, so a failed commit may leave unused refs but never plaintext
-// credentials in project files.
+// Preparation never writes credentials. Native publication joins secret/local
+// changes in one transaction after recoverable filesystem application.
 export interface PersistencePort
   extends FilesystemWorkspaceStore,
     LocalStateStore {
@@ -73,10 +74,11 @@ export interface PersistencePort
     id: string,
     files: FileChange[],
     local: LocalChange[],
+    secrets?: SecretBatch,
   ): Promise<Record<string, ProjectFile>>;
   setActiveWorkspace(id: string): Promise<void>;
-  writeGlobal(changes: LocalChange[]): Promise<void>;
-  deleteWorkspace(id: string): Promise<void>;
+  writeGlobal(changes: LocalChange[], secrets?: SecretBatch): Promise<void>;
+  deleteWorkspace(id: string): Promise<void | WorkspaceDeletionResult>;
   finishMigration(): Promise<void>;
   readAttachment?(
     workspaceId: string,

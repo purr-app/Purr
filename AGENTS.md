@@ -39,10 +39,17 @@ Purr is a local-first desktop API client built with React/TypeScript and Tauri/R
 - Canonical files versus encrypted SQLite versus secret vault, migrations and recovery: `docs/persistence-architecture.md`.
 - GraphQL requests, schemas, introspection, editor services, and limitations: `docs/graphql.md`.
 - Import boundary, current cURL support, reserved integrations and tracing: `docs/imports-and-integrations.md`.
+- Secret-storage refactor, migrations, and Windows/Linux release plan: `docs/plans/secure-storage/README.md`. This is proposed work, not shipped behavior.
+
+When working on that plan, read its README, `progress.md`, and only the active phase plus linked design sections. Update phase checkboxes and the compact handoff with test evidence; keep manual acceptance separate from implementation status.
+
+Keep `docs/plans/secure-storage/**` local and uncommitted until all plan phases are completed and their required acceptance evidence is recorded. Do not stage or force-add plan files, progress logs, or manual-validation checklists before then. Implementation code and shipped architecture documentation may be committed independently.
 
 ## Documentation maintenance
 
 Architecture-affecting changes are incomplete until the relevant documentation is updated. Update docs when a change adds a first-class entity, changes data ownership or request/response lifecycle, adds a persistence format/table/file, adds an import/provider/integration, changes an IPC/API boundary, changes Git-friendly/local/secret classification, or introduces a major UI/runtime mode. Update roadmap/reserved claims when imports, tracing, benchmark/history, or another concept becomes working functionality. Small implementation details that do not alter these contracts do not require a docs change.
+
+Before creating a test server or synthetic fixture, check `tests/fixtures/` and existing fixture-server scripts for a reusable implementation. Put new test servers and reusable synthetic fixture assets in `tests/fixtures/`; do not create them in plan or documentation directories.
 
 Independent research, tests/review, or disjoint implementation may be delegated to subagents when their write scopes do not overlap. The coordinating agent remains responsible for reconciling results and verifying the integrated change.
 

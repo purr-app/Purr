@@ -3,12 +3,16 @@ import { saveBeforeApplicationExit } from "../../../application/application-clos
 import { loadWorkspaceStore, saveWorkspaceStore, watchWorkspaceChanges } from "../services/workspace-storage";
 import { createWorkspace, type Workspace, type WorkspaceStore } from "../model/workspace";
 import { useApplicationServices } from "../../../app/application-services-context";
+import { CommitRejectedError, RecoveryRequiredError } from "../../../application/ports/credentials";
+
+const needsRecovery = (error: unknown) => error instanceof RecoveryRequiredError || error instanceof CommitRejectedError && error.recoveryRequired;
 
 export function useWorkspaces() {
   const { lifecycle, persistence } = useApplicationServices();
   const [store, setStore] = useState<WorkspaceStore | null>(null);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [saveNeedsRecovery, setSaveNeedsRecovery] = useState(false);
   const [saving, setSaving] = useState(false);
   const latest = useRef(store);
   latest.current = store;
@@ -20,8 +24,9 @@ export function useWorkspaces() {
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
-    void watchWorkspaceChanges(persistence, (workspace) => setStore((current) => current ? { ...current, workspaces: current.workspaces.map((item) => item.id === workspace.id ? workspace : item) } : current), setSaveError, () => latest.current)
-      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => setSaveError("Project file watching is unavailable. Reload before editing external changes."));
+    const watchError = (message: string) => { setSaveError(message); setSaveNeedsRecovery(false); };
+    void watchWorkspaceChanges(persistence, (workspace) => setStore((current) => current ? { ...current, workspaces: current.workspaces.map((item) => item.id === workspace.id ? workspace : item) } : current), watchError, () => latest.current)
+      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => watchError("Project file watching is unavailable. Reload before editing external changes."));
     return () => { disposed = true; stop?.(); };
   }, [persistence]);
   const flush = useCallback(async () => {
@@ -30,8 +35,8 @@ export function useWorkspaces() {
     setSaving(true);
     try {
       await saveWorkspaceStore(persistence, snapshot);
-      if (latest.current === snapshot) { setSaving(false); setSaveError(""); }
-    } catch (error) { setSaving(false); setSaveError(String(error)); throw error; }
+      if (latest.current === snapshot) { setSaving(false); setSaveError(""); setSaveNeedsRecovery(false); }
+    } catch (error) { setSaving(false); setSaveError(String(error)); setSaveNeedsRecovery(needsRecovery(error)); throw error; }
   }, [persistence]);
   const retrySave = useCallback(async () => {
     const snapshot = latest.current;
@@ -42,8 +47,8 @@ export function useWorkspaces() {
       latest.current = reconciled;
       setStore(reconciled);
       await saveWorkspaceStore(persistence, reconciled);
-      if (latest.current === reconciled) { setSaving(false); setSaveError(""); }
-    } catch (error) { setSaving(false); setSaveError(String(error)); throw error; }
+      if (latest.current === reconciled) { setSaving(false); setSaveError(""); setSaveNeedsRecovery(false); }
+    } catch (error) { setSaving(false); setSaveError(String(error)); setSaveNeedsRecovery(needsRecovery(error)); throw error; }
   }, [persistence]);
   useEffect(() => {
     if (!store) return;
@@ -69,13 +74,14 @@ export function useWorkspaces() {
     setStore((current) => current ? { ...current, workspaces: current.workspaces.map((workspace) => workspace.id === id ? update(workspace) : workspace) } : current);
   }, []);
   const deleteWorkspace = useCallback(async (id: string) => {
-    await persistence.deleteWorkspace(id);
+    const result = await persistence.deleteWorkspace(id);
     setStore((current) => {
       if (!current) return current;
       let workspaces = current.workspaces.filter((workspace) => workspace.id !== id);
       if (!workspaces.length) workspaces = [createWorkspace("Personal")];
       return { ...current, workspaces, activeWorkspaceId: current.activeWorkspaceId === id ? workspaces[0].id : current.activeWorkspaceId };
     });
+    return result;
   }, [persistence]);
-  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry: load, flush, retrySave };
+  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry: load, flush, retrySave };
 }

@@ -1,11 +1,11 @@
 import { validateProject, type Project, type ProjectResource } from "../domain/project";
 import { createWorkspace, validateWorkspace, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
 import { decodeFiles } from "../storage/file-codec";
-import type { SecureStore } from "./ports/credentials";
-import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace } from "./ports/persistence";
+import { commitRejection, isCommitRejected, RecoveryRequiredError, type SecretBatch, type SecureStore } from "./ports/credentials";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace, WorkspaceDeletionResult } from "./ports/persistence";
 import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource } from "../storage/yaml";
 import { migrateWorkspaceAuthRuntime, projectGlobalVariables, projectWorkspace, restoreGlobalVariables, restoreWorkspace } from "./project-projection";
-import { CachedSecureStore } from "../storage/secrets";
+import { CachedSecureStore, SecretPreparationStore } from "../storage/secrets";
 import type { Variable } from "../features/workspaces/model/workspace";
 import { RequestHistory } from "./request-history";
 import { legacyHistoryEntry } from "./history-legacy";
@@ -54,6 +54,18 @@ export class WorkspacePersistence {
     return this.backend.readAttachment
       ? (attachmentId: string) => this.backend.readAttachment!(id, attachmentId)
       : undefined;
+  }
+  private async commitConfirmed<T>(batch: SecretBatch, work: () => Promise<T>, readCommitted: () => Promise<T>): Promise<T> {
+    try { return await work(); }
+    catch (error) {
+      if (isCommitRejected(error)) throw commitRejection(error);
+      let status;
+      try { status = await this.secure.operationStatus(batch.operationId); }
+      catch { throw new RecoveryRequiredError(batch.operationId); }
+      if (status.status === "committed") return readCommitted();
+      if (status.status === "recovery-required") throw new RecoveryRequiredError(batch.operationId);
+      throw error;
+    } finally { this.secure.clear(); }
   }
   private readProject(snapshot: StoredWorkspace, index = true): Project {
     if (!snapshot.files["purr.yaml"]) throw new Error("Workspace manifest is missing. Existing local data has not been changed.");
@@ -168,32 +180,69 @@ export class WorkspacePersistence {
   save(store: WorkspaceStore): Promise<void> {
     const work = async () => {
       for (const workspace of store.workspaces) await this.persist(workspace);
-      const definitions = await projectGlobalVariables(store.globalVariables ?? [], this.secure);
-      this.globalVariables = store.globalVariables ?? [];
+      const preparedGlobal = new SecretPreparationStore(this.secure);
+      await this.prepareVariableRemoval(this.globalVariables, store.globalVariables ?? [], preparedGlobal);
+      const { definitions, secrets } = await projectGlobalVariables(store.globalVariables ?? [], preparedGlobal);
       const serialized = JSON.stringify(definitions);
-      if (serialized !== this.globalSnapshot) {
-        await this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }]);
+      if (serialized !== this.globalSnapshot || secrets.mutations.length) {
+        await this.commitConfirmed(secrets, () => this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }], secrets), async () => undefined);
         this.globalSnapshot = serialized;
       }
-      if (this.activeId !== store.activeWorkspaceId && !this.deleted.has(store.activeWorkspaceId)) { await this.backend.setActiveWorkspace(store.activeWorkspaceId); this.activeId = store.activeWorkspaceId; }
+      this.globalVariables = store.globalVariables ?? [];
+      if (this.activeId !== store.activeWorkspaceId && !this.deleted.has(store.activeWorkspaceId)) {
+        try { await this.backend.setActiveWorkspace(store.activeWorkspaceId); this.activeId = store.activeWorkspaceId; }
+        catch { /* Selection is retried independently of committed project data. */ }
+      }
     };
     const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
   }
-  async deleteWorkspace(id: string): Promise<void> {
+  async deleteWorkspace(id: string): Promise<WorkspaceDeletionResult> {
     this.deleted.add(id);
     const remove = async () => {
-      await this.backend.deleteWorkspace(id);
+      const result = await this.backend.deleteWorkspace(id);
       this.secure.clear();
       this.snapshots.delete(id); this.projects.delete(id); this.paths.delete(id); this.sdlPaths.delete(id);
       this.developmentRewrites.delete(id);
       if (this.activeId === id) this.activeId = "";
+      return result ?? { committed: true as const, cleanupPending: false };
     };
     const next = this.queue.catch(() => {}).then(remove); this.queue = next;
-    try { await next; } catch (cause) { this.deleted.delete(id); throw cause; }
+    try { return await next; } catch (cause) { this.deleted.delete(id); throw cause; }
   }
-  private async persist(workspace: Workspace, legacySource?: string) {
+  saveWorkspace(workspace: Workspace, prepared: SecretPreparationStore): Promise<void> {
+    const attempt = prepared.fork();
+    const next = this.queue.catch(() => {}).then(() => this.persist(workspace, undefined, attempt));
+    this.queue = next;
+    return next;
+  }
+  private async prepareVariableRemoval(before: readonly Variable[], after: readonly Variable[], secure: SecretPreparationStore) {
+    const retained = new Set(after.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
+    for (const variable of before) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retained.has(variable.secretRef)
+      && !after.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await secure.delete(variable.secretRef);
+  }
+  private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure)) {
     if (this.deleted.has(workspace.id)) return;
-    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, this.secure); validateProject(project);
+    const previous = this.projects.get(workspace.id);
+    const previousVariables = [...(previous?.workspace.variables ?? []), ...(previous?.resources.flatMap((resource) => resource.kind === "environment" ? resource.variables : []) ?? [])];
+    const currentVariables = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)];
+    const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
+    for (const variable of previousVariables) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retainedRefs.has(variable.secretRef)
+      && !currentVariables.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await prepared.delete(variable.secretRef);
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared); validateProject(project);
+    const refs = (value: unknown, found = new Set<string>()): Set<string> => {
+      if (Array.isArray(value)) for (const child of value) refs(child, found);
+      else if (value && typeof value === "object") {
+        const object = value as Record<string, unknown>;
+        if (object.kind === "secret" && typeof object.ref === "string") found.add(object.ref);
+        for (const child of Object.values(object)) refs(child, found);
+      }
+      return found;
+    };
+    const nextCacheRefs = refs(projectedLocal);
+    for (const ref of refs(this.snapshots.get(workspace.id)?.local)) {
+      if (ref.startsWith(`purr/${workspace.id}/dynamic-variables/`) && !nextCacheRefs.has(ref)) await prepared.delete(ref);
+    }
+    const secrets = await prepared.batch();
     const local = this.backend.history ? projectedLocal.filter((record) => record.table !== "request_executions") : projectedLocal;
     if (legacySource) {
       // Preserve executions from the one-time monolithic workspace migration.
@@ -264,8 +313,10 @@ export class WorkspacePersistence {
         if (!next || !previous) localChanges.push(next ?? { ...previous!, value: null });
       } else if (JSON.stringify(next) !== JSON.stringify(previous)) localChanges.push(next ?? { ...previous!, value: null });
     }
-    if (changes.length || localChanges.length) {
-      const files = await this.backend.commit(workspace.id, changes, localChanges);
+    if (changes.length || localChanges.length || secrets.mutations.length) {
+      const files = await this.commitConfirmed(secrets,
+        () => this.backend.commit(workspace.id, changes, localChanges, secrets),
+        async () => (await this.backend.loadWorkspace(workspace.id)).files);
       this.snapshots.set(workspace.id, { id: workspace.id, files, local: [...nextLocal.values()] });
     }
     this.developmentRewrites.delete(workspace.id);
@@ -283,7 +334,8 @@ export class WorkspacePersistence {
     }
     if (!changed) return null;
     const snapshot = { ...previous, files }; const project = this.readProject(snapshot, false);
-    const projected = working ? await projectWorkspace(working, this.secure) : undefined;
+    const prepared = new SecretPreparationStore(this.secure);
+    const projected = working ? await projectWorkspace(working, prepared) : undefined;
     const local = projected?.local ?? previous.local;
     const baseline = this.projects.get(id);
     const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
@@ -307,7 +359,7 @@ export class WorkspacePersistence {
       // Removing a saved definition must not discard an unsaved working copy.
       if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
     }
-    const workspace = await restoreWorkspace(merged, local, this.secure, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
+    const workspace = await restoreWorkspace(merged, local, prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id));
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project); return workspace;
   }
   reconcileExternalChanges(store: WorkspaceStore): Promise<WorkspaceStore> {
@@ -331,12 +383,28 @@ export class WorkspacePersistence {
       this.queue = this.queue.catch(() => {}).then(reload).catch(() => onError("Project files changed externally but could not be reconciled. Local edits and files are preserved. Fix invalid YAML or conflicting edits, then reload."));
     });
   }
-  async saveProject(project: Project, initialize: (workspace: Workspace) => Workspace = (workspace) => workspace): Promise<Workspace> {
-    validateProject(project);
-    const snapshot = this.snapshots.get(project.workspace.id);
-    const restored = await restoreWorkspace(project, snapshot?.local ?? [], this.secure, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])), this.attachmentLoader(project.workspace.id));
-    const workspace = initialize(restored);
-    await this.save({ activeWorkspaceId: workspace.id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
+  async saveProject(project: Project, initialize: (workspace: Workspace) => Workspace = (workspace) => workspace,
+    importedSecrets: readonly { ref: string; value: string }[] = []): Promise<Workspace> {
+    const work = async () => {
+      validateProject(project);
+      const prepared = new SecretPreparationStore(this.secure);
+      for (const secret of importedSecrets) {
+        if (!secret.ref.startsWith(`purr/${project.workspace.id}/`) || await prepared.exists(secret.ref)) throw new Error("Import credentials must not overwrite existing secrets.");
+        await prepared.set(secret.ref, secret.value);
+      }
+      const snapshot = this.snapshots.get(project.workspace.id);
+      const restored = await restoreWorkspace(project, snapshot?.local ?? [], prepared, Object.fromEntries(Object.entries(snapshot?.files ?? {}).map(([path, file]) => [path, file.content])), this.attachmentLoader(project.workspace.id));
+      const workspace = initialize(restored);
+      await this.persist(workspace, undefined, prepared);
+      // Selection is a separate local preference. Its failure cannot turn a
+      // committed import into a failed import or hide its newly saved workspace.
+      if (this.activeId !== workspace.id) {
+        try { await this.backend.setActiveWorkspace(workspace.id); this.activeId = workspace.id; }
+        catch { /* Leave activeId unchanged so the next autosave retries selection. */ }
+      }
+      return workspace;
+    };
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
   }
   prepareImport(project: Project): Project {
     const existing = this.projects.get(project.workspace.id);

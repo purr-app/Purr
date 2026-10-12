@@ -11,13 +11,26 @@ import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 
 function fixture() {
   const values = new Map<string, unknown>(); const deletedSecrets: string[] = [];
+  const secure = new MemorySecureStore();
+  const publish = (changes: { key: string; value?: unknown }[]) => {
+    for (const change of changes) if (change.value === undefined) values.delete(change.key); else values.set(change.key, structuredClone(change.value));
+  };
   const port = new BrowserHistory({
     read: async <T>(key: string) => structuredClone(values.get(key)) as T | undefined,
-    write: async (changes) => { for (const change of changes) if (change.value === undefined) values.delete(change.key); else values.set(change.key, structuredClone(change.value)); },
+    write: async (changes) => publish(changes),
+    commit: async (changes, batch, _expected, identity) => { await secure.commitWith(batch, () => publish(changes), identity); },
+    remove: async (changes, prefixes, expected = []) => {
+      await secure.deletePrefixes(prefixes, () => {
+        for (const item of expected) assert.deepEqual(values.get(item.key), item.value);
+        publish(changes);
+        deletedSecrets.push(...prefixes);
+      });
+    },
+    operationStatus: (operationId) => secure.operationStatus(operationId),
     legacy: async () => [],
     deleteSecrets: async (prefix) => { deletedSecrets.push(prefix); },
   });
-  const secure = new MemorySecureStore(); let queue: Promise<unknown> = Promise.resolve();
+  let queue: Promise<unknown> = Promise.resolve();
   const service = new RequestHistory(port, secure, (work) => { const next = queue.then(work); queue = next.catch(() => {}); return next; });
   return { service, port, values, deletedSecrets, secure };
 }
@@ -52,7 +65,7 @@ test("append returns the execution id only after response adoption and propagate
   let allowAdoption!: () => void;
   const adoption = new Promise<void>((resolve) => { allowAdoption = resolve; });
   let adopted = false;
-  port.append = async (workspace, entry) => { await adoption; await append(workspace, entry); adopted = true; };
+  port.append = async (workspace, entry, secrets) => { await adoption; await append(workspace, entry, secrets); adopted = true; };
   let completed = false;
   const pending = service.append("workspace", execution()).then((id) => { completed = true; assert.equal(adopted, true); return id; });
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -121,8 +134,8 @@ test("history retains file bytes when source document is absent", async () => {
 });
 
 test("history append does not get lost behind autosave and deleting a document retains global history", async () => {
-  const backend = new MemoryPersistenceBackend(); const history = fixture().port;
-  const persistence = new WorkspacePersistence(Object.assign(backend, { history }), new MemorySecureStore());
+  const { port: history, secure } = fixture(); const backend = new MemoryPersistenceBackend(secure);
+  const persistence = new WorkspacePersistence(Object.assign(backend, { history }), secure);
   const workspace = createWorkspace("Test", "workspace");
   await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
   const document = workspace.documents.find((document) => document.kind === "http");
@@ -156,9 +169,9 @@ test("native response history retains the opaque content reference instead of ma
 });
 
 test("a pending execution retains native attachments through source draft deletion until history adopts them", async () => {
-  const backend = new MemoryPersistenceBackend(); const { port } = fixture();
+  const { port, secure } = fixture(); const backend = new MemoryPersistenceBackend(secure);
   const nativeAppend = port.append.bind(port);
-  port.append = async (workspaceId, entry) => {
+  port.append = async (workspaceId, entry, secrets) => {
     // Mirror native adoption: retained history files get their own ownership,
     // while the editor snapshot sends only metadata for a native attachment.
     const local = await backend.readLocal(workspaceId);
@@ -170,9 +183,9 @@ test("a pending execution retains native attachments through source draft deleti
       }
       return [id, value];
     }));
-    await nativeAppend(workspaceId, { ...entry, files });
+    await nativeAppend(workspaceId, { ...entry, files }, secrets);
   };
-  const persistence = new WorkspacePersistence(Object.assign(backend, { history: port }), new MemorySecureStore());
+  const persistence = new WorkspacePersistence(Object.assign(backend, { history: port }), secure);
   const workspace = createWorkspace("Test", "workspace");
   const { createHttpDocument } = await import("../src/features/workspaces/model/workspace");
   const { decodeFiles, getLocalAttachmentReference } = await import("../src/storage/file-codec");

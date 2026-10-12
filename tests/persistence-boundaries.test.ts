@@ -1,7 +1,8 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
-import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { restoreWorkspace } from "../src/application/project-projection";
 import { persistImport } from "../src/application/import-project";
 import { resolveEnvironmentSecrets } from "../src/application/environment-secrets";
 import { validateProject } from "../src/domain/project";
@@ -12,6 +13,7 @@ import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { executeHttp } from "../src/features/request-workbench/services/http-client";
 import { isInlineHttpResponse } from "../src/domain/http";
 import type { FileChange, LocalChange } from "../src/application/ports/persistence";
+import type { SecretBatch } from "../src/application/ports/credentials";
 
 function savedWorkspace() {
   const workspace = createWorkspace("Backend", "backend"); const document = workspace.documents[0];
@@ -27,7 +29,7 @@ test("JSON payload whitespace, repeated disabled rows and inactive body drafts s
   document.request.body.xml = "<inactive>retained locally</inactive>";
   document.request.headers = [{ id: "ui-1", name: "X-Test", value: "one", enabled: false }, { id: "ui-2", name: "X-Test", value: "two", enabled: true }];
   document.savedRequest = cloneRequestDraft(document.request);
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const yaml = serializeResource(projected.project.resources[0]);
   assert.ok(!yaml.includes("ui-1")); assert.ok(!yaml.includes("retained locally"));
   const resource = deserializeResource(yaml);
@@ -47,7 +49,7 @@ test("every auth credential and runtime OAuth token uses SecureStore; explicit p
     auth.oauth2.clientSecret = "secret-client";
     auth.oauth2.token = { tokenType: "Bearer", accessToken: "secret-access", refreshToken: "secret-refresh", obtainedAt: 1 };
     document.savedRequest = cloneRequestDraft(document.request);
-    const projected = await projectWorkspace(workspace, secure);
+    const projected = await projectAndCommit(workspace, secure);
     const serialized = serializeResource(projected.project.resources[0]) + JSON.stringify(projected.local);
     for (const secret of ["secret-bearer", "secret-password", "secret-api-key", "secret-client", "secret-access", "secret-refresh"]) assert.ok(!serialized.includes(secret), `${type}: ${secret}`);
     const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
@@ -55,7 +57,7 @@ test("every auth credential and runtime OAuth token uses SecureStore; explicit p
     assert.equal(restored.documents[0].request.auth.oauth2.token?.refreshToken, "secret-refresh");
     if (type === "bearer") {
       auth.credentialStorage = { bearer: "plain" }; document.savedRequest = cloneRequestDraft(document.request);
-      assert.ok(serializeResource((await projectWorkspace(workspace, secure)).project.resources[0]).includes("secret-bearer"));
+      assert.ok(serializeResource((await projectAndCommit(workspace, secure)).project.resources[0]).includes("secret-bearer"));
     }
   }
 });
@@ -63,10 +65,10 @@ test("every auth credential and runtime OAuth token uses SecureStore; explicit p
 test("inactive environment secrets are resolved on demand and saving does not overwrite them with blanks", async () => {
   const { workspace } = savedWorkspace(); const secure = new MemorySecureStore();
   workspace.environments = [{ id: "staging", name: "Staging", variables: [{ id: "stable", name: "password", kind: "static", value: "retained-secret", loaded: true, sensitive: true, enabled: true }] }];
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
   assert.deepEqual(restored.environments[0].variables[0], { id: "stable", name: "password", enabled: true, sensitive: true, kind: "static", secretRef: "purr/backend/environments/staging/stable", value: "", loaded: false });
-  await projectWorkspace(restored, secure);
+  await projectAndCommit(restored, secure);
   const resolved = await resolveEnvironmentSecrets(restored.environments[0], secure);
   assert.equal(resolved.variables[0].kind === "static" ? resolved.variables[0].value : "", "retained-secret");
   assert.equal(await resolveEnvironmentSecrets(resolved, secure), resolved, "already unlocked environments must not trigger a workspace update");
@@ -83,7 +85,7 @@ test("sensitive dynamic cache values use SecureStore instead of SQLite plaintext
     documentId: workspace.documents[0].id, expression: "$.token", language: "jsonpath", refresh: "session", environment: { type: "current" } }];
   workspace.dynamicVariableCache["token:none"] = { status: "success", value: "runtime-token", resolvedAt: new Date(0).toISOString(), durationMs: 5,
     environmentId: null, fingerprint: JSON.stringify(workspace.variables[0]) };
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   assert.doesNotMatch(JSON.stringify(projected.local), /runtime-token/);
   const restored = await restoreWorkspace(projected.project, projected.local, secure, {});
   assert.equal(restored.dynamicVariableCache["token:none"].value, "runtime-token");
@@ -93,9 +95,9 @@ test("schema cache becomes stale on external source changes and custom SDL sidec
   const { workspace } = savedWorkspace(); const schema = createSchemaDocument();
   Object.assign(schema, { saved: true, source: "introspection", endpoint: "https://old.example/graphql", sdl: "type Query { user: String }", pinned: true });
   workspace.documents.push(schema); const secure = new MemorySecureStore();
-  const projection = await projectWorkspace(workspace, secure);
+  const projection = await projectAndCommit(workspace, secure);
   const resource = projection.project.resources.find((resource) => resource.id === schema.id)!; assert.ok(resource.kind === "schema");
-  const backend = new MemoryPersistenceBackend(); const sdlPath = "schemas/backend/pinned.graphql";
+  const backend = new MemoryPersistenceBackend(secure); const sdlPath = "schemas/backend/pinned.graphql";
   await backend.commit(workspace.id, [
     { path: "purr.yaml", content: serializeManifest(projection.project.workspace), expectedRevision: null },
     { path: "schemas/backend.yaml", content: serializeResource(resource, sdlPath), expectedRevision: null },
@@ -114,7 +116,7 @@ test("binary attachments persist exact bytes through resource files, not UI file
   const { workspace, document } = savedWorkspace(); const file = new File([new Uint8Array([0, 255, 13, 10, 42])], "sample.bin", { type: "application/octet-stream" });
   document.request.body.type = "binary"; document.request.body.binary = { file, name: file.name, size: file.size, mimeType: file.type };
   document.savedRequest = cloneRequestDraft(document.request); const secure = new MemorySecureStore();
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const restored = await restoreWorkspace(projected.project, [], secure, projected.assets);
   assert.ok(isRequestDocument(restored.documents[0]));
   assert.deepEqual(new Uint8Array(await restored.documents[0].request.body.binary!.file.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
@@ -136,7 +138,7 @@ test("working-copy attachments are referenced from small editor records and rest
     mimeType: file.type,
   };
   const secure = new MemorySecureStore();
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const attachments = projected.local.filter((record) => record.table === "attachments");
   assert.equal(attachments.length, 1);
   const editorRecords = projected.local.filter((record) =>
@@ -182,7 +184,7 @@ test("native attachment metadata opens without loading bytes and remains lazy ac
     mimeType: file.type,
   };
   const secure = new MemorySecureStore();
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const attachment = projected.local.find((record) => record.table === "attachments");
   assert.ok(attachment);
   attachment.value = {
@@ -210,7 +212,7 @@ test("native attachment metadata opens without loading bytes and remains lazy ac
   assert.ok(restoredFile);
   assert.equal(restoredFile.size, expected.length);
   assert.equal(cloneRequestDraft(restored.documents[0].request).body.binary?.file, restoredFile);
-  await projectWorkspace(restored, secure);
+  await projectAndCommit(restored, secure);
   assert.equal(loads, 0);
   assert.deepEqual(new Uint8Array(await restoredFile.arrayBuffer()), expected);
   assert.equal(loads, 1);
@@ -228,14 +230,14 @@ test("editing another body mode does not rewrite an unchanged working-copy attac
     size: file.size,
     mimeType: file.type,
   };
-  const backend = new MemoryPersistenceBackend();
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const localBatches: LocalChange[][] = [];
   const commit = backend.commit.bind(backend);
-  backend.commit = async (id: string, files: FileChange[], local: LocalChange[]) => {
+  backend.commit = async (id: string, files: FileChange[], local: LocalChange[], secrets?: SecretBatch) => {
     localBatches.push(local);
-    return commit(id, files, local);
+    return commit(id, files, local, secrets);
   };
-  const persistence = new WorkspacePersistence(backend, new MemorySecureStore());
+  const persistence = new WorkspacePersistence(backend, secure);
   const store: WorkspaceStore = {
     activeWorkspaceId: workspace.id,
     workspaces: [workspace],
@@ -257,7 +259,7 @@ test("editing another body mode does not rewrite an unchanged working-copy attac
 });
 
 test("file watching reconciles a moved YAML resource without renaming it back or orphaning credential references", async () => {
-  const { workspace } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const { workspace } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure); let current: WorkspaceStore = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
   await persistence.save(current);
   const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
@@ -272,7 +274,7 @@ test("file watching reconciles a moved YAML resource without renaming it back or
 });
 
 test("explicit save retry reconciles an external move before committing local edits", async () => {
-  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure); let current: WorkspaceStore = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
   await persistence.save(current);
   const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((candidate) => candidate.startsWith("documents/"))!;
@@ -295,7 +297,7 @@ test("explicit save retry reconciles an external move before committing local ed
 });
 
 test("legacy request directories are migrated to the shared documents directory without changing IDs", async () => {
-  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const first = new WorkspacePersistence(backend, secure);
   await first.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
   const before = backend.snapshot.workspaces[0];
@@ -312,7 +314,7 @@ test("legacy request directories are migrated to the shared documents directory 
 });
 
 test("documents directories restore sidebar folders and persist their marker metadata", async () => {
-  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure);
   await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
   const before = backend.snapshot.workspaces[0];
@@ -330,7 +332,7 @@ test("documents directories restore sidebar folders and persist their marker met
 test("nested folders and documents round-trip through canonical filesystem paths with stable IDs", async () => {
   const { workspace, document } = savedWorkspace();
   const secure = new MemorySecureStore();
-  const backend = new MemoryPersistenceBackend();
+  const backend = new MemoryPersistenceBackend(secure);
   workspace.extraResources = [
     { id: "folder-api", kind: "folder", name: "API" },
     { id: "folder-users", kind: "folder", name: "Users", folderId: "folder-api" },
@@ -391,7 +393,7 @@ test("nested folders and documents round-trip through canonical filesystem paths
 test("external document-tree renames, moves and deletes reload from canonical hierarchy", async () => {
   const { workspace, document } = savedWorkspace();
   const secure = new MemorySecureStore();
-  const backend = new MemoryPersistenceBackend();
+  const backend = new MemoryPersistenceBackend(secure);
   workspace.extraResources = [
     { id: "folder-root", kind: "folder", name: "API" },
     { id: "folder-child", kind: "folder", name: "Users", folderId: "folder-root" },
@@ -469,7 +471,7 @@ test("external document-tree renames, moves and deletes reload from canonical hi
 });
 
 test("external valid edits conflict with dirty working copies instead of discarding them", async () => {
-  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure); const current = { activeWorkspaceId: workspace.id, workspaces: [workspace] };
   await persistence.save(current); document.request.url = "https://local.example/unsaved";
   const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
@@ -483,7 +485,7 @@ test("external valid edits conflict with dirty working copies instead of discard
 });
 
 test("migration checkpoints resume after interruption and reject changed legacy originals", async () => {
-  const { workspace } = savedWorkspace(); const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore();
+  const { workspace } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const legacy = { activeWorkspaceId: workspace.id, workspaces: [workspace] }; backend.snapshot.legacy = structuredClone(legacy);
   backend.finishMigration = async () => { throw new Error("Simulated interruption before retirement"); };
   await assert.rejects(new WorkspacePersistence(backend, secure).load(), /interruption/);
@@ -511,7 +513,7 @@ test("an empty environment survives compact YAML serialization", () => {
 });
 
 test("known development-only variable and auth shapes are rewritten to canonical YAML during startup", async () => {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore();
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   const manifest = `purr: 1
 workspace:
   id: project
@@ -578,7 +580,7 @@ variables:
 });
 
 test("invalid importer credential scope is rejected before writing any secret or resource", async () => {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   await assert.rejects(persistImport({ workspace: { id: "project", name: "Project", headers: [], auth: [] }, resources: [], diagnostics: [], secrets: [{ ref: "purr/other/token", value: "secret" }] }, persistence), /scoped/);
   assert.equal(await secure.exists("purr/other/token"), false); assert.equal(backend.writes.length, 0);
 });
@@ -588,7 +590,7 @@ test("response bodies and sent request credentials belong only to local executio
   document.lastResponse = await executeHttp({ method: "GET", url: document.request.url, headers: [["Authorization", "Bearer execution-secret"]], bodyBase64: null }, {
     transport: async () => ({ status: 200, statusText: "OK", durationMs: 1, headers: [["set-cookie", "session=response-cookie"]], bodyBase64: btoa("private-response") }),
   });
-  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
   const files = JSON.stringify(backend.snapshot.workspaces[0].files);
   for (const value of ["execution-secret", "response-cookie", "private-response", "lastResponse", "timeline"]) assert.ok(!files.includes(value));
@@ -599,9 +601,9 @@ test("response bodies and sent request credentials belong only to local executio
 });
 
 test("importing into an existing workspace is additive and rejects conflicting IDs", async () => {
-  const { workspace, document } = savedWorkspace(); const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   await persistence.save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const imported = { ...projected.project.resources[0], id: "another-request" };
   const result = { workspace: { ...projected.project.workspace, name: "Must not replace" }, resources: [imported], diagnostics: [], secrets: [] };
   const restored = await persistImport(result, persistence);
@@ -611,7 +613,7 @@ test("importing into an existing workspace is additive and rejects conflicting I
 });
 
 test("clean editor snapshots cannot shadow a credential updated through SecureStore", async () => {
-  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend();
+  const { workspace, document } = savedWorkspace(); const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   document.request.auth.type = "bearer"; document.request.auth.bearer.token = "old-value";
   document.savedRequest = cloneRequestDraft(document.request);
   await new WorkspacePersistence(backend, secure).save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });

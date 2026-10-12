@@ -1,12 +1,12 @@
-import type { SecureStore } from "../application/ports/credentials";
+import type { CommitState, SecretBatch, SecretSnapshot, SecureStore } from "../application/ports/credentials";
 import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, StorageSnapshot, StoredWorkspace } from "../application/ports/persistence";
-import type { SecretRef } from "../domain/project";
+import { secretRefSchema, type SecretRef } from "../domain/project";
 import { BrowserHistory } from "./browser-history";
 
 // Browser preview only; desktop always uses SQLite + the native secure store.
 const database = () => new Promise<IDBDatabase>((resolve, reject) => {
-  const open = indexedDB.open("purr-preview-v2", 1);
-  open.onupgradeneeded = () => { for (const name of ["projects", "local", "secrets", "app", "keys"]) open.result.createObjectStore(name); };
+  const open = indexedDB.open("purr-preview-v2", 2);
+  open.onupgradeneeded = () => { for (const name of ["projects", "local", "secrets", "app", "keys", "operations"]) if (!open.result.objectStoreNames.contains(name)) open.result.createObjectStore(name); };
   open.onsuccess = () => resolve(open.result); open.onerror = () => reject(new Error("Cannot open browser preview storage"));
 });
 async function read<T>(store: string, key: string): Promise<T | undefined> {
@@ -35,7 +35,15 @@ let keyPromise: Promise<CryptoKey> | undefined;
 const key = () => keyPromise ??= (async () => {
   const existing = await read<CryptoKey>("keys", "local"); if (existing) return existing;
   const created = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-  await writeMany([{ store: "keys", key: "local", value: created }]); return created;
+  const db = await database();
+  try { return await new Promise<CryptoKey>((resolve, reject) => {
+    const transaction = db.transaction("keys", "readwrite");
+    const store = transaction.objectStore("keys"); const request = store.get("local");
+    let selected = created;
+    request.onsuccess = () => { if (request.result) selected = request.result; else store.put(created, "local"); };
+    transaction.oncomplete = () => resolve(selected);
+    transaction.onabort = transaction.onerror = () => reject(new Error("Cannot initialize browser encryption key"));
+  }); } finally { db.close(); }
 })();
 async function seal(value: unknown, context: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -46,10 +54,123 @@ async function unseal<T>(value: { iv: Uint8Array<ArrayBuffer>; data: ArrayBuffer
   try { return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: value.iv, additionalData: new TextEncoder().encode(context) }, await key(), value.data))); }
   catch { throw new Error("Cannot decrypt browser preview data"); }
 }
+type StoredSecret = Awaited<ReturnType<typeof seal>> & { revision?: number; deleted?: boolean };
+type BrowserReceipt = CommitState & { request: Awaited<ReturnType<typeof seal>> };
+async function verifyReceipt(batch: SecretBatch, receipt: BrowserReceipt, identity: unknown = { kind: "secrets" }) {
+  const fingerprint = await contentRevision(JSON.stringify({ batch, identity }));
+  if (await unseal<string>(receipt.request, `operation/${batch.operationId}`) !== fingerprint)
+    throw new Error("operation-conflict: Operation identifier already used for a different secret batch");
+}
+type BrowserChange = { store: string; key: string; value?: unknown };
+type BrowserMembership = { store: string; prefix: string; keys: string[] };
+const secretRevision = (value: StoredSecret | undefined) => value?.revision ?? (value ? 1 : 0);
+const comparable = (value: unknown): string | undefined => JSON.stringify(value, (_name, child) =>
+  child instanceof ArrayBuffer ? Array.from(new Uint8Array(child)) : ArrayBuffer.isView(child) ? Array.from(new Uint8Array(child.buffer, child.byteOffset, child.byteLength)) : child);
+
+/** All revision checks and publication happen in one IndexedDB transaction.
+ * Encryption happens beforehand: awaiting WebCrypto inside a transaction lets it close. */
+async function publish(changes: BrowserChange[], batch?: SecretBatch, checks: BrowserChange[] = [], identity: unknown = { kind: "secrets" }, memberships: BrowserMembership[] = []) {
+  if (batch && (!batch.operationId || new Set(batch.mutations.map((mutation) => mutation.ref)).size !== batch.mutations.length))
+    throw new Error("Invalid secret operation");
+  const prepared = await Promise.all((batch?.mutations ?? []).map(async (mutation) => {
+    secretRefSchema.parse(mutation.ref);
+    if (!Number.isSafeInteger(mutation.expectedRevision) || mutation.expectedRevision < 0 || mutation.expectedRevision >= Number.MAX_SAFE_INTEGER)
+      throw new Error("Invalid secret revision");
+    return { ...mutation, stored: { ...await seal(mutation.value, mutation.ref), revision: mutation.expectedRevision + 1, deleted: mutation.value === null } };
+  }));
+  const encryptedRequest = batch ? await seal(await contentRevision(JSON.stringify({ batch, identity })), `operation/${batch.operationId}`) : undefined;
+  let replay: BrowserReceipt | undefined;
+  const db = await database();
+  try { await new Promise<void>((resolve, reject) => {
+    const stores = [...new Set([...changes, ...checks, ...memberships].map((change) => change.store).concat(["secrets", "operations"]))];
+    const transaction = db.transaction(stores, "readwrite");
+    let failure: Error | undefined;
+    transaction.oncomplete = () => failure ? reject(failure) : resolve();
+    transaction.onabort = transaction.onerror = () => reject(failure ?? new Error("Cannot save browser preview storage"));
+    const fail = (message: string) => {
+      failure = new Error(message);
+      if (batch) transaction.objectStore("operations").put({ operationId: batch.operationId, status: "aborted", request: encryptedRequest }, batch.operationId);
+      else transaction.abort();
+    };
+    const apply = () => {
+      for (const change of changes) {
+        const store = transaction.objectStore(change.store);
+        if (change.value === undefined) store.delete(change.key); else store.put(change.value, change.key);
+      }
+      for (const mutation of prepared) transaction.objectStore("secrets").put(mutation.stored, mutation.ref);
+      if (batch) transaction.objectStore("operations").put({ operationId: batch.operationId, status: "committed", request: encryptedRequest }, batch.operationId);
+    };
+    const verify = () => {
+      const pending = [...checks.map((check) => ({ ...check, revision: undefined as number | undefined })),
+        ...prepared.map((mutation) => ({ store: "secrets", key: mutation.ref, value: undefined, revision: mutation.expectedRevision }))];
+      let remaining = pending.length + memberships.length;
+      if (!remaining) { apply(); return; }
+      for (const check of pending) {
+        const request = transaction.objectStore(check.store).get(check.key);
+        request.onsuccess = () => {
+          if (failure) return;
+          if (check.revision === undefined ? comparable(request.result) !== comparable(check.value) : secretRevision(request.result) !== check.revision) {
+            fail("Storage changed externally. Reload before saving."); return;
+          }
+          if (--remaining === 0) apply();
+        };
+      }
+      for (const membership of memberships) {
+        const request = transaction.objectStore(membership.store).getAllKeys();
+        request.onsuccess = () => {
+          if (failure) return;
+          const current = request.result.filter((value): value is string => typeof value === "string" && value.startsWith(membership.prefix)).sort();
+          if (comparable(current) !== comparable([...membership.keys].sort())) {
+            fail("Storage changed externally. Reload before deleting."); return;
+          }
+          if (--remaining === 0) apply();
+        };
+      }
+    };
+    if (!batch) { verify(); return; }
+    const receipt = transaction.objectStore("operations").get(batch.operationId);
+    receipt.onsuccess = () => {
+      const state = receipt.result as BrowserReceipt | undefined;
+      if (state?.status === "committed") { replay = state; return; }
+      if (state) { failure = new Error(`Secret operation is ${state.status}`); return; }
+      verify();
+    };
+  });
+    if (replay && batch) await verifyReceipt(batch, replay, identity);
+  } finally { db.close(); }
+}
+/** Delete owned records and secret namespaces as one publication. Membership
+ * checks protect rows first created while encryption is being prepared. */
+async function removeProtected(changes: BrowserChange[], prefixes: string[], checks: BrowserChange[] = [], memberships: BrowserMembership[] = []) {
+  const allRefs = await keys("secrets");
+  const refs = allRefs.filter((ref) => prefixes.some((prefix) => ref.startsWith(prefix)));
+  const mutations = await Promise.all(refs.map(async (ref) => ({
+    ref, expectedRevision: secretRevision(await read<StoredSecret>("secrets", ref)), value: null,
+  })));
+  await publish(changes, { operationId: crypto.randomUUID(), mutations }, checks,
+    { kind: "delete", changes, prefixes }, [...memberships,
+      ...prefixes.map((prefix) => ({ store: "secrets", prefix, keys: refs.filter((ref) => ref.startsWith(prefix)) })),
+    ]);
+}
+async function historyChecks(expected: { key: string; value?: unknown }[]): Promise<BrowserChange[]> {
+  return Promise.all(expected.map(async ({ key, value }) => {
+    const stored = await read<Awaited<ReturnType<typeof seal>>>("app", key);
+    const current = stored ? await unseal(stored, key) : undefined;
+    if (comparable(current) !== comparable(value)) throw new Error("History changed externally. Reload before saving.");
+    return { store: "app", key, value: stored };
+  }));
+}
 export class BrowserSecureStore implements SecureStore {
-  async get(ref: SecretRef) { const data = await read<Awaited<ReturnType<typeof seal>>>("secrets", ref); return data ? unseal<string>(data, ref) : null; }
-  async set(ref: SecretRef, value: string) { await writeMany([{ store: "secrets", key: ref, value: await seal(value, ref) }]); }
-  async delete(ref: SecretRef) { await writeMany([{ store: "secrets", key: ref }]); }
+  async read(ref: SecretRef): Promise<SecretSnapshot> {
+    secretRefSchema.parse(ref);
+    const data = await read<StoredSecret>("secrets", ref);
+    return { value: data ? await unseal<string | null>(data, ref) : null, revision: secretRevision(data) };
+  }
+  async get(ref: SecretRef) { return (await this.read(ref)).value; }
+  async commit(batch: SecretBatch) { await publish([], batch); }
+  async operationStatus(operationId: string): Promise<CommitState> { const receipt = await read<CommitState>("operations", operationId); return { operationId, status: receipt?.status ?? "missing" }; }
+  async set(ref: SecretRef, value: string) { const previous = await this.read(ref); await this.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, expectedRevision: previous.revision, value }] }); }
+  async delete(ref: SecretRef) { const previous = await this.read(ref); await this.commit({ operationId: crypto.randomUUID(), mutations: [{ ref, expectedRevision: previous.revision, value: null }] }); }
   async exists(ref: SecretRef) { return (await this.get(ref)) !== null; }
 }
 export class BrowserPersistenceBackend implements PersistencePort {
@@ -58,19 +179,32 @@ export class BrowserPersistenceBackend implements PersistencePort {
       const data = await read<Awaited<ReturnType<typeof seal>>>("app", key);
       return data ? unseal<T>(data, key) : undefined;
     },
-    write: async (changes) => writeMany(await Promise.all(changes.map(async ({ key, value }) => ({
+    write: async (changes) => publish(await Promise.all(changes.map(async ({ key, value }) => ({
       store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
     })))),
+    commit: async (changes, batch, expected = [], identity) => {
+      const prior = await read<BrowserReceipt>("operations", batch.operationId);
+      if (prior?.status === "committed") { await verifyReceipt(batch, prior, identity); return; }
+      const checks = await historyChecks(expected);
+      await publish(await Promise.all(changes.map(async ({ key, value }) => ({
+        store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
+      }))), batch, checks, identity);
+    },
+    remove: async (changes, prefixes, expected = []) => {
+      const checks = await historyChecks(expected);
+      const storedChanges = await Promise.all(changes.map(async ({ key, value }) => ({
+        store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
+      })));
+      await removeProtected(storedChanges, prefixes, checks);
+    },
+    operationStatus: (operationId) => new BrowserSecureStore().operationStatus(operationId),
     legacy: (id) => this.readRawLocal(id),
     finishLegacy: async (id) => {
       const local = await this.readRawLocal(id);
       if (local.some((record) => record.table === "request_executions")) await writeMany([{ store: "local", key: id,
         value: await seal(local.filter((record) => record.table !== "request_executions"), id) }]);
     },
-    deleteSecrets: async (prefix) => {
-      const refs = (await keys("secrets")).filter((reference) => reference.startsWith(prefix));
-      if (refs.length) await writeMany(refs.map((key) => ({ store: "secrets", key })));
-    },
+    deleteSecrets: async (prefix) => removeProtected([], [prefix]),
   });
   async load(): Promise<StorageSnapshot> {
     const ids = await read<string[]>("app", "workspaces") ?? [];
@@ -86,14 +220,24 @@ export class BrowserPersistenceBackend implements PersistencePort {
     const local = await this.readRawLocal(id);
     return id === "__global__" ? local : [...local.filter((record) => record.table !== "request_executions"), ...await this.history.latestExecutions(id)];
   }
-  async commit(id: string, changes: FileChange[], local: LocalChange[]) {
-    const existing = { files: await read<Record<string, ProjectFile>>("projects", id) ?? {}, local: await this.readRawLocal(id) }; const files = { ...existing.files };
+  async commit(id: string, changes: FileChange[], local: LocalChange[], batch?: SecretBatch) {
+    if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${id === "__global__" ? "global" : id}/`))) throw new Error("Secret changes must belong to the workspace");
+    const identity = { kind: "workspace", id, changes, local };
+    if (batch) {
+      const receipt = await read<BrowserReceipt>("operations", batch.operationId);
+      if (receipt?.status === "committed") { await verifyReceipt(batch, receipt, identity); return (await this.loadWorkspace(id)).files; }
+    }
+    const oldFiles = await read<Record<string, ProjectFile>>("projects", id);
+    const oldLocal = await read<Awaited<ReturnType<typeof seal>>>("local", id);
+    const oldIds = await read<string[]>("app", "workspaces");
+    const existing = { files: oldFiles ?? {}, local: oldLocal ? await unseal<LocalRecord[]>(oldLocal, id) : [] }; const files = { ...existing.files };
     for (const change of changes) if ((files[change.path]?.revision ?? null) !== change.expectedRevision) throw new Error("Project changed externally. Reload before saving.");
     for (const change of changes) { if (change.content === null) delete files[change.path]; else files[change.path] = { content: change.content, revision: await contentRevision(change.content) }; }
     const records = new Map(existing.local.map((record) => [`${record.table}/${record.id}`, record]));
     for (const change of local) { const key = `${change.table}/${change.id}`; if (change.value === null) records.delete(key); else records.set(key, change as LocalRecord); }
-    const ids = new Set(await read<string[]>("app", "workspaces") ?? []); ids.add(id);
-    await writeMany([{ store: "projects", key: id, value: files }, { store: "local", key: id, value: await seal([...records.values()], id) }, { store: "app", key: "workspaces", value: [...ids] }]);
+    const ids = new Set(oldIds ?? []); if (id !== "__global__") ids.add(id);
+    await publish([{ store: "projects", key: id, value: files }, { store: "local", key: id, value: await seal([...records.values()], id) }, { store: "app", key: "workspaces", value: [...ids] }], batch,
+      [{ store: "projects", key: id, value: oldFiles }, { store: "local", key: id, value: oldLocal }, { store: "app", key: "workspaces", value: oldIds }], identity);
     return files;
   }
   async saveResource(id: string, change: FileChange) { return this.commit(id, [change], []); }
@@ -105,14 +249,25 @@ export class BrowserPersistenceBackend implements PersistencePort {
   async reloadResource(id: string, path: string) { return (await this.loadWorkspace(id)).files[path] ?? null; }
   async writeLocal(id: string, local: LocalChange[]) { await this.commit(id, [], local); }
   async setActiveWorkspace(id: string) { await writeMany([{ store: "app", key: "active", value: id }]); }
-  async writeGlobal(local: LocalChange[]) { await this.writeLocal("__global__", local); }
+  async writeGlobal(local: LocalChange[], batch?: SecretBatch) { await this.commit("__global__", [], local, batch); }
   async deleteWorkspace(id: string) {
-    await this.history.deleteWorkspace(id);
-    const ids = (await read<string[]>("app", "workspaces") ?? []).filter((candidate) => candidate !== id);
-    const prefix = `purr/${id}/`;
-    const secrets = (await keys("secrets")).filter((reference) => reference.startsWith(prefix));
-    await writeMany([{ store: "projects", key: id }, { store: "local", key: id }, { store: "app", key: "workspaces", value: ids },
-      ...secrets.map((reference) => ({ store: "secrets", key: reference }))]);
+    const [oldFiles, oldLocal, oldIds, oldActive, appKeys] = await Promise.all([
+      read("projects", id), read("local", id), read<string[]>("app", "workspaces"), read<string>("app", "active"), keys("app"),
+    ]);
+    const historyPrefix = `history/${id}/`;
+    const historyKeys = appKeys.filter((key) => key.startsWith(historyPrefix));
+    const history = await Promise.all(historyKeys.map(async (key) => ({ store: "app", key, value: await read("app", key) })));
+    const changes: BrowserChange[] = [
+      { store: "projects", key: id }, { store: "local", key: id },
+      { store: "app", key: "workspaces", value: (oldIds ?? []).filter((candidate) => candidate !== id) },
+      ...historyKeys.map((key) => ({ store: "app", key })),
+      ...(oldActive === id ? [{ store: "app", key: "active" }] : []),
+    ];
+    const checks = [
+      { store: "projects", key: id, value: oldFiles }, { store: "local", key: id, value: oldLocal },
+      { store: "app", key: "workspaces", value: oldIds }, { store: "app", key: "active", value: oldActive }, ...history,
+    ];
+    await removeProtected(changes, [`purr/${id}/`], checks, [{ store: "app", prefix: historyPrefix, keys: historyKeys }]);
   }
   async finishMigration() {
     const legacy = localStorage.getItem("purr.workspaces.v1");

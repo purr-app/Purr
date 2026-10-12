@@ -16,8 +16,9 @@ import type {
   ProjectFile,
   StorageSnapshot,
   StoredWorkspace,
+  WorkspaceDeletionResult,
 } from "../../application/ports/persistence";
-import type { SecureStore } from "../../application/ports/credentials";
+import { commitRejection, isCommitRejected, RecoveryRequiredError, type CommitState, type SecretBatch, type SecretSnapshot, type SecureStore } from "../../application/ports/credentials";
 import type {
   FormatRequest,
   JsonQueryRequest,
@@ -31,6 +32,9 @@ import { tauriObservability } from "./observability";
 import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
+  read(reference: SecretRef) { return invoke<SecretSnapshot>("secure_read", { reference }); }
+  operationStatus(operationId: string) { return invoke<CommitState>("secure_operation_status", { operationId }); }
+  async commit(batch: SecretBatch) { await confirmedCommit(() => invoke<void>("secure_commit", { batch }), batch); }
   get(reference: SecretRef) {
     return invoke<string | null>("secure_get", { reference });
   }
@@ -45,6 +49,19 @@ class TauriSecureStore implements SecureStore {
 
   exists(reference: SecretRef) {
     return invoke<boolean>("secure_exists", { reference });
+  }
+}
+
+async function confirmedCommit<T>(work: () => Promise<T>, batch: SecretBatch, committed?: () => Promise<T>): Promise<T> {
+  try { return await work(); }
+  catch (error) {
+    if (isCommitRejected(error)) throw commitRejection(error);
+    let status: CommitState;
+    try { status = await invoke<CommitState>("secure_operation_status", { operationId: batch.operationId }); }
+    catch { throw new RecoveryRequiredError(batch.operationId); }
+    if (status.status === "committed") return committed ? committed() : undefined as T;
+    if (status.status === "recovery-required") throw new RecoveryRequiredError(batch.operationId);
+    throw error;
   }
 }
 
@@ -69,11 +86,11 @@ class TauriPersistence implements PersistencePort {
     return (await this.loadWorkspace(id)).local;
   }
 
-  async commit(id: string, files: FileChange[], local: LocalChange[]) {
-    const changed = await invoke<Record<string, ProjectFile | null>>(
+  async commit(id: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch = { operationId: crypto.randomUUID(), mutations: [] }) {
+    const changed = await confirmedCommit(() => invoke<Record<string, ProjectFile | null>>(
       "commit_project",
-      { id, files, local },
-    );
+      { id, files, local, secrets },
+    ), secrets, async () => (await invoke<StoredWorkspace>("load_project", { id })).files);
     const next = { ...(this.cache.get(id) ?? {}) };
     for (const [path, file] of Object.entries(changed)) {
       if (file) next[path] = file;
@@ -137,13 +154,16 @@ class TauriPersistence implements PersistencePort {
     return invoke<void>("set_local_active_workspace", { id });
   }
 
-  writeGlobal(local: LocalChange[]) {
-    return invoke<void>("write_global_state", { local });
+  async writeGlobal(local: LocalChange[], secrets: SecretBatch = { operationId: crypto.randomUUID(), mutations: [] }) {
+    await confirmedCommit(() => invoke<void>("write_global_state", { local, secrets }), secrets);
   }
 
   async deleteWorkspace(id: string) {
-    await invoke<void>("delete_project", { id });
+    const batch = { operationId: crypto.randomUUID(), mutations: [] };
+    const request = () => invoke<WorkspaceDeletionResult>("delete_project", { id, operationId: batch.operationId });
+    const result = await confirmedCommit(request, batch, request);
     this.cache.delete(id);
+    return result;
   }
 
   finishMigration() {

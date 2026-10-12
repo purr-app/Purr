@@ -6,10 +6,10 @@ import { createRequestBody, type RequestBodyField } from "../features/request-wo
 import type { RequestDraft } from "../features/request-workbench/model/request";
 import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, isDocumentDirty, isExtensionDocument, isRequestDocument, validateWorkspace,
   type ExtensionDocument, type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
-import type { SecureStore } from "./ports/credentials";
+import type { SecretBatch, SecureStore } from "./ports/credentials";
 import type { LocalRecord } from "./ports/persistence";
 import { decodeFiles, encodeFile, encodeFiles, type FileAttachmentLoader, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
-import { protectRuntime, resolveCredential, resolveRuntime, secretRef, storeCredential } from "../storage/secrets";
+import { protectRuntime, resolveCredential, resolveRuntime, secretRef, storeCredential, SecretPreparationStore } from "../storage/secrets";
 
 type StoredOAuthToken = Omit<OAuthToken, "accessToken" | "refreshToken"> & { accessToken: Credential; refreshToken?: Credential };
 type WorkspaceAuthRuntime = { version: 1; entries: Array<{
@@ -158,8 +158,10 @@ async function protectDynamicVariableCache(cache: Workspace["dynamicVariableCach
   })));
 }
 
-export async function projectGlobalVariables(variables: readonly Variable[], secure: SecureStore): Promise<VariableDefinition[]> {
-  return Promise.all(variables.filter((variable) => variable.name.trim()).map((variable) => variableToDefinition(variable, secure, "global", "variables")));
+export async function projectGlobalVariables(variables: readonly Variable[], source: SecureStore): Promise<{ definitions: VariableDefinition[]; secrets: SecretBatch }> {
+  const secure = source instanceof SecretPreparationStore ? source : new SecretPreparationStore(source);
+  const definitions = await Promise.all(variables.filter((variable) => variable.name.trim()).map((variable) => variableToDefinition(variable, secure, "global", "variables")));
+  return { definitions, secrets: await secure.batch() };
 }
 
 export async function restoreGlobalVariables(value: unknown, secure: SecureStore): Promise<Variable[]> {
@@ -199,7 +201,8 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     : { ...common, kind: "http" };
 }
 
-export async function projectWorkspace(workspace: Workspace, secure: SecureStore): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string> }> {
+export async function projectWorkspace(workspace: Workspace, source: SecureStore): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
+  const secure = source instanceof SecretPreparationStore ? source : new SecretPreparationStore(source);
   // Historical tabs are views of local executions, never saved documents or drafts.
   const historicalIds = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.historical).map((document) => document.id));
   const currentTabId = (id: string | null): string | null => {
@@ -271,7 +274,7 @@ export async function projectWorkspace(workspace: Workspace, secure: SecureStore
     ...(workspace.defaultGraphqlSchemaId ? { defaultGraphqlSchemaId: workspace.defaultGraphqlSchemaId } : {}),
     ...(workspace.requestConfig.tracePropagation ? { tracePropagation: workspace.requestConfig.tracePropagation } : {}),
     variables: await Promise.all(workspace.variables.filter((row) => row.name).map((row) => variableToDefinition(row, secure, workspace.id, "variables"))),
-    headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets };
+    headers: workspace.requestConfig.headers.filter((row) => row.name || row.value).map(({ id, name, value, enabled, scope }) => ({ id, name, value, enabled, scope })), auth }, resources }, local, assets, secrets: await secure.batch() };
 }
 
 async function requestFromDefinition(resource: RequestDefinition, secure: SecureStore, assets: Record<string, string>): Promise<RequestDocument> {

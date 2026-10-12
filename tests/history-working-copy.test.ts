@@ -1,8 +1,8 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { historyNeedsReplacement, historyWorkingCopy, openHistoricalTab, returnFromHistory } from "../src/features/history/model/history-working-copy";
 import { cloneRequestDraft, closeDocument, createHttpDocument, createWorkspace, isDocumentDirty, openDocument, selectSidebarActivity, toggleWorkspaceSidebar, validateWorkspace, type RequestDocument } from "../src/features/workspaces/model/workspace";
-import { projectWorkspace } from "../src/application/project-projection";
 import { MemorySecureStore } from "../src/storage/secrets";
 
 function fixture(saved = true) {
@@ -65,7 +65,7 @@ test("existing drafts can be replaced; deleted sources become new drafts without
 
 test("historical tabs never enter canonical/local projection; closing removes ephemeral document", async () => {
   const { workspace, historical } = fixture();
-  const projected = await projectWorkspace(workspace, new MemorySecureStore());
+  const projected = await projectAndCommit(workspace, new MemorySecureStore());
   assert.ok(!projected.project.resources.some((resource) => resource.id === historical.id));
   assert.ok(!projected.local.some((record) => record.id === historical.id));
   const ui = (projected.local.find((record) => record.id === "state")!.value as {ui:{openDocumentIds:string[];activeDocumentId:string|null}}).ui;
@@ -110,7 +110,7 @@ test("document history replaces the tab, preserves the current buffer, and resto
   assert.deepEqual(viewed.ui.openDocumentIds, [historical.id]);
   assert.equal(viewed.documents.find((document) => document.id === source.id), source);
   assert.equal(historyNeedsReplacement(viewed, historical), true);
-  const projection = await projectWorkspace(viewed, new MemorySecureStore());
+  const projection = await projectAndCommit(viewed, new MemorySecureStore());
   const ui = (projection.local.find((record) => record.id === "state")!.value as {ui:{openDocumentIds:string[];activeDocumentId:string|null}}).ui;
   assert.deepEqual(ui.openDocumentIds, [source.id]); assert.equal(ui.activeDocumentId, source.id);
   const restored = returnFromHistory(viewed, historical);

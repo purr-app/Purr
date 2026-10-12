@@ -108,18 +108,45 @@ impl LocalStateStore {
                 {
                     return Err("Invalid history entry".into());
                 }
-                let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM request_executions WHERE workspace_id=?1 AND id=?2)",params![workspace,id],|r|r.get(0)).map_err(db)?;
-                if !exists {
-                    self.write(
-                        workspace,
-                        &[LocalRecord {
-                            table: "request_executions".into(),
-                            id: id.into(),
-                            value: entry.clone(),
-                        }],
-                    )?;
+                use super::{
+                    commit_coordinator, project_files::FilesystemWorkspaceStore,
+                    secret_commits::SecretBatch,
+                };
+                let batch: SecretBatch = match action.get("secrets") {
+                    Some(value) if !value.is_null() => serde_json::from_value(value.clone())
+                        .map_err(|_| "Invalid history secret batch")?,
+                    _ => SecretBatch::fresh(vec![])?,
+                };
+                batch.validate(Some(workspace))?;
+                let prefix = format!("purr/{workspace}/history/{id}/");
+                if batch
+                    .mutations
+                    .iter()
+                    .any(|mutation| !mutation.reference.starts_with(&prefix))
+                {
+                    return Err("History secret mutation is outside its execution scope".into());
                 }
-                self.prune_history(workspace)?;
+                let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM request_executions WHERE workspace_id=?1 AND id=?2)",params![workspace,id],|r|r.get(0)).map_err(db)?;
+                let replay = self.operation(&batch.operation_id)?.is_some();
+                if exists && !replay && !batch.mutations.is_empty() {
+                    return Err("History entries and their credentials are immutable".into());
+                }
+                let records = if !exists || replay {
+                    vec![LocalRecord {
+                        table: "request_executions".into(),
+                        id: id.into(),
+                        value: entry.clone(),
+                    }]
+                } else {
+                    vec![]
+                };
+                let store = FilesystemWorkspaceStore {
+                    directory: std::path::PathBuf::new(),
+                };
+                commit_coordinator::commit(self, &store, workspace, &[], &records, &batch)?;
+                // Retention is independent maintenance; its failure must not turn
+                // a durably published append into an apparent aborted operation.
+                let _ = self.prune_history(workspace);
                 Ok(Value::Null)
             }
             "existing" => {
@@ -379,6 +406,52 @@ mod tests {
     }
     fn append(store: &mut LocalStateStore, value: Value) {
         run(store, json!({"operation":"append","entry":value}));
+    }
+
+    #[test]
+    fn history_credentials_publish_with_entry_and_replay_cannot_change_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        let keys = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&directory.path().join("state.db"), &keys).unwrap();
+        let reference = "purr/workspace/history/execution/editor/auth/token";
+        let secrets = json!({"operationId":"history-commit","mutations":[{"ref":reference,"expectedRevision":0,"value":"historical-token"}]});
+        let mut value = entry("execution", "document", now());
+        value["files"] = json!({"missing":{"native":true}});
+        assert!(store
+            .request_history(
+                "workspace",
+                json!({"operation":"append","entry":value,"secrets":secrets})
+            )
+            .is_err());
+        assert!(store.get_secret(reference).unwrap().is_none());
+        assert_eq!(
+            store
+                .history("workspace", "document", i64::MAX, 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        let mut secrets = secrets;
+        secrets["operationId"] = json!("history-success");
+        value["files"] = json!({});
+        let action = json!({"operation":"append","entry":value,"secrets":secrets});
+        store.request_history("workspace", action.clone()).unwrap();
+        store.request_history("workspace", action.clone()).unwrap();
+        assert_eq!(store.read_secret(reference).unwrap().revision, 1);
+        let mut changed = action.clone();
+        changed["entry"]["name"] = json!("different");
+        assert!(store
+            .request_history("workspace", changed)
+            .unwrap_err()
+            .starts_with("operation-conflict:"));
+        let mut malformed = action;
+        malformed["secrets"]["mutations"][0]["expectedRevision"] = json!("bad");
+        assert!(store.request_history("workspace", malformed).is_err());
+        assert_eq!(
+            store.get_secret(reference).unwrap().as_deref(),
+            Some("historical-token")
+        );
+        assert_eq!(store.read_secret(reference).unwrap().revision, 1);
     }
 
     #[test]

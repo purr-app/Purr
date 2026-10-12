@@ -1,7 +1,8 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { restoreWorkspace } from "../src/application/project-projection";
 import { isInlineHttpResponse, restoreStoredHttpResponse } from "../src/domain/http";
 import { formatResponseBody, inspectResponseBody, queryResponseJson } from "../src/features/request-workbench/model/response";
 import { cloneRequestDraft, createWorkspace, isRequestDocument } from "../src/features/workspaces/model/workspace";
@@ -42,7 +43,7 @@ test("workspace execution history restores and reprojects both v1 inline and v2 
   document.request.url = "https://fixture.invalid/graphql";
   document.savedRequest = cloneRequestDraft(document.request);
   const secure = new MemorySecureStore();
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const fixtures = [inlineHttpResponseFixture(), referencedHttpExchangeFixture()];
   for (const [index, response] of fixtures.entries()) {
     const local = [
@@ -59,7 +60,7 @@ test("workspace execution history restores and reprojects both v1 inline and v2 
     assert.ok(isRequestDocument(restoredDocument));
     assert.deepEqual(restoredDocument.lastResponse, response);
 
-    const reprojected = await projectWorkspace(restored, secure);
+    const reprojected = await projectAndCommit(restored, secure);
     const savedExecution = reprojected.local.find((record) => record.table === "request_executions");
     assert.deepEqual((savedExecution?.value as { response?: unknown }).response, response);
   }

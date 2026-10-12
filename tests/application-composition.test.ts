@@ -23,7 +23,7 @@ const unavailable = () => Promise.reject(new Error("unused test port"));
 function memoryServices(): ApplicationServices {
   const secureStore = new MemorySecureStore();
   const persistence = new WorkspacePersistence(
-    new MemoryPersistenceBackend(),
+    new MemoryPersistenceBackend(secureStore),
     secureStore,
   );
   return Object.freeze({

@@ -31,8 +31,8 @@ pub struct LocalAttachment {
 }
 pub struct LocalStateStore {
     pub db: Connection,
-    cipher: LocalCipher,
-    secret_cipher: LocalCipher,
+    pub(super) cipher: LocalCipher,
+    pub(super) secret_cipher: LocalCipher,
 }
 fn db_error(_: rusqlite::Error) -> String {
     "Local database operation failed".into()
@@ -100,6 +100,8 @@ impl LocalStateStore {
             "secret_values",
             "response_content_chunks",
             "history_attachments",
+            "secret_operations",
+            "workspace_cleanup",
         ]) {
             has_encrypted_data |= db
                 .query_row(
@@ -152,7 +154,7 @@ impl LocalStateStore {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(db_error)?;
-        if version > 5 {
+        if version > 6 {
             return Err("Local database was created by a newer Purr version".into());
         }
         if version == 0 {
@@ -238,6 +240,18 @@ impl LocalStateStore {
                 CREATE TABLE history_attachments(workspace_id TEXT NOT NULL,id TEXT NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(workspace_id,id));
                 CREATE TABLE history_attachment_links(workspace_id TEXT NOT NULL,execution_id TEXT NOT NULL,attachment_id TEXT NOT NULL,PRIMARY KEY(workspace_id,execution_id,attachment_id));
                 INSERT INTO migrations(version) VALUES(5); PRAGMA user_version=5;").map_err(db_error)?;
+            tx.commit().map_err(db_error)?;
+        }
+        if version < 6 {
+            let tx = db.transaction().map_err(db_error)?;
+            tx.execute_batch("CREATE TABLE secret_revisions(reference TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision>0 AND revision<=9007199254740991));
+                INSERT INTO secret_revisions SELECT reference,1 FROM secret_values;
+                CREATE TRIGGER secret_insert_revision AFTER INSERT ON secret_values BEGIN INSERT INTO secret_revisions(reference,revision) VALUES(NEW.reference,1) ON CONFLICT(reference) DO UPDATE SET revision=revision+1; END;
+                CREATE TRIGGER secret_update_revision AFTER UPDATE ON secret_values BEGIN UPDATE secret_revisions SET revision=revision+1 WHERE reference=NEW.reference; END;
+                CREATE TRIGGER secret_delete_revision AFTER DELETE ON secret_values BEGIN UPDATE secret_revisions SET revision=revision+1 WHERE reference=OLD.reference; END;
+                CREATE TABLE secret_operations(operation_id TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('prepared','applying','committed','aborted','recovery-required')),payload BLOB NOT NULL);
+                CREATE TABLE workspace_cleanup(workspace_id TEXT PRIMARY KEY,payload BLOB NOT NULL);
+                INSERT INTO migrations(version) VALUES(6); PRAGMA user_version=6;").map_err(db_error)?;
             tx.commit().map_err(db_error)?;
         }
         Ok(())
@@ -370,39 +384,16 @@ impl LocalStateStore {
     }
 
     pub fn set_secret(&self, reference: &str, value: &str) -> Result<(), String> {
+        use super::secret_commits::{revision, SecretBatch, SecretMutation};
         validate_secret_ref(reference)?;
-        if value.is_empty() {
-            return self.delete_secret(reference);
-        }
-        let sealed = self
-            .secret_cipher
-            .seal(value.as_bytes(), &Self::secret_aad(reference))?;
-        self.db
-            .execute(
-                "INSERT INTO secret_values(reference,ciphertext,nonce,crypto_version)
-                 VALUES(?1,?2,?3,?4)
-                 ON CONFLICT(reference) DO UPDATE SET
-                   ciphertext=excluded.ciphertext,
-                   nonce=excluded.nonce,
-                   crypto_version=excluded.crypto_version,
-                   updated_at=CURRENT_TIMESTAMP",
-                params![
-                    reference,
-                    sealed.ciphertext,
-                    sealed.nonce.as_slice(),
-                    sealed.version
-                ],
-            )
-            .map_err(db_error)?;
-        Ok(())
+        self.commit_secrets(&SecretBatch::fresh(vec![SecretMutation {
+            reference: reference.into(),
+            expected_revision: revision(&self.db, reference)?,
+            value: (!value.is_empty()).then(|| value.into()),
+        }])?)
     }
-
     pub fn delete_secret(&self, reference: &str) -> Result<(), String> {
-        validate_secret_ref(reference)?;
-        self.db
-            .execute("DELETE FROM secret_values WHERE reference=?1", [reference])
-            .map_err(db_error)?;
-        Ok(())
+        self.set_secret(reference, "")
     }
 
     pub fn secret_exists(&self, reference: &str) -> Result<bool, String> {
@@ -425,12 +416,38 @@ impl LocalStateStore {
             .map_err(db_error)?;
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
+    #[cfg(test)]
     pub fn register(&self, id: &str, directory: &Path) -> Result<(), String> {
         self.db.execute("INSERT INTO workspaces(id,directory) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET directory=excluded.directory", params![id, directory.to_string_lossy()]).map_err(db_error)?;
         Ok(())
     }
+    #[cfg(test)]
     pub fn delete_workspace(&mut self, workspace: &str) -> Result<(), String> {
-        let tx = self.db.transaction().map_err(db_error)?;
+        let batch = super::secret_commits::SecretBatch::fresh(vec![])?;
+        self.delete_workspace_with_receipt(
+            workspace,
+            None,
+            &batch,
+            &serde_json::json!({"kind":"delete-project","workspace":workspace}),
+            &Value::Null,
+        )
+    }
+    pub(super) fn delete_workspace_with_receipt(
+        &mut self,
+        workspace: &str,
+        cleanup: Option<&Value>,
+        batch: &super::secret_commits::SecretBatch,
+        request: &Value,
+        result: &Value,
+    ) -> Result<(), String> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.db,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(db_error)?;
+        if self.replay_result(batch, request)?.is_some() {
+            return Ok(());
+        }
         for table in TABLES {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE workspace_id=?1"),
@@ -483,7 +500,30 @@ impl LocalStateStore {
             [workspace],
         )
         .map_err(db_error)?;
-        tx.commit().map_err(db_error)
+        if let Some(cleanup) = cleanup {
+            let payload = self.cipher.encrypt(
+                &serde_json::to_vec(cleanup).map_err(|_| "Invalid cleanup intent")?,
+                &format!("purr:workspace-cleanup:v1|{workspace}"),
+            )?;
+            tx.execute("INSERT INTO workspace_cleanup(workspace_id,payload) VALUES(?1,?2) ON CONFLICT(workspace_id) DO UPDATE SET payload=excluded.payload",params![workspace,payload]).map_err(db_error)?;
+        }
+        super::secret_commits::record_operation(
+            &tx,
+            &self.cipher,
+            &batch.operation_id,
+            "committed",
+            &serde_json::json!({"request":request,"result":result}),
+        )?;
+        match tx.commit() {
+            Ok(()) => Ok(()),
+            Err(error) => match self.operation(&batch.operation_id) {
+                Ok(Some((state, _))) if state == "committed" => Ok(()),
+                Ok(_) => Err(db_error(error)),
+                Err(_) => Err(
+                    "Commit recovery-required; cannot determine workspace deletion outcome".into(),
+                ),
+            },
+        }
     }
     pub fn app(&self, key: &str) -> Result<Option<String>, String> {
         self.db
@@ -570,6 +610,20 @@ impl LocalStateStore {
     }
     pub fn write(&mut self, workspace: &str, records: &[LocalRecord]) -> Result<(), String> {
         let tx = self.db.transaction().map_err(db_error)?;
+        Self::write_records(&tx, &self.cipher, workspace, records)?;
+        tx.execute(
+            "DELETE FROM pending_commits WHERE workspace_id=?1",
+            [workspace],
+        )
+        .map_err(db_error)?;
+        tx.commit().map_err(db_error)
+    }
+    pub(super) fn write_records(
+        tx: &rusqlite::Transaction<'_>,
+        cipher: &LocalCipher,
+        workspace: &str,
+        records: &[LocalRecord],
+    ) -> Result<(), String> {
         for record in records {
             if !TABLES.contains(&record.table.as_str()) {
                 return Err("Unknown local state table".into());
@@ -596,7 +650,7 @@ impl LocalStateStore {
                         params![workspace, record.id],
                     )
                     .map_err(db_error)?;
-                    delete_execution_content(&tx, workspace, &record.id)?;
+                    delete_execution_content(tx, workspace, &record.id)?;
                     tx.execute("DELETE FROM history_attachment_links WHERE workspace_id=?1 AND execution_id=?2", params![workspace,record.id]).map_err(db_error)?;
                 }
             } else {
@@ -617,12 +671,12 @@ impl LocalStateStore {
                             let body = serde_json::json!({ "text": response.remove("text"), "bodyBase64": response.remove("bodyBase64") });
                             let plain =
                                 serde_json::to_vec(&body).map_err(|_| "Invalid response body")?;
-                            let payload = self.cipher.encrypt(
+                            let payload = cipher.encrypt(
                                 &plain,
                                 &format!("{workspace}/response_bodies/{}", record.id),
                             )?;
                             tx.execute("INSERT INTO response_bodies(workspace_id,execution_id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,execution_id) DO UPDATE SET payload=excluded.payload",params![workspace,record.id,payload]).map_err(db_error)?;
-                            delete_execution_content(&tx, workspace, &record.id)?;
+                            delete_execution_content(tx, workspace, &record.id)?;
                         } else if let Some(content) = response.get("content") {
                             let content_id = content["id"]
                                 .as_str()
@@ -634,7 +688,7 @@ impl LocalStateStore {
                                 .as_bool()
                                 .ok_or("Invalid response content reference")?;
                             adopt_content(
-                                &tx,
+                                tx,
                                 workspace,
                                 &record.id,
                                 content_id,
@@ -652,7 +706,7 @@ impl LocalStateStore {
                                 params![workspace, record.id],
                             )
                             .map_err(db_error)?;
-                            delete_execution_content(&tx, workspace, &record.id)?;
+                            delete_execution_content(tx, workspace, &record.id)?;
                         }
                     }
                 }
@@ -679,11 +733,11 @@ impl LocalStateStore {
                     .optional()
                     .map_err(db_error)?;
                 if let Some(old) = old {
-                    if self.cipher.decrypt(&old, &context)? == plain {
+                    if cipher.decrypt(&old, &context)? == plain {
                         continue;
                     }
                 }
-                let payload = self.cipher.encrypt(&plain, &context)?;
+                let payload = cipher.encrypt(&plain, &context)?;
                 tx.execute(&format!("INSERT INTO {}(workspace_id,id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,id) DO UPDATE SET payload=excluded.payload,updated_at=CURRENT_TIMESTAMP", record.table), params![workspace, record.id, payload]).map_err(db_error)?;
                 if record.table == "request_executions" {
                     let response = &value["response"];
@@ -694,7 +748,7 @@ impl LocalStateStore {
                 }
                 if record.table == "request_executions" {
                     let summary = super::history::summary(&record.id, &record.value, false);
-                    let payload = self.cipher.encrypt(
+                    let payload = cipher.encrypt(
                         &serde_json::to_vec(&summary).map_err(|_| "Invalid history metadata")?,
                         &format!("{workspace}/history-summary/{}", record.id),
                     )?;
@@ -708,7 +762,7 @@ impl LocalStateStore {
                             if value["native"] == true {
                                 tx.execute("INSERT OR IGNORE INTO history_attachments SELECT workspace_id,id,payload FROM attachments WHERE workspace_id=?1 AND id=?2", params![workspace,id]).map_err(db_error)?;
                             } else {
-                                let payload = self.cipher.encrypt(
+                                let payload = cipher.encrypt(
                                     &serde_json::to_vec(value)
                                         .map_err(|_| "Invalid history attachment")?,
                                     &format!("{workspace}/attachments/{id}"),
@@ -730,12 +784,7 @@ impl LocalStateStore {
             }
         }
         tx.execute("DELETE FROM history_attachments WHERE workspace_id=?1 AND NOT EXISTS(SELECT 1 FROM history_attachment_links l WHERE l.workspace_id=history_attachments.workspace_id AND l.attachment_id=history_attachments.id)",[workspace]).map_err(db_error)?;
-        tx.execute(
-            "DELETE FROM pending_commits WHERE workspace_id=?1",
-            [workspace],
-        )
-        .map_err(db_error)?;
-        tx.commit().map_err(db_error)
+        Ok(())
     }
     pub(super) fn restore_response_body(
         &self,
@@ -794,6 +843,7 @@ impl LocalStateStore {
         })
         .transpose()
     }
+    #[cfg(test)]
     pub fn journal(&self, workspace: &str, value: &Value) -> Result<(), String> {
         let payload = self.cipher.encrypt(
             &serde_json::to_vec(value).map_err(|_| "Invalid commit")?,
@@ -1244,7 +1294,7 @@ mod tests {
         let secure = MemoryRootKeyStore::default();
         let store = LocalStateStore::open(&path, &secure).unwrap();
         // Reconstruct the earlier local schema, then exercise the real migration.
-        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_document_time; DROP INDEX execution_workspace_time; DROP TABLE history_attachments; DROP TABLE history_attachment_links; ALTER TABLE request_executions DROP COLUMN pinned; ALTER TABLE request_executions DROP COLUMN summary; ALTER TABLE request_executions DROP COLUMN document_id; ALTER TABLE request_executions DROP COLUMN started_at; ALTER TABLE request_executions DROP COLUMN status; DROP TABLE response_bodies; DROP TABLE cookie_metadata; DROP TABLE secret_values; DELETE FROM migrations WHERE version>1; PRAGMA user_version=1;").unwrap();
+        store.db.execute_batch("DROP TRIGGER secret_insert_revision; DROP TRIGGER secret_update_revision; DROP TRIGGER secret_delete_revision; DROP TABLE secret_revisions; DROP TABLE secret_operations; DROP TABLE workspace_cleanup; DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_document_time; DROP INDEX execution_workspace_time; DROP TABLE history_attachments; DROP TABLE history_attachment_links; ALTER TABLE request_executions DROP COLUMN pinned; ALTER TABLE request_executions DROP COLUMN summary; ALTER TABLE request_executions DROP COLUMN document_id; ALTER TABLE request_executions DROP COLUMN started_at; ALTER TABLE request_executions DROP COLUMN status; DROP TABLE response_bodies; DROP TABLE cookie_metadata; DROP TABLE secret_values; DELETE FROM migrations WHERE version>1; PRAGMA user_version=1;").unwrap();
         let value = serde_json::json!({"text":"retained draft"});
         let payload = store
             .cipher
@@ -1283,7 +1333,7 @@ mod tests {
                 }],
             )
             .unwrap();
-        store.db.execute_batch("DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_workspace_time; DROP TABLE history_attachments; DROP TABLE history_attachment_links; ALTER TABLE request_executions DROP COLUMN pinned; ALTER TABLE request_executions DROP COLUMN summary; DELETE FROM migrations WHERE version>=4; PRAGMA user_version=3;").unwrap();
+        store.db.execute_batch("DROP TRIGGER secret_insert_revision; DROP TRIGGER secret_update_revision; DROP TRIGGER secret_delete_revision; DROP TABLE secret_revisions; DROP TABLE secret_operations; DROP TABLE workspace_cleanup; DROP TABLE response_content_chunks; DROP INDEX response_contents_expiry; DROP TABLE response_contents; DROP INDEX execution_workspace_time; DROP TABLE history_attachments; DROP TABLE history_attachment_links; ALTER TABLE request_executions DROP COLUMN pinned; ALTER TABLE request_executions DROP COLUMN summary; DELETE FROM migrations WHERE version>=4; PRAGMA user_version=3;").unwrap();
         drop(store);
 
         let store = LocalStateStore::open(&path, &secure).unwrap();
@@ -1298,7 +1348,7 @@ mod tests {
                 .db
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
     }
 
@@ -1335,7 +1385,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM migrations", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
     }
 }

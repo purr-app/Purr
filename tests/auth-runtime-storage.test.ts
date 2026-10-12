@@ -19,7 +19,7 @@ async function fixture() {
     { id: "http-auth", name: "HTTP", scope: "http", enabled: true, value: bearer },
     { id: "gql-auth", name: "GraphQL", scope: "graphql", enabled: true, value: oauth },
   ];
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore();
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure);
   await new WorkspacePersistence(backend, secure).save({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
   return { workspace, backend, secure };
 }

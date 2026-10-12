@@ -30,7 +30,7 @@ const SEARCH_PAGE_MATCHES: usize = 1_000;
 const STRUCTURED_PARSE_BYTES: u64 = 32 * 1024 * 1024;
 const INLINE_OPERATION_RESULT_BYTES: usize = 256 * 1024;
 
-const ENCRYPTED_TABLES: [&str; 12] = [
+const ENCRYPTED_TABLES: [&str; 15] = [
     "workspace_local_state",
     "drafts",
     "document_session_state",
@@ -43,6 +43,9 @@ const ENCRYPTED_TABLES: [&str; 12] = [
     "response_bodies",
     "secret_values",
     "response_content_chunks",
+    "history_attachments",
+    "secret_operations",
+    "workspace_cleanup",
 ];
 
 #[derive(Clone, Copy)]
@@ -1471,7 +1474,7 @@ mod tests {
                 .db
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
     }
 

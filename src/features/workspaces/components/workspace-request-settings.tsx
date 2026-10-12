@@ -1,7 +1,7 @@
 import { Modal } from "../../../shared/components/ui/modal";
 import { useTabState, useForgetTabState } from "../../../shared/state/tab-state";
 import { Pencil, Plus, Trash2, Unplug } from "lucide-react";
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 
 import { AuthEditor } from "../../request-workbench/components/auth-editor";
 import { KeyValueEditor, type KeyValueEntry } from "../../request-workbench/components/key-value-editor";
@@ -25,6 +25,7 @@ import { integrationDefinitionSchema, type IntegrationDefinition } from "../../.
 import type { IntegrationSummary } from "../../../domain/observability";
 import { useExtensionRegistry } from "../../../extension-api/extension-context";
 import { useApplicationServices } from "../../../app/application-services-context";
+import { SecretPreparationStore } from "../../../storage/secrets";
 
 type SettingsTab = "general" | "headers" | "auth" | "graphql" | "integrations";
 
@@ -66,15 +67,16 @@ export function WorkspaceSettings({
   onDescriptionChange: (description: string) => void;
   onConfigChange: (config: WorkspaceRequestConfig) => void;
   onIntegrationChange: (id: string, change: Partial<Pick<IntegrationDefinition, "enabled">>) => void;
-  onIntegrationSave: (value: IntegrationDefinition) => void;
+  onIntegrationSave: (value: IntegrationDefinition, secrets: SecretPreparationStore) => Promise<void>;
   onIntegrationDelete: (id: string) => void;
   onDelete: () => Promise<void>;
 }) {
-  const { observability, secureStore } = useApplicationServices();
+  const { observability, persistence } = useApplicationServices();
   const extensions = useExtensionRegistry();
   const forgetState = useForgetTabState();
   const [catalogOpen, setCatalogOpen] = useTabState("settings.catalog", false);
   const [editingIntegration, setEditingIntegration] = useTabState<IntegrationDefinition | null>("settings.editingIntegration", null);
+  const editingSecrets = useMemo(() => new SecretPreparationStore(persistence.secure), [persistence, editingIntegration?.id]);
   const closeIntegrationEditor = () => {
     if (editingIntegration) forgetState(`integration.${editingIntegration.id}.`);
     setEditingIntegration(null); setCatalogOpen(false);
@@ -263,11 +265,11 @@ export function WorkspaceSettings({
                     onCancel={closeIntegrationEditor}
                     getCredential={async (key) => {
                       if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                      return secureStore.get(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`);
+                      return editingSecrets.get(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`);
                     }}
                     setCredential={async (key, value) => {
                       if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                      await secureStore.set(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`, value);
+                      await editingSecrets.set(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`, value);
                     }}
                     onSave={async (value) => {
                       if (value.id !== editingIntegration.id || value.provider !== editingIntegration.provider) throw new Error("Integration identity cannot change");
@@ -275,9 +277,9 @@ export function WorkspaceSettings({
                       const credentials = { ...value.credentials };
                       for (const key of integrationPresentation?.credentialKeys ?? []) {
                         const ref = `purr/${workspaceId}/integrations/${value.id}/${key}`;
-                        if (await secureStore.exists(ref)) credentials[key] = { kind: "secret", ref };
+                        if (await editingSecrets.exists(ref)) credentials[key] = { kind: "secret", ref };
                       }
-                      onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }));
+                      await onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }), editingSecrets);
                       closeIntegrationEditor();
                     }} /> : <div className="space-y-ui-5 p-ui-5">
                     <p className="m-ui-0 text-ui-md text-content-secondary">Choose a provider to connect to this workspace.</p>

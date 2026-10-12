@@ -5,8 +5,8 @@ import type { ImportPort } from "./ports/platform";
 import type { WorkspacePersistence } from "./workspace-persistence";
 import { persistImport } from "./import-project";
 
-// Call after flushing the latest workspace. Reuse the canonical commit and vault
-// rollback path, but retain the current runtime documents/session when adding envs.
+// Call after flushing the latest workspace. Reuse the prepared canonical/secret
+// commit, retaining current runtime documents/session when adding environments.
 export async function importEnvironment(source: ImportSource, current: Workspace, globals: readonly Variable[], persistence: WorkspacePersistence, importer: ImportPort) {
   const normalized = await importer.normalize(source, current.id, "environment");
   if (normalized.workspace.id !== current.id || normalized.resources.length !== 1 || normalized.resources[0].kind !== "environment")

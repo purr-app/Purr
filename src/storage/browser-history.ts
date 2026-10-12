@@ -1,3 +1,4 @@
+import type { CommitState, SecretBatch } from "../application/ports/credentials";
 import type { HistoryEntry, HistoryPort, HistoryQuery, HistorySummary } from "../application/ports/history";
 import type { LocalRecord } from "../application/ports/persistence";
 import { legacyHistoryEntry } from "../application/history-legacy";
@@ -6,6 +7,9 @@ import { legacyHistoryEntry } from "../application/history-legacy";
 export type BrowserHistoryStorage = {
   read<T>(key: string): Promise<T | undefined>;
   write(changes: { key: string; value?: unknown }[]): Promise<void>;
+  commit?(changes: { key: string; value?: unknown }[], batch: SecretBatch, expected?: { key: string; value?: unknown }[], identity?: unknown): Promise<void>;
+  remove?(changes: { key: string; value?: unknown }[], prefixes: string[], expected?: { key: string; value?: unknown }[]): Promise<void>;
+  operationStatus?(operationId: string): Promise<CommitState>;
   legacy(workspaceId: string): Promise<LocalRecord[]>;
   finishLegacy?(workspaceId: string): Promise<void>;
   deleteSecrets(prefix: string): Promise<void>;
@@ -34,13 +38,26 @@ export class BrowserHistory implements HistoryPort {
     await this.storage.finishLegacy?.(workspaceId);
     return summaries;
   }
-  async append(workspaceId: string, entry: HistoryEntry) {
+  async append(workspaceId: string, entry: HistoryEntry, batch?: SecretBatch) {
+    if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${workspaceId}/history/${entry.id}/`))) throw new Error("Secret changes must belong to the history entry");
+    if (batch && !this.storage.commit) throw new Error("Atomic history secret storage is unavailable");
+    const identity = { kind: "history", workspaceId, entry };
     const items = await this.index(workspaceId);
-    if (!items.some((item) => item.id === entry.id)) await this.storage.write([
+    if (items.some((item) => item.id === entry.id)) {
+      if (batch) {
+        if ((await this.storage.operationStatus?.(batch.operationId))?.status !== "committed") throw new Error("History entry already exists");
+        await this.storage.commit!([], batch, [], identity);
+      }
+      return;
+    }
+    const changes = [
       { key: entryKey(workspaceId, entry.id), value: entry },
       { key: indexKey(workspaceId), value: [...items, metadata(entry)] },
-    ]);
-    await this.prune(workspaceId);
+    ];
+    if (batch) await this.storage.commit!(changes, batch, [{ key: indexKey(workspaceId), value: items }], identity);
+    else await this.storage.write(changes);
+    // Retention is a separate operation; its failure cannot undo this committed append.
+    await this.prune(workspaceId).catch(() => {});
   }
   async list(workspaceId: string, query: HistoryQuery) {
     await this.prune(workspaceId);
@@ -68,9 +85,10 @@ export class BrowserHistory implements HistoryPort {
   private async removeItems(workspaceId: string, items: HistorySummary[], removed: HistorySummary[]) {
     if (!removed.length) return;
     const ids = new Set(removed.map((item) => item.id));
-    await this.storage.write([{ key: indexKey(workspaceId), value: items.filter((item) => !ids.has(item.id)) },
-      ...removed.map((item) => ({ key: entryKey(workspaceId, item.id) }))]);
-    for (const item of removed) await this.storage.deleteSecrets(`purr/${workspaceId}/history/${item.id}/`);
+    if (!this.storage.remove) throw new Error("Atomic history deletion is unavailable");
+    await this.storage.remove([{ key: indexKey(workspaceId), value: items.filter((item) => !ids.has(item.id)) },
+      ...removed.map((item) => ({ key: entryKey(workspaceId, item.id) }))],
+    removed.map((item) => `purr/${workspaceId}/history/${item.id}/`), [{ key: indexKey(workspaceId), value: items }]);
   }
   async remove(workspaceId: string, filter: { id?: string; documentId?: string }) {
     const items = await this.index(workspaceId);
@@ -106,7 +124,10 @@ export class BrowserHistory implements HistoryPort {
     return records;
   }
   async deleteWorkspace(workspaceId: string) {
-    await this.remove(workspaceId, {});
-    await this.storage.write([{ key: indexKey(workspaceId) }, { key: settingsKey(workspaceId) }]);
+    if (!this.storage.remove) throw new Error("Atomic history deletion is unavailable");
+    const items = await this.index(workspaceId);
+    await this.storage.remove([{ key: indexKey(workspaceId) }, { key: settingsKey(workspaceId) },
+      ...items.map((item) => ({ key: entryKey(workspaceId, item.id) }))], [`purr/${workspaceId}/history/`],
+    [{ key: indexKey(workspaceId), value: items }]);
   }
 }

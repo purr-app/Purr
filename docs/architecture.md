@@ -83,6 +83,7 @@ Rust modules provide narrow privileged boundaries:
 2. The canonical domain must not depend on UI, Tauri, storage implementation, or serialization details.
 3. Storage adapters implement contracts; projection decides what belongs to project files, local records, and the secret vault.
 4. Rust accepts final transport/file/secret operations. It does not reconstruct a `RequestDraft`, resolve template variables, apply workspace inheritance, choose auth, or serialize logical body modes.
+   Credential projection prepares mutations without changing the active vault. Persistence submits versioned batches with operation IDs; native publication joins secret/local changes in one SQLite transaction after recoverable filesystem application. Separate runtime credential writes use the same transactional primitive.
 5. Canonical definitions remain deterministic and Git-friendly. Runtime/session data and secret values must not leak into them.
 6. Request building and persistence each have one canonical route. New callers should reuse `prepareWireRequest`/`executeRequest` and `projectWorkspace`/`WorkspacePersistence`, not reimplement them.
 7. Stored format changes require compatibility or migration. Strict validation is useful only if older valid workspaces and local state can still open.

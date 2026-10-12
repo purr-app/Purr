@@ -1,3 +1,4 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
@@ -9,7 +10,6 @@ import { MemorySecureStore } from "../src/storage/secrets";
 import { createWorkspace, getEffectiveVariableValues, getVariableNamespace, validateWorkspace, cloneRequestDraft, isRequestDocument } from "../src/features/workspaces/model/workspace";
 import { resolveDynamicVariables } from "../src/features/workspaces/services/dynamic-variable-resolver";
 import { validateProject } from "../src/domain/project";
-import { projectWorkspace } from "../src/application/project-projection";
 import type { NormalizedImportResult } from "../src/importing/contracts";
 import type { ImportPort } from "../src/application/ports/platform";
 
@@ -23,7 +23,7 @@ function environmentResult(workspaceId: string, id = "imported-env"): Normalized
     secrets: [{ ref, value: "private-test-token" }], diagnostics: [] };
 }
 async function setup() {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const workspace = createWorkspace("Original", "project");
   workspace.variables = [staticVariable("workspace-url", "baseUrl", "https://workspace.test")];
   workspace.environments = [{ id: "old-env", name: "Local", variables: [] }];
@@ -61,7 +61,7 @@ test("environment overrides survive projection and disabled values fall back to 
   const { workspace, secure } = await setup();
   workspace.environments[0].variables = [staticVariable("environment-url", "baseUrl", "https://env.test")];
   assert.doesNotThrow(() => validateWorkspace(workspace));
-  const projected = await projectWorkspace(workspace, secure); assert.doesNotThrow(() => validateProject(projected.project));
+  const projected = await projectAndCommit(workspace, secure); assert.doesNotThrow(() => validateProject(projected.project));
   assert.equal(getEffectiveVariableValues(workspace, []).baseUrl, "https://env.test");
   workspace.environments[0].variables[0].enabled = false;
   assert.equal(getEffectiveVariableValues(workspace, []).baseUrl, "https://workspace.test");
@@ -88,12 +88,16 @@ test("failed commit rolls back new credentials and leaves the existing workspace
   assert.deepEqual(backend.snapshot, before);
 });
 
-test("failed secret writes roll back earlier values and existing refs cannot be overwritten", async () => {
+test("failed prepared secret publication preserves all values and existing refs cannot be overwritten", async () => {
   const { persistence, secure } = await setup();
   const result = environmentResult("project");
   result.secrets.push({ ref: "purr/project/imports/postman/failing", value: "second" });
   const originalSet = secure.set.bind(secure);
-  secure.set = async (ref, value) => { if (ref.endsWith("failing")) throw new Error("Vault unavailable"); await originalSet(ref, value); };
+  const originalCommit = secure.commitWith.bind(secure);
+  secure.commitWith = async (batch, publish, identity) => {
+    if (batch.mutations.some((mutation) => mutation.ref.endsWith("failing"))) throw new Error("Vault unavailable");
+    return originalCommit(batch, publish, identity);
+  };
   await assert.rejects(persistImport({ ...result, resources: [] }, persistence), /Vault unavailable/);
   assert.equal(await secure.exists(result.secrets[0].ref), false);
   await originalSet(result.secrets[0].ref, "existing-secret"); persistence.secure.clear();

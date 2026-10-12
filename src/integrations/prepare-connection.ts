@@ -11,7 +11,8 @@ export async function prepareIntegrationConnection(integration: IntegrationDefin
   let auth = createRequestAuth();
   if (integration.config.auth === "request") {
     const ref = `purr/${workspaceId}/integrations/${integration.id}/auth`;
-    const stored = await services.secureStore.get(ref);
+    const snapshot = await services.secureStore.read(ref);
+    const stored = snapshot.value;
     if (!stored) throw new Error("Integration authentication is unavailable. Open its settings to configure it.");
     auth = normalizeRequestAuth(JSON.parse(stored));
     const resolved = resolveAuth(auth, context);
@@ -24,7 +25,11 @@ export async function prepareIntegrationConnection(integration: IntegrationDefin
         const next = await fetchOAuthToken(resolvedOAuth(auth.oauth2, context), token ? "refresh" : "initial", undefined, services.httpTransport, services.responseContent, signal);
         auth = { ...auth, oauth2: { ...auth.oauth2, token: next } };
         // Inherited profiles retain ownership of their tokens; do not overwrite the binding.
-        if (normalizeRequestAuth(JSON.parse(stored)).type !== "inherit") await services.secureStore.set(ref, JSON.stringify(auth));
+        if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+        if (normalizeRequestAuth(JSON.parse(stored)).type !== "inherit") await services.secureStore.commit({
+          operationId: crypto.randomUUID(),
+          mutations: [{ ref, value: JSON.stringify(auth), expectedRevision: snapshot.revision }],
+        });
       }
     }
   } else if (integration.config.auth === "bearer") {

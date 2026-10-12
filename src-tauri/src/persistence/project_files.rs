@@ -151,6 +151,9 @@ impl FilesystemWorkspaceStore {
             })
             .transpose()
     }
+    pub(super) fn desired_revision(change: &FileChange) -> Result<Option<String>, String> {
+        Ok(Self::bytes(change)?.as_ref().map(|bytes| revision(bytes)))
+    }
     pub fn preflight(&self, changes: &[FileChange], recovering: bool) -> Result<(), String> {
         for change in changes {
             let actual = self.read(&change.path)?;
@@ -187,6 +190,10 @@ impl FilesystemWorkspaceStore {
                     .map_err(storage_error)?;
             } else if path.exists() {
                 fs::remove_file(&path).map_err(storage_error)?;
+                #[cfg(unix)]
+                fs::File::open(path.parent().ok_or("Invalid project path")?)
+                    .and_then(|file| file.sync_all())
+                    .map_err(storage_error)?;
             }
         }
         Ok(())
