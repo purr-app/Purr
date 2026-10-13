@@ -234,7 +234,7 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
           }
           extraction = { language: variable.language, expression, status: "success" };
           step.state = "resolved";
-          entry = { status: "success", value: valueText(extracted), resolvedAt: new Date().toISOString(), durationMs: performance.now() - startedAt,
+          entry = { status: "success", sensitivity: variable.sensitive, protection: response.timeline.responseProtection ?? "encrypted", value: valueText(extracted), resolvedAt: new Date().toISOString(), durationMs: performance.now() - startedAt,
             environmentId: sourceEnvironmentId, fingerprint: hash };
           nextPersistent[key] = entry;
           if (variable.refresh === "session") options.sessionCache.set(key, entry);

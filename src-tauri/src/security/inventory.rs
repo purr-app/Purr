@@ -110,7 +110,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| corrupt())?;
-    if !(0..=7).contains(&version) {
+    if !(0..=8).contains(&version) {
         return Err(corrupt());
     }
     let mut statement = db
@@ -188,12 +188,25 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
         if tables.contains(table) {
             encrypted |= db
                 .query_row(
-                    &format!("SELECT EXISTS(SELECT 1 FROM {table})"),
+                    &if version==8 {
+                        if table=="secret_values" {format!("SELECT EXISTS(SELECT 1 FROM {table})")}
+                        else if table=="response_content_chunks" {"SELECT EXISTS(SELECT 1 FROM response_content_chunks c JOIN response_contents r ON r.id=c.content_id WHERE r.protection='encrypted')".into()}
+                        else {format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE protection='encrypted')")}
+                    } else {format!("SELECT EXISTS(SELECT 1 FROM {table})")},
                     [],
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(|_| corrupt())?;
         }
+    }
+    if version == 8 {
+        encrypted |= db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM response_contents WHERE protection='encrypted')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(|_| corrupt())?;
     }
     let derived = if version > 0 {
         let marker: Option<String> = db
@@ -208,6 +221,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
             None => false,
             Some("hkdf-sha256-v1") => true,
             Some("scoped-envelope-v2") if version == 7 => true,
+            Some("mixed-scoped-v3") if version == 8 => true,
             _ => return Err(corrupt()),
         }
     } else {
@@ -239,6 +253,16 @@ impl EncryptedInventory {
         })
     }
 
+    pub fn is_public_profile(&self) -> bool {
+        if self.encrypted {
+            return false;
+        }
+        open_database(&self.database)
+            .ok()
+            .flatten()
+            .and_then(|db| {let established:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM app_state WHERE key='protected-store-established')",[],|r|r.get(0)).ok()?; if established {None}else{database_inventory(&db).ok()}})
+            .is_some_and(|inventory| inventory.version == 8 && !inventory.encrypted)
+    }
     pub fn has_encrypted_data(&self) -> bool {
         self.encrypted
     }

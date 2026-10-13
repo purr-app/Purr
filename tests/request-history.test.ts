@@ -37,6 +37,20 @@ function fixture() {
 const execution = (startedAt = Date.now()) => ({ documentId: "document", name: "A request", kind: "http" as const,
   editor: cloneRequestDraft(initialRequestDraft), response: null, error: "Connection refused", outcome: "error" as const, startedAt, durationMs: 20 });
 
+test("history persists compact editors and still reads full legacy snapshots", async () => {
+  const { service, values } = fixture();
+  const sent = execution();
+  const id = await service.append("workspace", sent);
+  const stored = [...values.entries()].find(([, value]) => (value as HistoryEntry)?.id === id && (value as HistoryEntry)?.version === 1)!;
+  const entry = stored[1] as HistoryEntry;
+  assert.deepEqual(entry.editor, { __purrRequest: 1, method: "GET", url: sent.editor.url });
+  const opened = await service.read("workspace", id);
+  assert.deepEqual(opened?.editor?.params, sent.editor.params);
+  assert.deepEqual(opened?.editor?.auth, sent.editor.auth);
+  values.set(stored[0], { ...entry, editor: structuredClone(sent.editor) });
+  assert.deepEqual((await service.read("workspace", id))?.editor, sent.editor);
+});
+
 test("dynamic execution provenance is immutable, workspace scoped, and optional for ordinary history", async () => {
   const { service } = fixture();
   const dynamicExecution: DynamicExecutionMetadata = {

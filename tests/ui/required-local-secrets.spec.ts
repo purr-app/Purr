@@ -43,6 +43,42 @@ test("unknown protected baseline disables editing while retaining owner and retr
   await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toBeEnabled();
 });
 
+test("healthy secret refresh gives feedback without reloading or unlocking storage", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(page.getByText("Secret statuses refreshed.", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).secretFixture.retries)).toEqual([]);
+  await page.evaluate(() => (window as any).secretFixture.renderEmpty());
+  await expect(page.getByRole("button", { name: "Refresh status", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toHaveCount(0);
+});
+
+test("retry shows progress and reports storage that remains locked", async ({ page }) => {
+  await page.evaluate(() => {
+    (window as any).secretFixture.render({ status: "locked", code: "synthetic-locked" });
+    (window as any).secretFixture.holdRetry();
+  });
+  await page.getByRole("button", { name: "Retry / Unlock", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Checking…", exact: true })).toBeDisabled();
+  await page.evaluate(() => (window as any).secretFixture.releaseRetry());
+  await expect(page.getByRole("alert")).toContainText("Protected storage is locked.");
+  await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: `Set value for ${owner}`, exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => (window as any).secretFixture.events)).toEqual([]);
+});
+
+test("retry distinguishes restored access from a still unavailable runtime key", async ({ page }) => {
+  await page.evaluate(() => {
+    (window as any).secretFixture.render({ status: "available" }, { status: "unavailable", code: "synthetic-runtime" });
+    (window as any).secretFixture.setRetryResult({ status: "available" });
+  });
+  await expect(page.getByText(/Protected response storage is unavailable/)).toBeVisible();
+  await page.getByRole("button", { name: "Retry / Unlock", exact: true }).click();
+  await expect(page.getByText("Protected storage access restored. Secret statuses refreshed.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh status", exact: true })).toBeVisible();
+  await expect(page.getByText(/Protected response storage is unavailable/)).toHaveCount(0);
+});
+
 
 test("legacy local references direct the user to the owning field without allowing unscoped writes", async ({ page }) => {
   await page.evaluate(() => (window as unknown as { secretFixture: { renderLegacy(): void } }).secretFixture.renderLegacy());

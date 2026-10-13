@@ -145,7 +145,7 @@ export async function fetchOAuthToken(
       headers,
       bodyBase64: base64Bytes(new TextEncoder().encode(params.toString())),
     },
-    { transport, content, signal, followRedirects: false },
+    { transport, content, signal, followRedirects: false, responseStorage: { protection: "encrypted" }, sensitivity: { url: true, headers: ["authorization"], body: true } },
   );
   if (!isInlineHttpResponse(result)) {
     await content?.release(result.content).catch(() => {});

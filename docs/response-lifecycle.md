@@ -34,7 +34,7 @@ The UTF-8 text decode is permissive. Inline compatibility responses retain origi
 
 Rust does not choose a viewer, calculate cookie policy, or normalize redirects. Rust enforces native history retention, pinning, pagination and cleanup. It does own bounded JSON/XML/NDJSON presentation parsing and the native jq/JSONPath adapters for opaque content. TypeScript still classifies media, selects the viewer, and defines when an extracted value is used by the application.
 
-The transport accepts a resolved response-storage policy. The current product always sends `encrypted`; `plaintext` is reserved and fails closed until its store format, migration, cleanup, and UI are implemented. Future workspace/folder/document preferences are resolved in TypeScript before transport, so Rust receives one effective policy rather than workspace-tree knowledge. These preferences are local security settings and must not be loaded from shared project YAML. Credential and secret storage is always encrypted regardless of response policy.
+The transport accepts the resolved local response-storage policy; see [Selective response storage](#selective-response-storage-s05). Native code receives one immutable policy for each dispatch and does not interpret workspace or document settings. Credentials and cookie material remain protected independently of this preference.
 
 ## Classification and normalization
 
@@ -202,3 +202,13 @@ The pending-response clock and the Send button share a monotonic start timestamp
 ## Protection ownership
 
 Native HTTP requires the originating workspace identity before dispatch. Workspace-bound application services pass it through HttpTransportOptions to native HttpRequest; it is not an HTTP header or shareable protocol field. The runtime key must be available before the request can reach the network. Response staging/chunks and derived format/query results use that workspace runtime scope. Chunk AAD authenticates workspace, content ID, index, offset and length. History adoption rejects missing/unowned/cross-workspace content. Public ResponseContentRef remains unchanged; S04 retains encryption for all responses.
+
+## Selective response storage (S05)
+
+Workspace **Encrypt responses** is a device-local On/Off setting in **Workspace settings → Secrets and encryption**, beside required local secret management. Each request has an **Encrypt response** Inherit/On/Off setting; its help icon explains the effective policy and plaintext behavior on hover or keyboard focus. Fresh and explicitly attached workspaces default Off. `resolveResponseStoragePolicy` resolves the preference before dispatch; dependency requests use their own document overrides and schema introspection uses the workspace preference. OAuth token acquisition always forces On. Changing a preference does not rewrite existing history or a response already being downloaded.
+
+Off stores ordinary content chunks as explicit plaintext bytes. On encrypts each bounded chunk and its MIME/charset metadata under the workspace runtime key. Both variants use the same streaming worker, backpressure, limits, adoption, lazy readers and cleanup. Derived format/query content inherits the source's recorded protection, independently of current settings. Download remains an explicit user export. Native and browser records use an explicit discriminator; unknown variants or failed decryption never fall back to plaintext.
+
+`application/response-snapshot.ts` projects Off execution snapshots before persistence: classified request URL/header/body fields and response credential/cookie headers become masked public fields; exact wire details are stored behind an execution-owned runtime SecretRef. Missing exact snapshots retain the public response and a visible typed state. Arbitrary response bodies are not scanned: Off can store returned tokens or personal data openly, as explained next to the setting. If an unexpected protected header cannot be stored, the public response can still be saved and the caller receives a warning. Errors remain protected.
+
+Schema and dynamic-variable caches remember their capture protection. An encrypted introspection result is not automatically pinned to canonical files; explicitly choosing **Pin schema SDL to project** publishes a public SDL file, as its tooltip states. Toggling Off does not decrypt previously captured caches. Orphan dynamic cache entries are discarded; captured sensitivity is retained when a variable definition changes.

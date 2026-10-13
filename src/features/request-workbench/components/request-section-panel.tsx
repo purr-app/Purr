@@ -24,6 +24,9 @@ import type { TemplateVariableActions } from "./template-variable-popover";
 import { MarkdownDocumentationEditor } from "./markdown-documentation-editor";
 
 type RequestSectionPanelProps = {
+  responseStorage?: "inherit" | "plaintext" | "encrypted";
+  workspaceResponseStorage?: "plaintext" | "encrypted";
+  onResponseStorageChange?: (value: "inherit" | "plaintext" | "encrypted") => void;
   schema?: GraphQLSchema;
   onOpenGraphqlType?: (name: string) => void;
   onRunGraphqlOperation?: (name: string) => void;
@@ -38,6 +41,7 @@ type RequestSectionPanelProps = {
 
 export function RequestSectionPanel({
   activeSection,
+  responseStorage, workspaceResponseStorage, onResponseStorageChange,
   draft,
   onDraftChange,
   authContext,
@@ -59,7 +63,7 @@ export function RequestSectionPanel({
     value={draft.documentation}
     onChange={(documentation) => onDraftChange({ ...draft, documentation })}
   />;
-  if (activeSection === "settings") return <RequestSettingsEditor draft={draft} effectiveDraft={effectiveDraft} onChange={onDraftChange} />;
+  if (activeSection === "settings") return <RequestSettingsEditor responseStorage={responseStorage} workspaceResponseStorage={workspaceResponseStorage} onResponseStorageChange={onResponseStorageChange} draft={draft} effectiveDraft={effectiveDraft} onChange={onDraftChange} />;
 
   return section?.id === "body" ? (
     <BodyEditor

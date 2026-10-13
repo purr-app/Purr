@@ -34,11 +34,9 @@ export type ResponseStoragePolicy = {
   protection: ResponseContentProtection;
 };
 
-// Plaintext is intentionally not selectable yet. Keeping the resolved policy
-// at the transport boundary lets future workspace/folder/document inheritance
-// change storage without teaching Rust about the workspace tree.
+// Fresh local workspaces default Off. Known token operations override this policy.
 export const defaultResponseStoragePolicy: ResponseStoragePolicy = {
-  protection: "encrypted",
+  protection: "plaintext",
 };
 
 export type HttpPipelineTimings = {

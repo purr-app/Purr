@@ -1,3 +1,4 @@
+import type { ResponseStoragePreference } from "../../../application/response-storage-policy";
 import { Network, SendHorizontal } from "lucide-react";
 import type { GraphQLSchema } from "graphql";
 import { useMemo, useRef, type ReactNode } from "react";
@@ -29,6 +30,9 @@ import { ColorizedUrlInput } from "./colorized-url-input";
 import { isCurlCommand } from "../model/curl-import";
 
 type RequestComposerProps = {
+  responseStorage?: ResponseStoragePreference;
+  workspaceResponseStorage?: "plaintext" | "encrypted";
+  onResponseStorageChange?: (value: ResponseStoragePreference) => void;
   readOnly?: boolean;
   historyAction?: ReactNode;
   historical?: boolean;
@@ -60,6 +64,7 @@ type RequestComposerProps = {
 };
 
 export function RequestComposer({
+  responseStorage, workspaceResponseStorage, onResponseStorageChange,
   readOnly = false, historyAction, historical,
   historyStartedAt,
   draft,
@@ -200,7 +205,7 @@ export function RequestComposer({
         inert={detailsCollapsed}
       >
         <fieldset disabled={readOnly} className="m-ui-0 min-w-0 border-0 p-ui-0 min-h-0 flex-1 overflow-hidden">
-            <RequestSectionPanel
+            <RequestSectionPanel responseStorage={responseStorage} workspaceResponseStorage={workspaceResponseStorage} onResponseStorageChange={onResponseStorageChange}
               schema={schema}
               onOpenGraphqlType={onOpenGraphqlType}
               onRunGraphqlOperation={onRunGraphqlOperation}

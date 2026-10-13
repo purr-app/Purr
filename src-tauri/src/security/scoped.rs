@@ -238,9 +238,11 @@ impl ScopeRegistry {
             return Err("scope-key-registry-missing".into());
         }
         if !exists
-            && path
-                .parent()
-                .is_some_and(|p| p.join("local-state.sqlite3").exists())
+            && path.parent().is_some_and(|p| {
+                p.join("local-state.sqlite3").exists()
+                    && !super::inventory::EncryptedInventory::inspect(p)
+                        .is_ok_and(|inventory| inventory.is_public_profile())
+            })
         {
             return Err("scope-key-registry-missing".into());
         }
@@ -276,9 +278,11 @@ impl ScopeRegistry {
             || (version == 0
                 && empty_schema
                 && allow_initialize
-                && !path
-                    .parent()
-                    .is_some_and(|p| p.join("local-state.sqlite3").exists()));
+                && !path.parent().is_some_and(|p| {
+                    p.join("local-state.sqlite3").exists()
+                        && !super::inventory::EncryptedInventory::inspect(p)
+                            .is_ok_and(|inventory| inventory.is_public_profile())
+                }));
         if initialize {
             let tx = db.transaction().map_err(storage_error)?;
             tx.execute_batch("CREATE TABLE registry_identity(vault_id TEXT NOT NULL, keycheck BLOB NOT NULL, initialized INTEGER NOT NULL); CREATE TABLE protection_scopes(scope TEXT PRIMARY KEY,active_key_id TEXT NOT NULL); CREATE TABLE wrapped_scope_keys(key_id TEXT PRIMARY KEY,scope TEXT NOT NULL,identity TEXT NOT NULL,wrapped BLOB NOT NULL,keycheck BLOB NOT NULL); PRAGMA user_version=1;").map_err(storage_error)?;
@@ -329,10 +333,11 @@ impl ScopeRegistry {
             if !allow_initialize {
                 return Err("scope-key-registry-incomplete".into());
             }
-            if path
-                .parent()
-                .is_some_and(|p| p.join("local-state.sqlite3").exists())
-            {
+            if path.parent().is_some_and(|p| {
+                p.join("local-state.sqlite3").exists()
+                    && !super::inventory::EncryptedInventory::inspect(p)
+                        .is_ok_and(|inventory| inventory.is_public_profile())
+            }) {
                 return Err("scope-key-registry-incomplete".into());
             }
             for scope in [

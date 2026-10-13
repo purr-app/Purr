@@ -31,7 +31,7 @@ impl NativeKeyState {
         let manager_value = Arc::new(KeyManager::new(
             data_directory(app)?,
             app.config().identifier.clone(),
-            "application-v2".into(),
+            "application-v3".into(),
             false,
         ));
         *manager = Some(manager_value.clone());

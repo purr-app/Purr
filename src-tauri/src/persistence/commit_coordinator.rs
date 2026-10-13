@@ -1,7 +1,7 @@
 //! Crash-consistent filesystem commits. Unpublished v2 operations recover by
 //! conditional rollback, never by silently publishing credentials after failure.
 use super::{
-    local_records::{LocalRecord, LocalStateStore},
+    local_records::{LocalRecord, LocalStateStore, RecordProtection},
     project_files::{FileChange, FilesystemWorkspaceStore, ProjectFile},
     secret_commits::{record_operation, SecretBatch},
 };
@@ -78,9 +78,17 @@ fn receipt(request: &Value, result: &Value) -> Value {
 
 fn stage(local: &mut LocalStateStore, workspace: &str, journal: &Journal) -> Result<(), String> {
     let plain = serde_json::to_vec(journal).map_err(|_| "Invalid prepared commit")?;
-    let payload = local
-        .cipher
-        .encrypt(&plain, &format!("{workspace}/journal"))?;
+    let protection = if journal.secrets.mutations.is_empty()
+        && journal
+            .local
+            .iter()
+            .all(|r| r.protection == RecordProtection::Plaintext)
+    {
+        RecordProtection::Plaintext
+    } else {
+        RecordProtection::Encrypted
+    };
+    let payload = protection.encode(&local.cipher, &plain, &format!("{workspace}/journal"))?;
     let tx = local
         .db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -96,8 +104,8 @@ fn stage(local: &mut LocalStateStore, workspace: &str, journal: &Journal) -> Res
         return Err("operation-conflict: Operation identifier was reserved concurrently".into());
     }
     tx.execute(
-        "INSERT INTO pending_commits(workspace_id,payload) VALUES(?1,?2)",
-        rusqlite::params![workspace, payload],
+        "INSERT INTO pending_commits(workspace_id,payload,protection) VALUES(?1,?2,?3)",
+        rusqlite::params![workspace, payload, protection.as_str()],
     )
     .map_err(db_error)?;
     record_operation(
@@ -187,7 +195,7 @@ pub(super) fn commit_with_hook(
 ) -> Result<BTreeMap<String, Option<ProjectFile>>, String> {
     batch.validate(Some(workspace))?;
     validate_serialized_size(&(files, records, batch))?;
-    let request = json!({"workspace":workspace,"directory":store.directory,"files":files,"local":records,"secrets":batch});
+    let request = json!({"protection":if batch.mutations.is_empty() && records.iter().all(|r|r.protection==RecordProtection::Plaintext){"plaintext"}else{"encrypted"},"workspace":workspace,"directory":store.directory,"files":files,"local":records,"secrets":batch});
     if let Some(result) = local.replay_result(batch, &request)? {
         return serde_json::from_value(result).map_err(|_| "Damaged commit result".into());
     }
@@ -349,6 +357,7 @@ mod tests {
                 .write(
                     "workspace",
                     &[LocalRecord {
+                        protection: Default::default(),
                         table: "drafts".into(),
                         id: "draft".into(),
                         value: json!({"name":"old"}),
@@ -415,6 +424,7 @@ mod tests {
         }
         fn records(&self) -> Vec<LocalRecord> {
             vec![LocalRecord {
+                protection: Default::default(),
                 table: "drafts".into(),
                 id: "draft".into(),
                 value: json!({"name":"new"}),
@@ -658,6 +668,7 @@ mod tests {
             let mut records = f.records();
             match invalid {
                 0 => records.push(LocalRecord {
+                    protection: Default::default(),
                     table: "invalid".into(),
                     id: "bad".into(),
                     value: json!(true),

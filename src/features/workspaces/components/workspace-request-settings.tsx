@@ -1,6 +1,8 @@
 import { integrationCredentialRef, readIntegrationCredential, stageIntegrationCredential } from "../../../integrations/auth-storage";
 import { RequiredLocalSecrets, type RequiredLocalSecretsProps } from "./required-local-secrets";
 import type { SecretFieldState } from "../../../application/ports/credentials";
+import { Switch } from "../../../shared/components/ui/switch";
+import { SettingsRow, SettingsSection } from "../../../shared/components/ui/settings-section";
 import { Modal } from "../../../shared/components/ui/modal";
 import { useTabState, useForgetTabState } from "../../../shared/state/tab-state";
 import { Pencil, Plus, Trash2, Unplug } from "lucide-react";
@@ -41,6 +43,7 @@ function availableAuthScopes(_auth: WorkspaceSharedAuth[], _editingId?: string) 
 
 export function WorkspaceSettings({
   workspaceId,
+  responseStorage = "plaintext", onResponseStorageChange,
   secrets, variableStates, onUpgrade,
   name,
   description,
@@ -58,6 +61,8 @@ export function WorkspaceSettings({
   onDelete,
 }: {
   workspaceId: string;
+  responseStorage?: "plaintext" | "encrypted";
+  onResponseStorageChange?: (value: "plaintext" | "encrypted") => void;
   secrets: RequiredLocalSecretsProps;
   variableStates?: Record<string, SecretFieldState>;
   onUpgrade: () => void;
@@ -112,7 +117,7 @@ export function WorkspaceSettings({
   useEffect(() => setAuthContext((current) => ({ ...current, variables, variableStates, secretStore: persistence.secure })), [variables, variableStates, persistence.secure]);
   const authDraft: RequestDraft = {
     ...initialRequestDraft,
-    auth: secrets.protectedState.status === "available" ? editingAuth?.value ?? createRequestAuth() : createRequestAuth(),
+    auth: secrets.workspace.publicWritable || secrets.protectedState.status === "available" ? editingAuth?.value ?? createRequestAuth() : createRequestAuth(),
   };
   const setAuthDraft: Dispatch<SetStateAction<RequestDraft>> = (change) => {
     setEditingAuth((current) => {
@@ -185,11 +190,22 @@ export function WorkspaceSettings({
         </header>
         <div className="shrink-0 border-b border-border-subtle px-ui-2 py-ui-1">
           <SegmentedTabs id="workspace-settings" panelId="workspace-settings-panel" label="Workspace settings"
-            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }, { value: "secrets", label: "Secrets" }]} onValueChange={setTab} />
+            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }, { value: "secrets", label: "Secrets and encryption" }]} onValueChange={setTab} />
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-3">
-          <fieldset disabled={secrets.protectedState.status !== "available" && tab !== "secrets"} className="m-ui-0 h-full min-w-0 border-0 p-ui-0">
-          {tab === "secrets" ? <div className="space-y-ui-4"><RequiredLocalSecrets {...secrets} />{secrets.migrationRequired ? <Button variant="brand" disabled={secrets.protectedState.status !== "available"} onClick={onUpgrade}>Upgrade workspace format</Button> : null}</div> : tab === "general" ? (
+          <fieldset disabled={secrets.protectedState.status !== "available" && tab !== "secrets" && tab !== "general"} className="m-ui-0 h-full min-w-0 border-0 p-ui-0">
+          {tab === "secrets" ? <div className="space-y-ui-6">
+            <div className="w-full">
+              <SettingsSection title="Local response storage">
+                <SettingsRow label="Encrypt responses" description="Default for future executions on this device. Individual requests can override it.">
+                  <Switch label="Encrypt responses for this workspace" checked={responseStorage === "encrypted"} onCheckedChange={(enabled) => onResponseStorageChange?.(enabled ? "encrypted" : "plaintext")} />
+                </SettingsRow>
+                <p className="m-ui-0 text-ui-sm text-content-tertiary">Off stores ordinary response bodies and metadata as plaintext, including any tokens or personal data returned by the server. Marked request secrets, authentication and cookies remain protected. Existing responses keep their original protection.</p>
+              </SettingsSection>
+            </div>
+            <RequiredLocalSecrets {...secrets} />
+            {secrets.migrationRequired ? <Button variant="brand" disabled={secrets.protectedState.status !== "available"} onClick={onUpgrade}>Upgrade workspace format</Button> : null}
+          </div> : tab === "general" ? (
             <div className="flex min-h-full max-w-ui-dialog flex-col gap-ui-3">
               <FormField label="Workspace name" value={name} placeholder="Workspace name" onChange={(event) => onNameChange(event.target.value)} />
               <div className="space-y-ui-2">

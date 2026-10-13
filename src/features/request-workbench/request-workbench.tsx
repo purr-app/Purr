@@ -1,3 +1,4 @@
+import { resolveResponseStoragePolicy, type ResponseStoragePreference } from "../../application/response-storage-policy";
 import { protectedStorageMessage } from "../workspaces/model/protected-storage-message";
 import type { ProtectedState } from "../../application/ports/persistence";
 import type { DynamicRequestCodeContext } from "./model/dynamic-request-code";
@@ -105,13 +106,19 @@ export type RequestSession = {
 export const emptyRequestSession: RequestSession = { response: null, error: "", sending: false, canvasFocus: "request" };
 export type RequestActions = { send: (operationName?: string) => void; focusUrl: () => void };
 export type DynamicSourceRequestDocument = {
+  responseStorage?: ResponseStoragePreference;
   id: string;
   name: string;
   kind: RequestKind;
   request: RequestDraft;
 };
 
-export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schemaSelector, schema, onOpenSchema, onOpenGraphqlType }: {
+export function RequestWorkbench({ localUnavailable = false, publicWritable, responseStorage = "inherit", workspaceResponseStorage = "plaintext", onResponseStorageChange, protectedState, dynamicExecution, onOpenDependency, historyEntryId, historyStartedAt, onReturnCurrent, onReplay, onOpenHistory, onHistoryError, draft, setDraft, requestKind, workspaceConfig, workspaceName, workspaceId, documentId, documentName, sourceDocuments, onCreateVariable, onOpenVariable, onCreateMissingVariable, onWorkspaceAuthChange, onImportCurl, view, splitRatios, onSplitRatioChange, requestSection, onRequestSectionChange, variables, runtimeVariables, environmentId, variablesForEnvironment, dynamicVariableCache, dynamicVariableSessionCache, onDynamicVariableCacheChange, cookieJar, session, onSessionChange, actionsRef, schemaSelector, schema, onOpenSchema, onOpenGraphqlType }: {
+  localUnavailable?: boolean;
+  publicWritable?: boolean;
+  responseStorage?: ResponseStoragePreference;
+  workspaceResponseStorage?: "plaintext" | "encrypted";
+  onResponseStorageChange?: (value: ResponseStoragePreference) => void;
   protectedState?: ProtectedState;
   dynamicExecution?: DynamicExecutionMetadata;
   onOpenDependency?: (id: string) => void;
@@ -192,7 +199,7 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
   const [progress, setProgress] = useState<HttpTransportProgress | null>(null);
   useEffect(() => setUrlInvalid(false), [documentId, draft.url]);
   const authRuntime = useAuthRuntime(
-    protectedAvailable ? draft : { ...draft, auth: { ...draft.auth, type: "none" } },
+    protectedAvailable || publicWritable ? draft : { ...draft, auth: { ...draft.auth, type: "none" } },
     setDraft,
     authContext,
     setAuthContext,
@@ -244,12 +251,13 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
       const sensitive = scoped.filter((variable) => variable.sensitive).map((variable) => variable.name);
       const sourceContext = contextFor(document.request, document.kind, document.id, resolvedVariables, sensitive, scoped);
       const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, workspaceConfig);
-      return executeRequest(outgoing, sourceContext, cookieJar, createDependencyAuthRuntime(outgoing, sourceContext, httpTransport, responseContent, execution?.signal), httpTransport, responseContent, { ...execution, onDispatch: dispatch.onDispatch, onPrepared: dispatch.onPrepared }, requestBodies);
+      return executeRequest(outgoing, sourceContext, cookieJar, createDependencyAuthRuntime(outgoing, sourceContext, httpTransport, responseContent, execution?.signal), httpTransport, responseContent, { ...execution, responseStorage: resolveResponseStoragePolicy({ workspace: workspaceResponseStorage, document: sourceDocuments.find((item) => item.id === document.id)?.responseStorage }), onDispatch: dispatch.onDispatch, onPrepared: dispatch.onPrepared }, requestBodies);
     },
   });
   const send = async (graphqlOperationName?: string) => {
     if (sendingRef.current || sending) return;
-    if (!protectedAvailable) { setError(`${protectedStorageMessage(protectedState!)} Open Workspace settings → Secrets and retry before sending.`); setCanvasFocus("response"); return; }
+    if (localUnavailable) { setError("This document has unavailable local state. Retry / Unlock before sending it."); setCanvasFocus("response"); return; }
+    if (!protectedAvailable && !publicWritable) { setError(`${protectedStorageMessage(protectedState!)} Open Workspace settings → Secrets and retry before sending.`); setCanvasFocus("response"); return; }
     if (!effectiveDraft.url.trim()) {
       setCanvasFocus("request");
       setUrlInvalid(true);
@@ -278,6 +286,7 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
     setProgress(null);
     onSessionChange({ dependencySteps: [], dependencyFailure: false, resolvingDependencies: true });
     setError("");
+    const dispatchPolicy = resolveResponseStoragePolicy({ workspace: workspaceResponseStorage, document: responseStorage });
     const startedAt = Date.now();
     let editor = cloneRequestDraft(snapshotSchemaRequest(draft, workspaceConfig, authContext));
     if (graphqlOperationName && editor.graphql) editor.graphql.operationName = graphqlOperationName;
@@ -287,7 +296,7 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
     const record = (outcome: "response" | "error" | "cancelled", response: StoredHttpResponse | null, error = "") => {
       if (recorded || !dispatched) return;
       recorded = true;
-      const pending = persistence.history?.append(workspaceId, { documentId, name: documentName, kind: requestKind,
+      const pending = persistence.history?.append(workspaceId, { documentId, name: documentName, kind: requestKind, onWarning: onHistoryError,
         editor, response, error, outcome, startedAt, durationMs: Date.now() - startedAt });
       if (pending) void pending.catch(() => onHistoryError?.("Could not save request history. The response is still available in this tab."))
         .finally(() => releaseAttachments?.());
@@ -318,7 +327,7 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
       onDynamicVariableCacheChange(dynamic.cache);
       setAuthContext((current) => ({ ...current, variables: dynamic.values, sensitiveVariableNames: [...dynamic.sensitiveNames] }));
       const outgoingContext = contextFor(outgoing, requestKind, documentId, dynamic.values, [...dynamic.sensitiveNames]);
-      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { signal: abort.signal, onProgress: reportProgress, onPrepared: (snapshot) => { editor = cloneRequestDraft({ ...snapshot, ...(snapshot.graphql ? { graphql: { ...snapshot.graphql, schemaId: undefined } } : {}) }); }, onDispatch: () => { dispatched = true; } }, requestBodies);
+      const result = await executeRequest(outgoing, outgoingContext, cookieJar, authRuntime, httpTransport, responseContent, { responseStorage: dispatchPolicy, signal: abort.signal, onProgress: reportProgress, onPrepared: (snapshot) => { editor = cloneRequestDraft({ ...snapshot, ...(snapshot.graphql ? { graphql: { ...snapshot.graphql, schemaId: undefined } } : {}) }); }, onDispatch: () => { dispatched = true; } }, requestBodies);
       if (execution !== executionRef.current) return;
       setResponse(result);
       record("response", result);
@@ -366,7 +375,8 @@ export function RequestWorkbench({ protectedState, dynamicExecution, onOpenDepen
   const canvasCompose = view === "canvas" && !hasActivity && !canvasCollapsed;
   const requestPane = (
     <RequestComposer
-      readOnly={!protectedAvailable}
+      readOnly={localUnavailable || !protectedAvailable && !publicWritable}
+      responseStorage={responseStorage} workspaceResponseStorage={workspaceResponseStorage} onResponseStorageChange={onResponseStorageChange}
       schema={schema}
       onOpenSchema={onOpenSchema}
       onOpenGraphqlType={onOpenGraphqlType}

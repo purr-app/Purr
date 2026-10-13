@@ -8,7 +8,7 @@ export class BrowserProtectedError extends Error {
 }
 export const scopeIdentity = (scope: BrowserProtectionScope): string => JSON.stringify(scope.owner === "workspace"
   ? [scope.owner, scope.workspaceId, scope.kind] : [scope.owner, scope.kind]);
-const aad = (scope: BrowserProtectionScope, keyId: string, context: string) => new TextEncoder().encode(JSON.stringify(["purr-preview-v3", 1, scopeIdentity(scope), keyId, 1, context]));
+const aad = (scope: BrowserProtectionScope, keyId: string, context: string) => new TextEncoder().encode(JSON.stringify(["purr-preview-v4", 1, scopeIdentity(scope), keyId, 1, context]));
 /** Preview keys are independent non-extractable browser keys, not desktop keys. */
 export class BrowserScopeCrypto {
   constructor(private readonly getKey: (scope: BrowserProtectionScope, create: boolean) => Promise<BrowserScopeKey>) {}

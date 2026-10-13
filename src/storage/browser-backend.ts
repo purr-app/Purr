@@ -1,5 +1,5 @@
 import type { CommitState, SecretBatch, SecretResolution, SecretSnapshot, SecureStore } from "../application/ports/credentials";
-import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, ProtectedState, StorageSnapshot, StoredWorkspace } from "../application/ports/persistence";
+import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, ProtectedState, StorageSnapshot, StoredWorkspace, UnavailableLocalRecord } from "../application/ports/persistence";
 import { secretRefSchema, type SecretRef } from "../domain/project";
 import { secretProtectionScope, validateSecretScope } from "./secrets";
 import { BrowserProtectedError, BrowserScopeCrypto, scopeIdentity, type BrowserProtectionScope, type BrowserScopeKey, type BrowserEnvelope } from "./browser-crypto";
@@ -11,7 +11,7 @@ const protectedFailure = (error: unknown): ProtectedState => error instanceof Br
 
 // Browser preview only; desktop always uses SQLite + the native secure store.
 const database = () => new Promise<IDBDatabase>((resolve, reject) => {
-  const open = indexedDB.open("purr-preview-v3", 1);
+  const open = indexedDB.open("purr-preview-v4", 1);
   open.onupgradeneeded = () => { for (const name of ["projects", "local", "secrets", "app", "keys", "operations"]) if (!open.result.objectStoreNames.contains(name)) open.result.createObjectStore(name); };
   open.onsuccess = () => resolve(open.result); open.onerror = () => reject(storageFailure());
 });
@@ -39,7 +39,7 @@ async function writeMany(changes: Array<{ store: string; key: string; value?: un
 }
 // Key and durable scope marker are initialized together. A missing known key is
 // never silently regenerated; there is intentionally no old-preview adoption.
-async function scopeKey(scope: BrowserProtectionScope, create: boolean): Promise<BrowserScopeKey> {
+async function scopeKey(scope: BrowserProtectionScope, create: boolean, persist = true): Promise<BrowserScopeKey> {
   const identity = scopeIdentity(scope);
   const candidate = create ? { id: crypto.randomUUID(), key: await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]) } : undefined;
   const db = await database();
@@ -58,11 +58,13 @@ async function scopeKey(scope: BrowserProtectionScope, create: boolean): Promise
           request.onsuccess = () => {
             known ||= request.result.some((record) => {
               const envelope = name === "operations" ? record?.request : record;
-              return envelope?.scope && scopeIdentity(envelope.scope) === identity;
+              const envelopes = envelope?.version === 1 && Array.isArray(envelope.records)
+                ? envelope.records.map((item: { envelope?: BrowserEnvelope }) => item.envelope) : [envelope?.envelope ?? envelope];
+              return envelopes.some((item: BrowserEnvelope | undefined) => item?.scope && scopeIdentity(item.scope) === identity);
             });
             if (--remaining) return;
             if (known) failure = new BrowserProtectedError("unavailable", "browser-scope-key-missing");
-            else { result = candidate; store.put(candidate, `key/${identity}`); store.put(candidate.id, `scope/${identity}`); }
+            else { result = candidate; if (persist) { store.put(candidate, `key/${identity}`); store.put(candidate.id, `scope/${identity}`); } }
           };
         }
       }
@@ -75,6 +77,7 @@ const scopeCrypto = new BrowserScopeCrypto(scopeKey);
 function contextScope(context: string): BrowserProtectionScope {
   if (context.startsWith("purr/")) return secretProtectionScope(context);
   if (context.startsWith("operation/")) return { owner: "application", kind: "journal" };
+  if (context.startsWith("local/")) { const id = context.split("/")[1]; return id === "__global__" ? { owner: "global", kind: "runtime" } : { owner: "workspace", workspaceId: id, kind: "runtime" }; }
   if (context.startsWith("history/")) return { owner: "workspace", workspaceId: context.split("/")[1], kind: "runtime" };
   return context === "__global__" ? { owner: "global", kind: "runtime" } : { owner: "workspace", workspaceId: context, kind: "runtime" };
 }
@@ -88,7 +91,7 @@ async function validateOwnerKeys(id: string): Promise<void> {
     const identity = scopeIdentity(scope);
     const [marker, storedKey] = await Promise.all([read("keys", `scope/${identity}`), read("keys", `key/${identity}`)]);
     const firstRef = refs.find((ref) => ref.startsWith(`purr/${owner}/${kind}/`));
-    const runtimeRecord = kind === "runtime" ? await read<BrowserEnvelope>("local", id) : undefined;
+    const runtimeRecord = kind === "runtime" ? (await read<StoredLocal>("local", id))?.records?.some((record) => record.protection === "encrypted") : false;
     if (marker !== undefined || storedKey !== undefined || firstRef || runtimeRecord) {
       await scopeKey(scope, false);
       // An existing key object with changed material must also fail closed.
@@ -96,11 +99,52 @@ async function validateOwnerKeys(id: string): Promise<void> {
     }
   }
 }
+/** Probe a fresh provider without publishing a key; known scopes never regenerate.
+ * Record corruption is reported separately from the capability to use its key. */
+async function runtimeKeyState(id: string): Promise<ProtectedState> {
+  const scope: BrowserProtectionScope = id === "__global__" ? { owner: "global", kind: "runtime" } : { owner: "workspace", workspaceId: id, kind: "runtime" };
+  try {
+    const identity = scopeIdentity(scope);
+    const [marker, key] = await Promise.all([read("keys", `scope/${identity}`), read("keys", `key/${identity}`)]);
+    await scopeKey(scope, marker === undefined && key === undefined, false);
+    return { status: "available" };
+  } catch (error) { return protectedFailure(error); }
+}
+/** Explicit v1 discriminators: malformed or unknown variants never fall back to public JSON. */
+type StoredValue = { version: 1; protection: "plaintext"; value: unknown } | { version: 1; protection: "encrypted"; envelope: BrowserEnvelope };
+type StoredLocalRecord = { table: LocalRecord["table"]; id: string } & StoredValue;
+type StoredLocal = { version: 1; records: StoredLocalRecord[] };
+const publicValue = (value: unknown): StoredValue => ({ version: 1, protection: "plaintext", value });
+async function storedValue(value: unknown, context: string, protection: "plaintext" | "encrypted"): Promise<StoredValue> {
+  if (protection !== "plaintext" && protection !== "encrypted") throw new BrowserProtectedError("corrupt", "browser-storage-protection-invalid");
+  return protection === "plaintext" ? publicValue(value) : { version: 1, protection, envelope: await seal(value, context) };
+}
+async function unpack<T>(stored: StoredValue, context: string): Promise<T> {
+  if (stored?.version !== 1) throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+  if (stored.protection === "plaintext" && Object.prototype.hasOwnProperty.call(stored, "value") && !Object.prototype.hasOwnProperty.call(stored, "envelope")) return stored.value as T;
+  if (stored.protection === "encrypted" && Object.prototype.hasOwnProperty.call(stored, "envelope") && !Object.prototype.hasOwnProperty.call(stored, "value")) return unseal<T>(stored.envelope, context);
+  throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+}
+function localContainer(value: StoredLocal | undefined): StoredLocalRecord[] {
+  if (value === undefined) return [];
+  if (value.version !== 1 || !Array.isArray(value.records)) throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+  const identities = new Set<string>();
+  for (const row of value.records) {
+    if (!row || typeof row !== "object") throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+    const identity = `${row.table}/${row.id}`;
+    if (typeof row.id !== "string" || !row.id || !["workspace_local_state", "drafts", "document_session_state", "request_executions", "cookie_jar", "schema_cache", "recent_items", "attachments"].includes(row.table) || identities.has(identity))
+      throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
+    identities.add(identity);
+  }
+  return value.records;
+}
+const localContext = (id: string, table: string, key: string) => `local/${id}/${table}/${key}`;
+const historyProtection = (key: string, value: unknown): "plaintext" | "encrypted" => !key.includes("/entry/") && !key.includes("/summary/") || (value as { protection?: string })?.protection === "plaintext" ? "plaintext" : "encrypted";
 type StoredSecret = Awaited<ReturnType<typeof seal>> & { revision?: number; deleted?: boolean };
-type BrowserReceipt = CommitState & { request: Awaited<ReturnType<typeof seal>> };
+type BrowserReceipt = CommitState & { request: StoredValue };
 async function verifyReceipt(batch: SecretBatch, receipt: BrowserReceipt, identity: unknown = { kind: "secrets" }) {
   const fingerprint = await contentRevision(JSON.stringify({ batch, identity }));
-  const payload = await unseal<{ fingerprint: string; status: CommitState["status"] }>(receipt.request, `operation/${batch.operationId}`);
+  const payload = await unpack<{ fingerprint: string; status: CommitState["status"] }>(receipt.request, `operation/${batch.operationId}`);
   if (payload.fingerprint !== fingerprint || payload.status !== receipt.status)
     throw new Error("operation-conflict: Operation identifier already used for a different secret batch");
 }
@@ -124,8 +168,8 @@ async function publish(changes: BrowserChange[], batch?: SecretBatch, checks: Br
     return { ...mutation, stored: { ...await seal({ value: mutation.value, revision: mutation.expectedRevision + 1 }, mutation.ref), revision: mutation.expectedRevision + 1, deleted: mutation.value === null } };
   }));
   const fingerprint = batch ? await contentRevision(JSON.stringify({ batch, identity })) : undefined;
-  const encryptedRequest = batch ? await seal({ fingerprint, status: "committed" }, `operation/${batch.operationId}`) : undefined;
-  const abortedRequest = batch ? await seal({ fingerprint, status: "aborted" }, `operation/${batch.operationId}`) : undefined;
+  const encryptedRequest = batch ? await storedValue({ fingerprint, status: "committed" }, `operation/${batch.operationId}`, batch.mutations.length ? "encrypted" : "plaintext") : undefined;
+  const abortedRequest = batch ? await storedValue({ fingerprint, status: "aborted" }, `operation/${batch.operationId}`, batch.mutations.length ? "encrypted" : "plaintext") : undefined;
   let replay: BrowserReceipt | undefined;
   const db = await database();
   try { await new Promise<void>((resolve, reject) => {
@@ -201,8 +245,8 @@ async function removeProtected(changes: BrowserChange[], prefixes: string[], che
 }
 async function historyChecks(expected: { key: string; value?: unknown }[]): Promise<BrowserChange[]> {
   return Promise.all(expected.map(async ({ key, value }) => {
-    const stored = await read<Awaited<ReturnType<typeof seal>>>("app", key);
-    const current = stored ? await unseal(stored, key) : undefined;
+    const stored = await read<StoredValue>("app", key);
+    const current = stored ? await unpack(stored, key) : undefined;
     if (comparable(current) !== comparable(value)) throw new Error("History changed externally. Reload before saving.");
     return { store: "app", key, value: stored };
   }));
@@ -229,7 +273,12 @@ export class BrowserSecureStore implements SecureStore {
   async read(ref: SecretRef): Promise<SecretSnapshot> {
     secretRefSchema.parse(ref);
     const data = await read<StoredSecret>("secrets", ref);
-    if (data === undefined) return { value: null, revision: 0 };
+    if (data === undefined) {
+      // Preparation must establish that its eventual protected publication can
+      // use this scope. A missing value must not hide a missing established key.
+      await scopeKey(secretProtectionScope(ref), true);
+      return { value: null, revision: 0 };
+    }
     const payload = await unseal<{ value: unknown; revision: number }>(data, ref); const revision = secretRevision(data); const value = payload.value;
     if (payload.revision !== revision) throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
     if (!Number.isSafeInteger(revision) || revision < 0 || typeof value !== "string" && value !== null)
@@ -241,7 +290,7 @@ export class BrowserSecureStore implements SecureStore {
   async operationStatus(operationId: string): Promise<CommitState> {
     const receipt = await read<BrowserReceipt>("operations", operationId);
     if (!receipt) return { operationId, status: "missing" };
-    const payload = await unseal<{ status: CommitState["status"] }>(receipt.request, `operation/${operationId}`);
+    const payload = await unpack<{ status: CommitState["status"] }>(receipt.request, `operation/${operationId}`);
     if (payload.status !== receipt.status || !["committed", "aborted", "recovery-required"].includes(payload.status))
       throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
     return { operationId, status: payload.status };
@@ -253,78 +302,100 @@ export class BrowserSecureStore implements SecureStore {
 export class BrowserPersistenceBackend implements PersistencePort {
   readonly history = new BrowserHistory({
     read: async <T>(key: string) => {
-      const data = await read<Awaited<ReturnType<typeof seal>>>("app", key);
-      return data ? unseal<T>(data, key) : undefined;
+      const data = await read<StoredValue>("app", key);
+      return data ? unpack<T>(data, key) : undefined;
     },
     write: async (changes) => publish(await Promise.all(changes.map(async ({ key, value }) => ({
-      store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
+      store: "app", key, ...(value === undefined ? {} : { value: await storedValue(value, key, historyProtection(key, value)) }),
     })))),
     commit: async (changes, batch, expected = [], identity) => {
       const prior = await read<BrowserReceipt>("operations", batch.operationId);
       if (prior?.status === "committed") { await verifyReceipt(batch, prior, identity); return; }
       const checks = await historyChecks(expected);
       await publish(await Promise.all(changes.map(async ({ key, value }) => ({
-        store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
+        store: "app", key, ...(value === undefined ? {} : { value: await storedValue(value, key, historyProtection(key, value)) }),
       }))), batch, checks, identity);
     },
     remove: async (changes, prefixes, expected = []) => {
       const checks = await historyChecks(expected);
       const storedChanges = await Promise.all(changes.map(async ({ key, value }) => ({
-        store: "app", key, ...(value === undefined ? {} : { value: await seal(value, key) }),
+        store: "app", key, ...(value === undefined ? {} : { value: await storedValue(value, key, historyProtection(key, value)) }),
       })));
       await removeProtected(storedChanges, prefixes, checks);
     },
     operationStatus: (operationId) => new BrowserSecureStore().operationStatus(operationId),
-    legacy: (id) => this.readRawLocal(id),
-    finishLegacy: async (id) => {
-      const local = await this.readRawLocal(id);
-      if (local.some((record) => record.table === "request_executions")) await writeMany([{ store: "local", key: id,
-        value: await seal(local.filter((record) => record.table !== "request_executions"), id) }]);
-    },
+    legacy: async () => [],
     deleteSecrets: async (prefix) => removeProtected([], [prefix]),
   });
   async load(): Promise<StorageSnapshot> {
     const ids = await read<string[]>("app", "workspaces") ?? [];
     const workspaces = await Promise.all(ids.map((id) => this.loadWorkspace(id)));
-    let global: LocalRecord[] = []; let protectedState: ProtectedState = { status: "available" };
-    try { await validateOwnerKeys("__global__"); global = await this.readLocal("__global__"); } catch (error) { protectedState = protectedFailure(error); }
-    return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces, global, globalProtectedState: protectedState, protectedState: { status: "available" } };
+    const global = await this.localSnapshot("__global__");
+    return { activeWorkspaceId: await read<string>("app", "active") ?? "", workspaces, global: global.local, globalUnavailableLocal: global.unavailableLocal, globalProtectedState: global.protectedState, protectedState: { status: "available" } };
   }
   async retryProtectedStorage() { return this.load(); }
   async loadWorkspace(id: string): Promise<StoredWorkspace> {
     const files = await read<Record<string, ProjectFile>>("projects", id) ?? {};
-    try { await validateOwnerKeys(id); return { id, files, local: await this.readLocal(id), protectedState: { status: "available" } }; }
-    catch (error) { return { id, files, local: [], protectedState: protectedFailure(error) }; }
+    return { id, files, ...await this.localSnapshot(id) };
   }
-  private async readRawLocal(id: string): Promise<LocalRecord[]> {
-    const data = await read<Awaited<ReturnType<typeof seal>>>("local", id);
-    if (data === undefined) return [];
-    const value = await unseal<unknown>(data, id);
-    if (!Array.isArray(value)) throw new BrowserProtectedError("corrupt", "browser-protected-data-corrupt");
-    return value as LocalRecord[];
+  private async localSnapshot(id: string): Promise<Pick<StoredWorkspace, "local" | "unavailableLocal" | "protectedState" | "runtimeProtectedState">> {
+    const local: LocalRecord[] = []; const unavailableLocal: UnavailableLocalRecord[] = [];
+    let protectedState: ProtectedState = { status: "available" };
+    const runtimeProtectedState = await runtimeKeyState(id);
+    try { await validateOwnerKeys(id); } catch (error) { protectedState = protectedFailure(error); }
+    let rows: StoredLocalRecord[];
+    try { rows = localContainer(await read<StoredLocal>("local", id)); }
+    catch (error) {
+      const state = protectedFailure(error); if (state.status === "available") throw error;
+      return { local, unavailableLocal: [{ table: "workspace_local_state", id: "*", state }], protectedState: state, runtimeProtectedState };
+    }
+    for (const row of rows) {
+      try { local.push({ table: row.table, id: row.id, protection: row.protection, value: await unpack(row, localContext(id, row.table, row.id)) }); }
+      catch (error) {
+        const state = protectedFailure(error); if (state.status === "available") throw error;
+        unavailableLocal.push({ table: row.table, id: row.id, state }); protectedState = state;
+      }
+    }
+    if (id !== "__global__") {
+      try { local.push(...await this.history.latestExecutions(id, (entryId, error) => {
+        const state = protectedFailure(error); if (state.status === "available") throw error;
+        unavailableLocal.push({ table: "request_executions", id: entryId, state }); protectedState = state;
+      })); }
+      catch (error) {
+        const state = protectedFailure(error); if (state.status === "available") throw error;
+        unavailableLocal.push({ table: "request_executions", id: "*", state }); protectedState = state;
+      }
+    }
+    return { local, unavailableLocal, protectedState, runtimeProtectedState };
   }
   async readLocal(id: string): Promise<LocalRecord[]> {
-    const local = await this.readRawLocal(id);
-    return id === "__global__" ? local : [...local.filter((record) => record.table !== "request_executions"), ...await this.history.latestExecutions(id)];
+    const snapshot = await this.localSnapshot(id);
+    if (snapshot.unavailableLocal?.length) throw new BrowserProtectedError(snapshot.protectedState!.status === "corrupt" ? "corrupt" : "unavailable", "browser-local-records-unavailable");
+    return snapshot.local;
   }
   async commit(id: string, changes: FileChange[], local: LocalChange[], batch?: SecretBatch) {
     if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${id === "__global__" ? "global" : id}/`))) throw new Error("Secret changes must belong to the workspace");
-    await validateOwnerKeys(id);
     const identity = { kind: "workspace", id, changes, local };
     if (batch) {
       const receipt = await read<BrowserReceipt>("operations", batch.operationId);
       if (receipt?.status === "committed") { await verifyReceipt(batch, receipt, identity); return (await this.loadWorkspace(id)).files; }
     }
     const oldFiles = await read<Record<string, ProjectFile>>("projects", id);
-    const oldLocal = await read<Awaited<ReturnType<typeof seal>>>("local", id);
+    const oldLocal = await read<StoredLocal>("local", id);
     const oldIds = await read<string[]>("app", "workspaces");
-    const existing = { files: oldFiles ?? {}, local: oldLocal ? await unseal<LocalRecord[]>(oldLocal, id) : [] }; const files = { ...existing.files };
+    const existing = { files: oldFiles ?? {}, local: localContainer(oldLocal) }; const files = { ...existing.files };
     for (const change of changes) if ((files[change.path]?.revision ?? null) !== change.expectedRevision) throw new Error("Project changed externally. Reload before saving.");
     for (const change of changes) { if (change.content === null) delete files[change.path]; else files[change.path] = { content: change.content, revision: await contentRevision(change.content) }; }
     const records = new Map(existing.local.map((record) => [`${record.table}/${record.id}`, record]));
-    for (const change of local) { const key = `${change.table}/${change.id}`; if (change.value === null) records.delete(key); else records.set(key, change as LocalRecord); }
+    for (const change of local) {
+      const key = `${change.table}/${change.id}`; const previous = records.get(key);
+      // A public save may preserve opaque rows, but cannot replace/delete an unreadable protected value.
+      if (previous) await unpack(previous, localContext(id, change.table, change.id));
+      if (change.value === null) records.delete(key);
+      else records.set(key, { table: change.table, id: change.id, ...await storedValue(change.value, localContext(id, change.table, change.id), change.protection ?? "encrypted") });
+    }
     const ids = new Set(oldIds ?? []); if (id !== "__global__") ids.add(id);
-    await publish([{ store: "projects", key: id, value: files }, { store: "local", key: id, value: await seal([...records.values()], id) }, { store: "app", key: "workspaces", value: [...ids] }], batch,
+    await publish([{ store: "projects", key: id, value: files }, { store: "local", key: id, value: { version: 1, records: [...records.values()] } }, { store: "app", key: "workspaces", value: [...ids] }], batch,
       [{ store: "projects", key: id, value: oldFiles }, { store: "local", key: id, value: oldLocal }, { store: "app", key: "workspaces", value: oldIds }], identity);
     return files;
   }
@@ -357,7 +428,7 @@ export class BrowserPersistenceBackend implements PersistencePort {
     ];
     await removeProtected(changes, [`purr/${id}/`], checks, [{ store: "app", prefix: historyPrefix, keys: historyKeys }]);
   }
-  async finishMigration() { /* Clean v3 preview never imports or deletes old preview storage. */ }
+  async finishMigration() { /* Clean v4 preview never imports or deletes old preview storage. */ }
   async watchChanges(_listener: (id: string, paths: string[]) => void) { return () => {}; }
 }
 export async function contentRevision(content: string) {

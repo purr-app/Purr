@@ -16,7 +16,7 @@ import { legacyHistoryEntry } from "./history-legacy";
 // workspaces can be migrated safely on their next save.
 const resourceDirectory = (resource: ProjectResource) => ({ http: "documents", graphql: "documents", extension: "documents", schema: "schemas", "api-schema": "schemas", environment: "environments", folder: "documents", integration: "integrations" })[resource.kind];
 const slug = (name: string) => name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "resource";
-const key = (record: LocalRecord | LocalChange) => `${record.table}/${record.id}`;
+const key = (record: Pick<LocalRecord, "table" | "id">) => `${record.table}/${record.id}`;
 const folderMarker = ".purr-folder.yaml";
 const parentPath = (path: string) => path.split("/").slice(0, -1).join("/");
 const fileName = (path: string) => { const parts = path.split("/"); return parts[parts.length - 1] || ""; };
@@ -39,6 +39,20 @@ function assertLegacyBaseline(snapshot: StoredWorkspace, revisions: Record<strin
   if (Object.keys(revisions).length !== Object.keys(snapshot.files).length || Object.entries(revisions).some(([path, revision]) => snapshot.files[path]?.revision !== revision))
     throw new LegacyDefinitionConflict();
 }
+/** A missing private attachment makes its owning editor opaque, not every document. */
+function isolateUnavailableAttachments(snapshot: StoredWorkspace): StoredWorkspace {
+  if (snapshot.unavailableLocal === undefined) return snapshot;
+  const unavailable = new Set(snapshot.unavailableLocal.filter((row) => row.table === "attachments").map((row) => row.id));
+  if (!unavailable.size) return snapshot;
+  const usesUnavailable = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") return false;
+    if ("__purrFileRef" in value && typeof value.__purrFileRef === "string" && unavailable.has(value.__purrFileRef)) return true;
+    return Object.values(value).some(usesUnavailable);
+  };
+  const owners = snapshot.local.filter((row) => ["drafts", "document_session_state"].includes(row.table) && usesUnavailable(row.value));
+  return { ...snapshot, local: snapshot.local.filter((row) => !owners.includes(row)), unavailableLocal: [...snapshot.unavailableLocal,
+    ...owners.map((row) => ({ table: row.table, id: row.id, state: { status: "unavailable" as const, code: "request-attachment-unavailable" } }))] };
+}
 export class WorkspacePersistence {
   private snapshots = new Map<string, StoredWorkspace>();
   private projects = new Map<string, Project>();
@@ -51,6 +65,8 @@ export class WorkspacePersistence {
   private activeId = "";
   private globalSnapshot = "";
   private globalState: ProtectedState = { status: "available" };
+  private globalPublicWritable = true;
+  getGlobalPublicWritable() { return this.globalPublicWritable; }
   private storageNotice: { legacyDirectory: string } | null = null;
   getStorageNotice() { return this.storageNotice; }
   getGlobalProtectedState() { return this.globalState; }
@@ -72,12 +88,15 @@ export class WorkspacePersistence {
   }
   getWorkspaceStatus(id: string) {
     const sourceVersion = this.formats.get(id) ?? 2;
-    return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState: this.storageState.status === "available" ? this.protectedStates.get(id) ?? this.storageState : this.storageState };
+    const protectedState = this.protectedStates.get(id) ?? this.storageState;
+    const snapshot = this.snapshots.get(id);
+    const publicWritable = protectedState.status === "available" || protectedState.status !== "recovery-required" && !("code" in protectedState && ["local-record-unreadable", "local-history-unreadable"].includes(protectedState.code)) && snapshot?.unavailableLocal !== undefined && !snapshot.unavailableLocal.some((row) => row.id === "*");
+    return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
   }
   getProject(id: string) { return this.projects.get(id); }
   private assertWritable(id: string) {
     const state = this.getWorkspaceStatus(id).protectedState;
-    if (state.status !== "available") throw new Error("Protected storage is unavailable. This workspace is read-only; retry before saving.");
+    if (!this.getWorkspaceStatus(id).publicWritable) throw new Error(`Storage ${state.status}. This workspace is read-only; retry before saving.`);
   }
   private async commitConfirmed<T>(batch: SecretBatch, work: () => Promise<T>, readCommitted: () => Promise<T>): Promise<T> {
     try { return await work(); }
@@ -184,14 +203,15 @@ export class WorkspacePersistence {
     const stored = await this.backend.load(); const workspaces: Workspace[] = [];
     this.storageState = stored.protectedState ?? { status: "available" };
     this.globalState = stored.globalProtectedState ?? this.storageState;
+    this.globalPublicWritable = this.globalState.status === "available" || this.globalState.status !== "recovery-required" && stored.globalUnavailableLocal !== undefined && !stored.globalUnavailableLocal.some((row) => row.id === "*" || row.table === "workspace_local_state" && row.id === "variables");
     this.storageNotice = stored.storageNotice ?? null;
     for (const originalSnapshot of stored.workspaces) {
       // Retention runs before restoring last responses, so an expired body does
       // not return through the workspace session after a restart.
       let protectedState = originalSnapshot.protectedState ?? this.storageState;
-      let snapshot = originalSnapshot;
-      if (protectedState.status === "available" && this.backend.history) {
-        try { await this.backend.history.prune(originalSnapshot.id); snapshot = { ...originalSnapshot, local: await this.backend.readLocal(originalSnapshot.id) }; }
+      let snapshot = isolateUnavailableAttachments(originalSnapshot);
+      if (protectedState.status === "available" && !originalSnapshot.unavailableLocal?.length && this.backend.history) {
+        try { await this.backend.history.prune(originalSnapshot.id); snapshot = isolateUnavailableAttachments({ ...originalSnapshot, local: await this.backend.readLocal(originalSnapshot.id) }); }
         catch { protectedState = { status: "corrupt", code: "local-history-unreadable" }; }
       }
       this.protectedStates.set(snapshot.id, protectedState);
@@ -204,7 +224,7 @@ export class WorkspacePersistence {
         const workspace = createWorkspace("Workspace needs recovery", snapshot.id); workspace.documents = []; workspace.protectedState = protectedState;
         this.snapshots.set(snapshot.id, snapshot); workspaces.push(workspace); continue;
       }
-      const local = protectedState.status === "available" ? snapshot.local : [];
+      const local = protectedState.status === "available" || snapshot.unavailableLocal !== undefined ? snapshot.local : [];
       let workspace: Workspace;
       try {
         const pending = local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-definition-draft")?.value as { sourceRevisions?: Record<string, string> } | undefined;
@@ -215,6 +235,7 @@ export class WorkspacePersistence {
         workspace = await restoreWorkspace(project, [], this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id), { hydrateSecrets: false, sourceVersion: this.formats.get(snapshot.id) });
       }
       workspace.projectFormatVersion = this.formats.get(snapshot.id); workspace.protectedState = protectedState;
+      workspace.publicWritable = protectedState.status === "available" || snapshot.unavailableLocal !== undefined && !snapshot.unavailableLocal.some((row) => row.id === "*") && protectedState.status !== "recovery-required" && !("code" in protectedState && ["local-record-unreadable", "local-history-unreadable"].includes(protectedState.code));
       this.snapshots.set(snapshot.id, snapshot); this.projects.set(snapshot.id, project); workspaces.push(workspace);
     }
     const legacy = stored.legacy as WorkspaceStore | undefined;
@@ -233,24 +254,23 @@ export class WorkspacePersistence {
     this.activeId = stored.activeWorkspaceId;
     const globalRecord = stored.global?.find((record) => record.table === "workspace_local_state" && record.id === "variables");
     let globalVariables: Variable[] = [];
-    if (this.globalState.status === "available") try { globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure, false); }
-    catch { this.globalState = { status: "corrupt", code: "global-variables-unreadable" }; }
+    if (this.globalState.status === "available" || stored.globalUnavailableLocal !== undefined) try { globalVariables = await restoreGlobalVariables(globalRecord?.value, this.secure, false); }
+    catch { this.globalState = { status: "corrupt", code: "global-variables-unreadable" }; this.globalPublicWritable = false; }
     this.globalVariables = globalVariables;
     this.globalSnapshot = JSON.stringify(globalRecord?.value ?? []);
-    if (this.storageState.status === "available") { await this.save({ activeWorkspaceId, workspaces, globalVariables }); await this.backend.finishMigration(); }
+    if (this.storageState.status === "available" || stored.workspaces.some((workspace) => workspace.unavailableLocal !== undefined)) { await this.save({ activeWorkspaceId, workspaces, globalVariables }); await this.backend.finishMigration(); }
     return { activeWorkspaceId, workspaces, globalVariables };
   }
   save(store: WorkspaceStore): Promise<void> {
     const work = async () => {
-      if (this.storageState.status !== "available") return;
-      for (const workspace of store.workspaces) if (this.getWorkspaceStatus(workspace.id).protectedState.status === "available") await this.persist(workspace);
-      if (this.globalState.status === "available") {
+      for (const workspace of store.workspaces) if (this.getWorkspaceStatus(workspace.id).publicWritable) await this.persist(workspace);
+      if (this.globalPublicWritable) {
         const preparedGlobal = new SecretPreparationStore(this.secure);
         await this.prepareVariableRemoval(this.globalVariables, store.globalVariables ?? [], preparedGlobal);
         const { definitions, secrets } = await projectGlobalVariables(store.globalVariables ?? [], preparedGlobal);
         const serialized = JSON.stringify(definitions);
         if (serialized !== this.globalSnapshot || secrets.mutations.length) {
-          await this.commitConfirmed(secrets, () => this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions }], secrets), async () => undefined);
+          await this.commitConfirmed(secrets, () => this.backend.writeGlobal([{ table: "workspace_local_state", id: "variables", value: definitions, protection: "plaintext" }], secrets), async () => undefined);
           this.globalSnapshot = serialized;
         }
         preparedGlobal.acknowledge();
@@ -281,7 +301,7 @@ export class WorkspacePersistence {
     const next = this.queue.catch(() => {}).then(async () => {
       this.assertWritable(workspace.id);
       await this.persist(workspace, undefined, attempt, options.intent);
-      return { ...workspace, projectFormatVersion: this.formats.get(workspace.id) ?? 2, protectedState: { status: "available" as const } };
+      return { ...workspace, projectFormatVersion: this.formats.get(workspace.id) ?? 2, protectedState: this.getWorkspaceStatus(workspace.id).protectedState, publicWritable: this.getWorkspaceStatus(workspace.id).publicWritable };
     });
     this.queue = next;
     return next;
@@ -317,12 +337,14 @@ export class WorkspacePersistence {
   private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure), intent: "automatic" | "explicit" = "automatic") {
     if (this.deleted.has(workspace.id)) return;
     this.assertWritable(workspace.id);
+    const unavailableDocuments = new Set(this.getWorkspaceStatus(workspace.id).unavailableDocumentIds);
+    if (workspace.documents.some((document) => unavailableDocuments.has(document.id) && isDocumentDirty(document))) throw new Error("This document has unavailable local state. Retry / Unlock before editing it; other documents remain usable.");
     const previous = this.projects.get(workspace.id);
     const upgrading = this.formats.get(workspace.id) === 1;
     if (upgrading && intent === "automatic" && previous) {
       const snapshot = this.snapshots.get(workspace.id)!;
       const legacyRevisions = Object.fromEntries([...this.paths.get(workspace.id) ?? []].map(([id, path]) => [id, snapshot.files[path].revision]));
-      const projection = await projectWorkspace(workspace, prepared, { localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
+      const projection = await projectWorkspace(workspace, prepared, { includeExecutions: !this.backend.history, localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
         sourceRevisions: Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.revision])) });
       const local = projection.local.filter((record) => !this.backend.history || record.table !== "request_executions");
       const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source").map((record) => [key(record), record]));
@@ -346,7 +368,7 @@ export class WorkspacePersistence {
     const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     for (const variable of previousVariables) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retainedRefs.has(variable.secretRef)
       && !currentVariables.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await prepared.delete(variable.secretRef);
-    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { globalVariables: this.globalVariables }); validateProject(project);
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables }); validateProject(project);
     const refs = (value: unknown, found = new Set<string>()): Set<string> => {
       if (Array.isArray(value)) for (const child of value) refs(child, found);
       else if (value && typeof value === "object") {
@@ -415,6 +437,7 @@ export class WorkspacePersistence {
       const content = desired[path] ?? null;
       if ((snapshot.files[path]?.content ?? null) !== content) changes.push({ path, content, expectedRevision: snapshot.files[path]?.revision ?? null });
     }
+    if (changes.some((change) => [...unavailableDocuments].some((id) => change.path === paths.get(id)))) throw new Error("This document has unavailable local state. Retry / Unlock before saving it.");
     const oldLocal = new Map(snapshot.local.map((record) => [key(record), record])); const nextLocal = new Map(local.map((record) => [key(record), record]));
     for (const record of snapshot.local) if ((record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source") && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
     // An in-flight request can outlive its source document. Its lazy native
@@ -422,7 +445,9 @@ export class WorkspacePersistence {
     if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local)
       if (record.table === "attachments" && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
     const localChanges: LocalChange[] = [];
+    const unavailable = new Set(snapshot.unavailableLocal?.map(key));
     for (const id of new Set([...oldLocal.keys(), ...nextLocal.keys()])) {
+      if (unavailable.has(id)) { nextLocal.delete(id); continue; }
       // Execution writes/deletes belong exclusively to the append-only history
       // service. A stale lastResponse must never resurrect an expired entry.
       if (this.backend.history && id.startsWith("request_executions/")) continue;
@@ -435,7 +460,7 @@ export class WorkspacePersistence {
       const files = await this.commitConfirmed(secrets,
         () => this.backend.commit(workspace.id, changes, localChanges, secrets),
         async () => (await this.backend.loadWorkspace(workspace.id)).files);
-      this.snapshots.set(workspace.id, { id: workspace.id, files, local: [...nextLocal.values()] });
+      this.snapshots.set(workspace.id, { ...snapshot, id: workspace.id, files, local: [...nextLocal.values()] });
     }
     this.developmentRewrites.delete(workspace.id);
     this.projects.set(workspace.id, project); this.paths.set(workspace.id, paths);
@@ -489,7 +514,7 @@ export class WorkspacePersistence {
     if (state?.status === "recovery-required" && ["project-format-unreadable", "legacy-definition-conflict"].includes(state.code)) this.protectedStates.set(id, { status: "available" });
     const prepared = new SecretPreparationStore(this.secure);
     const projected = working && this.getWorkspaceStatus(id).protectedState.status === "available" ? await projectWorkspace(working, prepared,
-      sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) : undefined;
+      { includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) }) : undefined;
     const local = projected?.local ?? previous.local;
     const baseline = this.projects.get(id);
     const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
@@ -513,9 +538,9 @@ export class WorkspacePersistence {
       // Removing a saved definition must not discard an unsaved working copy.
       if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
     }
-    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).protectedState.status === "available" ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion });
+    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion });
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
-    workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; return workspace;
+    workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; workspace.publicWritable = this.getWorkspaceStatus(id).publicWritable; return workspace;
   }
   reconcileExternalChanges(store: WorkspaceStore): Promise<WorkspaceStore> {
     const reconcile = async () => {
@@ -579,8 +604,8 @@ export class WorkspacePersistence {
     const snapshot = await this.backend.attachDirectory(id, directory);
     const project = this.readProject(snapshot);
     this.protectedStates.set(id, snapshot.protectedState ?? this.storageState);
-    const workspace = await restoreWorkspace(project, this.getWorkspaceStatus(id).protectedState.status === "available" ? snapshot.local : [], this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion: this.formats.get(id) });
-    workspace.projectFormatVersion = this.formats.get(id); workspace.protectedState = this.getWorkspaceStatus(id).protectedState;
+    const workspace = await restoreWorkspace(project, this.getWorkspaceStatus(id).publicWritable ? snapshot.local : [], this.secure, Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion: this.formats.get(id) });
+    workspace.projectFormatVersion = this.formats.get(id); workspace.protectedState = this.getWorkspaceStatus(id).protectedState; workspace.publicWritable = this.getWorkspaceStatus(id).publicWritable;
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     await this.save({ activeWorkspaceId: id, workspaces: [workspace], globalVariables: this.globalVariables }); return workspace;
   }

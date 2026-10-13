@@ -713,7 +713,7 @@ test("variables use explicit drafts, validate duplicate names without blocking t
   // in the actual browser backend before testing restoration after reload.
   await expect.poll(async () => {
     const manifests = await page.evaluate(() => new Promise<string[]>((resolve, reject) => {
-      const open = indexedDB.open("purr-preview-v3");
+      const open = indexedDB.open("purr-preview-v4");
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const db = open.result;
@@ -799,7 +799,7 @@ test("Secret is independent of reveal; browser preview persists ciphertext and r
   await saved(page); await page.reload();
   await expect(page.getByRole("button", { name: "Select environment" })).toContainText("Secure staging");
   const storage = await page.evaluate(async () => {
-    const db = await new Promise<IDBDatabase>((resolve) => { const request = indexedDB.open("purr-preview-v3"); request.onsuccess = () => resolve(request.result); });
+    const db = await new Promise<IDBDatabase>((resolve) => { const request = indexedDB.open("purr-preview-v4"); request.onsuccess = () => resolve(request.result); });
     const all = (name: string) => new Promise<any[]>((resolve) => { const request = db.transaction(name).objectStore(name).getAll(); request.onsuccess = () => resolve(request.result); });
     const projects = await all("projects"); const secrets = await all("secrets"); const keys = await all("keys"); db.close();
     return { leaked: JSON.stringify(projects).includes("purr-test-secret-not-in-project"), encrypted: secrets.length > 0 && secrets.every((entry) => entry.data instanceof ArrayBuffer && entry.iv instanceof Uint8Array), exportable: keys.some((entry) => entry.key?.extractable), legacy: localStorage.getItem("purr.workspaces.v1") };

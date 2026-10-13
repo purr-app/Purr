@@ -18,21 +18,28 @@ export type LocalTable =
   | "schema_cache"
   | "recent_items"
   | "attachments";
-export type LocalRecord = { table: LocalTable; id: string; value: unknown };
+export type LocalProtection = "plaintext" | "encrypted";
+export type UnavailableLocalRecord = { table: LocalTable; id: string; state: Exclude<ProtectedState, { status: "available" }> };
+export type LocalRecord = { table: LocalTable; id: string; value: unknown; protection?: LocalProtection };
 export type LocalChange = {
   table: LocalTable;
   id: string;
   value: unknown | null;
+  protection?: LocalProtection;
 };
 export type StoredWorkspace = {
   id: string;
   files: Record<string, ProjectFile>;
   local: LocalRecord[];
+  unavailableLocal?: UnavailableLocalRecord[];
+  /** Runtime-key capability, independent of credential keys and damaged individual records. */
+  runtimeProtectedState?: ProtectedState;
   /** Absence means available for old adapters. Non-available local is opaque, not empty. */
   protectedState?: ProtectedState;
 };
 export type StorageSnapshot = {
   globalProtectedState?: ProtectedState;
+  globalUnavailableLocal?: UnavailableLocalRecord[];
   storageNotice?: { legacyDirectory: string } | null;
   activeWorkspaceId: string;
   workspaces: StoredWorkspace[];

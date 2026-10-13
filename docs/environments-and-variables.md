@@ -213,3 +213,5 @@ unrelated unsaved edit remains unsaved. Immutable execution history, response
 snapshots, file contents, opaque extension configuration, IDs and secret references
 are unchanged. Dynamic cache entries are invalidated. Secrets are never resolved
 as part of the rename operation.
+
+Dynamic cache entries also retain capture-time sensitivity and response protection. A later preference change does not decrypt a cached value. Sensitive values retain runtime SecretRefs even if the live variable is made public; refreshing creates a new value using the current declaration. Entries with no owning variable are omitted from future cache snapshots. Error caches remain encrypted.

@@ -178,7 +178,7 @@ impl ResponseContentHandle {
 }
 
 #[derive(Default)]
-pub struct ResponseContentState(Mutex<Option<ResponseContentHandle>>);
+pub struct ResponseContentState(Mutex<Option<(ResponseContentHandle, bool)>>);
 
 impl ResponseContentState {
     pub fn handle(&self, app: &tauri::AppHandle) -> Result<ResponseContentHandle, String> {
@@ -186,20 +186,24 @@ impl ResponseContentState {
             .0
             .lock()
             .map_err(|_| "Response storage is unavailable")?;
-        if guard.is_none() {
+        if guard.as_ref().is_none_or(|(_, available)| !available) {
             let data = data_directory(app).map_err(|error| error.to_string())?;
-            let ciphers = app
-                .state::<NativeKeyState>()
-                .open(app)
-                .map_err(|error| error.to_string())?;
-            *guard = Some(ResponseContentHandle::start(
-                data.join("local-state.sqlite3"),
-                &ciphers,
-            )?);
+            let ciphers = app.state::<NativeKeyState>().open(app);
+            // A public store can run without OS key access. Keep its worker until
+            // an explicit Retry / Unlock has made real keys available.
+            if ciphers.is_err() && guard.is_some() {
+                return Ok(guard.as_ref().expect("existing public worker").0.clone());
+            }
+            let available = ciphers.is_ok();
+            let ciphers = ciphers.unwrap_or_else(|_| Arc::new(RootCiphers::unavailable()));
+            *guard = Some((
+                ResponseContentHandle::start(data.join("local-state.sqlite3"), &ciphers)?,
+                available,
+            ));
         }
         guard
             .as_ref()
-            .cloned()
+            .map(|(handle, _)| handle.clone())
             .ok_or_else(|| "Response storage is unavailable".into())
     }
 }

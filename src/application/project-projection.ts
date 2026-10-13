@@ -1,6 +1,8 @@
+import { compactLocalRequest, compactLocalRequestDocument, expandLocalRequest, expandLocalRequestDocument } from "./local-request-codec";
+import { protectResponseSnapshot, restoreResponseSnapshot, responseRecordProtection } from "./response-snapshot";
 import { schemaConnectionIdentity } from "../features/graphql/model/schema-connection";
 import { credentialSchema, resourceSchema, workspaceDefinitionSchema, variableDefinitionSchema, type AuthDefinition, type Credential, type Project, type ProjectResource, type RequestDefinition, type SchemaDefinition, type VariableDefinition } from "../domain/project";
-import { responseForPersistence, restoreStoredHttpResponse, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
+import { responseForPersistence, storedHttpResponseStartedAt, type StoredHttpResponse } from "../domain/http";
 import { serializeResource, deserializeResourceFile, normalizeLegacyResource, normalizeLegacyWorkspace } from "../storage/yaml";
 import { normalizeRequestAuth, createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
@@ -219,13 +221,13 @@ async function variableFromDefinition(variable: VariableDefinition, secure: Secu
 }
 
 async function protectDynamicVariableCache(cache: Workspace["dynamicVariableCache"], variables: readonly Variable[], secure: SecureStore, workspace: string) {
-  return Object.fromEntries(await Promise.all(Object.entries(cache).map(async ([key, entry]) => {
+  return Object.fromEntries(await Promise.all(Object.entries(cache).filter(([key]) => variables.some((variable) => variable.id === key.split(":", 1)[0])).map(async ([key, entry]) => {
     const variableId = key.split(":", 1)[0];
     const variable = variables.find((candidate) => candidate.id === variableId);
-    if (!variable?.sensitive || entry.status !== "success" || entry.value === undefined) return [key, entry];
+    if (!variable?.sensitive && !entry.sensitivity && !entry.secretState || entry.status !== "success" || entry.value === undefined) return [key, entry];
     const credential = await storeCredential(secure, secretRef(workspace, `dynamic-variables/${variableId}`, `cache/${entry.environmentId ?? "none"}`, "runtime"), entry.value, "secret", entry.secretState);
     const { secretState: _state, ...metadata } = entry;
-    return [key, { ...metadata, value: { __purrSecret: credential } }];
+    return [key, { ...metadata, sensitivity: true, value: { __purrSecret: credential } }];
   })));
 }
 
@@ -274,7 +276,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     : { ...common, kind: "http" };
 }
 
-export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { globalVariables?: readonly Variable[]; localOnlyBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
+export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { includeExecutions?: boolean; globalVariables?: readonly Variable[]; localOnlyBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
   const secure = source instanceof SecretPreparationStore ? source : new SecretPreparationStore(source);
   // Historical tabs are views of local executions, never saved documents or drafts.
   const historicalIds = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.historical).map((document) => document.id));
@@ -301,7 +303,7 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
   const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();
   const allVariables = [...workspace.variables, ...workspace.environments.flatMap((environment) => environment.variables)];
   const local: LocalRecord[] = [
-    { table: "workspace_local_state", id: "state", value: { ui: workspace.ui, activeEnvironmentId: workspace.activeEnvironmentId } },
+    { table: "workspace_local_state", id: "state", value: { ui: workspace.ui, activeEnvironmentId: workspace.activeEnvironmentId, responseStorage: workspace.responseStorage } },
     { table: "workspace_local_state", id: "dynamic-variable-cache", value: await protectDynamicVariableCache(workspace.dynamicVariableCache, allVariables, secure, workspace.id) },
   ];
   if (!baseline) for (const environment of workspace.environments) resources.push({ id: environment.id, kind: "environment", name: environment.name,
@@ -327,17 +329,18 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
       const definition = document.saved ? baseline?.resources.find((item): item is RequestDefinition => item.id === document.id && (item.kind === "http" || item.kind === "graphql"))
         ?? (!baseline ? await requestDefinition(document, workspace.id, secure, assets) : undefined) : undefined;
       if (definition) resources.push(definition);
-      if (!document.saved || isDocumentDirty(document)) {
+      const hasDraft = !document.saved || isDocumentDirty(document);
+      if (hasDraft) {
         const draft = await protectRuntime({ ...document, lastResponse: null, sentAt: null }, secure, workspace.id, `drafts/${document.id}`) as Record<string, unknown>;
         // The portable baseline tracks external edits; it is not a runtime secret snapshot.
-        local.push({ table: "drafts", id: document.id, value: await encodeFiles({ ...draft, base: baseline ? null : definition ?? null,
+        local.push({ table: "drafts", id: document.id, value: await encodeFiles({ ...compactLocalRequestDocument(draft) as Record<string, unknown>, base: baseline ? null : definition ?? null,
           ...(baseline && definition ? { baseFingerprint: await valueHash(serializeResource(definition, undefined, 1)) } : {}),
         }, attachments) });
       }
-      local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
-        ...(definition ? { ...(baseline ? { definitionHash: await valueHash(serializeResource(definition, undefined, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definition: serializeResource(definition, undefined, options.sourceVersion ?? 2) }),
-          editor: await encodeFiles(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`), attachments) } : {}) } });
-      if (document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, value: { documentId: document.id, response: responseForPersistence(document.lastResponse) } });
+      local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, ...(isRequestDocument(document) ? { responseStorage: document.responseStorage ?? "inherit" } : {}), createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
+        ...(definition && !hasDraft ? { ...(baseline ? { definitionHash: await valueHash(serializeResource(definition, undefined, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definitionHash: await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) }),
+          editor: await encodeFiles(compactLocalRequest(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)), attachments) } : {}) } });
+      if (options.includeExecutions !== false && document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, protection: responseRecordProtection(document.lastResponse), value: { documentId: document.id, response: responseRecordProtection(document.lastResponse) === "plaintext" ? await protectResponseSnapshot(document.lastResponse, secure, workspace.id, `executions/${document.id}-${document.lastResponse.timeline.startedAtMs}`) : responseForPersistence(document.lastResponse) } });
     } else if (document.kind === "schema") {
       const previousSchema = baseline?.resources.find((item): item is SchemaDefinition => item.kind === "schema" && item.id === document.id);
       const auth = previousSchema?.auth ?? (!baseline ? await authToDefinition(document.auth, secure, workspace.id, `schemas/${document.id}`) : { type: "none" as const });
@@ -347,7 +350,7 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
         endpoint: document.endpoint, auth, introspectionHeaders, pin: document.pinned !== false,
         ...(document.pinned !== false && document.sdl ? { pinnedSdl: document.sdl } : {}) };
       if (document.saved) resources.push(definition);
-      else local.push({ table: "drafts", id: document.id, value: await protectRuntime(document, secure, workspace.id, `schema-drafts/${document.id}`) });
+      else local.push({ table: "drafts", id: document.id, protection: document.cacheProtection ?? "encrypted", value: await protectRuntime(document, secure, workspace.id, `schema-drafts/${document.id}`) });
       let cacheIdentity = document.cacheIdentity;
       if (!baseline && cacheIdentity && cacheIdentity === await schemaConnectionIdentity(document, workspace.requestConfig, identityVariables, workspace.activeEnvironmentId)) {
         const canonical = { ...document,
@@ -359,9 +362,9 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
         const committedIdentity = cacheIdentity;
         secure.onCommitted(() => { if (document.cacheIdentity === before) document.cacheIdentity = committedIdentity; });
       }
-      local.push({ table: "schema_cache", id: document.id, value: { version: 2, definitionHash: await schemaDefinitionIdentity(definition), sdl: document.sdl, loadedAt: document.loadedAt, source: await protectRuntime(schemaSource(document), secure, workspace.id, `schema-cache/${document.id}/source`), cacheIdentity } });
+      local.push({ table: "schema_cache", id: document.id, protection: document.cacheProtection ?? "encrypted", value: { version: 2, protection: document.cacheProtection ?? "encrypted", definitionHash: await schemaDefinitionIdentity(definition), sdl: document.sdl, loadedAt: document.loadedAt, cacheIdentity } });
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, createdAt: document.createdAt, updatedAt: document.updatedAt,
-        ...(baseline ? { authDefinitionHash: await valueHash(auth) } : { authDefinition: JSON.stringify(auth) }), auth: await protectRuntime(document.auth, secure, workspace.id, `schema-auth/${document.id}`) } });
+        authDefinitionHash: await valueHash(auth), auth: await protectRuntime(document.auth, secure, workspace.id, `schema-auth/${document.id}`) } });
     } else {
       const definition: ProjectResource = { id: document.id, kind: "extension", name: document.name,
         ...(document.description ? { description: document.description } : {}), ...(document.folderId ? { folderId: document.folderId } : {}),
@@ -383,6 +386,12 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
   }
   for (const [id, value] of attachments) local.push({ table: "attachments", id, value });
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
+  // Only explicit, reviewed projections may be public. Unknown adapter records
+  // retain the encrypted default at the storage boundary.
+  for (const record of local) record.protection ??= record.table === "cookie_jar" || record.table === "attachments"
+
+    || record.table === "workspace_local_state" && record.id === "dynamic-variable-cache" && Object.values(workspace.dynamicVariableCache).some((entry) => entry.status === "error" || entry.protection === "encrypted")
+    ? "encrypted" : "plaintext";
   return { project: baseline ?? { workspace: { id: workspace.id, name: workspace.name, ...(workspace.description ? { description: workspace.description } : {}),
     ...(workspace.defaultGraphqlSchemaId ? { defaultGraphqlSchemaId: workspace.defaultGraphqlSchemaId } : {}),
     ...(workspace.requestConfig.tracePropagation ? { tracePropagation: workspace.requestConfig.tracePropagation } : {}),
@@ -448,8 +457,8 @@ export async function restoreWorkspace(
   workspace.requestConfig.tracePropagation = project.workspace.tracePropagation;
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
   const attachments = new Map(records.filter((item) => item.table === "attachments").map((item) => [item.id, item.value]));
-  const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null } | undefined;
-  if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; }
+  const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null; responseStorage?: "plaintext" | "encrypted" } | undefined;
+  if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; workspace.responseStorage = state.responseStorage === "encrypted" ? "encrypted" : "plaintext"; }
   else workspace.ui = { ...workspace.ui, openDocumentIds: [], activeDocumentId: null };
   workspace.dynamicVariableCache = await resolveRuntime(get("workspace_local_state", "dynamic-variable-cache") ?? {}, secure, hydrate) as Workspace["dynamicVariableCache"];
   const runtimeAuth = parseWorkspaceAuthRuntime(get("workspace_local_state", "auth-runtime"), workspace.id);
@@ -480,7 +489,7 @@ export async function restoreWorkspace(
       extensionType: resource.extensionType, configVersion: resource.configVersion, config: structuredClone(resource.config),
       savedConfigVersion: resource.configVersion, savedConfig: structuredClone(resource.config), ui: {} });
     if (resource.kind === "schema") {
-      const storedCache = get("schema_cache", resource.id) as { version?: number; definitionHash?: string; sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"]; cacheIdentity?: string } | undefined;
+      const storedCache = get("schema_cache", resource.id) as { version?: number; protection?: "plaintext" | "encrypted"; definitionHash?: string; sdl: string; loadedAt: string | null; source?: SchemaDefinition["source"]; cacheIdentity?: string } | undefined;
       const source = resource.source;
       const cache = storedCache && typeof storedCache.sdl === "string"
         && (storedCache.version === 2 || storedCache.version === undefined && JSON.stringify(storedCache.source) === JSON.stringify(source)) ? storedCache : undefined;
@@ -489,6 +498,7 @@ export async function restoreWorkspace(
         connectionVersion: resource.endpoint !== undefined ? 1 : undefined,
         auth: resource.auth ? await authFromDefinition(resource.auth, secure, hydrate) : createRequestAuth(),
         introspectionHeaders: await Promise.all((resource.introspectionHeaders ?? []).map((header) => headerFromDefinition(header, secure, hydrate))),
+        cacheProtection: cache?.protection ?? "encrypted",
         cacheIdentity: cache?.definitionHash && cache.definitionHash !== await schemaDefinitionIdentity(resource) ? "changed" : typeof cache?.cacheIdentity === "string" ? cache.cacheIdentity : undefined,
         endpoint: resource.endpoint ?? ("endpoint" in source ? source.endpoint ?? "" : ""), sourceRequestId: source.type === "introspection" ? source.requestId ?? "" : "",
         sourceLabel: source.type === "introspection" ? resource.endpoint ?? source.endpoint ?? "" : "location" in source ? source.location ?? "" : "", pinned: resource.pin,
@@ -496,7 +506,7 @@ export async function restoreWorkspace(
     }
   }
   for (const record of records.filter((item) => item.table === "drafts")) {
-    const draft = await resolveRuntime(decodeFiles(record.value, attachments, workspace.id, loadAttachment), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
+    const draft = await resolveRuntime(expandLocalRequestDocument(decodeFiles(record.value, attachments, workspace.id, loadAttachment)), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
     if (index < 0 && !draft.saved) workspace.documents.push(draft);
     else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
@@ -547,7 +557,7 @@ export async function restoreWorkspace(
       if (session?.editor && definition && sessionMatches && !records.some((record) => record.table === "drafts" && record.id === result.id)) {
         const canonicalAuth = result.request.auth;
         const canonicalHeaders = result.request.headers;
-        const editor = await resolveRuntime(decodeFiles(session.editor, attachments, workspace.id, loadAttachment), secure, hydrate) as RequestDraft;
+        const editor = await resolveRuntime(expandLocalRequest(decodeFiles(session.editor, attachments, workspace.id, loadAttachment)), secure, hydrate) as RequestDraft;
         // Cached editor modes must not shadow a credential changed in SecureStore.
         // Dirty working copies use their own local refs until explicitly saved.
         const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[canonicalAuth.type] as "bearer" | "basic" | "apiKey" | "oauth2" | "inherit" | null;
@@ -561,11 +571,13 @@ export async function restoreWorkspace(
         result.request = editor;
         result.savedRequest = result.request;
       }
-      const executions = records.filter((record) => record.table === "request_executions" && (record.value as { documentId?: unknown }).documentId === document.id)
-        .map((record) => restoreStoredHttpResponse((record.value as { response?: unknown }).response))
+      const executions = (await Promise.all(records.filter((record) => record.table === "request_executions" && (record.value as { documentId?: unknown }).documentId === document.id)
+        .map((record) => restoreResponseSnapshot((record.value as { response?: unknown }).response, secure, workspace.id))))
         .filter((response): response is StoredHttpResponse => response !== null)
         .sort((a, b) => storedHttpResponseStartedAt(b) - storedHttpResponseStartedAt(a));
       result.lastResponse = executions[0] ?? null;
+      const preference = (get("document_session_state", result.id) as { responseStorage?: unknown } | undefined)?.responseStorage;
+      result.responseStorage = preference === "encrypted" || preference === "plaintext" ? preference : "inherit";
     }
     return result;
   }));

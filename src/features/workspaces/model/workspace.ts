@@ -30,6 +30,8 @@ export type Variable = VariableBase & (
 export type EnvironmentVariable = Variable;
 export type Environment = { id: string; name: string; description?: string; folderId?: string; variables: Variable[] };
 export type DynamicVariableCacheEntry = {
+  sensitivity?: boolean;
+  protection?: "plaintext" | "encrypted";
   status: "success" | "error";
   value?: string;
   error?: string;
@@ -53,6 +55,8 @@ export type RequestDocumentKind = "http" | "graphql";
 export type CreatableDocumentKind = RequestDocumentKind | "schema";
 export type RequestDocument = DocumentBase & {
   kind: RequestDocumentKind;
+  /** Device-local response storage preference; never part of canonical YAML. */
+  responseStorage?: "inherit" | "plaintext" | "encrypted";
   /** Ephemeral immutable execution tab; never projected to workspace files. */
   historical?: { dynamicExecution?: DynamicExecutionMetadata; entryId: string; documentId: string; startedAt: number; error: string; readOnly?: boolean; inPlace?: boolean };
   request: RequestDraft;
@@ -71,6 +75,7 @@ export type SchemaDocument = DocumentBase & {
   auth: ReturnType<typeof createRequestAuth>;
   introspectionHeaders: RequestHeader[];
   cacheIdentity?: string;
+  cacheProtection?: "plaintext" | "encrypted";
   fetchStatus?: "loading" | "error";
   fetchError?: string;
   endpoint: string;
@@ -108,6 +113,7 @@ export type Workspace = {
   /** Ephemeral capabilities; never project into canonical definitions. */
   projectFormatVersion?: 1 | 2;
   protectedState?: ProtectedState;
+  publicWritable?: boolean;
   id: string;
   name: string;
   description: string;
@@ -119,6 +125,8 @@ export type Workspace = {
   cookies: SessionCookie[];
   activeEnvironmentId: string | null;
   requestConfig: WorkspaceRequestConfig;
+  /** Device-local default for future executions. */
+  responseStorage?: "plaintext" | "encrypted";
   dynamicVariableCache: Record<string, DynamicVariableCacheEntry>;
   ui: {
     openDocumentIds: string[];
@@ -245,7 +253,7 @@ export function createWorkspace(name = "Personal", id: string = crypto.randomUUI
   const document = createHttpDocument();
   return {
     schemaVersion: 1, id, name, description: "", documents: [document], variables: [], environments: [], cookies: [], activeEnvironmentId: null,
-    requestConfig: createWorkspaceRequestConfig(), dynamicVariableCache: {},
+    requestConfig: createWorkspaceRequestConfig(), responseStorage: "plaintext", dynamicVariableCache: {},
     ui: {
       openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false,
       settingsTabOpen: false, settingsTabActive: false, sidebarOpen: true,
@@ -339,7 +347,7 @@ export function duplicateDocument(workspace: Workspace, id: string): Workspace {
     const created = createSchemaDocument();
     const duplicate: SchemaDocument = { ...created, saved: true, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
       folderId: source.folderId, sourceRequestId: source.sourceRequestId, endpoint: source.endpoint, sdl: source.sdl, source: source.source,
-      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders).map((header) => ({ ...header, secretRef: undefined })), cacheIdentity: source.cacheIdentity,
+      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders).map((header) => ({ ...header, secretRef: undefined })), cacheIdentity: source.cacheIdentity, cacheProtection: source.cacheProtection,
       sourceLabel: source.sourceLabel, loadedAt: source.loadedAt, schemaSource: source.schemaSource, pinned: source.pinned, ui: { ...source.ui } };
     return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
   }
@@ -348,7 +356,7 @@ export function duplicateDocument(workspace: Workspace, id: string): Workspace {
   request.auth = { ...request.auth, secretRefs: undefined, oauth2: { ...request.auth.oauth2, token: null } };
   request.headers = request.headers.map((header) => ({ ...header, secretRef: undefined }));
   const duplicate: RequestDocument = { ...created, kind: source.kind, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
-    folderId: source.folderId, request, ui: { ...source.ui } };
+    folderId: source.folderId, responseStorage: source.responseStorage ?? "inherit", request, ui: { ...source.ui } };
   return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
 }
 
@@ -655,8 +663,10 @@ export function validateWorkspace(value: unknown): Workspace {
     cookies: Array.isArray(workspace.cookies) ? workspace.cookies : [],
     dynamicVariableCache: workspace.dynamicVariableCache && typeof workspace.dynamicVariableCache === "object" ? workspace.dynamicVariableCache : {},
     requestConfig,
+    responseStorage: workspace.responseStorage === "encrypted" ? "encrypted" : "plaintext",
     documents: workspace.documents.map((document) => isRequestDocument(document) ? ({
       ...document,
+      responseStorage: document.responseStorage === "encrypted" || document.responseStorage === "plaintext" ? document.responseStorage : "inherit",
       request: normalizeRequest(document.request),
       savedRequest: document.saved
         ? cloneRequestDraft(normalizeRequest(document.savedRequest && validRequest(document.savedRequest, document.kind) ? document.savedRequest : document.request))

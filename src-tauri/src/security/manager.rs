@@ -313,7 +313,7 @@ impl KeyManager {
             }
             (None, None, None)
                 if !inventory.has_encrypted_data()
-                    && !known_database
+                    && (!known_database || inventory.is_public_profile())
                     && metadata
                         .as_ref()
                         .is_none_or(|m| m.phase == Phase::Prepared && m.new_vault) =>
@@ -1243,5 +1243,37 @@ mod tests {
                 .scope_registry_version,
             Some(1)
         );
+    }
+    #[test]
+    fn keyless_public_profile_can_provision_once_but_never_replace_an_established_root() {
+        use crate::persistence::local_records::{LocalRecord, LocalStateStore, RecordProtection};
+        let dir = tempfile::tempdir().unwrap();
+        let mut public = LocalStateStore::open_with_ciphers(
+            &dir.path().join("local-state.sqlite3"),
+            &RootCiphers::unavailable(),
+        )
+        .unwrap();
+        public
+            .write(
+                "a",
+                &[LocalRecord {
+                    protection: RecordProtection::Plaintext,
+                    table: "drafts".into(),
+                    id: "r".into(),
+                    value: serde_json::json!({"url":"https://example.invalid"}),
+                }],
+            )
+            .unwrap();
+        drop(public);
+        let provider = Arc::new(Provider::default());
+        {
+            let manager = scoped_manager(dir.path(), &provider);
+            manager.open_scoped().unwrap();
+        }
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 1);
+        provider.entries.lock().unwrap().clear();
+        let manager = scoped_manager(dir.path(), &provider);
+        assert_eq!(error(manager.open_scoped()).code, "root-key-missing");
+        assert_eq!(provider.writes.load(Ordering::Relaxed), 1);
     }
 }

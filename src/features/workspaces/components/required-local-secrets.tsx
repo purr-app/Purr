@@ -16,16 +16,17 @@ export type RequiredLocalSecretsProps = {
   secure: SecureStore;
   migrationRequired: boolean;
   protectedState: ProtectedState;
+  runtimeProtectedState?: ProtectedState;
   onOpenOwner: (ownerId: string, environmentId?: string, field?: string) => void;
   onSetValue: (ref: string, value: string | null) => Promise<void>;
-  onRetry: () => Promise<void>;
+  onRetry: () => Promise<ProtectedState>;
 };
 const statusLabel = (item: SecretInventoryItem) => item.declaration === "external-provider" ? "External provider unavailable"
   : item.declaration === "unsaved-value" ? "Save the owner to create its local reference"
     : item.declaration === "missing-variable" ? "Variable not defined or disabled"
       : ({ available: "Available locally", missing: "Missing locally", locked: "Locked", unavailable: "Unavailable", corrupt: "Cannot read protected value", denied: "Access denied", unchecked: "Checking…" })[item.status.status];
 
-export function RequiredLocalSecrets({ workspace, project, globalVariables, secure, migrationRequired, protectedState, onOpenOwner, onSetValue, onRetry }: RequiredLocalSecretsProps) {
+export function RequiredLocalSecrets({ workspace, project, globalVariables, secure, migrationRequired, protectedState, runtimeProtectedState, onOpenOwner, onSetValue, onRetry }: RequiredLocalSecretsProps) {
   const input = useMemo(() => ({ workspace, project, globalVariables }), [workspace, project, globalVariables]);
   const base = useMemo(() => buildSecretInventory(input), [input]);
   const [resolved, setResolved] = useState<{ input: typeof input; inventory: typeof base } | null>(null);
@@ -43,6 +44,8 @@ export function RequiredLocalSecrets({ workspace, project, globalVariables, secu
     return () => { current = false; };
   }, [input, secure, refresh, available]);
   const inventory = resolved?.input === input && available ? resolved.inventory : base;
+  const recoveryState = available ? runtimeProtectedState ?? protectedState : protectedState;
+  const needsRetry = recoveryState.status !== "available" || inventory.items.some((item) => ["locked", "denied", "unavailable", "corrupt"].includes(item.status.status));
   const omitted = inventory.items.filter((item) => item.ref).length;
   const missing = inventory.items.filter((item) => item.status.status !== "available" && item.status.status !== "unchecked").length;
   const pending = inventory.items.filter((item) => item.status.status === "unchecked").length;
@@ -60,14 +63,25 @@ export function RequiredLocalSecrets({ workspace, project, globalVariables, secu
     <div className="flex items-start justify-between gap-ui-3">
       <div><h3 className="m-ui-0 text-ui-md font-medium text-content-primary">Required local secrets</h3>
         <p className="mb-ui-0 mt-ui-2 text-ui-sm text-content-secondary">References describe what a workspace needs. Values stay on this device. Existing values are never filled into this panel.</p></div>
-      <Button type="button" variant="brand" size="sm" disabled={busy} onClick={async () => {
+      {needsRetry || inventory.items.length || error ? <Button type="button" variant={needsRetry ? "brand" : "secondary"} size="sm" disabled={busy} onClick={async () => {
         setBusy(true); setError(""); setNotice(""); setEditing(null); setValue("");
-        try { await onRetry(); setResolved(null); setRefresh((current) => current + 1); }
+        try {
+          if (needsRetry) {
+            const state = await onRetry();
+            if (state.status !== "available") { setError(`${protectedStorageMessage(state)} Existing local values have been preserved.`); return; }
+          }
+          const checked = await resolveSecretInventory(input, secure);
+          setResolved({ input, inventory: checked });
+          const inaccessible = checked.items.some((item) => ["locked", "denied", "unavailable", "corrupt"].includes(item.status.status));
+          setNotice(inaccessible ? "Access rechecked. Some secret values remain unavailable; see their status below."
+            : needsRetry ? "Protected storage access restored. Secret statuses refreshed." : "Secret statuses refreshed.");
+        }
         catch { setError("Protected storage is still unavailable. Existing local values have been preserved."); }
         finally { setBusy(false); }
-      }}>Retry / Unlock</Button>
+      }}>{busy ? "Checking…" : needsRetry ? "Retry / Unlock" : "Refresh status"}</Button> : null}
     </div>
     {!available ? <p role="status" className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">{protectedStorageMessage(protectedState)} Editing is disabled until the stored baseline can be read. Public definitions remain available.</p> : null}
+    {available && recoveryState.status !== "available" ? <p role="status" className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">{protectedStorageMessage(recoveryState)} Protected response storage is unavailable until access is restored.</p> : null}
     {migrationRequired ? <p role="status" className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">This workspace still uses format v1. Known legacy credential literals may remain in its public files until an explicit Save or Upgrade succeeds. Updating current files does not remove previous Git history or copies.</p> : null}
     <div className="rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-content-secondary">
       <p className="m-ui-0 font-medium text-content-primary">Configuration sharing preview</p>

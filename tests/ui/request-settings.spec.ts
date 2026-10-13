@@ -19,7 +19,7 @@ test.beforeEach(async ({ page }) => {
 
 test("request settings have section hierarchy, persist, and control execution", async ({ page }) => {
   const settings = page.getByLabel("Request settings", { exact: true });
-  await expect(settings.getByRole("heading", { level: 2 })).toHaveText(["Tracing", "Redirects", "Connection", "Cookies"]);
+  await expect(settings.getByRole("heading", { level: 2 })).toHaveText(["Tracing", "Redirects", "Connection", "Cookies", "Local response storage"]);
   const titleSize = await settings.getByRole("heading", { name: "Tracing", exact: true }).evaluate((node) => parseFloat(getComputedStyle(node).fontSize));
   const labelSize = await settings.getByRole("heading", { name: "Tracing provider", exact: true }).evaluate((node) => parseFloat(getComputedStyle(node).fontSize));
   expect(titleSize).toBeGreaterThan(labelSize);

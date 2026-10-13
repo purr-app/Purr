@@ -34,6 +34,7 @@ export type HistorySummary = {
 };
 export type HistoryEntry = HistorySummary & {
   version: 1;
+  protection?: "plaintext" | "encrypted";
   editor: unknown;
   response: StoredHttpResponse | null;
   error: string;

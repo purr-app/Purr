@@ -5,6 +5,7 @@ import { Input } from "../../../shared/components/ui/input";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import { Switch } from "../../../shared/components/ui/switch";
 import { SettingsRow, SettingsSection } from "../../../shared/components/ui/settings-section";
+import { HelpTooltip } from "../../../shared/components/ui/help-tooltip";
 import type { RequestSettings } from "../../../domain/request-settings";
 import { getRequestSettings, type RequestDraft } from "../model/request";
 import { resolveRequestTracing } from "../model/request-tracing";
@@ -25,7 +26,10 @@ function NumberSetting({ label, value, min, max, disabled = false, onChange }: {
     }} onBlur={() => { if (!valid) setText(String(value)); }} />;
 }
 
-export function RequestSettingsEditor({ draft, effectiveDraft, onChange }: {
+export function RequestSettingsEditor({ draft, effectiveDraft, onChange, responseStorage = "inherit", workspaceResponseStorage = "plaintext", onResponseStorageChange }: {
+  responseStorage?: "inherit" | "plaintext" | "encrypted";
+  workspaceResponseStorage?: "plaintext" | "encrypted";
+  onResponseStorageChange?: (value: "inherit" | "plaintext" | "encrypted") => void;
   draft: RequestDraft; effectiveDraft: RequestDraft; onChange: (draft: RequestDraft) => void;
 }) {
   const integrations = useWorkspaceIntegrations();
@@ -74,6 +78,18 @@ export function RequestSettingsEditor({ draft, effectiveDraft, onChange }: {
       </SettingsRow>
       <SettingsRow label="Automatically store cookies" description="Save Set-Cookie headers from responses and redirect hops to the workspace jar.">
         <Switch label="Automatically store cookies" checked={settings.storeCookies} onCheckedChange={(storeCookies) => change({ storeCookies })} />
+      </SettingsRow>
+    </SettingsSection>
+    <SettingsSection title="Local response storage">
+      <SettingsRow label={<span className="inline-flex items-center gap-ui-1">Encrypt response
+        <HelpTooltip label="About response encryption">
+          <p className="m-ui-0">{responseStorage === "inherit" ? `Uses the workspace default: ${workspaceResponseStorage === "encrypted" ? "On" : "Off"}.` : `Request override: ${responseStorage === "encrypted" ? "On" : "Off"}.`} Applies to future executions on this device. Existing responses keep their original protection.</p>
+          <p className="mb-ui-0 mt-ui-2">Off stores ordinary response bodies and metadata as plaintext, including tokens or personal data returned by the server. Marked request secrets, authentication and cookies remain protected.</p>
+        </HelpTooltip>
+      </span>}>
+        <SelectField label="Encrypt response for this request" value={responseStorage} options={[
+          { value: "inherit", label: "Inherit" }, { value: "encrypted", label: "On" }, { value: "plaintext", label: "Off" },
+        ]} onValueChange={(value) => onResponseStorageChange?.(value)} />
       </SettingsRow>
     </SettingsSection>
   </div>;

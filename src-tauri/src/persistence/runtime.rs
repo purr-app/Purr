@@ -123,7 +123,10 @@ impl RuntimeStorage {
     fn open(app: &tauri::AppHandle) -> Result<Self, ProtectedError> {
         let data = data_directory(app)?;
         fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
-        let ciphers = app.state::<NativeKeyState>().open(app)?;
+        let ciphers = app
+            .state::<NativeKeyState>()
+            .open(app)
+            .unwrap_or_else(|_| std::sync::Arc::new(crate::security::RootCiphers::unavailable()));
         let local =
             LocalStateStore::open_with_ciphers(&data.join("local-state.sqlite3"), &ciphers)?;
         let (sender, receiver) = mpsc::channel();
@@ -263,17 +266,20 @@ impl RuntimeStorage {
     fn workspace(&mut self, id: &str) -> Result<Value, String> {
         self.recover()?;
         let files = self.files(id)?.load()?;
-        let protected = (|| {
-            self.local.validate_owner_keys(id)?;
-            self.local.prune_history(id)?;
-            self.local.read(id)
-        })();
-        match protected {
-            Ok(local) => Ok(json!({ "id": id, "files": files, "local": local })),
-            Err(_) => Ok(
-                json!({ "id": id, "files": files, "local": [], "protectedState": {"status":"corrupt", "code":"workspace-scope-unavailable"} }),
-            ),
-        }
+        let (local, unavailable) = self.local.read_partial(id)?;
+        let state = if self.local.validate_owner_keys(id).is_ok() {
+            json!({"status":"available"})
+        } else {
+            json!({"status":"unavailable","code":"protected-storage-unavailable"})
+        };
+        let runtime_state = if self.local.runtime_cipher(id).is_ok() {
+            json!({"status":"available"})
+        } else {
+            json!({"status":"unavailable","code":"runtime-storage-unavailable"})
+        };
+        Ok(
+            json!({"id":id,"files":files,"local":local,"unavailableLocal":unavailable,"protectedState":state,"runtimeProtectedState":runtime_state}),
+        )
     }
 }
 
@@ -349,7 +355,7 @@ fn snapshot(
     for (id, directory) in attached {
         if !ids.contains(id) {
             workspace_cleanup::ensure_available(&storage.local, id, directory)?;
-            storage.local.prepare_workspace_keys(id)?;
+            let _ = storage.local.prepare_workspace_keys(id);
             storage.watch(id, directory.clone())?;
             ids.insert(id.clone());
         }
@@ -358,20 +364,15 @@ fn snapshot(
         .iter()
         .map(|id| storage.workspace(id))
         .collect::<Result<Vec<_>, _>>()?;
-    let (global, global_state) = match storage
-        .local
-        .validate_owner_keys("__global__")
-        .and_then(|_| storage.local.read("__global__"))
-    {
-        Ok(records) => (records, json!({"status":"available"})),
-        Err(_) => (
-            Vec::new(),
-            json!({"status":"corrupt","code":"global-scope-unavailable"}),
-        ),
+    let (global, global_unavailable) = storage.local.read_partial("__global__")?;
+    let global_state = if storage.local.validate_owner_keys("__global__").is_ok() {
+        json!({"status":"available"})
+    } else {
+        json!({"status":"unavailable","code":"protected-storage-unavailable"})
     };
     let old = crate::security::layout::deprecated_directory(&storage.data);
     Ok(
-        json!({"activeWorkspaceId":storage.local.app("active-workspace")?.unwrap_or_default(),"workspaces":workspaces,"global":global,"globalProtectedState":global_state,"protectedState":{"status":"available"},"storageNotice":old.map(|directory| json!({"legacyDirectory":directory.to_string_lossy()}))}),
+        json!({"activeWorkspaceId":storage.local.app("active-workspace")?.unwrap_or_default(),"workspaces":workspaces,"global":global,"globalUnavailableLocal":global_unavailable,"globalProtectedState":global_state,"protectedState":{"status":"available"},"storageNotice":old.map(|directory| json!({"legacyDirectory":directory.to_string_lossy()}))}),
     )
 }
 
@@ -547,7 +548,14 @@ pub fn commit_project(
         storage.recover_before_commit()?;
         let store = storage.files(&id)?;
         workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
-        storage.local.prepare_workspace_keys(&id)?;
+        let protected = !batch.mutations.is_empty()
+            || local.iter().any(|record| {
+                record.protection == super::local_records::RecordProtection::Encrypted
+            });
+        let prepared = storage.local.prepare_workspace_keys(&id);
+        if protected {
+            prepared?;
+        }
         storage.watch(&id, store.directory.clone())?;
         commit_coordinator::commit(&mut storage.local, &store, &id, &files, &local, &batch)
     })
@@ -755,7 +763,7 @@ pub fn attach_project_directory(
             }
             workspace_cleanup::ensure_available(&storage.local, &id, &path)?;
             // Registration follows successful frontend validation via a separate commit.
-            storage.local.prepare_workspace_keys(&id)?;
+            let _ = storage.local.prepare_workspace_keys(&id);
             storage.watch(&id, path)?;
             storage.workspace(&id)
         })())

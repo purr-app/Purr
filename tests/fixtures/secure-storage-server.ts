@@ -44,6 +44,17 @@ export async function startSecureStorageFixtureServer(port = 18765) {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (request.method === "OPTIONS") { json(response, 200, { ok: true }); return; }
       if (url.pathname === "/health") { json(response, 200, { ok: true }); return; }
+      if (url.pathname === "/response") {
+        const bytes = Math.max(0, Math.min(16 * 1024 * 1024, Number(url.searchParams.get("bytes")) || 0));
+        const delayMs = Math.max(0, Math.min(10_000, Number(url.searchParams.get("delayMs")) || 0));
+        const marker = (url.searchParams.get("marker") || "PURR_PUBLIC_RESPONSE").slice(0, 128);
+        const send = () => { if (!response.destroyed) json(response, 200, { marker, padding: "x".repeat(bytes) }); };
+        if (delayMs) setTimeout(send, delayMs); else send();
+        return;
+      }
+      if (url.pathname === "/oauth/token") {
+        json(response, 200, { access_token: syntheticCredentials.A, token_type: "Bearer", expires_in: 3600 }); return;
+      }
       if (url.pathname === "/basic" || url.pathname === "/bearer") {
         const authorization = request.headers.authorization ?? "";
         let label: "A" | "B" | undefined;
@@ -89,6 +100,6 @@ export async function startSecureStorageFixtureServer(port = 18765) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const fixture = await startSecureStorageFixtureServer(Number(process.env.PURR_SECURE_STORAGE_FIXTURE_PORT ?? 18765));
-  process.stdout.write(`Purr synthetic secure-storage fixture: ${fixture.url}\nRoutes: /health /basic /bearer /echo /cookies/set /cookies/check\n`);
+  process.stdout.write(`Purr synthetic secure-storage fixture: ${fixture.url}\nRoutes: /health /response /oauth/token /basic /bearer /echo /cookies/set /cookies/check\n`);
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void fixture.close(); });
 }

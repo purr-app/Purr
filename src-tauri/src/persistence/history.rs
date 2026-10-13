@@ -88,7 +88,6 @@ impl LocalStateStore {
         Ok(())
     }
     pub fn request_history(&mut self, workspace: &str, action: Value) -> Result<Value, String> {
-        self.runtime_cipher(workspace)?;
         let operation = action["operation"]
             .as_str()
             .ok_or("Invalid history operation")?;
@@ -134,6 +133,13 @@ impl LocalStateStore {
                 }
                 let records = if !exists || replay {
                     vec![LocalRecord {
+                        protection: serde_json::from_value(
+                            entry
+                                .get("protection")
+                                .cloned()
+                                .unwrap_or(json!("encrypted")),
+                        )
+                        .map_err(|_| "Invalid history protection")?,
                         table: "request_executions".into(),
                         id: id.into(),
                         value: entry.clone(),
@@ -181,7 +187,7 @@ impl LocalStateStore {
                 let before = query["cursor"]["startedAt"].as_i64().unwrap_or(i64::MAX);
                 let before_id = query["cursor"]["id"].as_str().unwrap_or("");
                 let search = query["search"].as_str().unwrap_or("").trim().to_lowercase();
-                let mut stmt = self.db.prepare("SELECT id,summary,CASE WHEN summary IS NULL THEN payload ELSE NULL END,pinned FROM request_executions WHERE workspace_id=?1 AND (?2 IS NULL OR document_id=?2) AND (started_at<?3 OR (started_at=?3 AND id<?4)) ORDER BY started_at DESC,id DESC").map_err(db)?;
+                let mut stmt = self.db.prepare("SELECT id,summary,CASE WHEN summary IS NULL THEN payload ELSE NULL END,pinned,protection,document_id,started_at,status FROM request_executions WHERE workspace_id=?1 AND (?2 IS NULL OR document_id=?2) AND (started_at<?3 OR (started_at=?3 AND id<?4)) ORDER BY started_at DESC,id DESC").map_err(db)?;
                 let rows = stmt
                     .query_map(
                         params![workspace, query["documentId"].as_str(), before, before_id],
@@ -191,23 +197,41 @@ impl LocalStateStore {
                                 r.get::<_, Option<Vec<u8>>>(1)?,
                                 r.get::<_, Option<Vec<u8>>>(2)?,
                                 r.get::<_, bool>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, Option<String>>(5)?,
+                                r.get::<_, Option<i64>>(6)?,
+                                r.get::<_, Option<i64>>(7)?,
                             ))
                         },
                     )
                     .map_err(db)?;
                 let mut items = Vec::new();
+                let encrypted_available = self.runtime_cipher(workspace).is_ok();
                 for row in rows {
-                    let (id, metadata, payload, pinned) = row.map_err(db)?;
+                    let (id, metadata, payload, pinned, protection, document, started_at, status) =
+                        row.map_err(db)?;
+                    if protection == "encrypted" && !encrypted_available {
+                        items.push(json!({"id":id,"documentId":document.unwrap_or_default(),"startedAt":started_at.unwrap_or(0),"status":status,"size":0,"pinned":pinned,"name":"Protected response unavailable","kind":"http","method":"","url":"Protected response unavailable","durationMs":0,"outcome":"response","protectedState":{"status":"unavailable","code":"history-key-unavailable"}}));
+                        if items.len() > limit {
+                            break;
+                        }
+                        continue;
+                    }
                     let mut item = if let Some(metadata) = metadata {
-                        let plain = self
-                            .runtime_cipher(workspace)?
-                            .decrypt(&metadata, &format!("{workspace}/history-summary/{id}"))?;
+                        let plain = self.decode_runtime(
+                            workspace,
+                            &protection,
+                            &metadata,
+                            &format!("{workspace}/history-summary/{id}"),
+                        )?;
                         let Ok(metadata) = serde_json::from_slice::<Value>(&plain) else {
                             continue;
                         };
                         metadata
                     } else {
-                        let plain = self.runtime_cipher(workspace)?.decrypt(
+                        let plain = self.decode_runtime(
+                            workspace,
+                            &protection,
                             &payload.ok_or("Missing history payload")?,
                             &format!("{workspace}/request_executions/{id}"),
                         )?;
@@ -253,15 +277,16 @@ impl LocalStateStore {
             "read" => {
                 self.prune_history(workspace)?;
                 let id = action["id"].as_str().ok_or("Missing history id")?;
-                let row:Option<(Vec<u8>,bool)>=self.db.query_row("SELECT payload,pinned FROM request_executions WHERE workspace_id=?1 AND id=?2",params![workspace,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db)?;
-                let Some((payload, pinned)) = row else {
+                let row:Option<(Vec<u8>,bool,String)>=self.db.query_row("SELECT payload,pinned,protection FROM request_executions WHERE workspace_id=?1 AND id=?2",params![workspace,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db)?;
+                let Some((payload, pinned, protection)) = row else {
                     return Ok(Value::Null);
                 };
-                let mut value: Value = serde_json::from_slice(
-                    &self
-                        .runtime_cipher(workspace)?
-                        .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?,
-                )
+                let mut value: Value = serde_json::from_slice(&self.decode_runtime(
+                    workspace,
+                    &protection,
+                    &payload,
+                    &format!("{workspace}/request_executions/{id}"),
+                )?)
                 .map_err(|_| "Damaged history entry")?;
                 self.restore_response_body(workspace, id, &mut value)?;
                 let meta = summary(id, &value, pinned);
@@ -339,7 +364,10 @@ impl LocalStateStore {
         Ok(value.and_then(|v| v.parse().ok()).unwrap_or(30))
     }
     pub fn prune_history(&mut self, workspace: &str) -> Result<(), String> {
-        self.runtime_cipher(workspace)?;
+        // Do not perform destructive retention without the protected owner.
+        if self.runtime_cipher(workspace).is_err() {
+            return Ok(());
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "Invalid system clock")?
@@ -588,6 +616,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "drafts".into(),
                     id: "draft".into(),
                     value: Value::Null,
@@ -639,6 +668,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "file".into(),
                     value: file.clone(),
@@ -655,6 +685,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "file".into(),
                     value: Value::Null,
@@ -674,6 +705,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "file".into(),
                     value: metadata,
@@ -705,6 +737,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "legacy".into(),
                     value,
@@ -859,6 +892,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "masked".into(),
                     value,

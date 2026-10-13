@@ -139,6 +139,7 @@ fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
 pub struct LocalCipher(CipherBackend);
 #[derive(Clone)]
 enum CipherBackend {
+    Unavailable,
     Raw(Arc<Aes256Gcm>),
     Scoped {
         registry: Arc<scoped::ScopeRegistry>,
@@ -165,6 +166,19 @@ fn derive_key(root: &[u8], info: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
 }
 
 impl RootCiphers {
+    /// A public-storage handle. Every cryptographic operation fails closed.
+    pub fn unavailable() -> Self {
+        let cipher = LocalCipher(CipherBackend::Unavailable);
+        Self {
+            storage_initialization: std::sync::Mutex::new(()),
+            database: cipher.clone(),
+            secrets: cipher.clone(),
+            response_content: cipher.clone(),
+            legacy_database: None,
+            wrapping: cipher,
+            journal_seed: Arc::new(Zeroizing::new([0; 32])),
+        }
+    }
     #[cfg(test)]
     pub fn open(
         store: &dyn RootKeyStore,
@@ -289,10 +303,14 @@ impl LocalCipher {
         ))))
     }
     pub fn is_scoped(&self) -> bool {
-        matches!(self.0, CipherBackend::Scoped { .. })
+        !matches!(self.0, CipherBackend::Raw(_))
+    }
+    pub fn is_available(&self) -> bool {
+        !matches!(self.0, CipherBackend::Unavailable)
     }
     pub fn for_scope(&self, scope: ProtectionScope) -> Result<Self, String> {
         match &self.0 {
+            CipherBackend::Unavailable => Err("protected-storage-unavailable".into()),
             CipherBackend::Scoped {
                 registry, purpose, ..
             } => {
@@ -319,6 +337,7 @@ impl LocalCipher {
     }
     pub fn provision_scope(&self, scope: ProtectionScope) -> Result<(), String> {
         match &self.0 {
+            CipherBackend::Unavailable => Err("protected-storage-unavailable".into()),
             CipherBackend::Scoped { registry, .. } => registry.provision(scope),
             CipherBackend::Raw(_) => {
                 #[cfg(test)]
@@ -336,6 +355,7 @@ impl LocalCipher {
     }
     pub fn seal(&self, bytes: &[u8], aad: &str) -> Result<SealedValue, String> {
         let cipher = match &self.0 {
+            CipherBackend::Unavailable => return Err("protected-storage-unavailable".into()),
             CipherBackend::Raw(cipher) => cipher,
             CipherBackend::Scoped {
                 registry,
@@ -375,6 +395,7 @@ impl LocalCipher {
         aad: &str,
     ) -> Result<Zeroizing<Vec<u8>>, String> {
         let cipher = match &self.0 {
+            CipherBackend::Unavailable => return Err("protected-storage-unavailable".into()),
             CipherBackend::Raw(cipher) => cipher,
             CipherBackend::Scoped {
                 registry,

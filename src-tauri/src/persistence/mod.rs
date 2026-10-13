@@ -16,3 +16,14 @@ pub mod catalogue;
 
 #[cfg(test)]
 mod scoped_tests;
+
+#[cfg(test)]
+mod mixed_tests;
+
+#[cfg(test)]
+mod performance_fixture {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/native-storage-benchmark.rs"
+    ));
+}

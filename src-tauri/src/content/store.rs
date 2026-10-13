@@ -1,8 +1,8 @@
 use super::{
     contracts::{
         ByteRange, ContentInfo, ContentMetadata, ContentOperationResult, ContentWindow,
-        FormatRequest, JsonQueryRequest, LinePage, LineSegment, ResponseContentRef, SearchMatch,
-        SearchPage, SearchQuery,
+        FormatRequest, JsonQueryRequest, LinePage, LineSegment, ResponseContentProtection,
+        ResponseContentRef, SearchMatch, SearchPage, SearchQuery,
     },
     operations::{format_document, query_document, query_large_document},
 };
@@ -51,6 +51,12 @@ impl Default for ResponseLimits {
             staging_ttl_seconds: 60 * 60,
         }
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProtectedContentMetadata {
+    media_type: Option<String>,
+    charset: Option<String>,
 }
 
 pub struct ResponseContentStore {
@@ -141,7 +147,10 @@ impl ResponseContentStore {
         &mut self,
         metadata: ContentMetadata,
     ) -> Result<ResponseContentRef, String> {
-        self.ensure_workspace(&metadata.workspace_id)?;
+        validate_workspace(&metadata.workspace_id)?;
+        if metadata.protection == ResponseContentProtection::Encrypted {
+            self.ensure_workspace(&metadata.workspace_id)?;
+        }
         self.cleanup_expired(now_seconds())?;
         let mut random = [0_u8; 16];
         getrandom::fill(&mut random).map_err(|_| "Cannot generate response content ID")?;
@@ -153,9 +162,23 @@ impl ResponseContentStore {
                 .collect::<String>()
         );
         let created_at = now_seconds();
+        let (media_type, charset, protected_metadata) = match metadata.protection {
+            ResponseContentProtection::Plaintext => (metadata.media_type, metadata.charset, None),
+            ResponseContentProtection::Encrypted => {
+                let bytes = serde_json::to_vec(&ProtectedContentMetadata {
+                    media_type: metadata.media_type,
+                    charset: metadata.charset,
+                })
+                .map_err(|_| "Cannot encode response content metadata")?;
+                let sealed = self
+                    .workspace_cipher(&metadata.workspace_id)?
+                    .encrypt(&bytes, &metadata_aad(&metadata.workspace_id, &id))?;
+                (None, None, Some(sealed))
+            }
+        };
         self.db.execute(
-            "INSERT INTO response_contents(id,workspace_id,state,byte_length,media_type,charset,created_at,expires_at) VALUES(?1,?6,'staging',0,?2,?3,?4,?5)",
-            params![id, metadata.media_type, metadata.charset, created_at, created_at + self.limits.staging_ttl_seconds, metadata.workspace_id],
+            "INSERT INTO response_contents(id,workspace_id,state,byte_length,media_type,charset,created_at,expires_at,protection,metadata) VALUES(?1,?6,'staging',0,?2,?3,?4,?5,?7,?8)",
+            params![id, media_type, charset, created_at, created_at + self.limits.staging_ttl_seconds, metadata.workspace_id, metadata.protection.as_str(), protected_metadata],
         ).map_err(|_| "Cannot create response content")?;
         self.reference(&id)
     }
@@ -167,7 +190,10 @@ impl ResponseContentStore {
             return Ok(ContentWriteTiming::default());
         }
         let workspace = self.workspace(id)?;
-        let cipher = self.workspace_cipher(&workspace)?;
+        let protection = self.reference(id)?.protection;
+        let cipher = (protection == ResponseContentProtection::Encrypted)
+            .then(|| self.workspace_cipher(&workspace))
+            .transpose()?;
         let started = Instant::now();
         let mut encryption = Duration::ZERO;
         let (state, mut offset): (String, u64) = self
@@ -214,11 +240,17 @@ impl ResponseContentStore {
             let index = first_index + relative_index as u64;
             let aad = chunk_aad(&workspace, id, index, offset, chunk.len() as u64);
             let encryption_started = Instant::now();
-            let sealed = cipher.seal(chunk, &aad)?;
+            let (version, nonce, payload) = match &cipher {
+                Some(cipher) => {
+                    let sealed = cipher.seal(chunk, &aad)?;
+                    (sealed.version, sealed.nonce.to_vec(), sealed.ciphertext)
+                }
+                None => (0, Vec::new(), chunk.to_vec()),
+            };
             encryption += encryption_started.elapsed();
             transaction.execute(
                 "INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![id, sqlite_i64(index)?, sqlite_i64(offset)?, chunk.len() as i64, sealed.version, sealed.nonce.as_slice(), sealed.ciphertext],
+                params![id, sqlite_i64(index)?, sqlite_i64(offset)?, chunk.len() as i64, version, nonce, payload],
             ).map_err(|_| "Cannot write response content")?;
             offset += chunk.len() as u64;
         }
@@ -260,6 +292,7 @@ impl ResponseContentStore {
         }
         let (line_count, max_line_bytes) = self.line_statistics(id, reference.byte_length)?;
         Ok(ContentInfo {
+            protection: reference.protection,
             size: reference.byte_length,
             media_type: reference.media_type,
             text_encoding: reference.charset,
@@ -386,7 +419,10 @@ impl ResponseContentStore {
         let mut bytes = Vec::with_capacity((end.saturating_sub(offset)) as usize);
         let mut expected_offset = offset;
         let workspace = self.workspace(id)?;
-        let cipher = self.workspace_cipher(&workspace)?;
+        let protection = self.reference(id)?.protection;
+        let cipher = (protection == ResponseContentProtection::Encrypted)
+            .then(|| self.workspace_cipher(&workspace))
+            .transpose()?;
         let mut statement = self.db.prepare(
             "SELECT chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext FROM response_content_chunks WHERE content_id=?1 AND plain_offset < ?3 AND plain_offset + plain_length > ?2 ORDER BY chunk_index",
         ).map_err(|_| "Cannot read response content")?;
@@ -405,12 +441,20 @@ impl ResponseContentStore {
         for row in chunks {
             let (index, offset, length, version, nonce, ciphertext) =
                 row.map_err(|_| "Cannot read response content")?;
-            let plain = cipher.open_sealed(
-                version,
-                &nonce,
-                &ciphertext,
-                &chunk_aad(&workspace, id, index, offset, length),
-            )?;
+            let plain = match &cipher {
+                Some(cipher) => cipher.open_sealed(
+                    version,
+                    &nonce,
+                    &ciphertext,
+                    &chunk_aad(&workspace, id, index, offset, length),
+                )?,
+                None => {
+                    if version != 0 || !nonce.is_empty() {
+                        return Err("Public response content has invalid chunk protection".into());
+                    }
+                    zeroize::Zeroizing::new(ciphertext)
+                }
+            };
             if plain.len() as u64 != length {
                 return Err("Response content chunk is damaged".into());
             }
@@ -859,6 +903,7 @@ impl ResponseContentStore {
         media_type: &str,
     ) -> Result<ContentOperationResult, String> {
         let reference = self.create_staging(ContentMetadata {
+            protection: self.reference(source_id)?.protection,
             workspace_id: self.workspace(source_id)?,
             media_type: Some(media_type.into()),
             charset: Some("utf-8".into()),
@@ -892,13 +937,17 @@ impl ResponseContentStore {
 
     fn reference(&self, id: &str) -> Result<ResponseContentRef, String> {
         validate_id(id)?;
-        self.db
+        let (mut reference, protected_metadata, workspace): (ResponseContentRef, Option<Vec<u8>>, String) = self.db
             .query_row(
-                "SELECT byte_length,media_type,charset,state FROM response_contents WHERE id=?1",
+                "SELECT byte_length,media_type,charset,state,protection,metadata,workspace_id FROM response_contents WHERE id=?1",
                 [id],
                 |row| {
                     let state: String = row.get(3)?;
-                    Ok(ResponseContentRef {
+                    let protection: String = row.get(4)?;
+                    let protection = ResponseContentProtection::from_storage(&protection)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    Ok((ResponseContentRef {
+                        protection,
                         id: id.into(),
                         byte_length: nonnegative_u64(row, 0)?,
                         media_type: row.get(1)?,
@@ -906,13 +955,39 @@ impl ResponseContentStore {
                         line_count: None,
                         max_line_bytes: None,
                         complete: state != "staging",
-                    })
+                    }, row.get(5)?, row.get(6)?))
                 },
             )
             .optional()
             .map_err(|_| "Cannot inspect response content")?
-            .ok_or_else(|| "Response content does not exist".into())
+            .ok_or("Response content does not exist")?;
+        match reference.protection {
+            ResponseContentProtection::Encrypted => {
+                if reference.media_type.is_some() || reference.charset.is_some() {
+                    return Err("Encrypted response content has invalid public metadata".into());
+                }
+                let metadata =
+                    protected_metadata.ok_or("Encrypted response content metadata is missing")?;
+                let bytes = self
+                    .workspace_cipher(&workspace)?
+                    .decrypt(&metadata, &metadata_aad(&workspace, id))?;
+                let metadata: ProtectedContentMetadata = serde_json::from_slice(&bytes)
+                    .map_err(|_| "Encrypted response content metadata is invalid")?;
+                reference.media_type = metadata.media_type;
+                reference.charset = metadata.charset;
+            }
+            ResponseContentProtection::Plaintext => {
+                if protected_metadata.is_some() {
+                    return Err("Public response content has invalid protected metadata".into());
+                }
+            }
+        }
+        Ok(reference)
     }
+}
+
+fn metadata_aad(workspace: &str, id: &str) -> String {
+    format!("purr:response-content-metadata:v3|{workspace}|{id}")
 }
 
 fn nonnegative_u64(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
@@ -1011,6 +1086,7 @@ mod tests {
     ) -> ResponseContentRef {
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: workspace.into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
@@ -1018,6 +1094,149 @@ mod tests {
             .unwrap();
         store.append(&reference.id, bytes).unwrap();
         store.finish(&reference.id).unwrap()
+    }
+
+    #[test]
+    fn public_content_and_derived_results_work_without_keys_and_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.sqlite3");
+        let mut store =
+            ResponseContentStore::open_with_ciphers(&path, &RootCiphers::unavailable()).unwrap();
+        let reference = store
+            .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Plaintext,
+                workspace_id: "public-workspace".into(),
+                media_type: Some("application/json".into()),
+                charset: Some("utf-8".into()),
+            })
+            .unwrap();
+        let bytes = format!(
+            "{{\"value\":\"{}\"}}",
+            "public-response-marker".repeat(20_000)
+        )
+        .into_bytes();
+        store.append(&reference.id, &bytes).unwrap();
+        store.finish(&reference.id).unwrap();
+        assert_eq!(
+            store.inspect(&reference.id).unwrap().protection,
+            ResponseContentProtection::Plaintext
+        );
+        let derived = store
+            .derived_content_result(&reference.id, bytes.clone(), "application/json")
+            .unwrap();
+        let ContentOperationResult::Content { reference: derived } = derived else {
+            panic!("expected derived content")
+        };
+        assert_eq!(derived.protection, ResponseContentProtection::Plaintext);
+        let (version, nonce, stored): (i64, Vec<u8>, Vec<u8>) = store.db.query_row(
+            "SELECT crypto_version,nonce,ciphertext FROM response_content_chunks WHERE content_id=?1 ORDER BY chunk_index LIMIT 1",
+            [&reference.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(version, 0);
+        assert!(nonce.is_empty());
+        assert_eq!(stored, bytes[..stored.len()]);
+        assert!(store
+            .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
+                workspace_id: "public-workspace".into(),
+                media_type: None,
+                charset: None,
+            })
+            .is_err());
+        drop(store);
+        let reopened =
+            ResponseContentStore::open_with_ciphers(&path, &RootCiphers::unavailable()).unwrap();
+        assert_eq!(
+            reopened.read_operation_content(&reference.id).unwrap(),
+            bytes
+        );
+        assert_eq!(reopened.read_operation_content(&derived.id).unwrap(), bytes);
+    }
+
+    #[test]
+    fn mixed_content_keeps_encrypted_metadata_and_never_falls_back() {
+        let (directory, _ciphers, mut store) = scoped_store();
+        let protected = store
+            .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
+                workspace_id: "workspace-a".into(),
+                media_type: Some("sensitive-media-marker".into()),
+                charset: Some("sensitive-charset-marker".into()),
+            })
+            .unwrap();
+        store
+            .append(&protected.id, b"protected-response-marker")
+            .unwrap();
+        store.finish(&protected.id).unwrap();
+        let public = store
+            .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Plaintext,
+                workspace_id: "workspace-a".into(),
+                media_type: None,
+                charset: None,
+            })
+            .unwrap();
+        store.append(&public.id, b"ordinary public body").unwrap();
+        store.finish(&public.id).unwrap();
+        let (media_type, charset, metadata): (Option<String>, Option<String>, Vec<u8>) = store
+            .db
+            .query_row(
+                "SELECT media_type,charset,metadata FROM response_contents WHERE id=?1",
+                [&protected.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!(media_type.is_none() && charset.is_none());
+        assert!(!String::from_utf8_lossy(&metadata).contains("sensitive-"));
+        let derived = store
+            .derived_content_result(
+                &protected.id,
+                b"protected-derived-marker".to_vec(),
+                "text/plain",
+            )
+            .unwrap();
+        let ContentOperationResult::Content { reference: derived } = derived else {
+            panic!("expected content")
+        };
+        assert_eq!(derived.protection, ResponseContentProtection::Encrypted);
+        drop(store);
+        let path = directory.path().join("local-state.sqlite3");
+        let store =
+            ResponseContentStore::open_with_ciphers(&path, &RootCiphers::unavailable()).unwrap();
+        assert_eq!(
+            store.read_operation_content(&public.id).unwrap(),
+            b"ordinary public body"
+        );
+        assert!(store.read_operation_content(&protected.id).is_err());
+        assert!(store.read_operation_content(&derived.id).is_err());
+        store
+            .db
+            .execute(
+                "UPDATE response_contents SET protection='plaintext' WHERE id=?1",
+                [&protected.id],
+            )
+            .unwrap();
+        assert!(store.read_operation_content(&protected.id).is_err());
+        store
+            .db
+            .execute(
+                "UPDATE response_content_chunks SET crypto_version=1 WHERE content_id=?1",
+                [&public.id],
+            )
+            .unwrap();
+        assert!(store.read_operation_content(&public.id).is_err());
+        store
+            .db
+            .execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE response_contents SET protection='unknown' WHERE id=?1",
+                [&public.id],
+            )
+            .unwrap();
+        assert!(store.read_operation_content(&public.id).is_err());
     }
 
     #[test]
@@ -1125,6 +1344,7 @@ mod tests {
         for workspace in ["", "../invalid", "unprovisioned"] {
             assert!(store
                 .create_staging(ContentMetadata {
+                    protection: ResponseContentProtection::Encrypted,
                     workspace_id: workspace.into(),
                     media_type: None,
                     charset: None
@@ -1194,6 +1414,7 @@ mod tests {
             );
             let reference = content
                 .create_staging(ContentMetadata {
+                    protection: ResponseContentProtection::Encrypted,
                     workspace_id: "workspace".into(),
                     media_type: None,
                     charset: None,
@@ -1263,6 +1484,7 @@ mod tests {
                         ResponseContentStore::open_with_ciphers(&path, &ciphers).unwrap();
                     let response = store
                         .create_staging(ContentMetadata {
+                            protection: ResponseContentProtection::Encrypted,
                             workspace_id: "workspace".into(),
                             media_type: None,
                             charset: None,
@@ -1295,6 +1517,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
@@ -1335,6 +1558,7 @@ mod tests {
         let (directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("application/octet-stream".into()),
                 charset: None,
@@ -1360,6 +1584,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let giant = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
@@ -1388,6 +1613,7 @@ mod tests {
 
         let many = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
@@ -1421,6 +1647,7 @@ mod tests {
         let (_directory, _root, mut store) = store(ResponseLimits::default());
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: Some("utf-8".into()),
@@ -1471,6 +1698,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("text/plain".into()),
                 charset: None,
@@ -1518,6 +1746,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
@@ -1570,6 +1799,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let json_reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
@@ -1627,6 +1857,7 @@ mod tests {
 
         let ndjson_reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("application/x-ndjson".into()),
                 charset: Some("utf-8".into()),
@@ -1671,6 +1902,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1694,6 +1926,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let first = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1703,6 +1936,7 @@ mod tests {
         assert!(store.append(&first.id, b"9").is_err());
         let second = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1724,6 +1958,7 @@ mod tests {
         let (_directory, _root, mut store) = store(limits);
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1745,6 +1980,7 @@ mod tests {
 
         let reordered = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1766,6 +2002,7 @@ mod tests {
 
         let missing = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1805,6 +2042,7 @@ mod tests {
         let marker = b"purr-sensitive-response-marker";
         let reference = store
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1848,6 +2086,7 @@ mod tests {
         let (directory, root, mut content) = store(limits);
         let reference = content
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: Some("application/json".into()),
                 charset: Some("utf-8".into()),
@@ -1857,6 +2096,7 @@ mod tests {
         let reference = content.finish(&reference.id).unwrap();
         let workspace_reference = content
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "other_workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1870,6 +2110,7 @@ mod tests {
 
         let mut local = LocalStateStore::open(&directory.path().join("state.db"), &root).unwrap();
         let record = LocalRecord {
+            protection: Default::default(),
             table: "request_executions".into(),
             id: "execution_1".into(),
             value: serde_json::json!({
@@ -1887,6 +2128,7 @@ mod tests {
             .write(
                 "other_workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "execution_2".into(),
                     value: serde_json::json!({
@@ -1917,6 +2159,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "execution_1".into(),
                     value: serde_json::Value::Null,
@@ -1959,6 +2202,7 @@ mod tests {
         let (directory, root, mut content) = store(limits);
         let reference = content
             .create_staging(ContentMetadata {
+                protection: ResponseContentProtection::Encrypted,
                 workspace_id: "workspace".into(),
                 media_type: None,
                 charset: None,
@@ -1969,11 +2213,13 @@ mod tests {
         drop(content);
         let mut local = LocalStateStore::open(&directory.path().join("state.db"), &root).unwrap();
         let execution = LocalRecord {
+            protection: Default::default(),
             table: "request_executions".into(),
             id: "execution_1".into(),
             value: serde_json::json!({"documentId":"request","response":{"protocolVersion":2,"response":{"status":200},"content":reference,"timeline":{"startedAtMs":1}}}),
         };
         let invalid = LocalRecord {
+            protection: Default::default(),
             table: "invalid".into(),
             id: "bad".into(),
             value: serde_json::json!({}),
@@ -1991,4 +2237,8 @@ mod tests {
             "ready"
         );
     }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/native-content-benchmark.rs"
+    ));
 }

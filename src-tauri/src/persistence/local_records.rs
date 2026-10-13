@@ -20,8 +20,54 @@ pub const TABLES: &[&str] = &[
     "recent_items",
     "attachments",
 ];
+#[derive(Serialize, Deserialize, Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordProtection {
+    Plaintext,
+    #[default]
+    Encrypted,
+}
+impl RecordProtection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plaintext => "plaintext",
+            Self::Encrypted => "encrypted",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "plaintext" => Ok(Self::Plaintext),
+            "encrypted" => Ok(Self::Encrypted),
+            _ => Err("Unsupported record protection".into()),
+        }
+    }
+    pub fn encode(
+        self,
+        cipher: &LocalCipher,
+        bytes: &[u8],
+        context: &str,
+    ) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Plaintext => Ok(bytes.to_vec()),
+            Self::Encrypted => cipher.encrypt(bytes, context),
+        }
+    }
+    pub fn decode(
+        self,
+        cipher: &LocalCipher,
+        bytes: &[u8],
+        context: &str,
+    ) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Plaintext => Ok(bytes.to_vec()),
+            Self::Encrypted => cipher.decrypt(bytes, context),
+        }
+    }
+}
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LocalRecord {
+    #[serde(default)]
+    pub protection: RecordProtection,
     pub table: String,
     pub id: String,
     pub value: Value,
@@ -117,11 +163,17 @@ impl LocalStateStore {
         Self::initialize_database(&mut db, ciphers)?;
         let store = Self {
             db,
-            cipher: ciphers.database.for_scope(ProtectionScope::journal())?,
+            cipher: if ciphers.database.is_available() {
+                ciphers.database.for_scope(ProtectionScope::journal())?
+            } else {
+                ciphers.database.clone()
+            },
             secret_cipher: ciphers.secrets.clone(),
         };
         if !ciphers.is_scoped() {
             store.backfill_history_metadata()?;
+        } else if ciphers.database.is_available() {
+            store.set_app("protected-store-established", "1")?;
         }
         Ok(store)
     }
@@ -133,58 +185,10 @@ impl LocalStateStore {
         ciphers: &RootCiphers,
     ) -> Result<(), String> {
         if ciphers.is_scoped() {
-            let version: i64 = db
-                .pragma_query_value(None, "user_version", |row| row.get(0))
-                .map_err(db_error)?;
-            if version != 7 {
-                // A fresh initialization may have stopped between schema transactions.
-                // Resume only empty schema; never reinterpret old records as v2.
-                let mut tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('migrations','sqlite_sequence')").map_err(db_error)?;
-                let names = tables
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .map_err(db_error)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(db_error)?;
-                for name in names {
-                    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-                        return Err("Unsupported local storage schema".into());
-                    }
-                    let count: i64 = db
-                        .query_row(&format!("SELECT COUNT(*) FROM {name}"), [], |row| {
-                            row.get(0)
-                        })
-                        .map_err(db_error)?;
-                    if count != 0 {
-                        return Err("Legacy local data cannot be opened as storage v2".into());
-                    }
-                }
-            }
+            return Self::initialize_public_database(db);
         }
         Self::migrate(db)?;
-        if ciphers.is_scoped() {
-            let marker: Option<String> = db
-                .query_row(
-                    "SELECT value FROM app_state WHERE key='crypto-key-derivation'",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(db_error)?;
-            let version: i64 = db
-                .pragma_query_value(None, "user_version", |row| row.get(0))
-                .map_err(db_error)?;
-            if marker
-                .as_deref()
-                .is_some_and(|value| value != "scoped-envelope-v2")
-                || (version == 7 && marker.as_deref() != Some("scoped-envelope-v2"))
-            {
-                return Err("Unsupported local encryption format".into());
-            }
-            let tx = db.transaction().map_err(db_error)?;
-            tx.execute_batch("INSERT OR IGNORE INTO app_state(key,value) VALUES('crypto-key-derivation','scoped-envelope-v2'); INSERT OR IGNORE INTO migrations(version) VALUES(7); PRAGMA user_version=7;").map_err(db_error)?;
-            tx.commit().map_err(db_error)?;
-            return Ok(());
-        }
+        Self::add_protection_columns(db)?;
         let uses_derived_keys = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM app_state WHERE key='crypto-key-derivation' AND value='hkdf-sha256-v1')",
             [], |row| row.get::<_, bool>(0),
@@ -197,6 +201,99 @@ impl LocalStateStore {
             Self::upgrade_database_cipher(db, legacy, &ciphers.database)?;
         }
         Ok(())
+    }
+    pub(crate) fn initialize_public_database(db: &mut Connection) -> Result<(), String> {
+        let version: i64 = db
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(db_error)?;
+        if version == 8 {
+            let marker: String = db
+                .query_row(
+                    "SELECT value FROM app_state WHERE key='crypto-key-derivation'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(db_error)?;
+            if marker != "mixed-scoped-v3" {
+                return Err("Unsupported local encryption format".into());
+            }
+            return Ok(());
+        }
+        if version != 0 {
+            return Err("Previous local storage must be archived before opening S05".into());
+        }
+        // Bootstrap atomically: an interrupted initial creation remains empty.
+        db.execute_batch("BEGIN IMMEDIATE").map_err(db_error)?;
+        let result = (|| {
+            Self::create_schema(db)?;
+            Self::add_protection_columns(db)?;
+            db.execute_batch("INSERT INTO app_state(key,value) VALUES('crypto-key-derivation','mixed-scoped-v3'); INSERT INTO migrations(version) VALUES(8); PRAGMA user_version=8;").map_err(db_error)
+        })();
+        match result {
+            Ok(()) => db.execute_batch("COMMIT").map_err(db_error),
+            Err(e) => {
+                let _ = db.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+    fn create_schema(db: &mut Connection) -> Result<(), String> {
+        // Shared DDL with historical test fixtures, no old records are read.
+        let mut temporary = Connection::open_in_memory().map_err(db_error)?;
+        Self::migrate(&mut temporary)?;
+        let mut statement=temporary.prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END,rowid").map_err(db_error)?;
+        let statements = statement
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        for statement in statements {
+            db.execute_batch(&statement).map_err(db_error)?;
+        }
+        Ok(())
+    }
+    fn add_protection_columns(db: &Connection) -> Result<(), String> {
+        for table in TABLES.iter().copied().chain([
+            "response_bodies",
+            "history_attachments",
+            "pending_commits",
+            "secret_operations",
+            "workspace_cleanup",
+            "response_contents",
+        ]) {
+            let exists: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name='protection')",
+                    [table],
+                    |r| r.get(0),
+                )
+                .map_err(db_error)?;
+            if !exists {
+                db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN protection TEXT NOT NULL DEFAULT 'encrypted' CHECK(protection IN ('plaintext','encrypted'))")).map_err(db_error)?;
+            }
+        }
+        let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('response_contents') WHERE name='metadata')",[],|r|r.get(0)).map_err(db_error)?;
+        if !exists {
+            db.execute_batch("ALTER TABLE response_contents ADD COLUMN metadata BLOB")
+                .map_err(db_error)?;
+        }
+        Ok(())
+    }
+    pub fn protected_available(&self) -> bool {
+        self.cipher.is_available()
+    }
+    pub(super) fn decode_runtime(
+        &self,
+        workspace: &str,
+        protection: &str,
+        bytes: &[u8],
+        context: &str,
+    ) -> Result<Vec<u8>, String> {
+        let protection = RecordProtection::parse(protection)?;
+        if protection == RecordProtection::Plaintext {
+            return Ok(bytes.to_vec());
+        }
+        self.runtime_cipher(workspace)?.decrypt(bytes, context)
     }
     pub fn runtime_cipher(&self, workspace: &str) -> Result<LocalCipher, String> {
         self.cipher.for_scope(ProtectionScope::runtime(workspace))
@@ -214,36 +311,21 @@ impl LocalStateStore {
         Ok(())
     }
     pub fn prepare_workspace_keys(&self, workspace: &str) -> Result<(), String> {
-        if !self.cipher.is_scoped() {
+        if !self.cipher.is_scoped() || !self.protected_available() {
             return Ok(());
         }
         if workspace == "global" || workspace == "__global__" {
             return Err("Reserved workspace identifier".into());
         }
-        let mut exists: bool = self
-            .db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=?1)",
-                [workspace],
-                |row| row.get(0),
-            )
-            .map_err(db_error)?;
+        let mut exists = self
+            .app(&format!("scope-provisioned/{workspace}"))?
+            .is_some();
         for table in TABLES.iter().copied().chain([
             "response_contents",
             "response_bodies",
             "history_attachments",
-            "pending_commits",
-            "workspace_cleanup",
-            "history_attachment_links",
         ]) {
-            exists |= self
-                .db
-                .query_row(
-                    &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE workspace_id=?1)"),
-                    [workspace],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(db_error)?;
+            exists |= self.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE workspace_id=?1 AND protection='encrypted')"),[workspace],|r|r.get::<_,bool>(0)).map_err(db_error)?;
         }
         let prefix = format!("purr/{workspace}/");
         exists |= self.db.query_row("SELECT EXISTS(SELECT 1 FROM secret_values WHERE substr(reference,1,length(?1))=?1 UNION ALL SELECT 1 FROM secret_revisions WHERE substr(reference,1,length(?1))=?1)", [&prefix], |row| row.get::<_, bool>(0)).map_err(db_error)?;
@@ -255,10 +337,11 @@ impl LocalStateStore {
         ] {
             if exists {
                 self.cipher.for_scope(scope)?;
-            } else {
+            } else if self.cipher.for_scope(scope.clone()).is_err() {
                 self.cipher.provision_scope(scope)?;
             }
         }
+        self.set_app(&format!("scope-provisioned/{workspace}"), "1")?;
         Ok(())
     }
     #[cfg(test)]
@@ -478,6 +561,19 @@ impl LocalStateStore {
         use crate::security::ProtectedError;
         validate_secret_ref(reference)
             .map_err(|_| ProtectedError::denied("invalid-secret-reference"))?;
+        if !self.secret_cipher.is_available() {
+            return Err(ProtectedError::unavailable("protected-storage-unavailable"));
+        }
+        let cipher = if self.secret_cipher.is_scoped() {
+            self.secret_cipher
+                .for_scope(
+                    ProtectionScope::from_secret_ref(reference)
+                        .map_err(|_| ProtectedError::denied("secret-scope-invalid"))?,
+                )
+                .map_err(|_| ProtectedError::corrupt("scope-key-unavailable"))?
+        } else {
+            self.secret_cipher.clone()
+        };
         let stored = self
             .db
             .query_row(
@@ -495,16 +591,6 @@ impl LocalStateStore {
             .map_err(|_| ProtectedError::unavailable("secret-database-unavailable"))?;
         let Some((version, nonce, ciphertext)) = stored else {
             return Ok(None);
-        };
-        let cipher = if self.secret_cipher.is_scoped() {
-            self.secret_cipher
-                .for_scope(
-                    ProtectionScope::from_secret_ref(reference)
-                        .map_err(|_| ProtectedError::denied("secret-scope-invalid"))?,
-                )
-                .map_err(|_| ProtectedError::corrupt("scope-key-unavailable"))?
-        } else {
-            self.secret_cipher.clone()
         };
         let plaintext = cipher
             .open_sealed(version, &nonce, &ciphertext, &Self::secret_aad(reference))
@@ -676,61 +762,80 @@ impl LocalStateStore {
         self.db.execute("INSERT INTO app_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value", params![key,value]).map_err(db_error)?;
         Ok(())
     }
+    #[cfg(test)]
     pub fn read(&self, workspace: &str) -> Result<Vec<LocalRecord>, String> {
+        let (records, unavailable) = self.read_partial(workspace)?;
+        if !unavailable.is_empty() {
+            return Err("Protected local records are unavailable".into());
+        }
+        Ok(records)
+    }
+    pub fn read_partial(&self, workspace: &str) -> Result<(Vec<LocalRecord>, Vec<Value>), String> {
         let mut records = Vec::new();
+        let mut unavailable = Vec::new();
         for table in TABLES {
             let query = if *table == "request_executions" {
-                "SELECT id,payload FROM request_executions e WHERE workspace_id=?1 AND status IS NOT NULL AND (document_id IS NULL OR id=(SELECT newest.id FROM request_executions newest WHERE newest.workspace_id=e.workspace_id AND newest.document_id=e.document_id AND newest.status IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1)) ORDER BY id".to_string()
+                "SELECT id,payload,protection FROM request_executions e WHERE workspace_id=?1 AND status IS NOT NULL AND (document_id IS NULL OR id=(SELECT newest.id FROM request_executions newest WHERE newest.workspace_id=e.workspace_id AND newest.document_id=e.document_id AND newest.status IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1)) ORDER BY id".to_string()
             } else {
-                format!("SELECT id,payload FROM {table} WHERE workspace_id=?1 ORDER BY id")
+                format!(
+                    "SELECT id,payload,protection FROM {table} WHERE workspace_id=?1 ORDER BY id"
+                )
             };
             let mut stmt = self.db.prepare(&query).map_err(db_error)?;
             let rows = stmt
                 .query_map([workspace], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })
                 .map_err(db_error)?;
             for row in rows {
-                let (id, bytes) = row.map_err(db_error)?;
-                let plain = self
-                    .runtime_cipher(workspace)?
-                    .decrypt(&bytes, &format!("{workspace}/{table}/{id}"))?;
-                let mut value: Value = match serde_json::from_slice(&plain) {
-                    Ok(value) => value,
-                    Err(_) if *table == "request_executions" => continue,
-                    Err(_) => return Err("Damaged local record".into()),
-                };
-                if *table == "request_executions" && !value.is_object() {
-                    continue;
+                let (id, bytes, protection) = row.map_err(db_error)?;
+                let protection = RecordProtection::parse(&protection)?;
+                let decoded = (|| {
+                    let plain = self.decode_runtime(
+                        workspace,
+                        protection.as_str(),
+                        &bytes,
+                        &format!("{workspace}/{table}/{id}"),
+                    )?;
+                    let mut value: Value =
+                        serde_json::from_slice(&plain).map_err(|_| "Damaged local record")?;
+                    if *table == "request_executions" {
+                        self.restore_response_body(workspace, &id, &mut value)?;
+                    } else if *table == "attachments" {
+                        value = Self::attachment_metadata(&value)?;
+                    }
+                    Ok::<_, String>(value)
+                })();
+                match decoded {
+                    Ok(value) if *table=="request_executions" && !value.is_object()=>{},
+                    Ok(value)=>records.push(LocalRecord{table:table.to_string(),id,value,protection}),
+                    Err(_)=>unavailable.push(serde_json::json!({"table":table,"id":id,"state":{"status":if self.protected_available(){"corrupt"}else{"unavailable"},"code":"local-record-unavailable"}})),
                 }
-                if *table == "request_executions" {
-                    self.restore_response_body(workspace, &id, &mut value)?;
-                } else if *table == "attachments" {
-                    value = Self::attachment_metadata(&value)?;
-                }
-                records.push(LocalRecord {
-                    table: table.to_string(),
-                    id,
-                    value,
-                });
             }
         }
-        Ok(records)
+        Ok((records, unavailable))
     }
     pub fn read_attachment(&self, workspace: &str, id: &str) -> Result<LocalAttachment, String> {
-        let payload: Vec<u8> = self
+        let (payload,protection): (Vec<u8>,String) = self
             .db
             .query_row(
-                "SELECT payload FROM attachments WHERE workspace_id=?1 AND id=?2 UNION ALL SELECT payload FROM history_attachments WHERE workspace_id=?1 AND id=?2 LIMIT 1",
+                "SELECT payload,protection FROM attachments WHERE workspace_id=?1 AND id=?2 UNION ALL SELECT payload,protection FROM history_attachments WHERE workspace_id=?1 AND id=?2 LIMIT 1",
                 params![workspace, id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?,row.get(1)?)),
             )
             .optional()
             .map_err(db_error)?
             .ok_or("Local attachment is unavailable")?;
-        let plain = self
-            .runtime_cipher(workspace)?
-            .decrypt(&payload, &format!("{workspace}/attachments/{id}"))?;
+        let plain = self.decode_runtime(
+            workspace,
+            &protection,
+            &payload,
+            &format!("{workspace}/attachments/{id}"),
+        )?;
         let value: Value =
             serde_json::from_slice(&plain).map_err(|_| "Damaged local attachment")?;
         let (name, media_type, _last_modified, encoded, expected_size) =
@@ -763,8 +868,49 @@ impl LocalStateStore {
         workspace: &str,
         records: &[LocalRecord],
     ) -> Result<(), String> {
-        let cipher = cipher.for_scope(ProtectionScope::runtime(workspace))?;
         for record in records {
+            if record.table == "cookie_jar" && record.protection != RecordProtection::Encrypted {
+                return Err("Cookie values require encryption".into());
+            }
+            let cipher = if record.protection == RecordProtection::Encrypted {
+                cipher.for_scope(ProtectionScope::runtime(workspace))?
+            } else {
+                cipher.clone()
+            };
+            // An unavailable protected value may not be overwritten/deleted by a
+            // public projection that did not hydrate it.
+            let existing: Option<(String, Vec<u8>)> = tx
+                .query_row(
+                    &format!(
+                        "SELECT protection,payload FROM {} WHERE workspace_id=?1 AND id=?2",
+                        if TABLES.contains(&record.table.as_str()) {
+                            record.table.as_str()
+                        } else {
+                            return Err("Unknown local state table".into());
+                        }
+                    ),
+                    params![workspace, record.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(db_error)?;
+            if let Some((protection, payload)) = existing {
+                let stored_protection = RecordProtection::parse(&protection)?;
+                if stored_protection == RecordProtection::Encrypted
+                    && (record.protection == RecordProtection::Plaintext || record.value.is_null())
+                {
+                    cipher
+                        .for_scope(ProtectionScope::runtime(workspace))?
+                        .decrypt(
+                            &payload,
+                            &format!("{workspace}/{}/{}", record.table, record.id),
+                        )?;
+                    if record.table == "request_executions" && !record.value.is_null() {
+                        return Err("Historical response protection is immutable".into());
+                    }
+                }
+            }
+
             if !TABLES.contains(&record.table.as_str()) {
                 return Err("Unknown local state table".into());
             }
@@ -795,7 +941,7 @@ impl LocalStateStore {
                 }
             } else {
                 if record.table == "attachments" && record.value["native"] == true {
-                    tx.execute("INSERT OR IGNORE INTO attachments(workspace_id,id,payload) SELECT workspace_id,id,payload FROM history_attachments WHERE workspace_id=?1 AND id=?2",params![workspace,record.id]).map_err(db_error)?;
+                    tx.execute("INSERT OR IGNORE INTO attachments(workspace_id,id,payload,protection) SELECT workspace_id,id,payload,protection FROM history_attachments WHERE workspace_id=?1 AND id=?2",params![workspace,record.id]).map_err(db_error)?;
                     let available: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE workspace_id=?1 AND id=?2)",params![workspace,record.id],|row|row.get(0)).map_err(db_error)?;
                     if !available {
                         return Err("Local attachment is unavailable".into());
@@ -811,11 +957,12 @@ impl LocalStateStore {
                             let body = serde_json::json!({ "text": response.remove("text"), "bodyBase64": response.remove("bodyBase64") });
                             let plain =
                                 serde_json::to_vec(&body).map_err(|_| "Invalid response body")?;
-                            let payload = cipher.encrypt(
+                            let payload = record.protection.encode(
+                                &cipher,
                                 &plain,
                                 &format!("{workspace}/response_bodies/{}", record.id),
                             )?;
-                            tx.execute("INSERT INTO response_bodies(workspace_id,execution_id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,execution_id) DO UPDATE SET payload=excluded.payload",params![workspace,record.id,payload]).map_err(db_error)?;
+                            tx.execute("INSERT INTO response_bodies(workspace_id,execution_id,payload,protection) VALUES(?1,?2,?3,?4) ON CONFLICT(workspace_id,execution_id) DO UPDATE SET payload=excluded.payload,protection=excluded.protection",params![workspace,record.id,payload,record.protection.as_str()]).map_err(db_error)?;
                             delete_execution_content(tx, workspace, &record.id)?;
                         } else if let Some(content) = response.get("content") {
                             let content_id = content["id"]
@@ -861,24 +1008,26 @@ impl LocalStateStore {
                     }
                 }
                 let plain = serde_json::to_vec(&value).map_err(|_| "Invalid local data")?;
-                let old: Option<Vec<u8>> = tx
+                let old: Option<(Vec<u8>, String)> = tx
                     .query_row(
                         &format!(
-                            "SELECT payload FROM {} WHERE workspace_id=?1 AND id=?2",
+                            "SELECT payload,protection FROM {} WHERE workspace_id=?1 AND id=?2",
                             record.table
                         ),
                         params![workspace, record.id],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
                     .map_err(db_error)?;
-                if let Some(old) = old {
-                    if cipher.decrypt(&old, &context)? == plain {
+                if let Some((old, protection)) = old {
+                    if protection == record.protection.as_str()
+                        && record.protection.decode(&cipher, &old, &context)? == plain
+                    {
                         continue;
                     }
                 }
-                let payload = cipher.encrypt(&plain, &context)?;
-                tx.execute(&format!("INSERT INTO {}(workspace_id,id,payload) VALUES(?1,?2,?3) ON CONFLICT(workspace_id,id) DO UPDATE SET payload=excluded.payload,updated_at=CURRENT_TIMESTAMP", record.table), params![workspace, record.id, payload]).map_err(db_error)?;
+                let payload = record.protection.encode(&cipher, &plain, &context)?;
+                tx.execute(&format!("INSERT INTO {}(workspace_id,id,payload,protection) VALUES(?1,?2,?3,?4) ON CONFLICT(workspace_id,id) DO UPDATE SET payload=excluded.payload,protection=excluded.protection,updated_at=CURRENT_TIMESTAMP", record.table), params![workspace, record.id, payload,record.protection.as_str()]).map_err(db_error)?;
                 if record.table == "request_executions" {
                     let response = &value["response"];
                     let status = response["status"]
@@ -888,7 +1037,8 @@ impl LocalStateStore {
                 }
                 if record.table == "request_executions" {
                     let summary = super::history::summary(&record.id, &record.value, false);
-                    let payload = cipher.encrypt(
+                    let payload = record.protection.encode(
+                        &cipher,
                         &serde_json::to_vec(&summary).map_err(|_| "Invalid history metadata")?,
                         &format!("{workspace}/history-summary/{}", record.id),
                     )?;
@@ -900,14 +1050,15 @@ impl LocalStateStore {
                     if let Some(files) = record.value["files"].as_object() {
                         for (id, value) in files {
                             if value["native"] == true {
-                                tx.execute("INSERT OR IGNORE INTO history_attachments SELECT workspace_id,id,payload FROM attachments WHERE workspace_id=?1 AND id=?2", params![workspace,id]).map_err(db_error)?;
+                                tx.execute("INSERT OR IGNORE INTO history_attachments SELECT workspace_id,id,payload,protection FROM attachments WHERE workspace_id=?1 AND id=?2", params![workspace,id]).map_err(db_error)?;
                             } else {
-                                let payload = cipher.encrypt(
+                                let payload = record.protection.encode(
+                                    &cipher,
                                     &serde_json::to_vec(value)
                                         .map_err(|_| "Invalid history attachment")?,
                                     &format!("{workspace}/attachments/{id}"),
                                 )?;
-                                tx.execute("INSERT OR IGNORE INTO history_attachments(workspace_id,id,payload) VALUES(?1,?2,?3)",params![workspace,id,payload]).map_err(db_error)?;
+                                tx.execute("INSERT OR IGNORE INTO history_attachments(workspace_id,id,payload,protection) VALUES(?1,?2,?3,?4)",params![workspace,id,payload,record.protection.as_str()]).map_err(db_error)?;
                             }
                             let available: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM history_attachments WHERE workspace_id=?1 AND id=?2)",params![workspace,id],|row|row.get(0)).map_err(db_error)?;
                             if !available {
@@ -932,19 +1083,22 @@ impl LocalStateStore {
         id: &str,
         value: &mut Value,
     ) -> Result<(), String> {
-        let bytes: Option<Vec<u8>> = self
+        let bytes: Option<(Vec<u8>,String)> = self
             .db
             .query_row(
-                "SELECT payload FROM response_bodies WHERE workspace_id=?1 AND execution_id=?2",
+                "SELECT payload,protection FROM response_bodies WHERE workspace_id=?1 AND execution_id=?2",
                 params![workspace, id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?,row.get(1)?)),
             )
             .optional()
             .map_err(db_error)?;
-        if let Some(bytes) = bytes {
-            let plain = self
-                .runtime_cipher(workspace)?
-                .decrypt(&bytes, &format!("{workspace}/response_bodies/{id}"))?;
+        if let Some((bytes, protection)) = bytes {
+            let plain = self.decode_runtime(
+                workspace,
+                &protection,
+                &bytes,
+                &format!("{workspace}/response_bodies/{id}"),
+            )?;
             let body: Value =
                 serde_json::from_slice(&plain).map_err(|_| "Damaged response body")?;
             value["response"]["text"] = body["text"].clone();
@@ -971,14 +1125,17 @@ impl LocalStateStore {
         started_at: u64,
     ) -> Result<Option<Value>, String> {
         let row = self.db.query_row(
-            "SELECT id,CASE WHEN length(payload)<=1048576 THEN payload ELSE NULL END FROM request_executions WHERE workspace_id=?1 AND document_id=?2 AND started_at=?3 LIMIT 1",
-            params![workspace, document, i64::try_from(started_at).map_err(|_| "Execution timestamp exceeds SQLite integer range")?], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            "SELECT id,CASE WHEN length(payload)<=1048576 THEN payload ELSE NULL END,protection FROM request_executions WHERE workspace_id=?1 AND document_id=?2 AND started_at=?3 LIMIT 1",
+            params![workspace, document, i64::try_from(started_at).map_err(|_| "Execution timestamp exceeds SQLite integer range")?], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?,row.get::<_,String>(2)?)),
         ).optional().map_err(db_error)?;
-        row.map(|(id, payload)| {
+        row.map(|(id, payload, protection)| {
             let payload = payload.ok_or("Execution metadata exceeds trace lookup limit")?;
-            let plain = self
-                .runtime_cipher(workspace)?
-                .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?;
+            let plain = self.decode_runtime(
+                workspace,
+                &protection,
+                &payload,
+                &format!("{workspace}/request_executions/{id}"),
+            )?;
             serde_json::from_slice(&plain).map_err(|_| "Damaged execution metadata".into())
         })
         .transpose()
@@ -995,16 +1152,24 @@ impl LocalStateStore {
     pub fn pending(&self) -> Result<Vec<(String, Value)>, String> {
         let mut stmt = self
             .db
-            .prepare("SELECT workspace_id,payload FROM pending_commits")
+            .prepare("SELECT workspace_id,payload,protection FROM pending_commits WHERE (?1 OR protection='plaintext')")
             .map_err(db_error)?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            .query_map([self.protected_available()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(db_error)?;
         rows.map(|row| {
-            let (id, bytes) = row.map_err(db_error)?;
-            let plain = self.cipher.decrypt(&bytes, &format!("{id}/journal"))?;
+            let (id, bytes, protection) = row.map_err(db_error)?;
+            let plain = RecordProtection::parse(&protection)?.decode(
+                &self.cipher,
+                &bytes,
+                &format!("{id}/journal"),
+            )?;
             Ok((
                 id,
                 serde_json::from_slice(&plain).map_err(|_| "Damaged pending commit")?,
@@ -1051,6 +1216,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "attachment-1".into(),
                     value: serde_json::json!({
@@ -1251,6 +1417,7 @@ mod tests {
         let secure = MemoryRootKeyStore::default();
         let mut store = LocalStateStore::open(&directory.path().join("state.db"), &secure).unwrap();
         let execution = |id: i64| LocalRecord {
+            protection: Default::default(),
             table: "request_executions".into(),
             id: format!("request-{id}"),
             value: serde_json::json!({
@@ -1288,6 +1455,7 @@ mod tests {
                 &[
                     execution(3),
                     LocalRecord {
+                        protection: Default::default(),
                         table: "not_a_table".into(),
                         id: "bad".into(),
                         value: Value::Bool(true)
@@ -1315,6 +1483,7 @@ mod tests {
         let path = directory.path().join("state.db");
         let mut store = LocalStateStore::open(&path, &root).unwrap();
         let record = |time| LocalRecord {
+            protection: Default::default(),
             table: "request_executions".into(),
             id: format!("document-{time}"),
             value: serde_json::json!({
@@ -1406,6 +1575,7 @@ mod tests {
             }
         });
         let execution = LocalRecord {
+            protection: Default::default(),
             table: "request_executions".into(),
             id: "request-reference".into(),
             value: serde_json::json!({ "documentId": "request", "response": response }),
@@ -1468,6 +1638,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "legacy-response".into(),
                     value: serde_json::json!({"documentId":"request","response":{"status":200,"text":"legacy body","bodyBase64":"bGVnYWN5IGJvZHk=","timeline":{"startedAtMs":1}}}),
@@ -1503,6 +1674,7 @@ mod tests {
             .write(
                 "ws",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "cookie_jar".into(),
                     id: "cookie".into(),
                     value: serde_json::json!({"value":"sensitive-cookie"}),

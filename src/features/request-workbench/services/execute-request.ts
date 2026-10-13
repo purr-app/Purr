@@ -257,6 +257,12 @@ export async function executeRequest(
       sendCookies: draft.useCookieJar,
       settings: getRequestSettings(draft),
       sensitiveHeaders: prepared.sensitiveHeaders,
+      sensitivity: {
+        url: prepared.sensitiveQueryParams.length > 0 || prepared.provenance.some((usage) => /^(url|path|query)/.test(usage.field)),
+        headers: prepared.sensitiveHeaders,
+        headerNames: prepared.provenance.some((usage) => usage.field === "header-name" || usage.field === "trace-header"),
+        body: prepared.sensitiveBody,
+      },
       sensitiveQueryParams: prepared.sensitiveQueryParams,
       displayRequest: prepared.displayRequest,
       content,

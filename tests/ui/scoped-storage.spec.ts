@@ -10,7 +10,7 @@ test("missing known workspace key stays unavailable across Retry without affecti
     const path = "/src/storage/browser-backend.ts"; const { BrowserPersistenceBackend } = await import(path);
     const backend = new BrowserPersistenceBackend();
     for (const id of ["alpha", "beta"]) await backend.commit(id, [{ path: "purr.yaml", content: `workspace-${id}`, expectedRevision: null }], [{ table: "drafts", id: "draft", value: `private-${id}` }]);
-    const db = await new Promise<IDBDatabase>((resolve) => { const open = indexedDB.open("purr-preview-v3"); open.onsuccess = () => resolve(open.result); });
+    const db = await new Promise<IDBDatabase>((resolve) => { const open = indexedDB.open("purr-preview-v4"); open.onsuccess = () => resolve(open.result); });
     const id = JSON.stringify(["workspace", "alpha", "runtime"]);
     await new Promise<void>((resolve) => { const tx = db.transaction("keys", "readwrite"); tx.objectStore("keys").delete(`key/${id}`); tx.oncomplete = () => resolve(); });
     const first = await backend.load(); const second = await backend.retryProtectedStorage();
@@ -39,7 +39,7 @@ test("preview rejects copied envelopes and atomically rejects stale secret plus 
     const operationId = crypto.randomUUID(); let failed = false;
     try { await backend.commit("alpha", [{ path: "purr.yaml", content: "must-not-publish", expectedRevision: files["purr.yaml"].revision }], [],
       { operationId, mutations: [{ ref, scope: { owner: "workspace", workspaceId: "alpha", kind: "credentials" }, expectedRevision: stale.revision, value: "A-stale" }] }); } catch { failed = true; }
-    const db = await new Promise<IDBDatabase>((resolve) => { const open = indexedDB.open("purr-preview-v3"); open.onsuccess = () => resolve(open.result); });
+    const db = await new Promise<IDBDatabase>((resolve) => { const open = indexedDB.open("purr-preview-v4"); open.onsuccess = () => resolve(open.result); });
     await new Promise<void>((resolve) => {
       const tx = db.transaction("secrets", "readwrite"); const store = tx.objectStore("secrets"); const request = store.get(ref);
       request.onsuccess = () => store.put(request.result, other); tx.oncomplete = () => resolve();
@@ -83,7 +83,7 @@ test("credential-only key loss isolates its workspace before startup autosave", 
       await backend.commit(id, [{ path: "purr.yaml", content: `workspace-${id}`, expectedRevision: null }], []);
       await secure.set(`purr/${id}/credentials/auth/password`, `synthetic-${id}`);
     }
-    const db = await new Promise<IDBDatabase>((resolve) => { const open = indexedDB.open("purr-preview-v3"); open.onsuccess = () => resolve(open.result); });
+    const db = await new Promise<IDBDatabase>((resolve) => { const open = indexedDB.open("purr-preview-v4"); open.onsuccess = () => resolve(open.result); });
     const key = `key/${JSON.stringify(["workspace", "alpha", "credentials"])}`;
     await new Promise<void>((resolve) => { const tx = db.transaction("keys", "readwrite"); tx.objectStore("keys").delete(key); tx.oncomplete = () => resolve(); });
     const snapshot = await backend.load(); const retried = await backend.retryProtectedStorage();

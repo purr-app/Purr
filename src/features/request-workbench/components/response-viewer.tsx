@@ -1292,6 +1292,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
       aria-label="HTTP response"
       className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel"
     >
+      {storedResponse.protectedSnapshot && storedResponse.protectedSnapshot.status !== "available" ? <p role="status" className="m-ui-0 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 text-ui-xs text-content-secondary">Exact protected request/response details are {storedResponse.protectedSnapshot.status ?? "unresolved"}. Public response content remains available. Retry / Unlock in Workspace settings → Secrets.</p> : null}
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated p-ui-2">
         <div
           className="flex min-w-0 flex-wrap items-center gap-ui-1"

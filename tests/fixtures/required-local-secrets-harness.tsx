@@ -14,11 +14,27 @@ export async function mountRequiredSecretsFixture() {
   const root = createRoot(document.body.appendChild(document.createElement("div")));
   const owners: string[] = [];
   const events: Array<{ ref: string; value: string | null }> = [];
-  const render = (protectedState: ProtectedState = { status: "available" }) => root.render(createElement(RequiredLocalSecrets, {
+  const retries: ProtectedState[] = [];
+  let retryResult: ProtectedState | undefined;
+  let retryGate: Promise<void> | undefined;
+  let releaseRetry: (() => void) | undefined;
+  const render = (protectedState: ProtectedState = { status: "available" }, runtimeProtectedState?: ProtectedState) => root.render(createElement(RequiredLocalSecrets, {
     workspace, globalVariables: [], secure, protectedState, migrationRequired: true,
-    onOpenOwner: (ownerId) => { owners.push(ownerId); }, onRetry: async () => {},
+    runtimeProtectedState,
+    onOpenOwner: (ownerId) => { owners.push(ownerId); }, onRetry: async () => {
+      retries.push(protectedState);
+      await retryGate;
+      const result = retryResult ?? runtimeProtectedState ?? protectedState;
+      render(result);
+      return result;
+    },
     onSetValue: async (ref, value) => { events.push({ ref, value }); if (value === null) await secure.delete(ref); else await secure.set(ref, value); },
   }));
   render();
-  return { events, owners, render, renderLegacy: () => { workspace.variables = [{ ...workspace.variables[0], secretRef: "purr/secret-fixture/variables/token" }]; render(); } };
+  return { events, owners, retries, render,
+    setRetryResult: (state: ProtectedState) => { retryResult = state; },
+    holdRetry: () => { retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; }); },
+    releaseRetry: () => releaseRetry?.(),
+    renderEmpty: () => { workspace.variables = []; render(); },
+    renderLegacy: () => { workspace.variables = [{ ...workspace.variables[0], secretRef: "purr/secret-fixture/variables/token" }]; render(); } };
 }

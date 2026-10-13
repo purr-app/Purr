@@ -107,7 +107,7 @@ export function VariablesExplorer({ globalAvailable = true, onImportEnvironment,
   const filtered = variables.filter((variable) => (!search.trim() || `${variable.name} ${variableSummary(variable, workspace)}`.toLowerCase().includes(search.toLowerCase()))
     && (type === "all" || variable.kind === type));
 
-  const writable = (!workspace.protectedState || workspace.protectedState.status === "available") && (scope !== "global" || globalAvailable);
+  const writable = (workspace.publicWritable || !workspace.protectedState || workspace.protectedState.status === "available") && (scope !== "global" || globalAvailable);
   const replaceInScope = (next: Variable[]) => {
     if (!writable) return;
     if (scope === "workspace") onWorkspaceVariablesChange(next);

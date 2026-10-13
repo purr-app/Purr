@@ -1,5 +1,5 @@
 //! CAS-protected credential mutations and encrypted, idempotent operation receipts.
-use super::local_records::{LocalRecord, LocalStateStore};
+use super::local_records::{LocalRecord, LocalStateStore, RecordProtection};
 use crate::security::{scoped::ProtectionScope, validate_secret_ref, LocalCipher};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -185,13 +185,19 @@ pub(super) fn record_operation(
 ) -> Result<(), String> {
     // Terminal receipts retain only an encrypted fingerprint and result, never
     // old secret values. The separate pending journal owns replay material.
+    let protection = if payload["request"]["protection"] == "plaintext" {
+        RecordProtection::Plaintext
+    } else {
+        RecordProtection::Encrypted
+    };
     let payload =
         json!({"requestFingerprint":fingerprint(&payload["request"])?,"result":payload["result"]});
-    let payload = cipher.encrypt(
+    let payload = protection.encode(
+        cipher,
         &serde_json::to_vec(&payload).map_err(|_| "Invalid operation receipt")?,
         &format!("purr:operation:v1|{id}"),
     )?;
-    db.execute("INSERT INTO secret_operations(operation_id,state,payload) VALUES(?1,?2,?3) ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,payload=excluded.payload WHERE secret_operations.state NOT IN ('committed','aborted')", params![id,state,payload]).map_err(db_error)?;
+    db.execute("INSERT INTO secret_operations(operation_id,state,payload,protection) VALUES(?1,?2,?3,?4) ON CONFLICT(operation_id) DO UPDATE SET state=excluded.state,payload=excluded.payload,protection=excluded.protection WHERE secret_operations.state NOT IN ('committed','aborted')", params![id,state,payload,protection.as_str()]).map_err(db_error)?;
     Ok(())
 }
 
@@ -229,19 +235,21 @@ impl LocalStateStore {
 
     pub fn operation(&self, id: &str) -> Result<Option<(String, Value)>, String> {
         validate_operation_id(id)?;
-        let row: Option<(String, Vec<u8>)> = self
+        let row: Option<(String, Vec<u8>, String)> = self
             .db
             .query_row(
-                "SELECT state,payload FROM secret_operations WHERE operation_id=?1",
+                "SELECT state,payload,protection FROM secret_operations WHERE operation_id=?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(db_error)?;
-        row.map(|(state, payload)| {
-            let plain = self
-                .cipher
-                .decrypt(&payload, &format!("purr:operation:v1|{id}"))?;
+        row.map(|(state, payload, protection)| {
+            let plain = RecordProtection::parse(&protection)?.decode(
+                &self.cipher,
+                &payload,
+                &format!("purr:operation:v1|{id}"),
+            )?;
             Ok((
                 state,
                 serde_json::from_slice(&plain).map_err(|_| "Damaged operation receipt")?,

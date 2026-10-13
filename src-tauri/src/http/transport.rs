@@ -15,7 +15,7 @@ use tokio::sync::watch;
 use super::request_body::{stream_file, RequestBodyPart, RequestBodySource, RequestFileRef};
 use crate::content::{
     actor::{PendingContentWrite, ResponseContentHandle},
-    contracts::{ContentMetadata, ResponseContentRef},
+    contracts::{ContentMetadata, ResponseContentProtection, ResponseContentRef},
 };
 
 const MAX_RESPONSE_BYTES: u64 = 128 * 1024 * 1024;
@@ -163,14 +163,6 @@ pub struct ResponseStoragePolicy {
     protection: ResponseContentProtection,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ResponseContentProtection {
-    #[default]
-    Encrypted,
-    Plaintext,
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpPipelineTimings {
@@ -263,13 +255,18 @@ fn request_error(error: reqwest::Error) -> String {
     .into()
 }
 
-fn content_metadata(workspace_id: &str, headers: &[(String, String)]) -> ContentMetadata {
+fn content_metadata(
+    workspace_id: &str,
+    headers: &[(String, String)],
+    protection: ResponseContentProtection,
+) -> ContentMetadata {
     let Some(value) = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
         .map(|(_, value)| value)
     else {
         return ContentMetadata {
+            protection,
             workspace_id: workspace_id.into(),
             media_type: None,
             charset: None,
@@ -289,6 +286,7 @@ fn content_metadata(workspace_id: &str, headers: &[(String, String)]) -> Content
             .filter(|value| !value.is_empty())
     });
     ContentMetadata {
+        protection,
         workspace_id: workspace_id.into(),
         media_type,
         charset,
@@ -358,14 +356,13 @@ pub async fn perform_http_with_files(
         return Err("Request cancelled.".into());
     }
     crate::content::store::validate_workspace(&request.workspace_id)?;
-    content
-        .ensure_workspace(request.workspace_id.clone())
-        .await?;
+    if request.response_storage.protection == ResponseContentProtection::Encrypted {
+        content
+            .ensure_workspace(request.workspace_id.clone())
+            .await?;
+    }
     let url = http_url(&request.url)?;
     let injected_trace_headers = request.injected_trace_headers;
-    if request.response_storage.protection != ResponseContentProtection::Encrypted {
-        return Err("Plaintext response storage is not enabled in this build.".into());
-    }
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|_| "Invalid HTTP method.")?;
     if request.body_base64.is_some() && request.body_source.is_some() {
@@ -479,7 +476,11 @@ pub async fn perform_http_with_files(
     });
 
     let staging = content
-        .create_staging(content_metadata(&request.workspace_id, &headers))
+        .create_staging(content_metadata(
+            &request.workspace_id,
+            &headers,
+            request.response_storage.protection,
+        ))
         .await?;
     let content_id = staging.id;
     let capture = async {
@@ -703,12 +704,13 @@ mod tests {
         }))
         .is_err());
         assert_eq!(
-            content_metadata("workspace-a", &[]).workspace_id,
+            content_metadata("workspace-a", &[], ResponseContentProtection::Encrypted).workspace_id,
             "workspace-a"
         );
         let metadata = content_metadata(
             "workspace-b",
             &[("Content-Type".into(), "text/plain; charset=utf-8".into())],
+            ResponseContentProtection::Encrypted,
         );
         assert_eq!(metadata.workspace_id, "workspace-b");
         assert_eq!(metadata.charset.as_deref(), Some("utf-8"));
@@ -1140,17 +1142,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plaintext_response_storage_fails_closed_until_implemented() {
+    async fn plaintext_response_storage_streams_without_a_key() {
         let directory = TempDir::new().unwrap();
-        let content = content_handle(&directory);
+        let content = ResponseContentHandle::for_test(
+            ResponseContentStore::open_with_ciphers(
+                &directory.path().join("state.sqlite3"),
+                &crate::security::RootCiphers::unavailable(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\npublic").unwrap();
+        });
         let (_, cancellation) = watch::channel(false);
-        let error = perform_http(
+        let result = perform_http(
             HttpRequest {
-                workspace_id: "workspace".into(),
                 response_storage: ResponseStoragePolicy {
                     protection: ResponseContentProtection::Plaintext,
                 },
-                ..request("https://example.com".into())
+                ..request(format!("http://{address}/"))
             },
             &HttpClient::default().0,
             &content,
@@ -1158,11 +1174,13 @@ mod tests {
             |_| {},
         )
         .await
-        .unwrap_err();
+        .unwrap();
         assert_eq!(
-            error,
-            "Plaintext response storage is not enabled in this build."
+            result.content.protection,
+            ResponseContentProtection::Plaintext
         );
+        assert_eq!(result.content.byte_length, 6);
+        server.join().unwrap();
     }
 
     #[tokio::test]

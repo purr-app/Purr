@@ -12,8 +12,8 @@ use std::{
 
 static PREPARATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-const MARKER: &str = "storage-layout-v2.json";
-const PENDING: &str = "storage-layout-transition.json";
+const MARKER: &str = "storage-layout-v3.json";
+const PENDING: &str = "storage-layout-transition-v3.json";
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Transition {
@@ -73,6 +73,12 @@ fn owned(name: &str) -> bool {
             | "storage-v2"
             | "root-key-v1"
             | "root-key-metadata-v1.json"
+            | "storage-layout-v2.json"
+            | "storage-layout-transition.json"
+            | "scope-keys.sqlite3"
+            | "scope-keys.sqlite3-wal"
+            | "scope-keys.sqlite3-shm"
+            | "scope-keys.sqlite3-journal"
     ) || matches!(
         name,
         "local-state.sqlite3"
@@ -84,12 +90,15 @@ fn owned(name: &str) -> bool {
         || name.starts_with(".tmp")
 }
 fn read(path: &Path) -> Result<Transition, ProtectedError> {
+    read_version(path, 3)
+}
+fn read_version(path: &Path, version: u8) -> Result<Transition, ProtectedError> {
     if !fs::symlink_metadata(path).map_err(|_| failure())?.is_file() {
         return Err(conflict());
     }
     let value: Transition =
         serde_json::from_slice(&fs::read(path).map_err(|_| failure())?).map_err(|_| conflict())?;
-    if value.version != 2
+    if value.version != version
         || value.archive.len() != 32
         || !value.archive.bytes().all(|c| c.is_ascii_hexdigit())
         || value
@@ -136,18 +145,13 @@ fn prepare_inner(root: &Path, stop_after: Option<usize>) -> Result<PathBuf, Prot
     }
     // Keep this inode at its original path: old builds also lock it.
     let _old = lock(&root.join("root-key-manager.lock"))?;
-    // A lost layout marker must not make an established scoped store look old.
-    if [
-        "scope-keys.sqlite3",
-        "scope-keys.sqlite3-wal",
-        "scope-keys.sqlite3-shm",
-        "scope-keys.sqlite3-journal",
-    ]
-    .iter()
-    .any(|name| present(&root.join(name)).unwrap_or(true))
-    {
-        return Err(conflict());
+    // S04 can be retired only with its manifest. Missing current metadata must
+    // not turn established S05 encryption into permission to replace keys.
+    let retiring_v2 = present(&root.join("storage-layout-v2.json"))?;
+    if retiring_v2 {
+        read_version(&root.join("storage-layout-v2.json"), 2)?;
     }
+    let resuming = present(&root.join(PENDING))?;
     let metadata_path = root.join("root-key-metadata-v1.json");
     if present(&metadata_path)? {
         if !fs::symlink_metadata(&metadata_path)
@@ -159,10 +163,17 @@ fn prepare_inner(root: &Path, stop_after: Option<usize>) -> Result<PathBuf, Prot
         let metadata: serde_json::Value =
             serde_json::from_slice(&fs::read(&metadata_path).map_err(|_| failure())?)
                 .map_err(|_| conflict())?;
-        if metadata["profile"] == "application-v2" || metadata.get("scopeRegistryVersion").is_some()
+        if metadata["profile"] == "application-v3"
+            || (!retiring_v2
+                && !resuming
+                && (metadata["profile"] == "application-v2"
+                    || metadata.get("scopeRegistryVersion").is_some()))
         {
             return Err(conflict());
         }
+    }
+    if !retiring_v2 && !resuming && present(&root.join("scope-keys.sqlite3"))? {
+        return Err(conflict());
     }
     let transition = if present(&root.join(PENDING))? {
         read(&root.join(PENDING))?
@@ -184,7 +195,7 @@ fn prepare_inner(root: &Path, stop_after: Option<usize>) -> Result<PathBuf, Prot
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).map_err(|_| failure())?;
         let value = Transition {
-            version: 2,
+            version: 3,
             archive: id.iter().map(|byte| format!("{byte:02x}")).collect(),
             entries,
         };
@@ -399,5 +410,40 @@ mod tests {
             b"original"
         );
         assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+    }
+    #[test]
+    fn s04_retirement_preserves_both_databases_sidecars_and_resumes_each_move() {
+        let names = [
+            "local-state.sqlite3",
+            "local-state.sqlite3-wal",
+            "local-state.sqlite3-shm",
+            "scope-keys.sqlite3",
+            "scope-keys.sqlite3-wal",
+            "scope-keys.sqlite3-shm",
+            "root-key-metadata-v1.json",
+            "storage-layout-v2.json",
+        ];
+        for stop in 1..=names.len() + 1 {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            for name in names {
+                fs::write(root.join(name),if name=="storage-layout-v2.json" {br#"{"version":2,"archive":"0123456789abcdef0123456789abcdef","entries":[]}"#.as_slice()} else if name=="root-key-metadata-v1.json" {br#"{"profile":"application-v2"}"#.as_slice()}else{name.as_bytes()}).unwrap();
+            }
+            fs::create_dir(root.join("projects")).unwrap();
+            fs::write(root.join("projects/purr.yaml"), b"public").unwrap();
+            let expected = names.map(|name| (name, fs::read(root.join(name)).unwrap()));
+            assert!(prepare_inner(root, Some(stop)).is_err());
+            prepare(root).unwrap();
+            let archive = deprecated_directory(root).unwrap();
+            for (name, bytes) in expected {
+                assert_eq!(fs::read(archive.join(name)).unwrap(), bytes);
+                assert!(!root.join(name).exists());
+            }
+            assert_eq!(
+                fs::read(archive.join("projects/purr.yaml")).unwrap(),
+                b"public"
+            );
+            assert_eq!(prepare(root).unwrap(), root);
+        }
     }
 }

@@ -1,6 +1,6 @@
 # Структура локальних БД Purr та формат зашифрованих BLOB
 
-Опис поточної реалізації S04, станом на 2026-10-13. Документ пояснює native storage, який можна переглядати через DBeaver. Подальші зміни політики Encrypt responses мають оновлювати цей опис.
+Опис реалізації S05, станом на 2026-10-13. Документ пояснює native storage, явне розділення public/protected записів та їх перегляд через DBeaver.
 
 ## 1. Де знаходяться дані
 
@@ -9,18 +9,18 @@
 ```text
 <app-data>/
 ├── projects/<workspace-id>/     переносимі YAML та assets
-├── local-state.sqlite3          основна локальна БД, schema version 7
+├── local-state.sqlite3          основна локальна БД, schema version 8
 ├── scope-keys.sqlite3           реєстр захищених ключів, schema version 1
 ├── root-key-metadata-v1.json    ідентичність OS root та keycheck
 ├── root-key-manager.lock       блокування активного native профілю
 ├── storage-layout.lock         блокування підготовки розташування
-├── storage-layout-v2.json      завершена підготовка розташування
+├── storage-layout-v3.json      завершена підготовка розташування
 └── deprecated/<unique-id>/     попередні managed datasets
 ```
 
 Біля кожної SQLite можуть існувати `-wal`, `-shm` та іноді `-journal`. Це службові файли SQLite. WAL може містити вже закомічені зміни, ще не перенесені в основний файл. Копія одного `.sqlite3` під час роботи застосунку не обов'язково є повною копією даних.
 
-`storage-layout-transition.json` існує під час перенесення попереднього сховища. Він містить список назв та місце архівування; після успіху стає `storage-layout-v2.json`. Жоден layout manifest не містить ключів. Попередні `development/`, `release/` та експериментальна `storage-v2/` також архівуються. Зовнішні attached project folders не переміщуються. Архівована БД має історичні шляхи каталогу й не відкривається автоматично як новий активний профіль.
+`storage-layout-transition-v3.json` існує під час перенесення попереднього сховища. Він містить список назв та місце архівування; після успіху стає `storage-layout-v3.json`. Жоден layout manifest не містить ключів. Попередні `development/`, `release/` та експериментальна `storage-v2/` також архівуються. Зовнішні attached project folders не переміщуються. Архівована БД має історичні шляхи каталогу й не відкривається автоматично як новий активний профіль.
 
 `projects` — файлове представлення workspace. Runtime workspace додатково включає локальні вкладки, drafts, історію, cookies та кеші в SQLite. Збережені запити, environments та конфігурації лежать у YAML, а не лише в БД.
 
@@ -28,7 +28,11 @@
 
 Це звичайна SQLite із шифруванням окремих значень застосунком, не SQLCipher. DBeaver бачить схему, таблиці, індекси, службові колонки та BLOB. Наявність BLOB сама по собі означає лише тип «байти»; у перелічених нижче protected колонках ці байти мають описаний криптографічний формат.
 
-У поточній версії credentials, drafts, cookies, session state, history, attachments і всі response bodies захищені. Продуктова ознака sensitive та факт шифрування локального runtime state — різні речі. Звичайний draft шифрується runtime key, але не стає SecretRef у canonical YAML.
+S05 використовує явну колонку `protection`: `plaintext` або `encrypted`. UI/session та очищені робочі копії можуть бути відкритим JSON; credentials і виділені sensitive fragments залишаються у `secret_values`. Cookies, OAuth runtime та приватні attachments захищені незалежно від Encrypt responses. Позначення sensitive та вибір шифрування всієї відповіді — різні речі.
+
+Encrypt responses має локальний workspace default Off і request override Inherit/On/Off. Off дозволяє відкриті звичайні response body/metadata; On захищає їх runtime key. Політика фіксується при dispatch. Існуючі entries/chunks зберігають власну protection після перемикання. Довільний server body може містити токен або персональні дані: Purr не сканує його вміст. Cookie/Set-Cookie та відомі OAuth token responses залишаються захищеними.
+
+S05 починає новий dataset у корені app-data. Попередній S04 набір — managed projects, обидві SQLite з sidecars, root metadata та попередні layout manifests — цілісно переміщується в `deprecated/<unique-id>`. Schema 7 не перетворюється на schema 8. Старі OS Keychain entries зберігаються; новий профіль має identity `application-v3`. Старі external project directories не чіпаються. При явному підключенні YAML локальні defaults починаються з Off, а відсутні секрети вводяться вручну.
 
 Не приховуються всі метадані. Каталог workspace та шляхи, SecretRef, ID, ревізії, деякі timestamps/status, розміри response chunks і cookie attributes доступні без ключа. Заголовки криптографічних envelopes також відкриті, але автентифіковані. Копія директорії розкриває ці метадані, проте не містить відкритого нового installation root.
 
@@ -39,10 +43,10 @@
 | Таблиця | Колонки | Призначення |
 |---|---|---|
 | `migrations` | `version` INTEGER PK, `applied_at` TEXT | Журнал версій схеми |
-| `app_state` | `key` TEXT PK, `value` TEXT | Наприклад `active-workspace`, `crypto-key-derivation=scoped-envelope-v2`, retention settings |
+| `app_state` | `key` TEXT PK, `value` TEXT | Наприклад `active-workspace`, `crypto-key-derivation=mixed-scoped-v3`, retention settings |
 | `workspaces` | `id` TEXT PK, `directory` TEXT UNIQUE | Зв'язок workspace ID із managed або зовнішньою project directory |
 
-Поточний `PRAGMA user_version` — **7**. Схема не дорівнює версії canonical YAML або версії криптографічного envelope.
+Поточний `PRAGMA user_version` — **8**. Схема не дорівнює версії canonical YAML або версії криптографічного envelope.
 
 ### 3.2 Основні локальні записи
 
@@ -52,22 +56,36 @@
 workspace_id TEXT NOT NULL,
 id TEXT NOT NULL,
 payload BLOB NOT NULL,
+protection TEXT NOT NULL DEFAULT 'encrypted'
+  CHECK(protection IN ('plaintext', 'encrypted')),
 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 PRIMARY KEY(workspace_id, id)
 ```
 
-| Таблиця | Що знаходиться всередині розшифрованого `payload` |
+| Таблиця | Що знаходиться всередині JSON `payload` після декодування protection |
 |---|---|
 | `workspace_local_state` | JSON локальних налаштувань. Наприклад записи `state`, `dynamic-variable-cache`, `auth-runtime`. Global variables — запис `variables` із власником `__global__`. Для явно відкритого v1 project може існувати `legacy-definition-draft` |
 | `drafts` | JSON робочої копії документа, включно з незбереженими змінами; runtime credentials представлені захищеними references |
 | `document_session_state` | JSON стану редактора, UI, timestamps та локальних атрибутів документа |
 | `request_executions` | JSON незмінної history entry, request/response metadata та references на body; додаткові колонки описані нижче |
 | `cookie_jar` | JSON cookie record зі значенням cookie |
-| `schema_cache` | JSON кешу GraphQL: SDL, час завантаження, source, cache identity та definition hash |
+| `schema_cache` | JSON кешу GraphQL: SDL, час завантаження, cache identity та definition hash |
 | `recent_items` | Локальні recent records; наявність таблиці не означає, що вона завжди заповнена |
 | `attachments` | JSON attachment record: `version`, `name`, `type`, `lastModified`, `size`, `base64` |
 
-Розшифрування `payload` дає UTF-8 JSON. Це спеціалізовані DTO, не одна серіалізована копія всього runtime `Workspace`. Форма JSON залежить від таблиці та типу запису.
+`protection=plaintext` означає UTF-8 JSON без crypto envelope; `encrypted` означає scoped envelope v2, після розшифрування якого отримуємо UTF-8 JSON. Reader вибирає шлях за колонкою, не за першим байтом або помилкою decrypt. Це спеціалізовані DTO, не одна серіалізована копія всього runtime `Workspace`. Форма JSON залежить від таблиці та типу запису.
+
+Локальні HTTP/GraphQL editors у `drafts.request`, `drafts.savedRequest`, `document_session_state.editor` та `request_executions.editor` мають компактний формат із `__purrRequest: 1`. Наприклад, звичайний GET без додаткових налаштувань зберігається так:
+
+```json
+{"__purrRequest":1,"method":"GET","url":"http://127.0.0.1:18765/echo"}
+```
+
+Версія фіксує defaults: порожні Body/Auth, один стандартний порожній рядок params/headers, порожні pathParams, увімкнені cookies та стандартні request inheritance overrides відновлюються при читанні. Зберігаються лише відмінності, включно з вкладеними полями auth/body. Це не видалення неактивних режимів: задані значення, disabled rows, дублікати, нестандартні ID, файли й індивідуальні overrides залишаються. Невикористаний автоматично створений multipart boundary можна відновити; активний/налаштований body і власний boundary зберігаються. Defaults цього формату незалежні від майбутніх UI defaults.
+
+Secret envelopes створюються **до** ущільнення; повна структура editor відновлюється **до** читання секретів, тому missing/unavailable не губляться. Повний попередній JSON читається без конвертації. Нові записи компактні; існуюча історія не переписується масово. Для dirty document session не дублює editor, який уже належить draft. `savedRequest` залишається baseline для Discard. Clean session використовує `definitionHash` замість копії YAML; schema session — `authDefinitionHash`. У `schema_cache` v2 source береться з canonical definition, тому старе дублююче поле більше не записується.
+
+На синтетичному GET із прикладу JSON editor зменшується з 1020 до 70 UTF-8 байтів (приблизно 93%). Це розмір конкретного editor payload, а не всієї SQLite БД чи гарантія прискорення запуску. Після видалення/заміни старих payloads SQLite може повторно використовувати сторінки без зменшення розміру файла.
 
 Owner `__global__` позначає global runtime storage. У SecretRef глобальний owner має ім'я `global`. Для звичайного workspace ці імена зарезервовані.
 
@@ -81,13 +99,13 @@ Owner `__global__` позначає global runtime storage. У SecretRef гло�
 | `started_at` INTEGER nullable | Час виконання в мілісекундах Unix epoch |
 | `status` INTEGER nullable | HTTP status для відповідних виконань |
 | `pinned` INTEGER DEFAULT 0 | Закріплення, що виключає автоматичне expiry |
-| `summary` BLOB nullable | Зашифрований JSON короткого опису історії |
+| `summary` BLOB nullable | JSON короткого опису історії; використовує protection execution |
 
 Індекси: `execution_document_time(workspace_id, document_id, started_at DESC)` і `execution_workspace_time(workspace_id, started_at DESC, id DESC)`.
 
-Summary містить такі поля, як name, method, URL, outcome, status, size та необов'язкове provenance dynamic execution. Список історії читає summary; тіло відповіді не потрібне для звичайного переліку. Текстовий пошук перевіряє розшифровані summaries у Rust, а не SQL `LIKE` усередині ciphertext.
+Summary містить такі поля, як name, method, URL, outcome, status, size та необов'язкове provenance dynamic execution. Список історії читає summary; тіло відповіді не потрібне для звичайного переліку. Текстовий пошук перевіряє декодовані summaries у Rust, а не SQL `LIKE` усередині ciphertext. Публічний snapshot із Off не містить classified wire values: точні sensitive request/response fields знаходяться за immutable `protectedSnapshot` runtime SecretRef. Зміна поточного токена не змінює history snapshot.
 
-`response_bodies(workspace_id, execution_id, payload BLOB)` із composite PK — попередній inline body формат. Payload є зашифрованим JSON з `text`/`bodyBase64`. Новий native streaming шлях використовує наступні таблиці.
+`response_bodies(workspace_id, execution_id, payload BLOB, protection TEXT)` із composite PK — попередній inline body формат. Payload — JSON із `text`/`bodyBase64`, відкритий або encrypted згідно з protection. Новий native streaming шлях використовує наступні таблиці.
 
 **`response_contents` — метадані одного body:**
 
@@ -98,8 +116,10 @@ Summary містить такі поля, як name, method, URL, outcome, statu
 | `execution_id` | TEXT nullable; встановлюється при adoption історією |
 | `state` | TEXT: `staging`, `ready`, `adopted` |
 | `byte_length` | INTEGER ≥ 0 |
-| `media_type`, `charset` | TEXT nullable |
-| `created_at`, `expires_at` | INTEGER epoch milliseconds; expiry nullable |
+| `media_type`, `charset` | TEXT nullable; заповнені лише для plaintext content |
+| `protection` | TEXT: `plaintext` або `encrypted`; задається до першого chunk |
+| `metadata` | BLOB nullable; encrypted mediaType/charset для On, NULL для Off |
+| `created_at`, `expires_at` | INTEGER Unix epoch seconds; expiry nullable |
 
 Є UNIQUE `(workspace_id, execution_id)` та індекс `response_contents_expiry(state, expires_at)`.
 
@@ -111,19 +131,19 @@ Summary містить такі поля, як name, method, URL, outcome, statu
 | `chunk_index` | INTEGER ≥ 0 |
 | `plain_offset` | INTEGER ≥ 0; позиція у початковому body |
 | `plain_length` | INTEGER > 0; розмір до шифрування |
-| `crypto_version` | INTEGER; зараз 2 для scoped content |
-| `nonce` | BLOB, 12 bytes |
-| `ciphertext` | BLOB; header + encrypted bytes + authentication tag |
+| `crypto_version` | INTEGER: 2 для scoped content, 0 для plaintext content |
+| `nonce` | BLOB: 12 bytes для encrypted, порожній для plaintext |
+| `ciphertext` | BLOB: encrypted envelope fragment або сирі body bytes для plaintext; історична назва колонки |
 
-PK `(content_id, chunk_index)`, UNIQUE `(content_id, plain_offset)`. Після розшифрування chunk отримуємо **сирі байти response body**, не JSON-обгортку. Наприклад JSON response лишається JSON байтами, PNG — PNG байтами.
+PK `(content_id, chunk_index)`, UNIQUE `(content_id, plain_offset)`. За `response_contents.protection=encrypted` chunk розшифровується, за `plaintext` reader додатково вимагає `crypto_version=0` і порожній nonce. Результат — **сирі байти response body**, не JSON-обгортка. Невідомий discriminator або суперечливий chunk відхиляється, decrypt error не запускає plaintext fallback. Наприклад JSON response лишається JSON байтами, PNG — PNG байтами.
 
-`staging` означає запис у процесі; `ready` — завершений тимчасовий content; `adopted` — content належить збереженій history entry. Видалення execution прибирає відповідний content та chunks. Derived format/query results також можуть створювати тимчасові `ready` records.
+`staging` означає запис у процесі; `ready` — завершений тимчасовий content; `adopted` — content належить збереженій history entry. Видалення execution прибирає відповідний content та chunks. Derived format/query results також можуть створювати тимчасові `ready` records; вони успадковують protection та workspace фактичного source content.
 
 ### 3.4 Cookies та attachments
 
 `cookie_metadata` має composite PK `(workspace_id, id)` та відкриті колонки `name`, `domain`, `path`, `expires`, `secure`, `http_only`, `same_site`, `host_only`, `enabled`. Індекс — `cookie_domain_path(workspace_id, domain, path)`. Cookie value знаходиться у protected `cookie_jar.payload`.
 
-`history_attachments(workspace_id, id, payload BLOB)` має composite PK; це захищені копії attachments, які потрібні для replay історії після видалення live draft.
+`history_attachments(workspace_id, id, payload BLOB, protection TEXT)` має composite PK; це захищені копії attachments, які потрібні для replay історії після видалення live draft.
 
 `history_attachment_links(workspace_id, execution_id, attachment_id)` із composite PK пов'язує executions із retained attachments. Зв'язки відкриті; payload захищений. History attachment використовує той самий encryption context, що й live attachment, щоб можна було переносити ciphertext між цими власниками без повторного кодування файла.
 
@@ -144,11 +164,11 @@ Reference має форму `purr/<workspace-id>/credentials/<owner>/<field>` а
 
 | Таблиця | Структура | Protected payload |
 |---|---|---|
-| `pending_commits` | `workspace_id` TEXT PK, `payload` BLOB | JSON журналу file/local/secret publication та відновлення |
-| `secret_operations` | `operation_id` TEXT PK, `state` TEXT, `payload` BLOB | JSON receipt: fingerprint запиту та result; replay material знаходиться в pending journal |
-| `workspace_cleanup` | `workspace_id` TEXT PK, `payload` BLOB | JSON intent завершення очищення managed directory |
+| `pending_commits` | `workspace_id` TEXT PK, `payload` BLOB, `protection` TEXT | JSON журналу file/local/secret publication та відновлення |
+| `secret_operations` | `operation_id` TEXT PK, `state` TEXT, `payload` BLOB, `protection` TEXT | JSON receipt: fingerprint запиту та result; replay material знаходиться в pending journal |
+| `workspace_cleanup` | `workspace_id` TEXT PK, `payload` BLOB, `protection` TEXT | JSON intent завершення очищення managed directory |
 
-Operation states: `prepared`, `applying`, `committed`, `aborted`, `recovery-required`. Ці записи використовують installation journal scope. У pending journal можуть бути секретні значення для відновлення, тому він також зашифрований. Terminal receipts забезпечують повторювану перевірку результату операції.
+Operation states: `prepared`, `applying`, `committed`, `aborted`, `recovery-required`. Protected записи використовують installation journal scope. Journal із secret mutations або encrypted local changes завжди encrypted. Суто public commit може мати plaintext journal і receipt без доступу до ключа. Receipt містить SHA-256 request fingerprint та result, а не значення секретів. Terminal receipts забезпечують повторювану перевірку результату операції.
 
 ## 4. `scope-keys.sqlite3`
 
@@ -179,6 +199,12 @@ Workspace/global credential/runtime roots генеруються незалеж�
 Поточна функція HKDF використовує salt `purr:root-key:v1`; суфікс salt — історична назва, не версія envelope. `scope.kind` та `purpose` є різними рівнями: runtime secret value використовує runtime scope + secrets purpose, а draft — runtime scope + database purpose.
 
 ## 5. Точний формат BLOB
+
+### 5.0 Як вибрати формат
+
+Спочатку дивись `protection`, потім структуру BLOB. Для `plaintext` local `payload`/`summary` — звичайні UTF-8 JSON bytes без version byte; для body chunk — сирі response bytes. Для `encrypted` застосовуються формати нижче. `secret_values` та wrapped keys не мають public варіанта.
+
+Приклад public draft: BLOB із байтами `{"version":1,...}`. Захищені поля всередині такого DTO представлені refs, а не literal секретами. Це не SQLCipher: всю SQLite не можна класифікувати за одним заголовком.
 
 ### 5.1 Єдина колонка `payload` або `summary`: scoped envelope v2
 
@@ -255,6 +281,7 @@ purr:scope-envelope:v2|<headerByteLength>:<headerJSON>|<contextByteLength>:<cont
 | History summary | `<workspace>/history-summary/<execution-id>` |
 | Inline response body | `<workspace>/response_bodies/<execution-id>` |
 | Secret value | `purr:secret:v1|<SecretRef>` |
+| Response content metadata | `purr:response-content-metadata:v3\|<workspace>\|<content-id>` |
 | Response chunk | `purr:response-content:v2|<workspace>|<content-id>|<index>|<offset>|<plain-length>` |
 | Pending commit | `<workspace>/journal` |
 | Operation receipt | `purr:operation:v1|<operation-id>` |
@@ -283,9 +310,13 @@ PRAGMA foreign_key_list('response_content_chunks');
 Приклади перегляду лише метаданих:
 
 ```sql
-SELECT workspace_id, id, length(payload) AS blob_bytes,
+SELECT workspace_id, id, protection, length(payload) AS blob_bytes,
        hex(substr(payload, 1, 17)) AS version_nonce_header_length
 FROM drafts;
+
+-- Читабельний JSON тільки для явно public rows:
+SELECT workspace_id, id, CAST(payload AS TEXT) AS public_json
+FROM drafts WHERE protection = 'plaintext';
 
 SELECT reference, crypto_version, length(nonce) AS nonce_bytes,
        length(ciphertext) AS envelope_bytes
@@ -323,7 +354,7 @@ def payload_header(blob: bytes):
 
 Обмеження: startup читає та розшифровує локальні записи workspace; великий змінений draft потребує серіалізації та повторного запису свого payload; пошук історії може перебирати багато encrypted summaries. Блокові responses обмежують streaming buffers, але не роблять всі JSON DTO, attachments або пошукові операції потоковими. Функціональні тести не є порівняльним benchmark S04.
 
-S05 має додати політику зберігання звичайних responses та Encrypt responses. Credentials, cookies, OAuth runtime і відомі sensitive дані залишатимуться protected. Цей документ описує поточний encrypted-only response flow.
+S05 прибирає AES-GCM overhead для public rows/chunks, але зберігає серіалізацію JSON, SQLite IO і bounded streaming. On та всі classified fragments продовжують використовувати AES-GCM. Сам факт меншої кількості crypto operations не є benchmark; порівнювати треба однакові synthetic fixtures та workload.
 
 ## 8. Джерела в репозиторії
 
@@ -337,4 +368,4 @@ S05 має додати політику зберігання звичайних
 - [project-projection.ts](../src/application/project-projection.ts) — runtime DTO → canonical/local records.
 - [layout.rs](../src-tauri/src/security/layout.rs) — deprecated archival manifests.
 
-Browser preview використовує IndexedDB `purr-preview-v3` та WebCrypto envelopes; його формат відрізняється від наведеного native binary layout. Для нього дивись `src/storage/browser-crypto.ts` і `browser-backend.ts`.
+Browser preview використовує новий IndexedDB `purr-preview-v4`, зберігаючи стару v3 без змін. Local container має `{version:1, records:[...]}`; кожен row має table/id та `{version:1, protection:"plaintext", value}` або `{version:1, protection:"encrypted", envelope}`. Browser WebCrypto envelope містить scope/keyId/context/iv/data; це не native binary layout. Public history index має мінімальні redacted summaries для On, окремі encrypted summary records повертають деталі при доступному ключі. Unavailable records позначаються типізовано і зберігаються при public save. Для нього дивись `src/storage/browser-crypto.ts` і `browser-backend.ts`.

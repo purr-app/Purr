@@ -64,7 +64,7 @@ export function useWorkspaces() {
     setStore((current) => current ? { ...current, workspaces: current.workspaces.map((workspace) => {
       if (workspace.id !== id) return workspace;
       const next = update(workspace);
-      if (persistence.getWorkspaceStatus(id).protectedState.status === "available") return next;
+      if (persistence.getWorkspaceStatus(id).publicWritable) return next;
       // Navigation remains in memory while the protected baseline is unavailable.
       return { ...workspace, ui: next.ui, activeEnvironmentId: next.activeEnvironmentId, documents: workspace.documents.map((document) => {
         const proposed = next.documents.find((item) => item.id === document.id);

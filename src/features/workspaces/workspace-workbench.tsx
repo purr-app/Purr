@@ -1,3 +1,4 @@
+import { resolveResponseStoragePolicy } from "../../application/response-storage-policy";
 import { workspaceHttpTransport } from "../request-workbench/services/workspace-http-transport";
 import { protectedStorageMessage } from "./model/protected-storage-message";
 import { invalidateSecretBuffers } from "../../application/invalidate-secret-buffers";
@@ -206,10 +207,10 @@ export function WorkspaceWorkbench() {
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
   const services = useMemo(() => workspace?.id ? {
     ...rootServices,
-    httpTransport: workspaceHttpTransport(rootServices.httpTransport, workspace.id),
-  } : rootServices, [rootServices, workspace?.id]);
+    httpTransport: workspaceHttpTransport(rootServices.httpTransport, workspace.id, workspace.responseStorage),
+  } : rootServices, [rootServices, workspace?.id, workspace?.responseStorage]);
   const workspaceStatus = workspace ? persistence.getWorkspaceStatus(workspace.id) : undefined;
-  const writable = !workspaceStatus || workspaceStatus.protectedState.status === "available";
+  const writable = !workspaceStatus || workspaceStatus.publicWritable;
   useEffect(() => {
     setVariableScope("effective");
     setVariableSelection(null);
@@ -256,7 +257,7 @@ export function WorkspaceWorkbench() {
   const currentDocument = activeDocument && isRequestDocument(activeDocument) ? activeDocument : undefined;
   const sourceDocuments = useMemo(() => workspace?.documents
     .filter((document): document is RequestDocument => isRequestDocument(document) && document.saved && !document.historical)
-    .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
+    .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, responseStorage: document.responseStorage, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
   const linkedSchema = workspace?.documents.find((item): item is SchemaDocument => item.kind === "schema" && item.id === currentDocument?.request.graphql?.schemaId);
   const schemaSdl = linkedSchema?.sdl;
   const schema = useMemo(() => { try { return schemaSdl ? parseGraphqlSchema(schemaSdl) : undefined; } catch { return undefined; } }, [schemaSdl]);
@@ -288,6 +289,7 @@ export function WorkspaceWorkbench() {
     jars.current.set(workspace.id, created);
     return created;
   }, [workspace?.id]);
+  if (cookieJar) cookieJar.available = !workspaceStatus || workspaceStatus.runtimeProtectedState.status === "available" && !workspaceStatus.unavailableLocal.some((row) => row.table === "cookie_jar" || row.id === "*");
   const dynamicVariableSessionCache = useMemo(() => {
     const workspaceId = workspace?.id ?? "";
     const existing = dynamicSessionCaches.current.get(workspaceId);
@@ -811,10 +813,10 @@ export function WorkspaceWorkbench() {
             addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
           <TemplateVariableProvider value={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
-          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id}
+          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} responseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, responseStorage }))}
             variableStates={variableStates} onUpgrade={() => requestExplicitSave(workspace, true)}
             secrets={{ workspace, project: persistence.getProject(workspace.id), globalVariables: store.globalVariables, secure: persistence.secure,
-              migrationRequired: workspaceStatus!.migrationRequired, protectedState: workspaceStatus!.protectedState,
+              migrationRequired: workspaceStatus!.migrationRequired, protectedState: workspaceStatus!.protectedState, runtimeProtectedState: workspaceStatus!.runtimeProtectedState,
               onOpenOwner: (id, environmentId, field) => {
                 if (id === workspace.id) { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", field?.startsWith("Header ") ? "headers" : "auth"); return; }
                 if (workspace.documents.some((document) => document.id === id)) { update((current) => {
@@ -828,7 +830,11 @@ export function WorkspaceWorkbench() {
                 if (environmentId) openVariables(`environment:${environmentId}`, id, null); else openVariableDefinition(id);
               },
               onSetValue: async (ref, value) => { await persistence.setSecretValue(workspace, ref, value); setStore((current) => current ? invalidateSecretBuffers(current, ref) : current); },
-              onRetry: retryProtectedStorage }} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+              onRetry: async () => {
+                await retryProtectedStorage();
+                const status = persistence.getWorkspaceStatus(workspace.id);
+                return status.protectedState.status !== "available" ? status.protectedState : status.runtimeProtectedState;
+              } }} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             schemaConnections={requestConfig.schemaConnections} defaultGraphqlSchemaId={workspace.defaultGraphqlSchemaId}
             onDefaultGraphqlSchemaChange={(defaultGraphqlSchemaId) => update((current) => ({ ...current, defaultGraphqlSchemaId }))}
             integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
@@ -848,10 +854,10 @@ export function WorkspaceWorkbench() {
               if (result.cleanupPending) setActionError("Workspace removed. Its folder could not be cleaned up yet; Purr will retry on restart.");
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
-          : workspace.ui.variablesTabActive ? <VariablesExplorer globalAvailable={persistence.getGlobalProtectedState().status === "available"} onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
+          : workspace.ui.variablesTabActive ? <VariablesExplorer globalAvailable={persistence.getGlobalPublicWritable()} onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
             onSaveVariables={async (scope, variables) => {
               if (scope === "global") {
-                if (persistence.getGlobalProtectedState().status !== "available") throw new Error("Global protected storage is unavailable. Retry before editing global variables.");
+                if (!persistence.getGlobalPublicWritable()) throw new Error("Global variable definitions are unavailable. Retry before editing global variables.");
                 const savedWorkspace = await saveWithConfirmation(workspace);
                 const renames = variableRenames(store.globalVariables, variables);
                 const globalVariables = renameVariableDefinitions(variables, renames);
@@ -934,7 +940,7 @@ export function WorkspaceWorkbench() {
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
                     });
                     const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, requestConfig);
-                    return executeRequest(outgoing, context, cookieJar!, createDependencyAuthRuntime(outgoing, context, services.httpTransport, services.responseContent), services.httpTransport, services.responseContent, { onDispatch: dispatch.onDispatch, onPrepared: dispatch.onPrepared }, services.requestBodies);
+                    return executeRequest(outgoing, context, cookieJar!, createDependencyAuthRuntime(outgoing, context, services.httpTransport, services.responseContent), services.httpTransport, services.responseContent, { responseStorage: resolveResponseStoragePolicy({ workspace: workspace.responseStorage, document: sourceDocuments.find((item) => item.id === document.id)?.responseStorage }), onDispatch: dispatch.onDispatch, onPrepared: dispatch.onPrepared }, services.requestBodies);
                   } });
                 update((current) => mergeVariableCache(current, resolution.cache));
                 return resolution.steps;
@@ -952,15 +958,16 @@ export function WorkspaceWorkbench() {
             onChange={(change) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && isExtensionDocument(item)
               ? { ...item, ...change, updatedAt: new Date().toISOString() } : item) }))} />
           : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
-            variables={variables} variableStates={variableStates} protectedState={workspaceStatus!.protectedState} workspaceConfig={requestConfig} cookieJar={cookieJar!}
+            workspaceResponseStorage={workspace.responseStorage ?? "plaintext"} publicWritable={writable} variables={variables} variableStates={variableStates} protectedState={workspaceStatus!.protectedState} workspaceConfig={requestConfig} cookieJar={cookieJar!}
             environmentId={workspace.activeEnvironmentId} isDefault={workspace.defaultGraphqlSchemaId === activeDocument.id}
             onDefaultChange={() => update((current) => ({ ...current, defaultGraphqlSchemaId: current.defaultGraphqlSchemaId === activeDocument.id ? undefined : activeDocument.id }))}
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch, ...(item.sdl && !item.cacheIdentity && (patch.endpoint !== undefined || patch.auth || patch.schemaSource || patch.introspectionHeaders) ? { cacheIdentity: "changed" } : {}) } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <div className="flex h-full min-h-0 flex-col">
+            {workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id) ? <p role="status" className="m-ui-0 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 text-ui-sm text-content-secondary">This document has unavailable local state. Editing is disabled until Retry / Unlock in Workspace settings → Secrets restores it. Other documents remain usable.</p> : null}
             <div className="min-h-0 flex-1">{currentDocument.historical?.readOnly && currentDocument.lastResponse ? <div className="h-full min-h-0 bg-purr-base p-ui-2"><ResponseViewer response={currentDocument.lastResponse} workspaceId={workspace.id} documentId={currentDocument.historical.documentId} onOpenHistory={(id) => { void openHistory(id, true); }} historyEntryId={currentDocument.historical.entryId} historyStartedAt={currentDocument.historical.startedAt}
-              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench protectedState={workspaceStatus!.protectedState} dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
+              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench localUnavailable={workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id)} publicWritable={writable} responseStorage={currentDocument.responseStorage ?? "inherit"} workspaceResponseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === currentDocument.id && isRequestDocument(item) ? { ...item, responseStorage } : item) }))} protectedState={workspaceStatus!.protectedState} dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={currentDocument.historical ? { ...requestConfig, schemaConnections: [] } : requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.historical?.documentId ?? currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             historyEntryId={currentDocument.historical?.entryId} historyStartedAt={currentDocument.historical?.startedAt}

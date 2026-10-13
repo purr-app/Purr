@@ -250,6 +250,7 @@ mod tests {
             .write(
                 "public",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "drafts".into(),
                     id: "draft".into(),
                     value: json!({"sensitive":"synthetic-opaque-draft"}),
@@ -263,7 +264,7 @@ mod tests {
         local
             .db
             .execute(
-                "INSERT INTO workspace_cleanup VALUES('deleted',?1)",
+                "INSERT INTO workspace_cleanup(workspace_id,payload) VALUES('deleted',?1)",
                 [b"opaque-cleanup".as_slice()],
             )
             .unwrap();

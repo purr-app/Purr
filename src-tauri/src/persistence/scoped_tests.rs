@@ -35,6 +35,7 @@ fn scoped_publication_keeps_credentials_runtime_and_receipts_separate_after_reop
         }])
         .unwrap();
         let rows = vec![LocalRecord {
+            protection: Default::default(),
             table: "drafts".into(),
             id: "draft".into(),
             value: json!({"value":"private-draft"}),
@@ -100,6 +101,7 @@ fn scoped_publication_keeps_credentials_runtime_and_receipts_separate_after_reop
             "alpha",
             &[],
             &[LocalRecord {
+                protection: Default::default(),
                 table: "drafts".into(),
                 id: "draft".into(),
                 value: json!({"value":"lost"})
@@ -134,8 +136,7 @@ fn scoped_publication_keeps_credentials_runtime_and_receipts_separate_after_reop
     );
     assert!(store
         .get_secret("purr/alpha/requests/old/saved/bearer")
-        .unwrap()
-        .is_none());
+        .is_err());
 }
 
 #[test]
@@ -154,6 +155,7 @@ fn corrupt_workspace_key_does_not_rekey_or_hide_other_workspace() {
                 .write(
                     workspace,
                     &[LocalRecord {
+                        protection: Default::default(),
                         table: "drafts".into(),
                         id: "draft".into(),
                         value: json!({"owner":workspace}),
@@ -198,6 +200,7 @@ fn unavailable_runtime_stops_history_reads_and_pruning_without_deleting_expired_
             store.prepare_workspace_keys("alpha").unwrap();
             // Write directly so this deliberately expired fixture is not pruned by append.
             store.write("alpha", &[LocalRecord {
+                protection: Default::default(),
                 table: "request_executions".into(), id: "expired".into(),
                 value: json!({"version":1,"documentId":"request","startedAt":1,"outcome":"response",
                     "method":"GET","url":"https://example.invalid","response":{"status":200,"text":"retained body"}}),
@@ -238,14 +241,17 @@ fn unavailable_runtime_stops_history_reads_and_pruning_without_deleting_expired_
         drop(registry);
         let keys = keys(directory.path());
         let mut store = LocalStateStore::open_with_ciphers(&database, &keys).unwrap();
-        for action in [
-            json!({"operation":"list","query":{}}),
-            json!({"operation":"read","id":"expired"}),
-            json!({"operation":"prune"}),
-        ] {
-            assert!(store.request_history("alpha", action).is_err(), "{damage}");
-        }
-        assert!(store.prune_history("alpha").is_err(), "{damage}");
+        assert!(
+            store
+                .request_history("alpha", json!({"operation":"read","id":"expired"}))
+                .is_err(),
+            "{damage}"
+        );
+        assert!(store.prune_history("alpha").is_ok(), "{damage}");
+        let page = store
+            .request_history("alpha", json!({"operation":"list","query":{}}))
+            .unwrap();
+        assert_eq!(page["items"][0]["name"], "Protected response unavailable");
         let after = [
             "SELECT payload FROM request_executions",
             "SELECT payload FROM response_bodies",
@@ -296,6 +302,7 @@ fn unregistered_ciphertext_prevents_replacement_scope_keys() {
                     .write(
                         "alpha",
                         &[LocalRecord {
+                            protection: Default::default(),
                             table: "drafts".into(),
                             id: "draft".into(),
                             value: json!({"text":"retained draft"}),
@@ -307,6 +314,7 @@ fn unregistered_ciphertext_prevents_replacement_scope_keys() {
                         ResponseContentStore::open_with_ciphers(&database, &keys).unwrap();
                     let staged = content
                         .create_staging(ContentMetadata {
+                            protection: Default::default(),
                             workspace_id: "alpha".into(),
                             media_type: None,
                             charset: None,
@@ -388,55 +396,28 @@ fn unregistered_ciphertext_prevents_replacement_scope_keys() {
 }
 
 #[test]
-fn scoped_schema_initialization_resumes_only_empty_schema() {
+fn scoped_schema_rejects_every_previous_schema_without_migration() {
     for populated in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let keys = keys(directory.path());
         let database = directory.path().join("local-state.sqlite3");
-        let mut raw = rusqlite::Connection::open(&database).unwrap();
-        LocalStateStore::migrate(&mut raw).unwrap();
-        assert_eq!(
-            raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .unwrap(),
-            6
-        );
+        let mut old = rusqlite::Connection::open(&database).unwrap();
+        LocalStateStore::migrate(&mut old).unwrap();
         if populated {
-            raw.execute(
+            old.execute(
                 "INSERT INTO drafts(workspace_id,id,payload) VALUES('old','draft',X'010203')",
                 [],
             )
             .unwrap();
         }
-        drop(raw);
-        let opened = LocalStateStore::open_with_ciphers(&database, &keys);
-        if populated {
-            assert!(opened.is_err());
-            let raw = rusqlite::Connection::open(&database).unwrap();
-            assert_eq!(
-                raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                    .unwrap(),
-                6
-            );
-            assert_eq!(
-                raw.query_row("SELECT payload FROM drafts", [], |row| row
-                    .get::<_, Vec<u8>>(0))
-                    .unwrap(),
-                vec![1, 2, 3]
-            );
-        } else {
-            let opened = opened.unwrap();
-            assert_eq!(
-                opened
-                    .db
-                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                    .unwrap(),
-                7
-            );
-            assert_eq!(
-                opened.app("crypto-key-derivation").unwrap().as_deref(),
-                Some("scoped-envelope-v2")
-            );
-        }
+        drop(old);
+        assert!(LocalStateStore::open_with_ciphers(&database, &keys).is_err());
+        let old = rusqlite::Connection::open(&database).unwrap();
+        assert_eq!(
+            old.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            6
+        );
     }
 }
 

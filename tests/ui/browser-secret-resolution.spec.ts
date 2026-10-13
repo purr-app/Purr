@@ -24,7 +24,7 @@ test("browser corrupted ciphertext is not reported as missing, even when marked 
     const { BrowserSecureStore } = await import(modulePath);
     const secure = new BrowserSecureStore(); const ref = "purr/fixture/credentials/secret";
     await secure.set(ref, "synthetic-value");
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v3"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v4"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction("secrets", "readwrite"); const store = transaction.objectStore("secrets"); const request = store.get(ref);
       request.onsuccess = () => { store.put({ ...request.result, deleted: true, data: new Uint8Array([0]).buffer }, ref); };
@@ -58,11 +58,11 @@ test("browser degraded load preserves canonical files and opaque local ciphertex
     const { BrowserPersistenceBackend } = await import(modulePath);
     const backend = new BrowserPersistenceBackend();
     await backend.commit("fixture", [{ path: "purr.yaml", content: "purr: 2", expectedRevision: null }], [{ table: "drafts", id: "draft", value: "synthetic-private-draft" }]);
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v3"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("purr-preview-v4"); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     let original: unknown;
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction("local", "readwrite"); const store = transaction.objectStore("local"); const request = store.get("fixture");
-      request.onsuccess = () => { original = request.result; store.put({ ...request.result, data: new Uint8Array([0]).buffer }, "fixture"); };
+      request.onsuccess = () => { original = request.result; const row = request.result.records[0]; store.put({ ...request.result, records: [{ ...row, envelope: { ...row.envelope, data: new Uint8Array([0]).buffer } }] }, "fixture"); };
       transaction.oncomplete = () => resolve(); transaction.onabort = () => reject(transaction.error);
     });
     const degraded = await backend.load();
@@ -79,5 +79,5 @@ test("browser degraded load preserves canonical files and opaque local ciphertex
   expect(result.degraded.protectedState).toEqual({ status: "corrupt", code: "browser-protected-data-corrupt" });
   expect(result.stillDegraded).toEqual(result.degraded.protectedState);
   expect(result.recovered.protectedState).toEqual({ status: "available" });
-  expect(result.recovered.local).toEqual([{ table: "drafts", id: "draft", value: "synthetic-private-draft" }]);
+  expect(result.recovered.local).toEqual([{ table: "drafts", id: "draft", protection: "encrypted", value: "synthetic-private-draft" }]);
 });

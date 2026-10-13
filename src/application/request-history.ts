@@ -1,3 +1,5 @@
+import { compactLocalRequest, expandLocalRequest } from "./local-request-codec";
+import { protectResponseSnapshot, restoreResponseSnapshot, responseRecordProtection } from "./response-snapshot";
 import type { DynamicExecutionMetadata, HistoryEntry, HistoryOutcome, HistoryPort, HistoryQuery } from "./ports/history";
 import { commitRejection, isCommitRejected, RecoveryRequiredError, type SecureStore } from "./ports/credentials";
 import { isInlineHttpResponse, responseForPersistence, type StoredHttpResponse } from "../domain/http";
@@ -7,6 +9,7 @@ import { decodeFiles, encodeFiles, type FileAttachmentRecord, type NativeFileAtt
 import { protectRuntime, resolveRuntime, SecretPreparationStore } from "../storage/secrets";
 
 export type HistoryExecution = {
+  onWarning?: (message: string) => void;
   documentId: string;
   name: string;
   kind: "http" | "graphql";
@@ -54,16 +57,18 @@ export class RequestHistory {
       const attachments = new Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>();
       const prepared = new SecretPreparationStore(this.secure);
       const protectedEditor = await protectRuntime(editor, prepared, workspaceId, `history/${id}/editor`);
-      const encodedEditor = await encodeFiles(protectedEditor, attachments);
+      const encodedEditor = await encodeFiles(compactLocalRequest(protectedEditor), attachments);
+      const protection = entry.error || entry.dynamicExecution?.extraction?.error ? "encrypted" : response ? responseRecordProtection(response) : "encrypted";
+      const persistedResponse = response && protection === "plaintext" ? await protectResponseSnapshot(response, prepared, workspaceId, `history/${id}`) : response;
       const metadata = response && (isInlineHttpResponse(response) ? response : response.response);
       const stored = {
-        version: 1, id, documentId: entry.documentId, name: entry.name, kind: entry.kind,
+        version: 1, protection, id, documentId: entry.documentId, name: entry.name, kind: entry.kind,
         method: entry.kind === "graphql" ? "POST" : editor.method,
-        url: response?.timeline.displayRequest?.url ?? (response ? "Request details unavailable" : editor.url),
+        url: persistedResponse?.timeline.displayRequest?.url ?? (response ? "Request details unavailable" : editor.url),
         startedAt: Math.trunc(response?.timeline.startedAtMs ?? entry.startedAt), durationMs: Math.max(0, metadata?.durationMs ?? entry.durationMs),
         outcome: entry.outcome, status: metadata?.status ?? null,
         size: response ? isInlineHttpResponse(response) ? response.size : response.content.byteLength : 0,
-        pinned: false, editor: encodedEditor, response, error: entry.error,
+        pinned: false, editor: encodedEditor, response: persistedResponse, error: entry.error,
         files: Object.fromEntries(attachments),
         ...(entry.dynamicExecution ? { dynamicExecution: entry.dynamicExecution } : {}),
       } satisfies HistoryEntry;
@@ -79,6 +84,7 @@ export class RequestHistory {
       } finally {
         if ("clear" in this.secure && typeof this.secure.clear === "function") this.secure.clear();
       }
+      if (persistedResponse?.protectedSnapshot?.status === "unavailable") execution.onWarning?.("Public response saved. Exact protected details could not be stored; Retry / Unlock in Workspace settings → Secrets before sending again.");
       this.changed();
       // Resolves only after the storage adapter has adopted response content.
       return id;
@@ -96,8 +102,8 @@ export class RequestHistory {
       if (!entry) return null;
       const decoded = entry.editor == null ? null : decodeFiles(entry.editor, new Map(Object.entries(entry.files ?? {})), workspaceId,
         this.port.readAttachment ? (attachmentId) => this.port.readAttachment!(workspaceId, attachmentId) : undefined);
-      const editor = decoded ? await resolveRuntime(decoded, this.secure) as RequestDraft : null;
-      return { ...entry, editor };
+      const editor = decoded ? await resolveRuntime(expandLocalRequest(decoded), this.secure) as RequestDraft : null;
+      return { ...entry, editor, response: entry.response ? await restoreResponseSnapshot(entry.response, this.secure, workspaceId) : null };
     });
   }
   remove(workspaceId: string, filter: { id?: string; documentId?: string } = {}) {
