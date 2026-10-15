@@ -1025,3 +1025,216 @@ fn recovery_selection_is_scoped_cancellable_bounded_and_not_an_import_package() 
     oversized.backup = Some(Arc::new(Zeroizing::new(vec![0; 64 * 1024 * 1024 + 1])));
     assert!(state.stage_import(oversized).is_err());
 }
+
+#[test]
+fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() {
+    const KP: &str = "recovery key password";
+    const BP: &str = "backup file password";
+    let source = tempfile::tempdir().unwrap();
+    let mut local = store(source.path(), 15);
+    let definitions = files(source.path());
+    local.set_secret(A, "detached-bearer").unwrap();
+    local.set_secret(B, "detached-variable").unwrap();
+    let snapshot = definitions.load().unwrap();
+    let keys = KeyArchive {
+        version: 1,
+        workspace_id: "alpha".into(),
+        keys: local
+            .secret_cipher
+            .export_credential_recovery_keys("alpha")
+            .unwrap(),
+    };
+    let source_ids: Vec<_> = keys.keys.iter().map(|k| k.key_id().to_owned()).collect();
+    let backup = backup(&local, &inventory(&snapshot, "alpha").unwrap(), "alpha").unwrap();
+    let mut key_bytes = vec![];
+    codec::encode(
+        &mut key_bytes,
+        ContainerKind::RecoveryKeys,
+        KP,
+        &serde_json::to_vec(&keys).unwrap(),
+    )
+    .unwrap();
+    let mut backup_bytes = vec![];
+    codec::encode(
+        &mut backup_bytes,
+        ContainerKind::CredentialBackup,
+        BP,
+        &serde_json::to_vec(&backup).unwrap(),
+    )
+    .unwrap();
+    local.delete_workspace("alpha").unwrap();
+    assert!(local.get_secret(A).unwrap().is_none());
+    drop(local);
+    drop(keys);
+    drop(source); // No source database or scoped key registry survives.
+    let (key, backup) = recovery_pair(
+        SelectedImportFile {
+            name: "backup.purrsecrets".into(),
+            bytes: Zeroizing::new(backup_bytes),
+        },
+        SelectedImportFile {
+            name: "key.purrsecrets".into(),
+            bytes: Zeroizing::new(key_bytes),
+        },
+    )
+    .unwrap();
+    assert_eq!(key.name, "key.purrsecrets");
+    assert_eq!(backup.name, "backup.purrsecrets");
+    assert_eq!(
+        decode_recovery(
+            &key.bytes,
+            &backup.bytes,
+            "alpha",
+            "wrong password",
+            BP,
+            || Ok(())
+        )
+        .err()
+        .unwrap(),
+        "recovery-key-unlock-failed"
+    );
+    assert_eq!(
+        decode_recovery(
+            &key.bytes,
+            &backup.bytes,
+            "alpha",
+            KP,
+            "wrong password",
+            || Ok(())
+        )
+        .err()
+        .unwrap(),
+        "recovery-backup-unlock-failed"
+    );
+    assert_eq!(
+        decode_recovery(&key.bytes, &backup.bytes, "beta", KP, BP, || Ok(()))
+            .err()
+            .unwrap(),
+        "recovery-workspace-mismatch"
+    );
+    let dest = tempfile::tempdir().unwrap();
+    let mut destination = store(dest.path(), 93);
+    let destination_files = files(dest.path());
+    // The portable definitions are exactly the same, including stable workspace and secret IDs.
+    assert_eq!(
+        destination_files.load().unwrap().keys().collect::<Vec<_>>(),
+        snapshot.keys().collect::<Vec<_>>()
+    );
+    let destination_ids: Vec<_> = destination
+        .secret_cipher
+        .export_credential_recovery_keys("alpha")
+        .unwrap()
+        .iter()
+        .map(|k| k.key_id().to_owned())
+        .collect();
+    assert_ne!(source_ids, destination_ids);
+    let mismatched_keys = KeyArchive {
+        version: 1,
+        workspace_id: "alpha".into(),
+        keys: destination
+            .secret_cipher
+            .export_credential_recovery_keys("alpha")
+            .unwrap(),
+    };
+    let mut mismatched_bytes = vec![];
+    codec::encode(
+        &mut mismatched_bytes,
+        ContainerKind::RecoveryKeys,
+        KP,
+        &serde_json::to_vec(&mismatched_keys).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        decode_recovery(&mismatched_bytes, &backup.bytes, "alpha", KP, BP, || Ok(()))
+            .err()
+            .unwrap(),
+        "recovery-key-mismatch"
+    );
+
+    let archive = decode_recovery(&key.bytes, &backup.bytes, "alpha", KP, BP, || Ok(())).unwrap();
+    let state = TransferState::default();
+    let preview = prepare(
+        &state,
+        &destination,
+        inventory(&destination_files.load().unwrap(), "alpha").unwrap(),
+        "main",
+        "alpha",
+        archive,
+        || Ok(()),
+    )
+    .unwrap();
+    commit(
+        &state,
+        &mut destination,
+        &destination_files,
+        "main",
+        "alpha",
+        preview["id"].as_str().unwrap(),
+        "detached-recovery",
+        &[A.into(), B.into()],
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        destination.get_secret(A).unwrap().as_deref(),
+        Some("detached-bearer")
+    );
+    assert_eq!(
+        destination.get_secret(B).unwrap().as_deref(),
+        Some("detached-variable")
+    );
+    assert_eq!(
+        destination
+            .secret_cipher
+            .export_credential_recovery_keys("alpha")
+            .unwrap()
+            .iter()
+            .map(|k| k.key_id().to_owned())
+            .collect::<Vec<_>>(),
+        destination_ids
+    );
+    // Purpose bytes only route files: tampering them never bypasses full authentication.
+    let mut forged_key = backup.bytes.to_vec();
+    forged_key[9] = ContainerKind::RecoveryKeys as u8;
+    assert_eq!(
+        codec::kind_hint(&forged_key).unwrap(),
+        ContainerKind::RecoveryKeys
+    );
+    assert!(codec::decode(forged_key.as_slice(), ContainerKind::RecoveryKeys, BP).is_err());
+}
+
+#[test]
+fn recovery_pair_rejects_wrong_kinds_duplicate_purposes_and_invalid_headers() {
+    let file = |kind: ContainerKind| {
+        let mut bytes = vec![0; 133];
+        bytes[..8].copy_from_slice(b"PURRSEC\0");
+        bytes[8] = 1;
+        bytes[9] = kind as u8;
+        SelectedImportFile {
+            name: "untrusted-name".into(),
+            bytes: Zeroizing::new(bytes),
+        }
+    };
+    for (first, second) in [
+        (ContainerKind::SelectedSecrets, ContainerKind::RecoveryKeys),
+        (ContainerKind::RecoveryKeys, ContainerKind::RecoveryKeys),
+        (
+            ContainerKind::CredentialBackup,
+            ContainerKind::CredentialBackup,
+        ),
+    ] {
+        assert_eq!(
+            recovery_pair(file(first), file(second)).err().unwrap(),
+            "recovery-files-invalid"
+        );
+    }
+    let mut invalid = file(ContainerKind::RecoveryKeys);
+    invalid.bytes[0] = 0;
+    assert_eq!(
+        recovery_pair(invalid, file(ContainerKind::CredentialBackup))
+            .err()
+            .unwrap(),
+        "recovery-files-invalid"
+    );
+    assert!(codec::kind_hint(&[0; 9]).is_err());
+}

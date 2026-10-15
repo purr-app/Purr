@@ -330,9 +330,7 @@ impl TransferState {
             .lock()
             .map_err(|_| "Transfer state unavailable")?;
         entries.retain(|_, p| p.expires > now());
-        let stage = entries
-            .get(id)
-            .ok_or("Selected package expired; choose it again")?;
+        let stage = entries.get(id).ok_or("transfer-selection-expired")?;
         if stage.window != window || stage.workspace != workspace {
             return Err("Selected package belongs to another workspace or window".into());
         }
@@ -873,6 +871,14 @@ fn inventory(files: &BTreeMap<String, ProjectFile>, workspace: &str) -> Result<I
     }
     Ok(inv)
 }
+/// Shared credential/format checks for opening a portable canonical project.
+/// Full domain validation remains in the application's canonical decoder.
+pub(crate) fn validate_project_files(
+    files: &BTreeMap<String, ProjectFile>,
+    workspace: &str,
+) -> Result<(), String> {
+    inventory(files, workspace).map(|_| ())
+}
 fn inventory_json(local: &LocalStateStore, inv: &Inventory) -> Value {
     let items: Vec<_> = inv
         .owners
@@ -1343,6 +1349,99 @@ fn select_import_file(
     job.check()?;
     Ok(Some(SelectedImportFile { name, bytes }))
 }
+fn decode_recovery(
+    key_bytes: &[u8],
+    backup_bytes: &[u8],
+    workspace_id: &str,
+    key_password: &str,
+    backup_password: &str,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<SecretArchive, String> {
+    let bytes = codec::decode(
+        std::io::Cursor::new(key_bytes),
+        ContainerKind::RecoveryKeys,
+        key_password,
+    )
+    .map_err(|_| "recovery-key-unlock-failed")?;
+    let keys: KeyArchive = decode(&bytes).map_err(|_| "recovery-payload-invalid")?;
+    if keys.workspace_id != workspace_id {
+        return Err("recovery-workspace-mismatch".into());
+    }
+    if keys.version != 1 || keys.keys.is_empty() || keys.keys.len() > 128 {
+        return Err("recovery-payload-invalid".into());
+    }
+    let mut key_ids = BTreeSet::new();
+    for key in &keys.keys {
+        key.validate(workspace_id)
+            .map_err(|_| "recovery-key-mismatch")?;
+        if !key_ids.insert(key.key_id()) {
+            return Err("recovery-payload-invalid".into());
+        }
+    }
+    check()?;
+    let bytes = codec::decode(
+        std::io::Cursor::new(backup_bytes),
+        ContainerKind::CredentialBackup,
+        backup_password,
+    )
+    .map_err(|_| "recovery-backup-unlock-failed")?;
+    let backup: BackupArchive = decode(&bytes).map_err(|_| "recovery-payload-invalid")?;
+    if backup.workspace_id != workspace_id {
+        return Err("recovery-workspace-mismatch".into());
+    }
+    if backup.version != 1 || backup.rows.len() > MAX_ENTRIES {
+        return Err("recovery-payload-invalid".into());
+    }
+    let mut entries = vec![];
+    let mut size = 0usize;
+    for row in backup.rows {
+        let bytes = crate::security::decrypt_recovery_secret(
+            &keys.keys,
+            workspace_id,
+            &row.reference,
+            row.version,
+            &row.nonce,
+            &row.ciphertext,
+        )
+        .map_err(|_| "recovery-key-mismatch")?;
+        size += bytes.len();
+        if bytes.len() > MAX_VALUE || size > MAX_PAYLOAD {
+            return Err("recovery-payload-invalid".into());
+        }
+        let value = std::str::from_utf8(&bytes)
+            .map_err(|_| "recovery-payload-invalid")?
+            .to_owned();
+        entries.push(SecretEntry {
+            reference: row.reference,
+            label: None,
+            value: Zeroizing::new(value),
+        });
+    }
+    Ok(SecretArchive {
+        version: 1,
+        workspace_id: workspace_id.into(),
+        entries,
+        omissions: backup.omissions,
+        dependencies: backup.dependencies,
+    })
+}
+fn recovery_pair(
+    first: SelectedImportFile,
+    second: SelectedImportFile,
+) -> Result<(SelectedImportFile, SelectedImportFile), String> {
+    match (
+        codec::kind_hint(&first.bytes),
+        codec::kind_hint(&second.bytes),
+    ) {
+        (Ok(ContainerKind::RecoveryKeys), Ok(ContainerKind::CredentialBackup)) => {
+            Ok((first, second))
+        }
+        (Ok(ContainerKind::CredentialBackup), Ok(ContainerKind::RecoveryKeys)) => {
+            Ok((second, first))
+        }
+        _ => Err("recovery-files-invalid".into()),
+    }
+}
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
     serde_json::from_slice(bytes).map_err(|_| "Invalid credential package payload".into())
 }
@@ -1674,6 +1773,9 @@ fn dispatch_inner(app: &tauri::AppHandle, window: &str, action: &Action) -> Resu
             else {
                 return Ok(Value::Null);
             };
+            if codec::kind_hint(&bytes) != Ok(ContainerKind::SelectedSecrets) {
+                return Err("transfer-file-kind-invalid".into());
+            }
             let staged_id = state.stage_import(StagedImport {
                 window: window.into(),
                 workspace: workspace_id.clone(),
@@ -1725,13 +1827,16 @@ fn dispatch_inner(app: &tauri::AppHandle, window: &str, action: &Action) -> Resu
                 inventory(&files.load_transfer_definitions()?, workspace_id).map(|_| ())
             })?;
             let job = job.as_ref().ok_or("Missing transfer operation")?;
-            let Some(key) = select_import_file(app, "Choose recovery key", job)? else {
-                return Ok(Value::Null);
-            };
-            let Some(backup) = select_import_file(app, "Choose matching credential backup", job)?
+            let Some(key) =
+                select_import_file(app, "Choose recovery key or credential backup", job)?
             else {
                 return Ok(Value::Null);
             };
+            let Some(backup) = select_import_file(app, "Choose the other recovery file", job)?
+            else {
+                return Ok(Value::Null);
+            };
+            let (key, backup) = recovery_pair(key, backup)?;
             let staged_id = state.stage_import(StagedImport {
                 window: window.into(),
                 workspace: workspace_id.clone(),
@@ -1756,71 +1861,16 @@ fn dispatch_inner(app: &tauri::AppHandle, window: &str, action: &Action) -> Resu
         } => {
             let (key_bytes, backup_bytes) =
                 state.staged_package(staged_id, window, workspace_id)?;
-            let backup_bytes = backup_bytes.ok_or("Choose both recovery packages first")?;
+            let backup_bytes = backup_bytes.ok_or("recovery-files-invalid")?;
             job.as_ref().ok_or("Missing transfer operation")?.check()?;
-            let bytes = codec::decode(
-                std::io::Cursor::new(key_bytes.as_slice()),
-                ContainerKind::RecoveryKeys,
+            let archive = decode_recovery(
+                &key_bytes,
+                &backup_bytes,
+                workspace_id,
                 key_password,
-            )?;
-            let keys: KeyArchive = decode(&bytes)?;
-            if keys.version != 1 || keys.workspace_id != *workspace_id {
-                return Err("Recovery key belongs to another workspace".into());
-            }
-            if keys.keys.is_empty() || keys.keys.len() > 128 {
-                return Err("Invalid recovery key count".into());
-            }
-            let mut key_ids = BTreeSet::new();
-            for key in &keys.keys {
-                key.validate(workspace_id)?;
-                if !key_ids.insert(key.key_id()) {
-                    return Err("Duplicate recovery keys".into());
-                }
-            }
-            job.as_ref().ok_or("Missing transfer operation")?.check()?;
-            let bytes = codec::decode(
-                std::io::Cursor::new(backup_bytes.as_slice()),
-                ContainerKind::CredentialBackup,
                 backup_password,
+                || job.as_ref().ok_or("Missing transfer operation")?.check(),
             )?;
-            let backup: BackupArchive = decode(&bytes)?;
-            if backup.version != 1
-                || backup.workspace_id != *workspace_id
-                || backup.rows.len() > MAX_ENTRIES
-            {
-                return Err("Invalid credential backup identity or limits".into());
-            }
-            let mut entries = vec![];
-            let mut size = 0usize;
-            for row in backup.rows {
-                let bytes = crate::security::decrypt_recovery_secret(
-                    &keys.keys,
-                    workspace_id,
-                    &row.reference,
-                    row.version,
-                    &row.nonce,
-                    &row.ciphertext,
-                )?;
-                size += bytes.len();
-                if bytes.len() > MAX_VALUE || size > MAX_PAYLOAD {
-                    return Err("Recovered credentials exceed limit".into());
-                }
-                let value = std::str::from_utf8(&bytes)
-                    .map_err(|_| "Invalid credential encoding")?
-                    .to_owned();
-                entries.push(SecretEntry {
-                    reference: row.reference,
-                    label: None,
-                    value: Zeroizing::new(value),
-                });
-            }
-            let archive = SecretArchive {
-                version: 1,
-                workspace_id: workspace_id.clone(),
-                entries,
-                omissions: backup.omissions,
-                dependencies: backup.dependencies,
-            };
             job.as_ref().ok_or("Missing transfer operation")?.check()?;
             let result = transfer_access(app, workspace_id, |local, files| {
                 prepare(

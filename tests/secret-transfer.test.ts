@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validTransferPassword } from "../src/application/ports/secret-transfer";
+import { SecretTransferError, validTransferPassword } from "../src/application/ports/secret-transfer";
 import { unavailableSecretTransfer } from "../src/storage/unavailable-secret-transfer";
 
 test("transfer passwords count Unicode characters and bound UTF-8 bytes without trimming", () => {
@@ -77,6 +77,24 @@ test("native transfer validates metadata and preserves published outcome when ca
     finish!({ id: "late-preview", workspaceId: "workspace", expiresAt: Date.now() + 300000, items: [], omissions: [], dependencies: [] });
     assert.equal(await preparing, null);
     assert.ok(actions.some((entry) => entry.type === "cancel" && entry.previewId === "late-preview"));
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow); else delete (globalThis as { window?: unknown }).window;
+  }
+});
+
+
+test("native transfer exposes only recognized failure codes as typed actionable errors", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  try {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { __TAURI_INTERNALS__: {
+      invoke: async (_command: string, args: { action: { type: string } }) => {
+        if (args.action.type === "selectRecoveryFiles") throw "recovery-files-invalid";
+        throw new Error("recovery-backup-unlock-failed");
+      },
+    } } });
+    const { nativeSecretTransfer } = await import("../src/platform/tauri/secret-transfer");
+    await assert.rejects(nativeSecretTransfer.selectRecoveryFiles("workspace"), (error: unknown) => error instanceof SecretTransferError && error.code === "recovery-files-invalid");
+    await assert.rejects(nativeSecretTransfer.prepareRecovery({ workspaceId: "workspace", stagedId: "stage", keyPassword: "synthetic-password", backupPassword: "synthetic-password" }), (error: unknown) => error instanceof SecretTransferError && error.code === "recovery-backup-unlock-failed");
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow); else delete (globalThis as { window?: unknown }).window;
   }

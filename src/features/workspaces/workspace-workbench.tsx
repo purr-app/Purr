@@ -748,6 +748,17 @@ export function WorkspaceWorkbench() {
     }
   };
   const importWorkspace = async (source: ImportSource) => {
+    if (source.kind === "directory" || source.kind === "path" || source.kind === "file") {
+      await flush();
+      const opened = await persistence.tryOpenDirectory(source.path);
+      if (opened) {
+        updates.leaveTab();
+        setStore((current) => current ? { ...current, activeWorkspaceId: opened.id,
+          workspaces: current.workspaces.some((item) => item.id === opened.id) ? current.workspaces : [...current.workspaces, opened] } : current);
+        setDialog(null); setImportResult(null);
+        return;
+      }
+    }
     const { workspace: imported, report } = await importWorkspaceSource(source, persistence, services.imports, store.globalVariables);
     setStore((current) => current ? { ...current, activeWorkspaceId: imported.id,
       workspaces: [...current.workspaces.filter((candidate) => candidate.id !== imported.id), imported] } : current);

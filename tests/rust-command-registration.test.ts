@@ -46,6 +46,8 @@ const registeredCommands = [
   "finish_legacy_migration",
   "open_project_folder",
   "attach_project_directory",
+  "read_project_directory",
+  "open_project_directory",
   "secure_read",
   "secure_resolve",
   "secure_inspect",

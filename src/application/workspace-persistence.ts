@@ -607,6 +607,48 @@ export class WorkspacePersistence {
     // cannot be silently replaced by a collection adapter.
     return validateProject(existing ? { workspace: existing.workspace, resources: [...existing.resources, ...project.resources] } : project);
   }
+  /** Open portable project files with their original identity, then start local state
+   * on this installation. Preflight validation must finish before registration. */
+  openDirectory(directory: string): Promise<Workspace> {
+    return this.openDirectoryQueued(directory, false).then((workspace) => {
+      if (!workspace) throw new Error("The selected folder does not contain a Purr workspace.");
+      return workspace;
+    });
+  }
+  /** Detect portable Purr files within the normal import flow. Non-Purr sources
+   * continue through the existing collection importers; invalid Purr files fail. */
+  tryOpenDirectory(location: string): Promise<Workspace | null> {
+    if (!this.backend.inspectDirectory || !this.backend.openDirectory) return Promise.resolve(null);
+    return this.openDirectoryQueued(location, true);
+  }
+  private openDirectoryQueued(directory: string, optional: boolean): Promise<Workspace | null> {
+    const work = async () => {
+      if (!this.backend.inspectDirectory || !this.backend.openDirectory) throw new Error("Opening workspace folders requires the Purr desktop app.");
+      const candidate = await this.backend.inspectDirectory(directory, optional);
+      if (!candidate) return null;
+      const project = this.readProject(candidate, false);
+      const sourceVersion = deserializeManifestFile(candidate.files["purr.yaml"].content).sourceVersion;
+      await restoreWorkspace(project, [], this.secure, Object.fromEntries(Object.entries(candidate.files).map(([path, file]) => [path, file.content])), undefined, { hydrateSecrets: false, sourceVersion });
+      const expectedRevisions = Object.fromEntries(Object.entries(candidate.files).map(([path, file]) => [path, file.revision]));
+      const snapshot = isolateUnavailableAttachments(await this.backend.openDirectory(directory, expectedRevisions));
+      this.secure.clear();
+      this.deleted.delete(snapshot.id);
+      const openedProject = this.readProject(snapshot);
+      this.protectedStates.set(snapshot.id, snapshot.protectedState ?? this.storageState);
+      this.snapshots.set(snapshot.id, snapshot);
+      const workspace = await restoreWorkspace(openedProject, this.getWorkspaceStatus(snapshot.id).publicWritable ? snapshot.local : [], this.secure,
+        Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id), { hydrateSecrets: false, sourceVersion: this.formats.get(snapshot.id) });
+      workspace.projectFormatVersion = this.formats.get(snapshot.id);
+      workspace.protectedState = this.getWorkspaceStatus(snapshot.id).protectedState;
+      workspace.publicWritable = this.getWorkspaceStatus(snapshot.id).publicWritable;
+      this.projects.set(snapshot.id, openedProject);
+      // Registration is already durable. A failed selection write can retry on autosave.
+      try { await this.backend.setActiveWorkspace(snapshot.id); this.activeId = snapshot.id; } catch { /* Retry on next save. */ }
+      return workspace;
+    };
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
+
   async attachDirectory(id: string, directory: string): Promise<Workspace> {
     if (!this.backend.attachDirectory) throw new Error("Directory workspaces require the desktop application.");
     if (this.snapshots.has(id)) throw new Error("This workspace is already open.");

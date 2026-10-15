@@ -151,6 +151,24 @@ pub fn attach_project_directory(
 }
 
 #[tauri::command]
+pub fn read_project_directory(
+    app: tauri::AppHandle,
+    directory: String,
+    optional: Option<bool>,
+) -> Result<Value, String> {
+    runtime::read_project_directory(app, directory, optional.unwrap_or(false))
+}
+#[tauri::command]
+pub fn open_project_directory(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    directory: String,
+    expected_revisions: BTreeMap<String, String>,
+) -> Result<Value, String> {
+    runtime::open_project_directory(app, state, directory, expected_revisions)
+}
+
+#[tauri::command]
 pub async fn request_history(
     app: tauri::AppHandle,
     _state: tauri::State<'_, PersistenceState>,

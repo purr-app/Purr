@@ -101,6 +101,8 @@ impl PurrBuilder {
                 commands::persistence::finish_legacy_migration,
                 commands::persistence::open_project_folder,
                 commands::persistence::attach_project_directory,
+                commands::persistence::read_project_directory,
+                commands::persistence::open_project_directory,
                 commands::persistence::secure_read,
                 commands::persistence::secure_resolve,
                 commands::persistence::secure_inspect,

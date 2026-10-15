@@ -820,6 +820,165 @@ pub fn attach_project_directory(
     }
 }
 
+/// Classify before parsing so ordinary collection imports can use their existing
+/// importer, while an invalid Purr manifest always stays an explicit error.
+fn project_directory_input(directory: &str, optional: bool) -> Result<Option<PathBuf>, String> {
+    let input = Path::new(directory);
+    let resolved = fs::canonicalize(input)
+        .map_err(|_| "The selected file or workspace folder does not exist")?;
+    let path = if resolved.is_dir() {
+        resolved
+    } else if resolved.is_file() && input.file_name().is_some_and(|name| name == "purr.yaml") {
+        fs::canonicalize(
+            input
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )
+        .map_err(|_| "The selected workspace folder does not exist")?
+    } else if optional {
+        return Ok(None);
+    } else {
+        return Err("Choose a Purr workspace folder or its purr.yaml file".into());
+    };
+    if optional {
+        match fs::symlink_metadata(path.join("purr.yaml")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("Cannot read the workspace purr.yaml".into()),
+            Ok(_) => {}
+        }
+    }
+    Ok(Some(path))
+}
+
+/// Inspect a portable project without registering it or touching protected state.
+/// The application validates the canonical domain model before calling open.
+fn directory_candidate(
+    data: &Path,
+    directory: &str,
+) -> Result<(PathBuf, String, BTreeMap<String, ProjectFile>), String> {
+    let path = project_directory_input(directory, false)?
+        .ok_or("Choose a Purr workspace folder or its purr.yaml file")?;
+    let data = fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    if !path.is_dir() || data.starts_with(&path) || path.starts_with(&data) {
+        return Err("Choose a workspace folder outside Purr's private application storage".into());
+    }
+    let store = FilesystemWorkspaceStore {
+        directory: path.clone(),
+    };
+    let files = store.load()?;
+    let manifest = files
+        .get("purr.yaml")
+        .ok_or("This folder is not a Purr workspace: purr.yaml is missing")?;
+    let manifest: Value = serde_yaml::from_str(&manifest.content)
+        .map_err(|_| "The workspace purr.yaml is invalid")?;
+    if manifest["purr"] != 2 {
+        return Err("This workspace uses an unsupported project format".into());
+    }
+    let id = manifest["workspace"]["id"]
+        .as_str()
+        .ok_or("The workspace identity is missing")?
+        .to_string();
+    valid_id(&id)?;
+    crate::transfer::validate_project_files(&files, &id)?;
+    Ok((path, id, files))
+}
+
+fn inspect_project_directory(
+    data: &Path,
+    directory: &str,
+    optional: bool,
+) -> Result<Value, String> {
+    let Some(path) = project_directory_input(directory, optional)? else {
+        return Ok(Value::Null);
+    };
+    let (_, id, files) = directory_candidate(data, &path.to_string_lossy())?;
+    Ok(json!({"id":id,"files":files,"local":[]}))
+}
+
+pub fn read_project_directory(
+    app: tauri::AppHandle,
+    directory: String,
+    optional: bool,
+) -> Result<Value, String> {
+    let data = data_directory(&app).map_err(|error| error.to_string())?;
+    inspect_project_directory(&data, &directory, optional)
+}
+
+impl RuntimeStorage {
+    fn open_directory(
+        &mut self,
+        path: PathBuf,
+        id: &str,
+        files: BTreeMap<String, ProjectFile>,
+        expected: &BTreeMap<String, String>,
+    ) -> Result<Value, String> {
+        let revisions: BTreeMap<_, _> = files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.revision.clone()))
+            .collect();
+        if &revisions != expected {
+            return Err("The workspace files changed while opening. Please try again".into());
+        }
+        // Never use an upsert here: a copied folder must not replace the original
+        // catalogue entry or inherit its drafts, history and local credentials.
+        for (owner, directory) in self.local.workspaces()? {
+            let directory =
+                fs::canonicalize(&directory).unwrap_or_else(|_| PathBuf::from(directory));
+            if owner == id {
+                if directory == path {
+                    return self.workspace(id);
+                }
+                return Err("A workspace with this identity is already open from another folder. Select the existing workspace; open this copy on another device or Purr profile.".into());
+            }
+            if directory == path {
+                return Err("This folder is already open as another workspace".into());
+            }
+        }
+        for (owner, directory) in &self.roots {
+            if owner == id && directory != &path {
+                return Err(
+                    "A workspace with this identity is already open from another folder".into(),
+                );
+            }
+            if owner != id && directory == &path {
+                return Err("This folder is already open as another workspace".into());
+            }
+        }
+        workspace_cleanup::ensure_available(&self.local, id, &path)?;
+        self.recover_before_commit()?;
+        self.watcher
+            .watch(&path, RecursiveMode::Recursive)
+            .map_err(|_| "Cannot watch project directory")?;
+        if let Err(error) = self
+            .local
+            .prepare_workspace_keys(id)
+            .and_then(|_| self.local.validate_owner_keys(id))
+            .and_then(|_| self.local.register_new(id, &path))
+        {
+            let _ = self.watcher.unwatch(&path);
+            return Err(error);
+        }
+        self.roots.insert(id.to_string(), path);
+        Ok(
+            json!({"id":id,"files":files,"local":[],"protectedState":{"status":"available"},"runtimeProtectedState":{"status":"available"}}),
+        )
+    }
+}
+
+pub fn open_project_directory(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    directory: String,
+    expected_revisions: BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let data = data_directory(&app).map_err(|error| error.to_string())?;
+    let (path, id, files) = directory_candidate(&data, &directory)?;
+    access(&app, &state, |storage| {
+        storage.open_directory(path, &id, files, &expected_revisions)
+    })
+}
+
 pub fn request_history(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
@@ -1069,5 +1228,207 @@ id: external
             project_change_paths(&root, &[root.join("schemas/api.openapi")], false),
             vec!["schemas/api.openapi"]
         );
+    }
+}
+
+#[cfg(test)]
+mod open_directory_tests {
+    use super::*;
+    use crate::security::tests::MemoryRootKeyStore;
+
+    fn storage(data: &Path) -> RuntimeStorage {
+        RuntimeStorage {
+            local: LocalStateStore::open(
+                &data.join("local-state.sqlite3"),
+                &MemoryRootKeyStore::default(),
+            )
+            .unwrap(),
+            roots: HashMap::new(),
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            projects: data.join("projects"),
+            data: data.to_path_buf(),
+        }
+    }
+    fn fixture(directory: &Path) {
+        fs::create_dir_all(directory.join("documents")).unwrap();
+        fs::write(directory.join("purr.yaml"), "purr: 2\nworkspace:\n  id: portable\n  name: Portable\n  variables:\n    - id: token\n      kind: static\n      name: TOKEN\n      sensitive: true\n      secretRef: purr/portable/credentials/variables/token\n").unwrap();
+        fs::write(directory.join("documents/request.yaml"), "purr: 2\nkind: http\nid: request\nname: Request\nmethod: GET\nurl: https://example.test\nauth:\n  type: bearer\n  token: {kind: secret, ref: purr/portable/credentials/requests/request/saved/bearer}\n").unwrap();
+    }
+    fn revisions(files: &BTreeMap<String, ProjectFile>) -> BTreeMap<String, String> {
+        files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.revision.clone()))
+            .collect()
+    }
+    #[test]
+    fn portable_directory_open_preserves_identity_and_refs_without_copying_runtime_or_secrets() {
+        let data = tempfile::tempdir().unwrap();
+        let exported = tempfile::tempdir().unwrap();
+        fixture(exported.path());
+        let mut storage = storage(data.path());
+        let (path, id, files) =
+            directory_candidate(data.path(), exported.path().to_str().unwrap()).unwrap();
+        let before: BTreeMap<_, _> = files
+            .iter()
+            .map(|(path, file)| (path.clone(), file.content.clone()))
+            .collect();
+        assert!(storage.local.workspaces().unwrap().is_empty());
+        let expected = revisions(&files);
+        let result = storage
+            .open_directory(path.clone(), &id, files, &expected)
+            .unwrap();
+        assert_eq!(result["id"], "portable");
+        assert_eq!(result["local"], json!([]));
+        assert!(result["files"]["purr.yaml"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("purr/portable/credentials/variables/token"));
+        assert!(result["files"]["documents/request.yaml"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("purr/portable/credentials/requests/request/saved/bearer"));
+        assert!(storage
+            .local
+            .get_secret_typed("purr/portable/credentials/variables/token")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage.local.workspaces().unwrap(),
+            vec![(id.clone(), path.to_string_lossy().into_owned())]
+        );
+        let after = FilesystemWorkspaceStore {
+            directory: path.clone(),
+        }
+        .load()
+        .unwrap();
+        assert_eq!(
+            before,
+            after
+                .iter()
+                .map(|(path, file)| (path.clone(), file.content.clone()))
+                .collect()
+        );
+        let again = storage.open_directory(path, &id, after, &expected).unwrap();
+        assert_eq!(again["id"], "portable");
+        assert_eq!(storage.local.workspaces().unwrap().len(), 1);
+    }
+    #[test]
+    fn duplicate_copy_and_changed_candidate_never_replace_registered_workspace() {
+        let data = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        fixture(first.path());
+        fixture(copy.path());
+        let mut storage = storage(data.path());
+        let (path, id, files) =
+            directory_candidate(data.path(), first.path().to_str().unwrap()).unwrap();
+        storage
+            .open_directory(path.clone(), &id, files.clone(), &revisions(&files))
+            .unwrap();
+        let (copy_path, copy_id, copy_files) =
+            directory_candidate(data.path(), copy.path().to_str().unwrap()).unwrap();
+        assert!(storage
+            .open_directory(
+                copy_path,
+                &copy_id,
+                copy_files.clone(),
+                &revisions(&copy_files)
+            )
+            .unwrap_err()
+            .contains("already open"));
+        assert_eq!(
+            storage.local.workspaces().unwrap(),
+            vec![(id, path.to_string_lossy().into_owned())]
+        );
+        assert_eq!(storage.roots.len(), 1);
+        let fresh_data = tempfile::tempdir().unwrap();
+        let mut fresh = self::storage(fresh_data.path());
+        let (path, id, mut files) =
+            directory_candidate(fresh_data.path(), copy.path().to_str().unwrap()).unwrap();
+        let expected = revisions(&files);
+        files.get_mut("purr.yaml").unwrap().revision = "changed".into();
+        assert!(fresh
+            .open_directory(path, &id, files, &expected)
+            .unwrap_err()
+            .contains("changed"));
+        assert!(fresh.local.workspaces().unwrap().is_empty());
+        assert!(fresh.roots.is_empty());
+    }
+    #[test]
+    fn optional_import_distinguishes_collections_and_accepts_manifest_files() {
+        let data = tempfile::tempdir().unwrap();
+        let portable = tempfile::tempdir().unwrap();
+        fixture(portable.path());
+        let folder = portable.path().to_str().unwrap();
+        let manifest = portable.path().join("purr.yaml");
+        let by_folder = inspect_project_directory(data.path(), folder, true).unwrap();
+        let by_file =
+            inspect_project_directory(data.path(), manifest.to_str().unwrap(), true).unwrap();
+        assert_eq!(by_folder, by_file);
+        let (path, id, files) =
+            directory_candidate(data.path(), manifest.to_str().unwrap()).unwrap();
+        let mut storage = storage(data.path());
+        storage
+            .open_directory(path, &id, files.clone(), &revisions(&files))
+            .unwrap();
+        assert_eq!(storage.local.workspaces().unwrap().len(), 1);
+
+        let ordinary = tempfile::tempdir().unwrap();
+        fs::write(ordinary.path().join("collection.json"), "{}").unwrap();
+        for input in [
+            ordinary.path().to_path_buf(),
+            ordinary.path().join("collection.json"),
+        ] {
+            assert_eq!(
+                inspect_project_directory(data.path(), input.to_str().unwrap(), true).unwrap(),
+                Value::Null
+            );
+            assert!(
+                inspect_project_directory(data.path(), input.to_str().unwrap(), false).is_err()
+            );
+        }
+        assert!(inspect_project_directory(
+            data.path(),
+            ordinary.path().join("missing.json").to_str().unwrap(),
+            true
+        )
+        .is_err());
+    }
+    #[test]
+    fn optional_import_never_falls_back_from_broken_purr_projects() {
+        let data = tempfile::tempdir().unwrap();
+        let portable = tempfile::tempdir().unwrap();
+        fixture(portable.path());
+        let manifest = portable.path().join("purr.yaml");
+        fs::write(&manifest, "purr: [broken").unwrap();
+        for input in [portable.path().to_path_buf(), manifest.clone()] {
+            assert!(inspect_project_directory(data.path(), input.to_str().unwrap(), true).is_err());
+        }
+        fixture(portable.path());
+        fs::write(
+            portable.path().join("documents/request.yaml"),
+            "purr: 999\nkind: http",
+        )
+        .unwrap();
+        assert!(inspect_project_directory(data.path(), manifest.to_str().unwrap(), true).is_err());
+    }
+    #[test]
+    fn invalid_folders_and_private_storage_are_rejected_without_registration() {
+        let data = tempfile::tempdir().unwrap();
+        let invalid = tempfile::tempdir().unwrap();
+        let storage = storage(data.path());
+        assert!(directory_candidate(data.path(), invalid.path().to_str().unwrap()).is_err());
+        for manifest in [
+            "not: [yaml",
+            "purr: 999\nworkspace: {id: portable, name: Portable}",
+            "purr: 2\nworkspace: {id: ../escape, name: Invalid}",
+            "purr: 2\nworkspace: {id: portable, name: Portable}\ndefaults: {auth: invalid}",
+        ] {
+            fs::write(invalid.path().join("purr.yaml"), manifest).unwrap();
+            assert!(directory_candidate(data.path(), invalid.path().to_str().unwrap()).is_err());
+        }
+        fixture(data.path());
+        assert!(directory_candidate(data.path(), data.path().to_str().unwrap()).is_err());
+        assert!(storage.local.workspaces().unwrap().is_empty());
     }
 }

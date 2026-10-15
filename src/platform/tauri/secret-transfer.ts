@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
-import type { SecretTransferPort } from "../../application/ports/secret-transfer";
+import { SecretTransferError, secretTransferFailureCodes, type SecretTransferPort } from "../../application/ports/secret-transfer";
 
 const strings = z.array(z.string());
 const item = z.object({ ref: z.string().min(1), owners: strings });
@@ -18,7 +18,13 @@ const written = z.object({ status: z.enum(["written", "cancelled"]) });
 const committed = z.object({ operationId: z.string().min(1), status: z.enum(["committed", "aborted", "recovery-required"]) });
 const outcome = committed.extend({ status: z.enum(["committed", "aborted", "recovery-required", "missing"]) });
 async function call<T>(action: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
-  return schema.parse(await invoke("secret_transfer", { action }));
+  try { return schema.parse(await invoke("secret_transfer", { action })); }
+  catch (error) {
+    const code = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+    const known = secretTransferFailureCodes.find((value) => value === code);
+    if (known) throw new SecretTransferError(known);
+    throw error;
+  }
 }
 async function cancellable<T>(action: Record<string, unknown>, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();

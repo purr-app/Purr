@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, ListChecks, ShieldCheck, KeyRound, FileKey } from "lucide-react";
 import { useApplicationServices } from "../../../app/application-services-context";
-import { validTransferPassword, type SecretTransferInventory, type SecretTransferPreview, type SelectedRecoveryPackages } from "../../../application/ports/secret-transfer";
+import { SecretTransferError, validTransferPassword, type SecretTransferInventory, type SecretTransferPreview, type SelectedRecoveryPackages } from "../../../application/ports/secret-transfer";
 import { Button } from "../../../shared/components/ui/button";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { FormField } from "../../../shared/components/ui/form-field";
@@ -14,6 +14,22 @@ const titles: Record<Mode, string> = {
   backup: "Export credential backup", recover: "Recover secrets",
 };
 const description = "Share saved workspace secrets in a password-protected .purrsecrets file. Unsaved values, globals, cookies, OAuth sessions and history stay on this device.";
+function transferFailureMessage(error: unknown): string | undefined {
+  if (!(error instanceof SecretTransferError)) return;
+  const messages = {
+    "recovery-files-invalid": "Choose one recovery-key file and its matching credential-backup file. A selected-secret package belongs in Import secrets.",
+    "recovery-key-unlock-failed": "Could not unlock the recovery key. Its password is incorrect or the file is damaged.",
+    "recovery-backup-unlock-failed": "Could not unlock the credential backup. Its password is incorrect or the file is damaged.",
+    "recovery-workspace-mismatch": "These recovery files belong to another workspace. Import the matching workspace folder first.",
+    "recovery-key-mismatch": "The recovery key does not match this credential backup. Choose the key exported for this backup.",
+    "recovery-payload-invalid": "These recovery files contain invalid or unsupported data. Choose an intact matching backup.",
+    "transfer-selection-expired": "The file selection has expired. Choose the files again.",
+    "transfer-file-kind-invalid": "This is not a selected-secret package. Recovery keys and credential backups must be opened through Recovery.",
+    "transfer-authentication-failed": "Could not unlock this package. Its password is incorrect or the file is damaged.",
+  };
+  return `${messages[error.code]} No values were imported.`;
+}
+
 function exportPasswordError(password: string, confirmation: string) {
   if (!password) return "Enter a package password.";
   if (Array.from(password).length < 12) return "Use at least 12 characters.";
@@ -199,12 +215,16 @@ function TransferDialog({ workspaceId, mode, onImported, onBeforeTransfer, onClo
         clearPasswords();
         onNotice(result.status === "written" ? `${titles[mode]} completed.` : "Export cancelled."); onClose();
       }
-    } catch {
+    } catch (error) {
       clearPasswords();
       if (!started && abort.signal.aborted) { onNotice("Transfer cancelled before opening a file."); onClose(); return; }
-      setError(mode === "import" && !staged ? "Could not open this package. Check file access and try again. No values were imported."
+      const failure = transferFailureMessage(error);
+      if (error instanceof SecretTransferError && error.code === "transfer-selection-expired") {
+        stagedRef.current = null; setStaged(null); setRecoveryFiles(null);
+      }
+      setError(failure ?? (mode === "import" && !staged ? "Could not open this package. Check file access and try again. No values were imported."
         : mode === "import" || mode === "recover" ? "Could not prepare this package. Check its password, workspace identity and file integrity. No values were imported."
-          : "Export could not finish. Check access to saved credentials and the destination, then retry.");
+          : "Export could not finish. Check access to saved credentials and the destination, then retry."));
     } finally { if (mounted.current) setBusy(false); }
   };
   const unavailableSelected = inventory?.items.some((item) => selected.includes(item.ref) && item.status !== "available");
@@ -301,12 +321,12 @@ function TransferDialog({ workspaceId, mode, onImported, onBeforeTransfer, onClo
       {!preview ? <>
         {mode === "import" && staged || mode === "recover" && recoveryFiles ? <div className="flex items-center justify-between gap-ui-3 rounded-ui-md bg-purr-codefield p-ui-3">
           <FileKey className="size-ui-5 shrink-0 text-content-secondary" />
-          <div className="min-w-0 flex-1 font-code text-ui-sm">{recoveryFiles ? <><p className="m-ui-0 truncate">{recoveryFiles.keyName}</p><p className="m-ui-0 truncate">{recoveryFiles.backupName}</p></> : <span className="block truncate">{staged?.name}</span>}</div>
+          <div className="min-w-0 flex-1 font-code text-ui-sm">{recoveryFiles ? <><p className="m-ui-0 truncate"><span className="mr-ui-2 font-ui text-content-secondary">Recovery key</span>{recoveryFiles.keyName}</p><p className="m-ui-0 truncate"><span className="mr-ui-2 font-ui text-content-secondary">Credential backup</span>{recoveryFiles.backupName}</p></> : <span className="block truncate">{staged?.name}</span>}</div>
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => { if (stagedRef.current) void transfer.cancel(stagedRef.current).catch(() => {}); stagedRef.current = null; setStaged(null); setRecoveryFiles(null); clearPasswords(); }}>Change files</Button>
         </div> : null}
         {exporting || mode === "import" && staged || mode === "recover" && recoveryFiles ? <section aria-label="Package passwords" className="space-y-ui-3 rounded-ui-lg bg-purr-codefield p-ui-4">
           <h3 className="m-ui-0 flex items-center gap-ui-2 text-ui-md font-medium"><KeyRound className="size-ui-4 text-content-secondary" />{mode === "recover" ? "Recovery passwords" : "Package password"}</h3>
-          <div className="grid grid-cols-1 gap-ui-4 sm:grid-cols-2">
+          <div className={`grid grid-cols-1 gap-ui-4 ${exporting || mode === "recover" ? "sm:grid-cols-2" : ""}`}>
             <FormField label={mode === "recover" ? "Recovery key password" : "Package password"} secret autoFocus={mode === "import" || mode === "recover"} value={password} disabled={busy} onChange={(event) => setPassword(event.target.value)} />
             {exporting ? <FormField label="Confirm password" secret value={confirmation} disabled={busy} onChange={(event) => setConfirmation(event.target.value)} /> : null}
             {mode === "recover" ? <FormField label="Credential backup password" secret value={backupPassword} disabled={busy} onChange={(event) => setBackupPassword(event.target.value)} /> : null}

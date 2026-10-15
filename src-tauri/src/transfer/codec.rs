@@ -25,6 +25,23 @@ pub enum ContainerKind {
     CredentialBackup = 3,
 }
 
+/// Unauthenticated routing hint only. `decode` must still authenticate the full container.
+pub fn kind_hint(bytes: &[u8]) -> Result<ContainerKind, String> {
+    if bytes.len() < HEADER + WRAPPED_KEY + 16
+        || bytes.len() > MAX_FILE_BYTES
+        || &bytes[..8] != MAGIC
+        || bytes[8] != 1
+    {
+        return Err("transfer-format-invalid".into());
+    }
+    match bytes[9] {
+        1 => Ok(ContainerKind::SelectedSecrets),
+        2 => Ok(ContainerKind::RecoveryKeys),
+        3 => Ok(ContainerKind::CredentialBackup),
+        _ => Err("transfer-format-invalid".into()),
+    }
+}
+
 fn derive(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
     if password.chars().count() < 12 || password.len() > 1024 {
         return Err("transfer-password-invalid".into());

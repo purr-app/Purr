@@ -204,6 +204,16 @@ class TauriPersistence implements PersistencePort {
     );
   }
 
+  inspectDirectory(directory: string, optional = false) {
+    return invoke<StoredWorkspace | null>("read_project_directory", { directory, optional });
+  }
+
+  async openDirectory(directory: string, expectedRevisions: Record<string, string>) {
+    const workspace = await invoke<StoredWorkspace>("open_project_directory", { directory, expectedRevisions });
+    this.cache.set(workspace.id, workspace.files);
+    return workspace;
+  }
+
   async attachDirectory(id: string, directory: string) {
     const workspace = await invoke<StoredWorkspace>(
       "attach_project_directory",

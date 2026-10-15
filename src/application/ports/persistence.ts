@@ -102,5 +102,9 @@ export interface PersistencePort
     id: string,
     directory: string,
   ): Promise<StoredWorkspace>;
+  /** Inspect canonical files without registering or changing the directory. */
+  inspectDirectory?(directory: string, optional?: boolean): Promise<StoredWorkspace | null>;
+  /** Register only if the complete inspected file revision set still matches. */
+  openDirectory?(directory: string, expectedRevisions: Record<string, string>): Promise<StoredWorkspace>;
   retryProtectedStorage?(): Promise<StorageSnapshot>;
 }

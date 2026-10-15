@@ -13,6 +13,7 @@ This document distinguishes working import/export behavior from architectural ex
 | Native `ImportAdapter` contract and registry | Implemented boundary |
 | Validate and persist a `NormalizedImportResult` | Implemented application path |
 | New-workspace import UI | Working for file, folder, URL, and pasted text |
+| Open exported/copied Purr project folder | Desktop New workspace → Import → Choose folder instead; preserves identity and SecretRefs |
 | OpenAPI 3.0/3.1 adapter | Working first version |
 | Postman Collection v2.0/v2.1 and environment JSON adapters | Working; scripts and saved response examples are reported as unsupported |
 | Insomnia/Bruno/Yaak adapters | Not implemented |
@@ -276,3 +277,5 @@ registrar.menuItems.register({
   },
 });
 ```
+
+The standard **New workspace → Import** flow recognizes Purr-native project directories and selected `purr.yaml` files before trying the existing collection importers. Choose folder instead selects an exported/copied/Git directory. Non-Purr files and folders continue through OpenAPI/Postman import; invalid Purr projects show an error rather than silently falling back. This registers the selected external directory in place after canonical validation and revision checks. Exported/copy/Git directories retain workspace identity for subsequent encrypted secret import. Existing same-ID workspaces in another directory are never overwritten or silently reidentified.

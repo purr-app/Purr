@@ -641,6 +641,15 @@ impl LocalStateStore {
             .map_err(db_error)?;
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
+    pub(crate) fn register_new(&self, id: &str, directory: &Path) -> Result<(), String> {
+        self.db
+            .execute(
+                "INSERT INTO workspaces(id,directory) VALUES(?1,?2)",
+                params![id, directory.to_string_lossy()],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
     #[cfg(test)]
     pub fn register(&self, id: &str, directory: &Path) -> Result<(), String> {
         self.db.execute("INSERT INTO workspaces(id,directory) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET directory=excluded.directory", params![id, directory.to_string_lossy()]).map_err(db_error)?;

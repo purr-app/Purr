@@ -39,3 +39,15 @@ export interface SecretTransferPort {
 export function validTransferPassword(password: string): boolean {
   return Array.from(password).length >= 12 && new TextEncoder().encode(password).byteLength <= 1024;
 }
+
+
+/** Safe native failures; messages and package contents are never rendered verbatim. */
+export const secretTransferFailureCodes = [
+  "recovery-files-invalid", "recovery-key-unlock-failed", "recovery-backup-unlock-failed",
+  "recovery-workspace-mismatch", "recovery-key-mismatch", "recovery-payload-invalid",
+  "transfer-selection-expired", "transfer-file-kind-invalid", "transfer-authentication-failed",
+] as const;
+export type SecretTransferFailureCode = typeof secretTransferFailureCodes[number];
+export class SecretTransferError extends Error {
+  constructor(readonly code: SecretTransferFailureCode) { super(code); this.name = "SecretTransferError"; }
+}

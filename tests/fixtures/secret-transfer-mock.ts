@@ -2,7 +2,7 @@ import type { Page } from "@playwright/test";
 import { installPersistenceMock } from "../ui/persistence-mock";
 
 /** Protocol fixture only: archive crypto/filesystem tests live in Rust. */
-export async function installSecretTransferMock(page: Page, options: { invalidImport?: boolean; delayedExport?: boolean; lostCommitReply?: boolean; expiredPreview?: boolean } = {}) {
+export async function installSecretTransferMock(page: Page, options: { invalidImport?: boolean; delayedExport?: boolean; lostCommitReply?: boolean; expiredPreview?: boolean; failureCode?: string; selectionFailure?: string } = {}) {
   await installPersistenceMock(page);
   await page.addInitScript((options) => {
     const state = window as any;
@@ -25,8 +25,10 @@ export async function installSecretTransferMock(page: Page, options: { invalidIm
         return { status: "written" };
       }
       if (action.type === "selectImportFile") return { id: "synthetic-selected-file", name: "selected-secrets.purrsecrets" };
+      if (action.type === "selectRecoveryFiles" && options.selectionFailure) throw options.selectionFailure;
       if (action.type === "selectRecoveryFiles") return { id: "synthetic-recovery-files", keyName: "recovery-key.purrsecrets", backupName: "credential-backup.purrsecrets" };
       if (action.type === "prepareImport" || action.type === "prepareRecovery") {
+        if (options.failureCode) throw options.failureCode;
         if (options.invalidImport) throw new Error("synthetic invalid package");
         return {
           id: "synthetic-preview", workspaceId: action.workspaceId, expiresAt: Date.now() + (options.expiredPreview ? -1 : 300000),

@@ -226,3 +226,45 @@ test("export reveals a saved value without changing selection", async ({ page })
   await page.getByRole("button", { name: "Hide saved Bearer token", exact: true }).click();
   await expect(page.getByLabel("Saved value Bearer token", { exact: true })).toHaveText("••••••••");
 });
+
+
+test("single import password fills its section", async ({ page }) => {
+  await installSecretTransferMock(page); await openSettings(page);
+  await page.getByRole("button", { name: "Import secrets", exact: true }).click();
+  await page.getByRole("button", { name: "Choose package", exact: true }).click();
+  const input = page.getByLabel("Package password", { exact: true });
+  const grid = input.locator("xpath=ancestor::section[1]").locator(".grid");
+  const widths = await Promise.all([input.locator("xpath=ancestor::*[@data-secret-input-control][1]").boundingBox(), grid.boundingBox()]);
+  expect(widths[0]!.width).toBeGreaterThan(widths[1]!.width * 0.95);
+});
+
+for (const [code, explanation] of [
+  ["recovery-key-unlock-failed", "Could not unlock the recovery key"],
+  ["recovery-backup-unlock-failed", "Could not unlock the credential backup"],
+  ["recovery-key-mismatch", "does not match this credential backup"],
+  ["recovery-workspace-mismatch", "belong to another workspace"],
+] as const) {
+  test(`recovery explains ${code} without publishing values`, async ({ page }) => {
+    await installSecretTransferMock(page, { failureCode: code }); await openSettings(page);
+    await page.getByRole("button", { name: "Recovery options", exact: true }).click();
+    await page.getByRole("button", { name: "Recover secrets", exact: true }).click();
+    await page.getByRole("button", { name: "Choose recovery files", exact: true }).click();
+    await expect(page.getByText("Recovery key", { exact: true })).toBeVisible();
+    await expect(page.getByText("Credential backup", { exact: true })).toBeVisible();
+    await page.getByLabel("Recovery key password", { exact: true }).fill("synthetic key password");
+    await page.getByLabel("Credential backup password", { exact: true }).fill("synthetic backup password");
+    await page.getByRole("button", { name: "Preview secrets", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText(explanation);
+    await expect(page.getByRole("alert")).toContainText("No values were imported");
+    expect((await calls(page)).some((entry: any) => entry.type === "commitImport")).toBe(false);
+  });
+}
+
+test("wrong recovery file types are explained before asking for passwords", async ({ page }) => {
+  await installSecretTransferMock(page, { selectionFailure: "recovery-files-invalid" }); await openSettings(page);
+  await page.getByRole("button", { name: "Recovery options", exact: true }).click();
+  await page.getByRole("button", { name: "Recover secrets", exact: true }).click();
+  await page.getByRole("button", { name: "Choose recovery files", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Choose one recovery-key file");
+  await expect(page.getByLabel("Recovery key password", { exact: true })).toHaveCount(0);
+});
