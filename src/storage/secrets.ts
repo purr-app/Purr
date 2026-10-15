@@ -1,6 +1,11 @@
 import { secretRefSchema, type Credential, type SecretRef } from "../domain/project";
 import { isPureTemplateReference } from "../domain/template-expression";
-import { SecretUnavailableError, type CommitState, type SecretBatch, type SecretSnapshot, type SecureStore, type SecretResolution, type SecretFieldState, type SecretProtectionScope } from "../application/ports/credentials";
+import { SecretUnavailableError, type CommitState, type SecretBatch, type SecretSnapshot, type SecureStore, type SecretResolution, type SecretInspection, type SecretFieldState, type SecretProtectionScope } from "../application/ports/credentials";
+
+export function inspectionOf(ref: SecretRef, resolution: SecretResolution): SecretInspection {
+  return resolution.status === "available" ? { ref, status: "available", revision: resolution.revision, empty: resolution.value.length === 0 }
+    : { ref, ...resolution };
+}
 
 export function secretRef(workspace: string, owner: string, field: string, kind: SecretProtectionScope["kind"] = "credentials"): SecretRef {
   return secretRefSchema.parse(`purr/${workspace}/${kind}/${owner}/${field}`);
@@ -30,6 +35,11 @@ export class MemorySecureStore implements SecureStore {
   async get(ref: SecretRef) { return this.values.get(ref) ?? null; }
   async read(ref: SecretRef): Promise<SecretSnapshot> { secretRefSchema.parse(ref); return { value: await this.get(ref), revision: this.revisions.get(ref) ?? 0 }; }
   async resolve(ref: SecretRef): Promise<SecretResolution> { const snapshot = await this.read(ref); return snapshot.value === null ? { status: "missing", revision: snapshot.revision } : { status: "available", ...snapshot, value: snapshot.value }; }
+  async inspect(refs: readonly SecretRef[]) { return Promise.all(refs.map(async (ref) => {
+    const snapshot = await this.read(ref);
+    return snapshot.value === null ? { ref, status: "missing" as const, revision: snapshot.revision }
+      : { ref, status: "available" as const, revision: snapshot.revision, empty: snapshot.value === "" };
+  })); }
   async operationStatus(operationId: string): Promise<CommitState> { return { operationId, status: this.operations.get(operationId)?.status ?? "missing" }; }
   async commitWith<T>(batch: SecretBatch, publish: () => T, identity: unknown = batch): Promise<T | undefined> {
     const request = JSON.stringify({ batch, identity });
@@ -119,6 +129,7 @@ export class CachedSecureStore implements SecureStore {
     else this.values.delete(ref);
     return result;
   }
+  inspect(refs: readonly SecretRef[]) { return this.source.inspect(refs); }
   async commit(batch: SecretBatch) { try { await this.source.commit(batch); } finally { this.clear(); } }
   operationStatus(operationId: string) { return this.source.operationStatus(operationId); }
   async set(ref: SecretRef, value: string) { try { await this.source.set(ref, value); } finally { this.clear(); } }
@@ -155,6 +166,10 @@ export class SecretPreparationStore implements SecureStore {
     if (!this.staged.has(ref)) return this.source.resolve(ref);
     const snapshot = await this.read(ref);
     return snapshot.value === null ? { status: "missing", revision: snapshot.revision } : { status: "available", value: snapshot.value, revision: snapshot.revision };
+  }
+  async inspect(refs: readonly SecretRef[]) {
+    const source = await this.source.inspect(refs.filter((ref) => !this.staged.has(ref)));
+    return Promise.all(refs.map(async (ref) => this.staged.has(ref) ? inspectionOf(ref, await this.resolve(ref)) : source.find((item) => item.ref === ref)!));
   }
   onCommitted(callback: () => void) { this.acknowledgements.push(callback); }
   preparedValue(ref: SecretRef): { value: string | null } | undefined { return this.staged.has(ref) ? { value: this.staged.get(ref)! } : undefined; }

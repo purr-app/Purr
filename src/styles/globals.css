@@ -388,6 +388,9 @@
   .ui-integration-dialog { inset: 0; height: calc(100dvh - var(--space-8)); }
   .ui-integration-dialog[open] { display: flex; flex-direction: column; }
   .ui-integration-dialog > :first-child { flex-shrink: 0; }
+  .ui-scroll-dialog { max-height: calc(100dvh - var(--space-8)); }
+  .ui-scroll-dialog[open] { display: flex; flex-direction: column; }
+  .ui-scroll-dialog > :last-child:not([data-modal-footer]) { min-height: 0; overflow-y: auto; }
   .ui-integration-content { flex: 1; min-height: 0; }
   .ui-workspace-menu {
     width: var(--workspace-selector-menu-width);

@@ -6,6 +6,11 @@ export type SecretResolution =
   | { status: "available"; value: string; revision: number }
   | { status: "missing"; revision: number }
   | { status: SecretFailureStatus; code: string; retryable: boolean };
+/** Value-free availability for lists. An available empty string is distinct from missing. */
+export type SecretInspection =
+  | { ref: SecretRef; status: "available"; revision: number; empty: boolean }
+  | { ref: SecretRef; status: "missing"; revision: number }
+  | { ref: SecretRef; status: SecretFailureStatus; code: string; retryable: boolean };
 export type CredentialEdit = { kind: "keep" } | { kind: "set"; value: string } | { kind: "delete" };
 /** Transient editor state. Never serialize this metadata as a credential value. */
 export type SecretFieldState = {
@@ -54,6 +59,7 @@ export interface SecureStore {
   get(ref: SecretRef): Promise<string | null>;
   read(ref: SecretRef): Promise<SecretSnapshot>;
   resolve(ref: SecretRef): Promise<SecretResolution>;
+  inspect(refs: readonly SecretRef[]): Promise<SecretInspection[]>;
   commit(batch: SecretBatch): Promise<void>;
   operationStatus(operationId: string): Promise<CommitState>;
   set(ref: SecretRef, value: string): Promise<void>;

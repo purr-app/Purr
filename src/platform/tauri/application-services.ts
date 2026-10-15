@@ -1,3 +1,4 @@
+import { nativeSecretTransfer } from "./secret-transfer";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -32,6 +33,7 @@ import { tauriObservability } from "./observability";
 import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
+  inspect(references: readonly SecretRef[]) { return invoke<import("../../application/ports/credentials").SecretInspection[]>("secure_inspect", { references }); }
   async resolve(reference: SecretRef): Promise<SecretResolution> {
     try { return await invoke<SecretResolution>("secure_resolve", { reference }); }
     catch { return { status: "unavailable", code: "secure-resolution-unavailable", retryable: true }; }
@@ -490,6 +492,7 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
     observability: tauriObservability,
     persistenceBackend: new TauriPersistence(),
     secureStore,
+    secretTransfer: nativeSecretTransfer,
     httpTransport: startHttp,
     responseContent: new TauriResponseContent(),
     oauthCallback: {

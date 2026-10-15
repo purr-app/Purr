@@ -369,3 +369,9 @@ S05 прибирає AES-GCM overhead для public rows/chunks, але збер
 - [layout.rs](../src-tauri/src/security/layout.rs) — deprecated archival manifests.
 
 Browser preview використовує новий IndexedDB `purr-preview-v4`, зберігаючи стару v3 без змін. Local container має `{version:1, records:[...]}`; кожен row має table/id та `{version:1, protection:"plaintext", value}` або `{version:1, protection:"encrypted", envelope}`. Browser WebCrypto envelope містить scope/keyId/context/iv/data; це не native binary layout. Public history index має мінімальні redacted summaries для On, окремі encrypted summary records повертають деталі при доступному ключі. Unavailable records позначаються типізовано і зберігаються при public save. Для нього дивись `src/storage/browser-crypto.ts` і `browser-backend.ts`.
+
+## Перенесення секретів і recovery (S06)
+
+Нових таблиць або нового формату SQLite немає. Вибірковий імпорт використовує наявні `secret_values`, revisions, journal та receipts, із CAS-перевіркою ідентичності й ревізій. Значення шифруються чинним credential key пристрою-одержувача. Drafts, request_executions, cookies та runtime keys не переносяться.
+
+Recovery key package містить тільки ключі credential scope обраного workspace. Окремий credential backup містить відповідні encrypted rows (`reference`, crypto version, nonce, ciphertext), відібрані за збереженими деклараціями. Це версійований пакет, а не SQLite backup. Секрети відновлюються тимчасовими source keys і повторно шифруються destination keys; активний registry не замінюється. Опис зовнішнього контейнера, форматів і меж — [Secret transfer and recovery](secret-transfer-and-recovery.md).

@@ -807,6 +807,62 @@ test("Secret is independent of reveal; browser preview persists ciphertext and r
   expect(storage).toEqual({ leaked: false, encrypted: true, exportable: false, legacy: null });
 });
 
+test("local secret availability stays distinct from editor hydration after a manager update", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("managed_token");
+  await page.getByLabel("Variable value", { exact: true }).fill("initial-secret");
+  await page.getByRole("switch", { name: "Sensitive & masked secret", exact: true }).click();
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await saved(page);
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  await page.getByRole("tab", { name: "Secrets and encryption", exact: true }).click();
+  await page.getByRole("button", { name: "Manage secrets", exact: true }).click();
+  await page.getByRole("button", { name: "Edit managed_token", exact: true }).click();
+  await page.getByLabel("Secret value managed_token", { exact: true }).fill("replacement-secret");
+  await page.getByRole("button", { name: "Save value", exact: true }).click();
+  await expect(page.getByLabel("Secret value managed_token", { exact: true })).toHaveValue("••••••••");
+  await page.getByRole("dialog", { name: "Manage local secrets" }).getByRole("button", { name: "Close dialog" }).click();
+  await page.getByRole("tab", { name: "Variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await expect(page.getByLabel("Variable value managed_token", { exact: true })).toContainText("••••••••");
+});
+
+test("inline sensitive creation shows its committed status without reopening Variables", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await page.getByRole("button", { name: "Add static variable", exact: true }).click();
+  await page.getByLabel("New variable name", { exact: true }).fill("inline_secret");
+  await page.getByLabel("New variable value", { exact: true }).fill("synthetic-inline-value");
+  await page.getByRole("button", { name: "Toggle new variable sensitive", exact: true }).click();
+  await page.getByRole("button", { name: "Save static variable", exact: true }).click();
+  await expect(page.getByLabel("Variable value inline_secret", { exact: true })).toHaveText("••••••••");
+  await expect(page.getByRole("button", { name: "Toggle inline_secret sensitive", exact: true })).toBeDisabled();
+  await page.getByLabel("Variable value inline_secret", { exact: true }).click();
+  await page.getByRole("button", { name: "Reveal value", exact: true }).click();
+  await expect(page.getByLabel("Variable value", { exact: true })).toHaveValue("synthetic-inline-value");
+});
+
+test("new sensitive variable without a value is missing; clearing a saved value needs explicit removal", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await page.getByRole("button", { name: "Variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("missing_token");
+  await page.getByRole("switch", { name: "Sensitive & masked secret", exact: true }).click();
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await expect(page.getByLabel("Variable value missing_token", { exact: true })).toContainText("Local secret missing");
+  await page.getByLabel("Variable value", { exact: true }).fill("stored-value");
+  await page.getByRole("button", { name: "Save variable", exact: true }).click();
+  await page.getByLabel("Variable value", { exact: true }).fill("");
+  await expect(page.getByRole("button", { name: "Save variable", exact: true })).toBeDisabled();
+  await expect(page.getByText("Secret value cannot be empty.", { exact: false })).toBeVisible();
+});
+
 test("environment templates reach native request URL, auth, headers and JSON while editor stays templated", async ({ page }) => {
   await mockDesktop(page);
   await page.goto("/");
@@ -974,4 +1030,40 @@ test("renaming an environment variable updates request snapshots and sibling env
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("{{endpoint}}/working");
   await saved(page); await page.reload();
   await expect(page.getByLabel("Request URL", { exact: true })).toHaveValue("{{endpoint}}/working");
+});
+
+test("manager creates a workspace secret while an environment is active and filters by type", async ({ page }) => {
+  await page.goto("/");
+  await createEnvironment(page, "Manager environment", { environment_only: "public-value" });
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  await page.getByRole("tab", { name: "Secrets and encryption", exact: true }).click();
+  await page.getByRole("button", { name: "Manage secrets", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Manage local secrets" });
+  await dialog.getByRole("button", { name: "New secret", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Save secret", exact: true })).toBeDisabled();
+  await dialog.getByLabel("Secret name", { exact: true }).fill("manager_secret");
+  await dialog.getByLabel("New secret value", { exact: true }).fill("synthetic-manager-secret");
+  await dialog.getByRole("button", { name: "Save secret", exact: true }).click();
+  await expect(dialog.getByLabel("Secret value manager_secret", { exact: true })).toHaveValue("••••••••");
+  await expect(dialog.getByText("1 saved · AES-256-GCM", { exact: true })).toBeVisible();
+  await dialog.getByRole("combobox", { name: "Secret type", exact: true }).click();
+  await page.getByRole("option", { name: "Request values", exact: true }).click();
+  await expect(dialog.getByLabel("Secret value manager_secret", { exact: true })).toHaveCount(0);
+  await dialog.getByRole("combobox", { name: "Secret type", exact: true }).click();
+  await page.getByRole("option", { name: "Variables", exact: true }).click();
+  await expect(dialog.getByLabel("Secret value manager_secret", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "New secret", exact: true }).click();
+  await dialog.getByLabel("Secret name", { exact: true }).fill("manager_secret");
+  await dialog.getByLabel("New secret value", { exact: true }).fill("must-not-overwrite");
+  await expect(dialog.getByRole("alert")).toHaveText("A workspace variable with this name already exists.");
+  await expect(dialog.getByRole("button", { name: "Save secret", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByRole("button", { name: "Open variables", exact: true }).click();
+  await variableScope(page, "Workspace").click();
+  await expect(page.getByLabel("Variable value manager_secret", { exact: true })).toHaveText("••••••••");
+  await page.getByRole("navigation", { name: "Variable scopes" }).getByRole("button", { name: "Manager environment", exact: true }).click();
+  await expect(page.getByLabel("Variable value manager_secret", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Variable value environment_only", { exact: true })).toBeVisible();
 });

@@ -89,6 +89,7 @@ type KeyValueFieldProps = {
   readOnly?: boolean;
   label?: string;
   secret?: boolean;
+  reserveReveal?: boolean;
   variableActions?: TemplateVariableActions;
 };
 
@@ -168,7 +169,7 @@ export function KeyValueEditor({
 }: KeyValueEditorProps) {
   const { secureStore } = useApplicationServices();
   const resolving = useRef(new Set<string>());
-  const [displaySecrets, setDisplaySecrets] = useState<Record<string, { sourceValue: string; sourceStatus: SecretFieldState["status"]; value: string; state: SecretFieldState }>>({});
+  const [displaySecrets, setDisplaySecrets] = useState<Record<string, { sourceValue: string; sourceStatus: SecretFieldState["status"]; value: string; state: SecretFieldState; empty?: boolean }>>({});
   const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
   const [dropTargetEntryId, setDropTargetEntryId] = useState<string | null>(
     null,
@@ -180,6 +181,23 @@ export function KeyValueEditor({
   useEffect(() => {
     entriesRef.current = entries;
   }, [entries]);
+  const unresolvedKey = entries.filter((entry) => entry.secretState?.status === "unresolved").map((entry) => `${entry.id}:${entry.secretState!.ref}`).join("\n");
+  useEffect(() => {
+    const source = entriesRef.current.filter((entry) => entry.secretState?.status === "unresolved");
+    if (!source.length) return;
+    let active = true;
+    void secureStore.inspect([...new Set(source.map((entry) => entry.secretState!.ref))]).then((statuses) => {
+      if (!active) return;
+      const byRef = new Map(statuses.map((status) => [status.ref, status]));
+      setDisplaySecrets((previous) => ({ ...previous, ...Object.fromEntries(source.flatMap((entry) => {
+        const status = byRef.get(entry.secretState!.ref);
+        return status ? [[entry.id, { sourceValue: entry.value, sourceStatus: entry.secretState!.status,
+          value: entry.value, empty: status.status === "available" && status.empty,
+          state: { ...entry.secretState!, status: status.status, edit: { kind: "keep" as const } } }]] : [];
+      })) }));
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [secureStore, unresolvedKey]);
 
   const resolveEntry = async (entry: KeyValueEntry) => {
     const state = entry.secretState;
@@ -401,7 +419,7 @@ export function KeyValueEditor({
         {entries.map((entry) => (
           <KeyValueRow
             key={entry.id}
-            entry={entry.readOnly && entry.secretState && displaySecrets[entry.id]?.state.ref === entry.secretState.ref && displaySecrets[entry.id].sourceValue === entry.value && displaySecrets[entry.id].sourceStatus === entry.secretState.status ? { ...entry, value: displaySecrets[entry.id].value, secretState: displaySecrets[entry.id].state } : entry}
+            entry={entry.secretState && displaySecrets[entry.id]?.state.ref === entry.secretState.ref && displaySecrets[entry.id].sourceValue === entry.value && displaySecrets[entry.id].sourceStatus === entry.secretState.status ? { ...entry, value: displaySecrets[entry.id].value, secretState: displaySecrets[entry.id].state } : entry}
             allowSensitive={allowSensitive}
             onResolve={() => { void resolveEntry(entry).catch(() => {}); }}
             multipart={multipart}
@@ -588,13 +606,14 @@ function KeyValueRow({
           className="flex-1"
           readOnly={entry.readOnly}
           secret={entry.secret || mandatorySensitive}
+          reserveReveal={allowSensitive}
           label={entry.key ? "Value for " + entry.key : keyLabel + " value"}
           font={valueFont}
           inputRef={valueInputRef}
           onFocus={onResolve}
           muted={!entry.enabled}
           value={entry.value}
-          placeholder={entry.secretState && entry.secretState.status !== "available" && entry.secretState.edit?.kind !== "set" ? `Local secret ${entry.secretState.status}` : valuePlaceholder}
+          placeholder={entry.secretState && entry.secretState.status !== "available" && entry.secretState.edit?.kind !== "set" ? `Local secret ${entry.secretState.status}` : entry.secretState?.status === "available" && !entry.value && entry.secretState.edit?.kind === "keep" ? "••••••••" : valuePlaceholder}
           onChange={(value) => onChange({ value })}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -605,7 +624,7 @@ function KeyValueRow({
           variableActions={variableActions}
         />
       )}
-      {allowSensitive && !entry.readOnly ? <Button type="button" size="icon" variant="ghost" aria-label={`Sensitive ${entry.key || keyLabel}`} aria-pressed={Boolean(entry.secret || mandatorySensitive)} disabled={mandatorySensitive || Boolean(entry.secret && entry.secretState && entry.secretState.status !== "available" && entry.secretState.edit?.kind !== "set")} title={entry.secret ? "Sensitive value: encrypted locally" : "Mark value sensitive"} onClick={() => onChange({ secret: !entry.secret })}><LockKeyhole className={cn("size-ui-3-5", entry.secret && "text-action-brand")} /></Button> : null}
+      {allowSensitive ? entry.readOnly ? <span className="flex size-control-sm shrink-0 items-center justify-center text-content-tertiary" title={entry.readOnlyReason} aria-label={entry.hideReadOnlyIndicator ? undefined : entry.readOnlyReason}>{!entry.hideReadOnlyIndicator && <LockKeyhole className="size-ui-3-5" aria-hidden="true" />}</span> : <Button type="button" size="icon" variant="ghost" aria-label={`Sensitive ${entry.key || keyLabel}`} aria-pressed={Boolean(entry.secret || mandatorySensitive)} disabled={mandatorySensitive || Boolean(entry.secret && entry.secretState && entry.secretState.status !== "available" && entry.secretState.edit?.kind !== "set")} title={entry.secret ? "Sensitive value: encrypted locally" : "Mark value sensitive"} onClick={() => onChange({ secret: !entry.secret })}><LockKeyhole className={cn("size-ui-3-5", entry.secret && "text-action-brand")} /></Button> : null}
       {scopeOptions && entry.scope ? (
         <SelectField
           className="w-method-popover shrink-0"
@@ -616,7 +635,7 @@ function KeyValueRow({
           onValueChange={(scope) => onChange({ scope })}
         />
       ) : null}
-      {entry.readOnly && !entry.hideReadOnlyIndicator ? (
+      {entry.readOnly && !entry.hideReadOnlyIndicator && !allowSensitive ? (
         <span
           className="flex size-control-xs items-center justify-center text-content-tertiary"
           title={entry.readOnlyReason}
@@ -877,12 +896,13 @@ function KeyValueField({
   readOnly,
   label,
   secret = false,
+  reserveReveal = false,
   variableActions,
 }: KeyValueFieldProps) {
   const [revealed, setRevealed] = useState(false);
   const secretInput = (bindings?: Parameters<Parameters<typeof TemplateVariablePopover>[0]["children"]>[0]) => <TemplateInput
           className={cn(
-            "h-full min-w-0 flex-1 bg-transparent px-ui-1 text-ui-md font-normal text-content-secondary outline-none disabled:cursor-not-allowed disabled:opacity-ui-visible",
+            "h-control-md min-w-0 flex-1 rounded-ui-md border border-transparent bg-transparent px-ui-2 text-ui-md font-normal text-content-secondary outline-none focus:border-action-brand focus:bg-purr-surface disabled:cursor-not-allowed disabled:opacity-ui-visible",
             font === "code" ? "font-code" : "font-ui",
           )}
           type={revealed ? "text" : "password"}
@@ -907,7 +927,7 @@ function KeyValueField({
     return (
       <div
         className={cn(
-          "flex h-control-md min-w-0 items-center gap-ui-2 rounded-ui-md border border-transparent bg-purr-surface px-ui-2",
+          "flex h-control-md min-w-0 items-center gap-ui-2",
           className,
           muted && "opacity-ui-disabled",
           invalid && "border-method-delete",
@@ -934,7 +954,7 @@ function KeyValueField({
       className={cn(
         "h-control-md min-w-0 rounded-ui-md border border-transparent bg-transparent px-ui-2 text-ui-md font-normal text-content-primary outline-none transition-colors duration-ui-fast placeholder:text-content-tertiary focus:border-action-brand focus:bg-purr-surface disabled:cursor-not-allowed disabled:border-transparent disabled:bg-purr-surface disabled:text-content-secondary disabled:opacity-ui-visible",
         font === "code" ? "font-code" : "font-ui",
-        className,
+        reserveReveal ? "flex-1" : className,
         muted && "text-content-tertiary placeholder:text-content-quaternary",
         invalid && "text-method-delete focus:border-method-delete",
       )}
@@ -955,5 +975,6 @@ function KeyValueField({
       onKeyUp={bindings?.onKeyUp}
       onKeyDown={(event) => { bindings?.onKeyDown(event); if (!event.defaultPrevented) onKeyDown?.(event); }}
     />;
-  return variableActions ? <TemplateVariablePopover value={value} onValueChange={onChange} actions={variableActions} inputRef={inputRef}>{(bindings) => input(bindings)}</TemplateVariablePopover> : input();
+  const control = variableActions ? <TemplateVariablePopover value={value} onValueChange={onChange} actions={variableActions} inputRef={inputRef}>{(bindings) => input(bindings)}</TemplateVariablePopover> : input();
+  return reserveReveal ? <div className={cn("flex min-w-0 items-center gap-ui-2", className)}>{control}<span className="size-control-xs shrink-0" aria-hidden="true" /></div> : control;
 }

@@ -32,11 +32,11 @@ test("response encryption preferences default Off, override locally and survive 
   await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
   await expect(page.getByRole("switch", { name: "Encrypt responses for this workspace", exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: "Secrets and encryption", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Required local secrets", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Manage secrets", exact: true })).toBeVisible();
   const workspacePolicy = page.getByRole("switch", { name: "Encrypt responses for this workspace", exact: true });
   await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toHaveCount(0);
-  const content = await page.getByRole("heading", { name: "Local response storage", exact: true }).locator("..").boundingBox();
-  const secrets = await page.getByRole("region", { name: "Required local secrets", exact: true }).boundingBox();
+  const content = await page.getByText("Encrypt responses", { exact: true }).locator("../..").boundingBox();
+  const secrets = await page.getByRole("button", { name: "Manage secrets", exact: true }).locator("../..").boundingBox();
   expect(content).not.toBeNull(); expect(secrets).not.toBeNull();
   expect(Math.abs(content!.width - secrets!.width)).toBeLessThan(2);
   await expect(workspacePolicy).not.toBeChecked(); await workspacePolicy.click(); await expect(workspacePolicy).toBeChecked();

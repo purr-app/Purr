@@ -17,6 +17,11 @@ export function createCoreServices(): ApplicationServices {
   return Object.freeze({
     ...adapters,
     persistence,
+    secretTransfer: {
+      ...adapters.secretTransfer,
+      commitImport: (input) => persistence.runSecretTransfer(() => adapters.secretTransfer.commitImport(input)),
+      operationStatus: (operationId) => persistence.runSecretTransfer(() => adapters.secretTransfer.operationStatus(operationId)),
+    },
     credentialResolver: {
       resolve: (credential) =>
         resolveCredential(persistence.secure, credential),

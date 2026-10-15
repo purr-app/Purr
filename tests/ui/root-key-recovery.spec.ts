@@ -39,7 +39,8 @@ for (const fixture of [
     await page.getByRole("tab", { name: /^Headers/ }).click();
     await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
     await page.getByRole("button", { name: "Required local secrets", exact: true }).click();
-    await expect(page.getByRole("region", { name: "Required local secrets", exact: true })).toContainText(fixture.message);
+    await page.getByRole("button", { name: "Manage secrets", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Manage local secrets", exact: true })).toContainText(fixture.message);
     expect(await page.evaluate(() => (window as any).__rootRetryCount)).toBe(attempt);
     await page.getByRole("button", { name: "Retry / Unlock", exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__rootRetryCount)).toBe(attempt + 1);
@@ -47,6 +48,7 @@ for (const fixture of [
     expect(await protectedData()).toEqual(original);
   }
   await page.getByRole("button", { name: "Required local secrets", exact: true }).click();
+  await page.getByRole("button", { name: "Manage secrets", exact: true }).click();
   await page.evaluate(() => { (window as any).__purrProtectedState = { status: "available" }; });
   await page.getByRole("button", { name: "Retry / Unlock", exact: true }).click();
   await expect(page.getByText(fixture.message, { exact: false })).toHaveCount(0);

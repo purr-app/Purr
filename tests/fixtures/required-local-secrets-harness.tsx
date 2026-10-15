@@ -11,10 +11,14 @@ export async function mountRequiredSecretsFixture() {
   workspace.variables = [{ id: "token", name: "token", kind: "static", enabled: true, sensitive: true, value: "", secretRef: reference }];
   const secure = new MemorySecureStore();
   await secure.set(reference, "MUST_NOT_RENDER_EXISTING_VALUE");
+  let resolutionCalls = 0;
+  const resolve = secure.resolve.bind(secure);
+  secure.resolve = async (ref) => { resolutionCalls++; return resolve(ref); };
   const root = createRoot(document.body.appendChild(document.createElement("div")));
   const owners: string[] = [];
   const events: Array<{ ref: string; value: string | null }> = [];
   const retries: ProtectedState[] = [];
+  let failNextSave = false;
   let retryResult: ProtectedState | undefined;
   let retryGate: Promise<void> | undefined;
   let releaseRetry: (() => void) | undefined;
@@ -28,10 +32,13 @@ export async function mountRequiredSecretsFixture() {
       render(result);
       return result;
     },
-    onSetValue: async (ref, value) => { events.push({ ref, value }); if (value === null) await secure.delete(ref); else await secure.set(ref, value); },
+    onCreateSecret: async () => { throw new Error("Creation is covered by workspace integration tests."); },
+    onSetValue: async (ref, value) => { if (failNextSave) { failNextSave = false; throw new Error("Synthetic save failure"); } events.push({ ref, value }); if (value === null) await secure.delete(ref); else await secure.set(ref, value); },
   }));
   render();
   return { events, owners, retries, render,
+    resolutionCalls: () => resolutionCalls,
+    failSave: () => { failNextSave = true; },
     setRetryResult: (state: ProtectedState) => { retryResult = state; },
     holdRetry: () => { retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; }); },
     releaseRetry: () => releaseRetry?.(),

@@ -4,7 +4,7 @@ pub mod inventory;
 pub mod layout;
 pub mod manager;
 pub mod scoped;
-pub use scoped::ProtectionScope;
+pub use scoped::{decrypt_recovery_secret, CredentialRecoveryKey, ProtectionScope};
 #[cfg(all(test, target_os = "macos"))]
 mod os_store_smoke;
 mod platform;
@@ -297,6 +297,19 @@ pub struct SealedValue {
 }
 
 impl LocalCipher {
+    pub fn export_credential_recovery_keys(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<CredentialRecoveryKey>, String> {
+        match &self.0 {
+            CipherBackend::Scoped {
+                registry,
+                purpose: scoped::CipherPurpose::Secrets,
+                ..
+            } => registry.export_credential_recovery_keys(workspace_id),
+            _ => Err("credential-scope-registry-required".into()),
+        }
+    }
     fn from_key(key: &[u8]) -> Result<Self, String> {
         Ok(Self(CipherBackend::Raw(Arc::new(
             Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid local encryption key")?,

@@ -1,3 +1,4 @@
+import { unavailableSecretTransfer } from "../src/storage/unavailable-secret-transfer";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
@@ -30,6 +31,7 @@ function memoryServices(): ApplicationServices {
     observability: { validateConfig: unavailable, integrations: async () => [], trace: unavailable },
     persistence,
     secureStore,
+    secretTransfer: unavailableSecretTransfer,
     credentialResolver: {
       resolve: async (credential) =>
         credential.kind === "plain"

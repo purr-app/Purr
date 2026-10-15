@@ -8,6 +8,7 @@ const nativeRoot = join(root, "src-tauri", "src");
 
 const registeredCommands = [
   "exit_app",
+  "secret_transfer",
   "observability_integrations",
   "observability_validate_config",
   "observability_trace",
@@ -47,6 +48,7 @@ const registeredCommands = [
   "attach_project_directory",
   "secure_read",
   "secure_resolve",
+  "secure_inspect",
   "retry_protected_storage",
   "secure_commit",
   "secure_operation_status",

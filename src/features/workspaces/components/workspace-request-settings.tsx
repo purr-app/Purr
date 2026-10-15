@@ -1,3 +1,4 @@
+import { SecretTransfer, WorkspaceExport } from "./secret-transfer";
 import { integrationCredentialRef, readIntegrationCredential, stageIntegrationCredential } from "../../../integrations/auth-storage";
 import { RequiredLocalSecrets, type RequiredLocalSecretsProps } from "./required-local-secrets";
 import type { SecretFieldState } from "../../../application/ports/credentials";
@@ -42,7 +43,7 @@ function availableAuthScopes(_auth: WorkspaceSharedAuth[], _editingId?: string) 
 }
 
 export function WorkspaceSettings({
-  workspaceId,
+  workspaceId, onImportedSecrets, onBeforeSecretTransfer,
   responseStorage = "plaintext", onResponseStorageChange,
   secrets, variableStates, onUpgrade,
   name,
@@ -61,6 +62,8 @@ export function WorkspaceSettings({
   onDelete,
 }: {
   workspaceId: string;
+  onImportedSecrets: (references: readonly string[]) => void;
+  onBeforeSecretTransfer: () => Promise<void>;
   responseStorage?: "plaintext" | "encrypted";
   onResponseStorageChange?: (value: "plaintext" | "encrypted") => void;
   secrets: RequiredLocalSecretsProps;
@@ -194,16 +197,14 @@ export function WorkspaceSettings({
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-3">
           <fieldset disabled={secrets.protectedState.status !== "available" && tab !== "secrets" && tab !== "general"} className="m-ui-0 h-full min-w-0 border-0 p-ui-0">
-          {tab === "secrets" ? <div className="space-y-ui-6">
-            <div className="w-full">
-              <SettingsSection title="Local response storage">
+          {tab === "secrets" ? <div className="w-full space-y-ui-4">
+              <SettingsSection title="Secrets and encryption">
                 <SettingsRow label="Encrypt responses" description="Default for future executions on this device. Individual requests can override it.">
                   <Switch label="Encrypt responses for this workspace" checked={responseStorage === "encrypted"} onCheckedChange={(enabled) => onResponseStorageChange?.(enabled ? "encrypted" : "plaintext")} />
                 </SettingsRow>
-                <p className="m-ui-0 text-ui-sm text-content-tertiary">Off stores ordinary response bodies and metadata as plaintext, including any tokens or personal data returned by the server. Marked request secrets, authentication and cookies remain protected. Existing responses keep their original protection.</p>
+                <RequiredLocalSecrets {...secrets} />
+                <SecretTransfer workspaceId={workspaceId} onImported={onImportedSecrets} onBeforeTransfer={onBeforeSecretTransfer} />
               </SettingsSection>
-            </div>
-            <RequiredLocalSecrets {...secrets} />
             {secrets.migrationRequired ? <Button variant="brand" disabled={secrets.protectedState.status !== "available"} onClick={onUpgrade}>Upgrade workspace format</Button> : null}
           </div> : tab === "general" ? (
             <div className="flex min-h-full max-w-ui-dialog flex-col gap-ui-3">
@@ -213,6 +214,7 @@ export function WorkspaceSettings({
                 <textarea id="workspace-description" aria-label="Workspace description" className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 font-ui text-ui-md text-content-primary outline-none placeholder:text-content-tertiary"
                   value={description} placeholder="What is this workspace used for?" onChange={(event) => onDescriptionChange(event.target.value)} />
               </div>
+              <WorkspaceExport workspaceId={workspaceId} onBeforeTransfer={onBeforeSecretTransfer} />
               <div className="mt-auto border-t border-border-subtle pt-ui-3">
                 <h2 className="m-ui-0 text-ui-md font-medium text-accent-red">Delete workspace</h2>
                 <p className="mb-ui-3 mt-ui-1 text-ui-xs text-content-tertiary">Removes Purr’s local state and managed project directory. An attached external directory is left on disk.</p>

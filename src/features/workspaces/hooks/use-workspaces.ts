@@ -5,6 +5,7 @@ import { comparableDefinitionState, createWorkspace, type Workspace, type Worksp
 import { useApplicationServices } from "../../../app/application-services-context";
 import type { SecretPreparationStore } from "../../../storage/secrets";
 import { CommitRejectedError, RecoveryRequiredError } from "../../../application/ports/credentials";
+import { invalidateSecretBuffers } from "../../../application/invalidate-secret-buffers";
 
 const needsRecovery = (error: unknown) => error instanceof RecoveryRequiredError || error instanceof CommitRejectedError && error.recoveryRequired;
 
@@ -134,6 +135,12 @@ export function useWorkspaces() {
     const restored = await persistence.retryProtectedStorage();
     latest.current = restored; setStore(restored); setSaveError(""); setSaveNeedsRecovery(false);
   }, [persistence]);
+  const applyImportedSecrets = useCallback((references: readonly string[]) => {
+    if (!latest.current) return;
+    const refreshed = references.reduce((current, reference) => invalidateSecretBuffers(current, reference), latest.current);
+    latest.current = refreshed;
+    setStore(refreshed);
+  }, []);
   const deleteWorkspace = useCallback(async (id: string) => {
     const result = await persistence.deleteWorkspace(id);
     setStore((current) => {
@@ -144,5 +151,5 @@ export function useWorkspaces() {
     });
     return result;
   }, [persistence]);
-  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry: load, flush, retrySave, saveExplicitWorkspace, retryProtectedStorage };
+  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry: load, flush, retrySave, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets };
 }

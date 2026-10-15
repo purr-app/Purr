@@ -50,7 +50,8 @@ test("degraded protected storage keeps public navigation and blocks Send until R
   await page.getByRole("tab", { name: /^Headers/ }).click();
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Required local secrets", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Required local secrets", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Manage secrets", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Manage local secrets", exact: true })).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("purr-native-persistence-test")!).workspaces[0].files)).toEqual(files);
   await page.evaluate(() => { (window as any).__purrProtectedState = { status: "available" }; });
   await page.getByRole("button", { name: "Retry / Unlock", exact: true }).click();

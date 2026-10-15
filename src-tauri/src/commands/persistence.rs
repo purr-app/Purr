@@ -215,6 +215,14 @@ pub fn secure_resolve(
     runtime::secure_resolve(app, state, reference)
 }
 #[tauri::command]
+pub fn secure_inspect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    references: Vec<String>,
+) -> Result<Vec<Value>, String> {
+    runtime::secure_inspect(app, state, references)
+}
+#[tauri::command]
 pub fn retry_protected_storage(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,

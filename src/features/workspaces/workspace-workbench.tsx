@@ -1,3 +1,4 @@
+import { secretRef } from "../../storage/secrets";
 import { resolveResponseStoragePolicy } from "../../application/response-storage-policy";
 import { workspaceHttpTransport } from "../request-workbench/services/workspace-http-transport";
 import { protectedStorageMessage } from "./model/protected-storage-message";
@@ -152,7 +153,7 @@ export function WorkspaceWorkbench() {
   const extensions = useExtensionRegistry();
   const { persistence } = rootServices;
   const historyRevision = useSyncExternalStore(persistence.history?.subscribe ?? noHistorySubscription, persistence.history?.getSnapshot ?? noHistoryRevision);
-  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage } = useWorkspaces();
+  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets } = useWorkspaces();
   useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
   const [upgradeConfirmation, setUpgradeConfirmation] = useState<{ run: () => Promise<void>; cancel: () => void } | null>(null);
   const [explicitSaving, setExplicitSaving] = useState(false);
@@ -813,7 +814,7 @@ export function WorkspaceWorkbench() {
             addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
           <TemplateVariableProvider value={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
-          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} responseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, responseStorage }))}
+          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} onImportedSecrets={applyImportedSecrets} onBeforeSecretTransfer={flush} responseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, responseStorage }))}
             variableStates={variableStates} onUpgrade={() => requestExplicitSave(workspace, true)}
             secrets={{ workspace, project: persistence.getProject(workspace.id), globalVariables: store.globalVariables, secure: persistence.secure,
               migrationRequired: workspaceStatus!.migrationRequired, protectedState: workspaceStatus!.protectedState, runtimeProtectedState: workspaceStatus!.runtimeProtectedState,
@@ -828,6 +829,14 @@ export function WorkspaceWorkbench() {
                 if (integration) { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.editingIntegration", integration); return; }
                 if (workspace.requestConfig.auth.some((profile) => profile.id === id) || workspace.requestConfig.headers.some((header) => header.id === id)) { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", workspace.requestConfig.auth.some((profile) => profile.id === id) ? "auth" : "headers"); return; }
                 if (environmentId) openVariables(`environment:${environmentId}`, id, null); else openVariableDefinition(id);
+              },
+              onCreateSecret: async (name, value) => {
+                if (!name.trim() || !value) throw new Error("Secret name and value are required.");
+                if (workspace.variables.some((variable) => variable.name.trim() === name.trim())) throw new Error("A workspace variable with this name already exists.");
+                const id = crypto.randomUUID();
+                const variable: Variable = { id, name: name.trim(), kind: "static", enabled: true, sensitive: true, value, loaded: true, secretRef: secretRef(workspace.id, "variables", id) };
+                const next = { ...workspace, variables: [...workspace.variables, variable] };
+                await saveWithConfirmation({ ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) });
               },
               onSetValue: async (ref, value) => { await persistence.setSecretValue(workspace, ref, value); setStore((current) => current ? invalidateSecretBuffers(current, ref) : current); },
               onRetry: async () => {

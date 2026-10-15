@@ -59,7 +59,7 @@ canonical Project + local records + assets
 
 ### Storage and native layers
 
-`src/application/ports/persistence.ts` and `credentials.ts` define `PersistencePort`, `FilesystemWorkspaceStore`, `LocalStateStore`, and `SecureStore`. `src/storage/contracts.ts` temporarily re-exports those types for existing internal callers. `yaml.ts` owns the canonical YAML codec; `browser-backend.ts` is the IndexedDB development adapter. The native persistence implementation and every Tauri command string live in `src/platform/tauri/application-services.ts`; `storage/native-backend.ts` is a temporary compatibility re-export.
+`src/application/ports/persistence.ts` and `credentials.ts` define `PersistencePort`, `FilesystemWorkspaceStore`, `LocalStateStore`, and `SecureStore`. `src/storage/contracts.ts` temporarily re-exports those types for existing internal callers. `yaml.ts` owns the canonical YAML codec; `browser-backend.ts` is the IndexedDB development adapter. Native persistence and Tauri command adapters live in `src/platform/tauri/`: `application-services.ts` composes the services and `secret-transfer.ts` validates transfer metadata. `storage/native-backend.ts` is a temporary compatibility re-export.
 
 `src/app/composition/core-services.ts` is the only platform-selection point. It chooses browser or desktop adapters once, constructs `WorkspacePersistence`, and supplies the frozen service object to the app factory. Browser and desktop keep their existing capability differences.
 
@@ -176,7 +176,7 @@ See [Request lifecycle](request-lifecycle.md) and [Response lifecycle](response-
 ## Desktop release follow-ups
 
 - The OSS Tauri configuration currently has no production CSP. Define and validate one before distributing production binaries, including the native `purr-content` image/media protocol, editors, dialogs, and OAuth flows.
-- Secure storage currently requires macOS; other platforms need native root-key adapters before they are supported. S02 changes classification/availability, not root-key custody: the user-only macOS root-key file remains until S03. Required local secrets is an omission/availability preview, not an implemented encrypted transfer/export flow.
+- Secure storage currently requires macOS; other platforms need native root-key adapters before they are supported. The installation root is protected by the cached OS key manager. Native saved-credential transfer and recovery are implemented through a typed port; browser preview explicitly does not support these operations. See [Secret transfer and recovery](secret-transfer-and-recovery.md).
 - Official distribution still requires signing/notarization configuration and verification of bundle identifiers, release channels, and Keychain migration. Validate fresh installations, upgrades, and missing/corrupt local storage before a release.
 
 ## Documentation ownership

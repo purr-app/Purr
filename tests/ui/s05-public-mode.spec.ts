@@ -28,6 +28,7 @@ async function installPublicModeBridge(page: Page, denyFreshKeys = false) {
       if (command === "reload_project_file") return backend.reloadResource(args.id, args.path);
       if (command === "secure_read") return secure.read(args.reference);
       if (command === "secure_resolve") return secure.resolve(args.reference);
+      if (command === "secure_inspect") return secure.inspect(args.references);
       if (command === "secure_operation_status") return secure.operationStatus(args.operationId);
       if (command === "secure_commit") return secure.commit(args.batch);
       if (command === "request_history") {

@@ -32,9 +32,10 @@ test("native adapters preserve typed resolution, hide IPC errors, and refresh ca
   const seen: string[] = [];
   try {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { __TAURI_INTERNALS__: {
-      invoke: async (command: string, args?: { reference?: string }) => {
+      invoke: async (command: string, args?: { reference?: string; references?: string[] }) => {
         seen.push(command);
         if (command === "secure_resolve") { assert.equal(args?.reference, reference); if (fail) throw new Error("DO_NOT_EXPOSE_PLATFORM_DETAIL"); return result; }
+        if (command === "secure_inspect") { assert.deepEqual(args?.references, [reference]); return [{ ref: reference, status: "available", revision: 4, empty: true }]; }
         if (command === "load_persistence") return { activeWorkspaceId: "workspace", workspaces: [{ id: "workspace", files: { obsolete: { content: "old", revision: "old" } }, local: [] }] };
         if (command === "retry_protected_storage") return { activeWorkspaceId: "workspace", protectedState: { status: "available" }, workspaces: [{ id: "workspace", files: {}, local: [] }] };
         if (command === "commit_project") return { current: { content: "new", revision: "new" } };
@@ -49,6 +50,7 @@ test("native adapters preserve typed resolution, hide IPC errors, and refresh ca
       { status: "denied", code: "permission-denied", retryable: true },
       { status: "corrupt", code: "credential-corrupt", retryable: false },
     ] as SecretResolution[]) { result = value; assert.deepEqual(await secureStore.resolve(reference), value); }
+    assert.deepEqual(await secureStore.inspect([reference]), [{ ref: reference, status: "available", revision: 4, empty: true }]);
     fail = true;
     assert.deepEqual(await secureStore.resolve(reference), { status: "unavailable", code: "secure-resolution-unavailable", retryable: true });
     await persistenceBackend.load();

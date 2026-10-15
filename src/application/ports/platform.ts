@@ -1,3 +1,4 @@
+import type { SecretTransferPort } from "./secret-transfer";
 import type {
   ImportSource,
   ImportTarget,
@@ -71,6 +72,7 @@ export type PlatformAdapters = Readonly<{
   observability: ObservabilityPort;
   persistenceBackend: PersistencePort;
   secureStore: SecureStore;
+  secretTransfer: SecretTransferPort;
   httpTransport: HttpTransportPort;
   responseContent: ResponseContentPort;
   oauthCallback: OAuthCallbackPort;

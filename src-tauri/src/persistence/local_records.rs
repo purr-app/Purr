@@ -80,7 +80,7 @@ pub struct LocalAttachment {
 pub struct LocalStateStore {
     pub db: Connection,
     pub(super) cipher: LocalCipher,
-    pub(super) secret_cipher: LocalCipher,
+    pub(crate) secret_cipher: LocalCipher,
 }
 fn db_error(_: rusqlite::Error) -> String {
     "Local database operation failed".into()

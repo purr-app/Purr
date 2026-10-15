@@ -1,7 +1,7 @@
 import type { CommitState, SecretBatch, SecretResolution, SecretSnapshot, SecureStore } from "../application/ports/credentials";
 import type { FileChange, LocalChange, LocalRecord, PersistencePort, ProjectFile, ProtectedState, StorageSnapshot, StoredWorkspace, UnavailableLocalRecord } from "../application/ports/persistence";
 import { secretRefSchema, type SecretRef } from "../domain/project";
-import { secretProtectionScope, validateSecretScope } from "./secrets";
+import { inspectionOf, secretProtectionScope, validateSecretScope } from "./secrets";
 import { BrowserProtectedError, BrowserScopeCrypto, scopeIdentity, type BrowserProtectionScope, type BrowserScopeKey, type BrowserEnvelope } from "./browser-crypto";
 import { BrowserHistory } from "./browser-history";
 
@@ -252,6 +252,9 @@ async function historyChecks(expected: { key: string; value?: unknown }[]): Prom
   }));
 }
 export class BrowserSecureStore implements SecureStore {
+  async inspect(refs: readonly SecretRef[]) {
+    return Promise.all(refs.map(async (ref) => inspectionOf(ref, await this.resolve(ref))));
+  }
   async resolve(ref: SecretRef): Promise<SecretResolution> {
     secretRefSchema.parse(ref);
     let data: StoredSecret | undefined;

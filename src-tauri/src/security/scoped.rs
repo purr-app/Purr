@@ -147,6 +147,97 @@ struct KeyIdentity {
     generation: u32,
     scope: ProtectionScope,
 }
+
+/// Sensitive native-only recovery material. Never expose through IPC or logs.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CredentialRecoveryKey {
+    identity: KeyIdentity,
+    root: Zeroizing<Vec<u8>>,
+    keycheck: Vec<u8>,
+}
+impl CredentialRecoveryKey {
+    pub fn key_id(&self) -> &str {
+        &self.identity.key_id
+    }
+    pub fn validate(&self, workspace_id: &str) -> Result<(), String> {
+        let scope = ProtectionScope::WorkspaceCredential {
+            workspace_id: workspace_id.into(),
+        };
+        scope.validate()?;
+        if self.identity.scope != scope
+            || self.identity.generation != 1
+            || self.identity.vault_id.is_empty()
+            || self.identity.vault_id.len() > 200
+            || self.identity.key_id.len() != 32
+            || !self.identity.key_id.bytes().all(|b| b.is_ascii_hexdigit())
+            || self.root.len() != 32
+            || self.keycheck.len() > 256
+        {
+            return Err("recovery-key-identity-invalid".into());
+        }
+        let check = Zeroizing::new(
+            LocalCipher::from_key(&self.root)?
+                .decrypt(&self.keycheck, &keycheck_aad(&self.identity)?)?,
+        );
+        if check.as_slice() != b"purr-scope-key-v2" {
+            return Err("recovery-key-invalid".into());
+        }
+        Ok(())
+    }
+}
+
+/// Opens a matching credential row without any source installation/runtime key.
+pub fn decrypt_recovery_secret(
+    keys: &[CredentialRecoveryKey],
+    workspace_id: &str,
+    reference: &str,
+    version: i64,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    let scope = ProtectionScope::WorkspaceCredential {
+        workspace_id: workspace_id.into(),
+    };
+    scope.validate()?;
+    if ProtectionScope::from_secret_ref(reference)? != scope {
+        return Err("recovery-secret-owner-mismatch".into());
+    }
+    if version != 2 || ciphertext.len() < 4 {
+        return Err("scope-envelope-version-invalid".into());
+    }
+    let length = u32::from_be_bytes(
+        ciphertext[..4]
+            .try_into()
+            .map_err(|_| "scope-envelope-invalid")?,
+    ) as usize;
+    if length > 4096 || ciphertext.len() < 4 + length + 16 {
+        return Err("scope-envelope-invalid".into());
+    }
+    let header_bytes = &ciphertext[4..4 + length];
+    let header: EnvelopeHeader =
+        serde_json::from_slice(header_bytes).map_err(|_| "scope-envelope-invalid")?;
+    if header.version != 2
+        || header.algorithm != "aes-256-gcm"
+        || header.purpose != CipherPurpose::Secrets
+        || header.key.scope != scope
+    {
+        return Err("scope-envelope-owner-mismatch".into());
+    }
+    let mut matching = keys.iter().filter(|key| key.identity == header.key);
+    let key = matching.next().ok_or("recovery-key-missing")?;
+    if matching.next().is_some() {
+        return Err("recovery-key-duplicate".into());
+    }
+    key.validate(workspace_id)?;
+    let derived = derive_key(&key.root, CipherPurpose::Secrets.info())?;
+    LocalCipher::from_key(derived.as_slice())?.open_sealed(
+        1,
+        nonce,
+        &ciphertext[4 + length..],
+        &envelope_aad(header_bytes, &format!("purr:secret:v1|{reference}")),
+    )
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct EnvelopeHeader {
@@ -501,6 +592,51 @@ impl ScopeRegistry {
     pub(super) fn ensure_scope(&self, scope: &ProtectionScope) -> Result<(), String> {
         self.active_key(scope).map(|_| ())
     }
+    pub(super) fn export_credential_recovery_keys(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<CredentialRecoveryKey>, String> {
+        let scope = ProtectionScope::WorkspaceCredential {
+            workspace_id: workspace_id.into(),
+        };
+        let identity = scope.identity()?;
+        // Check the active key; exporting recovery must never provision or repair scopes.
+        self.active_key(&scope)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "scope-key-cache-unavailable")?;
+        let ids = {
+            let mut statement = state
+                .database
+                .prepare("SELECT key_id FROM wrapped_scope_keys WHERE scope=?1 ORDER BY key_id")
+                .map_err(storage_error)?;
+            let rows = statement
+                .query_map([identity], |row| row.get::<_, String>(0))
+                .map_err(storage_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)?
+        };
+        let mut result = Vec::new();
+        for id in ids {
+            let key = self.load_key(&mut state, &scope, &id)?;
+            let keycheck = state
+                .database
+                .query_row(
+                    "SELECT keycheck FROM wrapped_scope_keys WHERE key_id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            let recovery = CredentialRecoveryKey {
+                identity: key.identity.clone(),
+                root: Zeroizing::new(key.root.to_vec()),
+                keycheck,
+            };
+            recovery.validate(workspace_id)?;
+            result.push(recovery);
+        }
+        Ok(result)
+    }
     pub(super) fn seal(
         &self,
         scope: &ProtectionScope,
@@ -623,6 +759,114 @@ mod tests {
             CipherBackend::Scoped { registry, .. } => registry.clone(),
             _ => panic!("expected scoped fixture"),
         }
+    }
+    #[test]
+    fn detached_recovery_opens_actual_credentials_without_installation_key() {
+        let reference = "purr/workspace-a/credentials/requests/token";
+        let (dir, keys) = fixture();
+        let row = keys
+            .secrets
+            .for_scope(scopes()[0].clone())
+            .unwrap()
+            .seal(
+                "синтетичний credential".as_bytes(),
+                &format!("purr:secret:v1|{reference}"),
+            )
+            .unwrap();
+        let exported = keys
+            .secrets
+            .export_credential_recovery_keys("workspace-a")
+            .unwrap();
+        assert_eq!(exported.len(), 1);
+        let serialized = Zeroizing::new(serde_json::to_vec(&exported).unwrap());
+        drop(exported);
+        drop(keys);
+        drop(dir);
+        let recovered: Vec<CredentialRecoveryKey> = serde_json::from_slice(&serialized).unwrap();
+        let plain = decrypt_recovery_secret(
+            &recovered,
+            "workspace-a",
+            reference,
+            row.version,
+            &row.nonce,
+            &row.ciphertext,
+        )
+        .unwrap();
+        assert_eq!(plain.as_slice(), "синтетичний credential".as_bytes());
+        assert!(decrypt_recovery_secret(
+            &recovered,
+            "workspace-b",
+            reference,
+            row.version,
+            &row.nonce,
+            &row.ciphertext
+        )
+        .is_err());
+        assert!(decrypt_recovery_secret(
+            &recovered,
+            "workspace-a",
+            "purr/workspace-a/credentials/requests/other",
+            row.version,
+            &row.nonce,
+            &row.ciphertext
+        )
+        .is_err());
+    }
+    #[test]
+    fn recovery_rejects_other_scopes_purposes_keys_and_corruption() {
+        let (_dir, keys) = fixture();
+        let recovery = keys
+            .secrets
+            .export_credential_recovery_keys("workspace-a")
+            .unwrap();
+        let reference = "purr/workspace-a/credentials/requests/token";
+        for scope in scopes().into_iter().skip(1).chain([
+            ProtectionScope::GlobalCredential,
+            ProtectionScope::GlobalRuntime,
+            ProtectionScope::InstallationJournal,
+        ]) {
+            let row = keys
+                .secrets
+                .for_scope(scope)
+                .unwrap()
+                .seal(b"synthetic", &format!("purr:secret:v1|{reference}"))
+                .unwrap();
+            assert!(decrypt_recovery_secret(
+                &recovery,
+                "workspace-a",
+                reference,
+                row.version,
+                &row.nonce,
+                &row.ciphertext
+            )
+            .is_err());
+        }
+        assert!(keys
+            .secrets
+            .export_credential_recovery_keys("global")
+            .is_err());
+        assert!(keys
+            .database
+            .export_credential_recovery_keys("workspace-a")
+            .is_err());
+        let row = keys
+            .database
+            .for_scope(scopes()[0].clone())
+            .unwrap()
+            .seal(b"synthetic", &format!("purr:secret:v1|{reference}"))
+            .unwrap();
+        assert!(decrypt_recovery_secret(
+            &recovery,
+            "workspace-a",
+            reference,
+            row.version,
+            &row.nonce,
+            &row.ciphertext
+        )
+        .is_err());
+        let mut recovery = recovery;
+        recovery[0].root[0] ^= 1;
+        assert!(recovery[0].validate("workspace-a").is_err());
     }
     #[test]
     fn scoped_envelopes_roundtrip_and_bind_owner_purpose_record_and_chunk() {

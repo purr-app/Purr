@@ -1,3 +1,4 @@
+import type { SecretTransferPort } from "../../application/ports/secret-transfer";
 import type { HttpTransportPort } from "../../application/ports/http";
 import type { ObservabilityPort } from "../../application/ports/observability";
 import type { ResponseContentPort } from "../../application/ports/response-content";
@@ -21,6 +22,7 @@ export type ApplicationServices = Readonly<{
   observability: ObservabilityPort;
   persistence: WorkspacePersistence;
   secureStore: SecureStore;
+  secretTransfer: SecretTransferPort;
   credentialResolver: CredentialResolver;
   httpTransport: HttpTransportPort;
   responseContent: ResponseContentPort;

@@ -172,6 +172,15 @@ export async function installPersistenceMock(page: Page) {
           if (command === "set_local_active_workspace") { snapshot.activeWorkspaceId = args.id; localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot)); return; }
           if (command === "finish_legacy_migration") return;
           if (command.startsWith("secure_")) {
+            if (command === "secure_inspect") return args.references.map((reference: string) => {
+              const injected = (window as any).__purrSecretStates?.[reference];
+              if (injected && injected.status !== "available") return { ref: reference, ...injected };
+              const state = stateFor(reference.split("/")[1]);
+              if (state.status !== "available") return { ref: reference, status: state.status === "recovery-required" ? "unavailable" : state.status,
+                code: state.code ?? "protected-storage-unavailable", retryable: state.status !== "corrupt" };
+              return reference in secrets ? { ref: reference, status: "available", revision: revision(reference), empty: secrets[reference] === "" }
+                : { ref: reference, status: "missing", revision: revision(reference) };
+            });
             if (command === "secure_resolve") {
               const injected = (window as any).__purrSecretStates?.[args.reference];
               if (injected) return injected;

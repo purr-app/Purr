@@ -376,6 +376,20 @@ fn snapshot(
     )
 }
 
+/// Transfer operations share the normal storage lock and recovery boundary.
+pub(crate) fn transfer_access<T>(
+    app: &tauri::AppHandle,
+    workspace: &str,
+    call: impl FnOnce(&mut LocalStateStore, &FilesystemWorkspaceStore) -> Result<T, String>,
+) -> Result<T, String> {
+    valid_id(workspace)?;
+    access(app, &app.state::<PersistenceState>(), |storage| {
+        storage.recover_before_commit()?;
+        let files = storage.files(workspace)?;
+        call(&mut storage.local, &files)
+    })
+}
+
 pub fn secure_get(
     app: tauri::AppHandle,
     state: tauri::State<'_, PersistenceState>,
@@ -615,6 +629,25 @@ pub fn secure_resolve(
         storage.local.read_secret_typed(&reference)
     });
     secret_resolution(result)
+}
+pub fn secure_inspect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PersistenceState>,
+    references: Vec<String>,
+) -> Result<Vec<Value>, String> {
+    if references.len() > 10_000 {
+        return Err("Too many secret references".into());
+    }
+    Ok(references.into_iter().map(|reference| {
+        let result = access_typed(&app, &state, |storage| storage.local.read_secret_typed(&reference));
+        match result {
+            Ok(snapshot) => match snapshot.value {
+                Some(value) => json!({"ref":reference,"status":"available","revision":snapshot.revision,"empty":value.is_empty()}),
+                None => json!({"ref":reference,"status":"missing","revision":snapshot.revision}),
+            },
+            Err(error) => json!({"ref":reference,"status":if error.status==ProtectedStatus::RecoveryRequired {ProtectedStatus::Unavailable}else{error.status},"code":error.code,"retryable":error.retryable}),
+        }
+    }).collect())
 }
 fn secret_resolution(result: Result<SecretSnapshot, ProtectedError>) -> Value {
     match result {

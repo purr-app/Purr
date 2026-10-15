@@ -136,6 +136,71 @@ impl FilesystemWorkspaceStore {
         }
         Ok(index)
     }
+    pub(crate) fn load_transfer_definitions(
+        &self,
+    ) -> Result<BTreeMap<String, ProjectFile>, String> {
+        let mut index = BTreeMap::new();
+        let mut total = 0u64;
+        if !self.directory.exists() {
+            return Ok(index);
+        }
+        let mut pending = vec![self.directory.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).map_err(storage_error)? {
+                let entry = entry.map_err(storage_error)?;
+                let kind = entry.file_type().map_err(storage_error)?;
+                let full = entry.path();
+                let relative = full
+                    .strip_prefix(&self.directory)
+                    .map_err(|_| "Invalid project path")?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if kind.is_symlink() {
+                    continue;
+                }
+                if kind.is_dir() {
+                    if !relative.split('/').any(|part| part.starts_with('.'))
+                        && [
+                            "requests",
+                            "graphql",
+                            "documents",
+                            "schemas",
+                            "environments",
+                            "folders",
+                            "integrations",
+                            "assets",
+                        ]
+                        .contains(&relative.split('/').next().unwrap_or(""))
+                    {
+                        pending.push(full);
+                    }
+                } else if relative.ends_with(".yaml") && self.path(&relative).is_ok() {
+                    let size = entry.metadata().map_err(storage_error)?.len();
+                    total = total
+                        .checked_add(size)
+                        .ok_or("Saved definitions exceed transfer limit")?;
+                    if size > 4 * 1024 * 1024 || total > 32 * 1024 * 1024 || index.len() >= 10_000 {
+                        return Err("Saved definitions exceed transfer limit".into());
+                    }
+                    use std::io::Read;
+                    let mut bytes = Vec::new();
+                    fs::File::open(self.path(&relative)?)
+                        .map_err(storage_error)?
+                        .take(4 * 1024 * 1024 + 1)
+                        .read_to_end(&mut bytes)
+                        .map_err(storage_error)?;
+                    if bytes.len() > 4 * 1024 * 1024 {
+                        return Err("Saved definition exceeds transfer limit".into());
+                    }
+                    let revision = revision(&bytes);
+                    let content = String::from_utf8(bytes)
+                        .map_err(|_| "Invalid saved definition encoding")?;
+                    index.insert(relative, ProjectFile { content, revision });
+                }
+            }
+        }
+        Ok(index)
+    }
     fn bytes(change: &FileChange) -> Result<Option<Vec<u8>>, String> {
         change
             .content

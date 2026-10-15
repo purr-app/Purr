@@ -94,6 +94,16 @@ export class WorkspacePersistence {
     return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
   }
   getProject(id: string) { return this.projects.get(id); }
+  /** Native transfer publishes through the same save/history queue. Secret
+   * buffers are invalidated even when transport loses the commit response. */
+  runSecretTransfer<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.queue.catch(() => {}).then(async () => {
+      try { return await work(); }
+      finally { this.secure.clear(); }
+    });
+    this.queue = next;
+    return next;
+  }
   private assertWritable(id: string) {
     const state = this.getWorkspaceStatus(id).protectedState;
     if (!this.getWorkspaceStatus(id).publicWritable) throw new Error(`Storage ${state.status}. This workspace is read-only; retry before saving.`);

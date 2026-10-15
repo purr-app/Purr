@@ -16,7 +16,8 @@ This document distinguishes working import/export behavior from architectural ex
 | OpenAPI 3.0/3.1 adapter | Working first version |
 | Postman Collection v2.0/v2.1 and environment JSON adapters | Working; scripts and saved response examples are reported as unsupported |
 | Insomnia/Bruno/Yaak adapters | Not implemented |
-| Generic project export package | Not implemented; canonical directory is the portable artifact |
+| Workspace configuration export | Native export to an empty directory; saved YAML and referenced assets, secret values omitted |
+| Selected secrets / credential recovery | Native password-protected packages; same workspace identity and declared refs only |
 | Canonical integration envelope and unavailable-provider management | Working |
 | Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
 | Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
@@ -39,7 +40,7 @@ Nothing is automatically saved. `importCurl` maps method, URL/query, headers, in
 
 Formats are cURL, wget, and HTTP/1.1. The cURL/wget renderers use POSIX single-quote escaping. Binary request bodies are represented by an informational placeholder rather than exported as a working file reference. Dynamic dependency requests are not executed merely to open the dialog.
 
-The canonical workspace directory remains the only current project-level export: copy/commit the Git-friendly files together with assets, and provision secret values separately.
+Export configuration copies the saved Git-friendly definitions and referenced assets to an empty directory. Secret references are retained; selected values can be transferred separately through Secrets and encryption.
 
 ## Native import pipeline
 
@@ -96,7 +97,7 @@ Each import has fresh resource and secret identities. The application validates 
 
 Imported definitions and preserved refs can open without local values. Required local secrets identifies their owners and availability and supports Set value or Retry/Unlock. A missing required active dependency blocks the relevant operation; it does not authorize a blank credential write during import or an unrelated save.
 
-S02 provides a configuration sharing/omission preview, not a workspace/environment/global or Postman export implementation. The existing Request Code dialog exports redacted or explicitly revealed wire commands; it is not a portable configuration/secret archive. Selective encrypted transfer and workspace-key recovery remain S06. Global dependencies are local to the application and are not silently bundled with a workspace.
+Secrets and encryption provides native configuration-only export, selected secret export/import and separate recovery-key/credential-backup operations. All use saved canonical declarations; unsaved editors, globals, cookies, OAuth sessions and history are excluded. Imports target a copy of the same workspace, preview Keep/Replace decisions, and commit atomically under destination keys. Expressions are transferred verbatim without requests or variable evaluation. The Request Code dialog remains a separate wire-command feature. See [Secret transfer and recovery](secret-transfer-and-recovery.md). Environment/global and Postman export remain unsupported.
 
 ## Generic normalized boundary
 

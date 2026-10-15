@@ -63,6 +63,7 @@ impl PurrBuilder {
             ))
             .invoke_handler(tauri::generate_handler![
                 commands::app::exit_app,
+                commands::transfer::secret_transfer,
                 commands::observability::observability_integrations,
                 commands::observability::observability_validate_config,
                 commands::observability::observability_trace,
@@ -102,6 +103,7 @@ impl PurrBuilder {
                 commands::persistence::attach_project_directory,
                 commands::persistence::secure_read,
                 commands::persistence::secure_resolve,
+                commands::persistence::secure_inspect,
                 commands::persistence::retry_protected_storage,
                 commands::persistence::secure_commit,
                 commands::persistence::secure_operation_status,
@@ -133,6 +135,7 @@ pub fn core_builder() -> PurrBuilder {
         .manage(oauth::OAuthCallbacks::default())
         .manage(crate::security::context::NativeKeyState::default())
         .manage(persistence::PersistenceState::default())
+        .manage(crate::transfer::TransferState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default());
     #[cfg(target_os = "macos")]
