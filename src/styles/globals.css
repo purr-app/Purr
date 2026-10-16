@@ -611,3 +611,15 @@
   @keyframes notification-rise { from { transform: translateY(var(--space-4)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .ui-notification { animation: none; } }
 }
+
+/* Git merge views share the existing editor and semantic status palette. */
+.purr-git-diff .cm-mergeView { min-height: 100%; background: var(--purr-code-bg); }
+.purr-git-diff .cm-mergeViewEditor { min-width: 0; }
+.purr-git-diff .cm-merge-a .cm-changedLine,
+.purr-git-diff .cm-deletedText { background: var(--purr-highlight); text-decoration-color: var(--accent-red); }
+.purr-git-diff .cm-merge-b .cm-changedLine,
+.purr-git-diff .cm-insertedText { background: var(--action-emerald-surface); }
+.purr-git-diff .cm-deletedLineGutter { background: var(--accent-red); }
+.purr-git-diff .cm-insertedLineGutter { background: var(--status-success); }
+.purr-git-diff .cm-merge-gap { background: var(--purr-surface); border-color: var(--border-subtle); }
+.purr-git-diff .cm-collapseUnchanged { background: var(--purr-surface); color: var(--content-tertiary); border-color: var(--border-subtle); font-family: var(--font-family-ui); }

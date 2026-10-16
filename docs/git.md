@@ -23,3 +23,9 @@ Native Git IPC is restricted by the same trusted-main-webview guard as persisten
 The version-1 `workspace_local_state/git-operation` record is encrypted and owned by the native Git adapter. Normal projection preserves it. While it exists, startup restores the pre-operation canonical snapshot and local working copies in recovery mode; partially merged YAML cannot prevent the workspace opening or be overwritten by autosave. Resolve/finish/abort remain available through Git IPC.
 
 Clone uses a temporary sibling directory, validates the complete project and workspace identity, then publishes into a new or empty destination. A duplicate registered workspace ID is rejected. The selected project is subsequently registered through the existing revision-checked open-directory pipeline.
+
+## Semantic and file diffs
+
+Diff preview offers Semantic and exact YAML views. Semantic parsing uses the canonical codecs, so omitted defaults and YAML formatting do not create false field changes. Requests expose URL/method, ordered query/path/header rows, auth, body fields, GraphQL, settings and documentation. Stable row IDs and occurrence keys retain duplicate and disabled rows, and distinguish reordering from insertion. Environments, workspace definitions, folders, schemas and opaque extension config use the same canonical boundary. Credential previews display references without reading SecureStore.
+
+CodeMirror's merge view renders real before/after file contents with Purr's editor theme; conflict editing adds source-to-result chunk controls. Binary or oversized previews show metadata. Unknown files fall back to the text view.
