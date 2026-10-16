@@ -324,6 +324,9 @@ impl Git {
                         .ok_or_else(|| GitError::new("git", "Invalid path."))?;
                     std::fs::create_dir_all(parent)?;
                     let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                    if let Ok(metadata) = std::fs::metadata(&target) {
+                        file.as_file().set_permissions(metadata.permissions())?;
+                    }
                     use std::io::Write;
                     file.write_all(&bytes)?;
                     file.persist(&target)
