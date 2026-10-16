@@ -1,3 +1,4 @@
+import type { AttachmentWritePort } from "./attachments";
 import type { StoredHttpResponse } from "../../domain/http";
 import type { SecretBatch } from "./credentials";
 
@@ -43,6 +44,7 @@ export type HistoryEntry = HistorySummary & {
 export type HistoryQuery = { documentId?: string; cursor?: { startedAt: number; id: string }; limit?: number; search?: string };
 export type HistoryPage = { items: HistorySummary[]; cursor: HistoryQuery["cursor"] | null };
 export interface HistoryPort {
+  attachments?: AttachmentWritePort;
   append(workspaceId: string, entry: HistoryEntry, secrets?: SecretBatch): Promise<void>;
   list(workspaceId: string, query: HistoryQuery): Promise<HistoryPage>;
   read(workspaceId: string, id: string): Promise<HistoryEntry | null>;

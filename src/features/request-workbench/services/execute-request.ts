@@ -18,6 +18,7 @@ async function prepareBody(
   options: {
     fileMode: "inline" | "native" | "summary";
     requestBodies?: RequestBodyPort;
+    signal?: AbortSignal;
   },
 ): Promise<{
   bodyBase64: string | null;
@@ -71,7 +72,7 @@ async function prepareBody(
     throw new Error("Native request body storage is unavailable.");
   if (body.type === "binary") {
     if (!body.binary) return { bodyBase64: null, references: [] };
-    const reference = await requestBodies.stage(body.binary.file);
+    const reference = await requestBodies.stage(body.binary.file, options.signal);
     return { bodyBase64: null, bodySource: { kind: "file", reference }, references: [reference] };
   }
   if (body.type !== "form-data" || !hasMultipartFile)
@@ -82,7 +83,7 @@ async function prepareBody(
     const parts: Extract<PreparedRequestBody, { kind: "multipart" }>["parts"][number][] = [];
     for (const field of activeFields) {
       if (field.fieldType === "file" && field.attachment) {
-        const reference = await requestBodies.stage(field.attachment);
+        const reference = await requestBodies.stage(field.attachment, options.signal);
         references.push(reference);
         parts.push({ kind: "file", name: field.key, reference });
       } else {
@@ -108,6 +109,7 @@ export async function prepareWireRequest(
     purpose?: RequestCompositionPurpose;
     fileMode?: "inline" | "native" | "summary";
     requestBodies?: RequestBodyPort;
+    signal?: AbortSignal;
   } = {},
 ): Promise<{
   request: PreparedHttpTransportRequest;
@@ -149,6 +151,7 @@ export async function prepareWireRequest(
   const preparedBody = await prepareBody(outgoing.body, {
     fileMode: options.fileMode ?? (options.requestBodies ? "native" : "inline"),
     requestBodies: options.requestBodies,
+    signal: options.signal,
   });
   try {
     const bodySummary: HttpRequestBodySummary | undefined = preparedBody.bodySummary ?? (preparedBody.bodySource?.kind === "file"
@@ -245,6 +248,7 @@ export async function executeRequest(
     {
       fileMode: requestBodies ? "native" : "inline",
       requestBodies,
+      signal: execution?.signal,
     },
   );
   try {

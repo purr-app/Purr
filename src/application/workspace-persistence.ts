@@ -1,6 +1,6 @@
 import { entityId, validateProject, type Project, type ProjectResource } from "../domain/project";
 import { createWorkspace, validateWorkspace, isRequestDocument, isDocumentDirty, type Workspace, type WorkspaceStore } from "../features/workspaces/model/workspace";
-import { decodeFiles } from "../storage/file-codec";
+import { AttachmentPreparation, TransientAttachments, decodeFiles } from "../storage/file-codec";
 import { commitRejection, isCommitRejected, RecoveryRequiredError, type SecretBatch, type SecureStore } from "./ports/credentials";
 import type { FileChange, LocalChange, LocalRecord, PersistencePort, StoredWorkspace, WorkspaceDeletionResult, ProtectedState } from "./ports/persistence";
 import { deserializeManifestFile, deserializeResourceFile, pinnedSchemaPath, serializeManifest, serializeResource, type ProjectFormatVersion } from "../storage/yaml";
@@ -345,6 +345,12 @@ export class WorkspacePersistence {
       && !after.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await secure.delete(variable.secretRef);
   }
   private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure), intent: "automatic" | "explicit" = "automatic") {
+    const attachments = this.backend.attachments ? new AttachmentPreparation(workspace.id, this.backend.attachments,
+      new Set(this.snapshots.get(workspace.id)?.local.filter((row) => row.table === "attachments").map((row) => row.id))) : undefined;
+    try { await this.persistPrepared(workspace, legacySource, prepared, intent, attachments); attachments?.acknowledge(); }
+    finally { await attachments?.dispose(); }
+  }
+  private async persistPrepared(workspace: Workspace, legacySource: string | undefined, prepared: SecretPreparationStore, intent: "automatic" | "explicit", attachments?: AttachmentPreparation) {
     if (this.deleted.has(workspace.id)) return;
     this.assertWritable(workspace.id);
     const unavailableDocuments = new Set(this.getWorkspaceStatus(workspace.id).unavailableDocumentIds);
@@ -354,7 +360,7 @@ export class WorkspacePersistence {
     if (upgrading && intent === "automatic" && previous) {
       const snapshot = this.snapshots.get(workspace.id)!;
       const legacyRevisions = Object.fromEntries([...this.paths.get(workspace.id) ?? []].map(([id, path]) => [id, snapshot.files[path].revision]));
-      const projection = await projectWorkspace(workspace, prepared, { includeExecutions: !this.backend.history, localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
+      const projection = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history, localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
         sourceRevisions: Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.revision])) });
       const local = projection.local.filter((record) => !this.backend.history || record.table !== "request_executions");
       const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source").map((record) => [key(record), record]));
@@ -378,7 +384,7 @@ export class WorkspacePersistence {
     const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     for (const variable of previousVariables) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retainedRefs.has(variable.secretRef)
       && !currentVariables.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await prepared.delete(variable.secretRef);
-    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables }); validateProject(project);
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables }); validateProject(project);
     const refs = (value: unknown, found = new Set<string>()): Set<string> => {
       if (Array.isArray(value)) for (const child of value) refs(child, found);
       else if (value && typeof value === "object") {
@@ -523,8 +529,9 @@ export class WorkspacePersistence {
     const state = this.protectedStates.get(id);
     if (state?.status === "recovery-required" && ["project-format-unreadable", "legacy-definition-conflict"].includes(state.code)) this.protectedStates.set(id, { status: "available" });
     const prepared = new SecretPreparationStore(this.secure);
+    const transientAttachments = new TransientAttachments();
     const projected = working && this.getWorkspaceStatus(id).protectedState.status === "available" ? await projectWorkspace(working, prepared,
-      { includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) }) : undefined;
+      { transientAttachments, includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) }) : undefined;
     const local = projected?.local ?? previous.local;
     const baseline = this.projects.get(id);
     const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
@@ -548,7 +555,7 @@ export class WorkspacePersistence {
       // Removing a saved definition must not discard an unsaved working copy.
       if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
     }
-    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion });
+    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion, transientAttachments });
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; workspace.publicWritable = this.getWorkspaceStatus(id).publicWritable; return workspace;
   }

@@ -412,6 +412,7 @@ impl LocalStateStore {
             .map_err(db)?;
         }
         tx.execute("DELETE FROM history_attachments WHERE workspace_id=?1 AND NOT EXISTS(SELECT 1 FROM history_attachment_links l WHERE l.workspace_id=history_attachments.workspace_id AND l.attachment_id=history_attachments.id)",[workspace]).map_err(db)?;
+        super::attachments::collect(&tx, workspace)?;
         tx.commit().map_err(db)
     }
 }

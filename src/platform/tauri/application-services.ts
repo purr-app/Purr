@@ -30,6 +30,7 @@ import type { ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 import { getLocalAttachmentReference } from "../../storage/file-codec";
 import { tauriObservability } from "./observability";
+import { tauriAttachments } from "./attachments";
 import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
@@ -73,6 +74,7 @@ async function confirmedCommit<T>(work: () => Promise<T>, batch: SecretBatch, co
 
 class TauriPersistence implements PersistencePort {
   readonly history = tauriHistory;
+  readonly attachments = tauriAttachments;
   private cache = new Map<string, Record<string, ProjectFile>>();
 
   async load() {
@@ -528,11 +530,17 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
       stage: async (file, signal) => {
         signal?.throwIfAborted();
         const local = getLocalAttachmentReference(file);
-        if (local)
-          return invoke<RequestFileRef>("request_file_from_attachment", {
+        if (local) {
+          const reference = await invoke<RequestFileRef>("request_file_from_attachment", {
             workspaceId: local.workspaceId,
             attachmentId: local.attachmentId,
           });
+          if (signal?.aborted) {
+            await invoke<void>("request_file_release", { reference }).catch(() => {});
+            signal.throwIfAborted();
+          }
+          return reference;
+        }
         const pending = await invoke<RequestFileRef>("request_file_create", {
           name: file.name,
           size: file.size,
@@ -553,9 +561,11 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
             });
           }
           signal?.throwIfAborted();
-          return await invoke<RequestFileRef>("request_file_finish", {
+          const reference = await invoke<RequestFileRef>("request_file_finish", {
             reference: pending,
           });
+          signal?.throwIfAborted();
+          return reference;
         } catch (cause) {
           await invoke<void>("request_file_release", { reference: pending }).catch(() => {});
           throw cause;

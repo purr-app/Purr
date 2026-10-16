@@ -291,3 +291,32 @@ test("request execution releases staged handles after success and transport fail
     assert.equal(released[0].id, "request-file-1");
   }
 });
+
+test("cancellation while native attachment or final chunk handle is returning releases the late handle", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const reference: RequestFileRef = { id: "late-upload", name: "test.bin", size: 1, mediaType: "application/octet-stream" };
+  try {
+    for (const local of [false, true]) {
+      const controller = new AbortController(); const commands: string[] = [];
+      Object.defineProperty(globalThis, "window", { configurable: true, value: { __TAURI_INTERNALS__: {
+        invoke: async (command: string) => {
+          commands.push(command);
+          if (command === "request_file_from_attachment" || command === "request_file_finish") { controller.abort(); return reference; }
+          if (command === "request_file_create") return reference;
+          if (command === "request_file_append" || command === "request_file_release") return null;
+          throw new Error(`Unexpected command: ${command}`);
+        },
+      } } });
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { platform: "MacIntel" } });
+      const file = local ? decodeFiles({ __purrFileRef: "local" }, new Map([["local", { version: 2, native: true, name: reference.name, type: reference.mediaType, lastModified: 1, size: 1 }]]), "workspace", async () => { throw new Error("Cannot materialize attachment"); }) : new File([new Uint8Array([1])], reference.name);
+      assert.ok(file instanceof File);
+      const { createTauriPlatformAdapters } = await import("../src/platform/tauri/application-services");
+      await assert.rejects(createTauriPlatformAdapters().requestBodies.stage(file, controller.signal), { name: "AbortError" });
+      assert.equal(commands.at(-1), "request_file_release");
+    }
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow); else delete (globalThis as { window?: unknown }).window;
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator); else delete (globalThis as { navigator?: unknown }).navigator;
+  }
+});

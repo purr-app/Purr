@@ -14,3 +14,5 @@ Run the synthetic API with `npx tsx tests/fixtures/secure-storage-server.ts` (lo
 | `/echo` | Deliberately echoes request values; an Off response may therefore contain secrets in its unclassified body |
 
 Native performance fixtures (`native-content-benchmark.rs`, `native-storage-benchmark.rs`) are included as ignored Rust tests. They use fresh temporary directories and synthetic in-memory root keys, never a real app profile or Keychain. See the test functions for measured operations. Run explicitly with Cargo `--ignored --nocapture`; ordinary CI tests do not run benchmarks. Set `PURR_BENCH_PROTECTION=plaintext` only if supported by that fixture; defaults are encrypted. Benchmark output contains durations/sizes only.
+
+S07 upload tests include `upload-http-server.rs` from the native test module. This isolated loopback fixture checks exact binary/multipart bytes, 307/308 replay and cancellation with synthetic encrypted sources. It is not a standalone server. For desktop upload checks, reuse `npm run fixture:responses` on port 43119 with `/upload/echo`, `/upload/redirect307` and `/upload/redirect308`.

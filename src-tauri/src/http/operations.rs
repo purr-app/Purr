@@ -75,6 +75,15 @@ impl HttpOperationState {
         Ok(())
     }
 
+    pub fn cancel_all(&self) {
+        if let Ok(mut operations) = self.0.lock() {
+            for entry in operations.values() {
+                let _ = entry.sender.send(true);
+            }
+            operations.clear();
+        }
+    }
+
     pub fn finish(&self, id: &str) {
         if let Ok(mut operations) = self.0.lock() {
             operations.remove(id);

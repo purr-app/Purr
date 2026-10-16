@@ -6,3 +6,5 @@ pub mod persistence;
 pub mod response;
 
 pub mod transfer;
+
+pub mod attachment;

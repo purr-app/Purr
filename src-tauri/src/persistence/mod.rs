@@ -1,3 +1,4 @@
+pub mod attachments;
 pub(crate) mod history;
 #[cfg(test)]
 pub mod legacy;

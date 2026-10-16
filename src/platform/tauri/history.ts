@@ -1,3 +1,4 @@
+import { tauriAttachments } from "./attachments";
 import { invoke } from "@tauri-apps/api/core";
 import type { HistoryPort } from "../../application/ports/history";
 import { commitRejection, isCommitRejected, RecoveryRequiredError, type CommitState, type SecretBatch } from "../../application/ports/credentials";
@@ -6,6 +7,7 @@ const command = <T>(id: string, operation: string, args: object = {}) =>
   invoke<T>("request_history", { id, action: { operation, ...args } });
 
 export const tauriHistory: HistoryPort = {
+  attachments: tauriAttachments,
   append: async (id, entry, secrets: SecretBatch = { operationId: crypto.randomUUID(), mutations: [] }) => {
     try { await command(id, "append", { entry, secrets }); }
     catch (error) {

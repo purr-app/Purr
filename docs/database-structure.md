@@ -9,7 +9,7 @@
 ```text
 <app-data>/
 ├── projects/<workspace-id>/     переносимі YAML та assets
-├── local-state.sqlite3          основна локальна БД, schema version 8
+├── local-state.sqlite3          основна локальна БД, schema version 9
 ├── scope-keys.sqlite3           реєстр захищених ключів, schema version 1
 ├── root-key-metadata-v1.json    ідентичність OS root та keycheck
 ├── root-key-manager.lock       блокування активного native профілю
@@ -71,7 +71,7 @@ PRIMARY KEY(workspace_id, id)
 | `cookie_jar` | JSON cookie record зі значенням cookie |
 | `schema_cache` | JSON кешу GraphQL: SDL, час завантаження, cache identity та definition hash |
 | `recent_items` | Локальні recent records; наявність таблиці не означає, що вона завжди заповнена |
-| `attachments` | JSON attachment record: `version`, `name`, `type`, `lastModified`, `size`, `base64` |
+| `attachments` | Encrypted v2 descriptor: `version`, `name`, `type`, `lastModified`, `size`, `contentId`; legacy v1 містить `base64` |
 
 `protection=plaintext` означає UTF-8 JSON без crypto envelope; `encrypted` означає scoped envelope v2, після розшифрування якого отримуємо UTF-8 JSON. Reader вибирає шлях за колонкою, не за першим байтом або помилкою decrypt. Це спеціалізовані DTO, не одна серіалізована копія всього runtime `Workspace`. Форма JSON залежить від таблиці та типу запису.
 
@@ -140,6 +140,11 @@ PK `(content_id, chunk_index)`, UNIQUE `(content_id, plain_offset)`. За `respo
 `staging` означає запис у процесі; `ready` — завершений тимчасовий content; `adopted` — content належить збереженій history entry. Видалення execution прибирає відповідний content та chunks. Derived format/query results також можуть створювати тимчасові `ready` records; вони успадковують protection та workspace фактичного source content.
 
 ### 3.4 Cookies та attachments
+
+S07 мігрує поточну schema 8 → 9 на місці, без нового dataset або заміни ключів. `attachment_blobs(stage_id, workspace_id, attachment_id, owner, state, metadata, received, chunks, created_at)` тримає encrypted metadata та lifecycle `staging → ready → adopted`. `attachment_chunks(stage_id, chunk_index, payload)` містить зашифровані блоки до 256 KiB з FK cascade; AAD прив’язує workspace, storage ID, позицію і загальний розмір. Ім’я, тип і розмір у metadata автентифіковані; staging counters — перевірювані індекси.
+
+Begin/append/finish готують immutable ciphertext; звичайна транзакція commit/history публікує ownership. Abort та очищення не видаляють stages незавершеного journal. Live/history descriptors посилаються на ті самі chunks; GC видаляє їх після зникнення обох власників. Активний HTTP reader утримує SQLite snapshot. Старі v1 записи конвертуються при першому явному читанні/відправленні; ця одноразова операція може потребувати RAM пропорційно старому payload, але не створює plaintext-файл. Нові локальні файли пишуться й читаються потоково.
+
 
 `cookie_metadata` має composite PK `(workspace_id, id)` та відкриті колонки `name`, `domain`, `path`, `expires`, `secure`, `http_only`, `same_site`, `host_only`, `enabled`. Індекс — `cookie_domain_path(workspace_id, domain, path)`. Cookie value знаходиться у protected `cookie_jar.payload`.
 
@@ -286,7 +291,9 @@ purr:scope-envelope:v2|<headerByteLength>:<headerJSON>|<contextByteLength>:<cont
 | Pending commit | `<workspace>/journal` |
 | Operation receipt | `purr:operation:v1|<operation-id>` |
 | Cleanup intent | `purr:workspace-cleanup:v1|<workspace>` |
-| Retained history attachment | `<workspace>/attachments/<attachment-id>` |
+| Retained history attachment descriptor | `<workspace>/attachments/<attachment-id>` |
+| Attachment metadata | `purr:attachment-metadata:v2\|<workspace>\|<content-id>` |
+| Attachment chunk | `purr:attachment:v2\|<workspace>\|<content-id>\|<index>\|<total-size>` |
 
 Wrapped scope key AAD: `purr:wrapped-scope-key:v2|<KeyIdentityJSON>`. Scope keycheck: `purr:scope-keycheck:v2|<KeyIdentityJSON>`. Registry keycheck: `purr:scope-registry:v2|<vault-id>`.
 
@@ -352,7 +359,7 @@ def payload_header(blob: bytes):
 
 Великі responses мають chunks до 256 KiB, worker групує до 8 MiB в транзакцію, transport допускає до двох write batches in flight. Великі bodies не передаються цілком у WebView для звичайного відновлення/перегляду. Основні local commits використовують SQLite synchronous FULL, response content worker — NORMAL.
 
-Обмеження: startup читає та розшифровує локальні записи workspace; великий змінений draft потребує серіалізації та повторного запису свого payload; пошук історії може перебирати багато encrypted summaries. Блокові responses обмежують streaming buffers, але не роблять всі JSON DTO, attachments або пошукові операції потоковими. Функціональні тести не є порівняльним benchmark S04.
+Обмеження: startup читає та розшифровує локальні записи workspace; великий змінений draft потребує серіалізації та повторного запису свого payload; пошук історії може перебирати багато encrypted summaries. Блокові responses та нові native attachments обмежують streaming buffers; JSON DTO, canonical asset materialization, одноразова конвертація старих attachments та деякі пошукові операції залишаються окремими обмеженнями. Функціональні тести не є порівняльним benchmark S04.
 
 S05 прибирає AES-GCM overhead для public rows/chunks, але зберігає серіалізацію JSON, SQLite IO і bounded streaming. On та всі classified fragments продовжують використовувати AES-GCM. Сам факт меншої кількості crypto operations не є benchmark; порівнювати треба однакові synthetic fixtures та workload.
 

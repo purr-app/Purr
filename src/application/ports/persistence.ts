@@ -1,3 +1,4 @@
+import type { AttachmentWritePort } from "./attachments";
 import type { HistoryPort } from "./history";
 import type { SecretBatch } from "./credentials";
 
@@ -83,6 +84,7 @@ export interface PersistencePort
   extends FilesystemWorkspaceStore,
     LocalStateStore {
   history?: HistoryPort;
+  attachments?: AttachmentWritePort;
   load(): Promise<StorageSnapshot>;
   commit(
     id: string,

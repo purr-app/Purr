@@ -9,6 +9,31 @@ fn allowed_media_type(value: &str) -> bool {
     value.starts_with("image/") || value.starts_with("audio/") || value.starts_with("video/")
 }
 
+// A media URL is not an HTML/document endpoint. WebKit may omit Fetch Metadata
+// for custom schemes; absence is supported only after validating the webview.
+fn media_request_allowed(headers: &http::HeaderMap, dev_url: Option<&tauri::Url>) -> bool {
+    let destination = headers
+        .get("Sec-Fetch-Dest")
+        .and_then(|value| value.to_str().ok());
+    if destination.is_some_and(|value| !matches!(value, "image" | "audio" | "video")) {
+        return false;
+    }
+    for name in [http::header::ORIGIN, http::header::REFERER] {
+        if let Some(value) = headers.get(name) {
+            let Ok(value) = value.to_str() else {
+                return false;
+            };
+            let Ok(url) = tauri::Url::parse(value) else {
+                return false;
+            };
+            if !crate::security::caller::trusted_url(&url, dev_url) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn parse_range(value: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, String> {
     let Some(value) = value else { return Ok(None) };
     let value = value.strip_prefix("bytes=").ok_or("Invalid media range")?;
@@ -54,6 +79,10 @@ fn response(
         .header(http::header::CACHE_CONTROL, "no-store")
         .header("X-Content-Type-Options", "nosniff")
         .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .header(
+            "Content-Security-Policy",
+            "default-src 'none'; sandbox; frame-ancestors 'none'",
+        )
         .header(http::header::CONTENT_LENGTH, content_length.to_string());
     if let Some((start, end)) = range {
         builder = builder.header(
@@ -87,6 +116,21 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         "purr-content",
         |context, request, responder| {
             let app = context.app_handle().clone();
+            let allowed = app
+                .get_webview_window(context.webview_label())
+                .is_some_and(|webview| {
+                    crate::security::caller::require_trusted_webview(webview.as_ref()).is_ok()
+                        && media_request_allowed(
+                            request.headers(),
+                            tauri::is_dev()
+                                .then_some(app.config().build.dev_url.as_ref())
+                                .flatten(),
+                        )
+                });
+            if !allowed {
+                responder.respond(error_response(http::StatusCode::FORBIDDEN, None));
+                return;
+            }
             let id = request.uri().path().trim_start_matches('/').to_string();
             let method = request.method().clone();
             let range = request
@@ -175,6 +219,34 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_documents_frames_fetches_and_untrusted_resource_origins() {
+        let mut headers = http::HeaderMap::new();
+        assert!(media_request_allowed(&headers, None));
+        for destination in ["document", "iframe", "empty", "script", "object"] {
+            headers.insert("Sec-Fetch-Dest", destination.parse().unwrap());
+            assert!(!media_request_allowed(&headers, None));
+        }
+        headers.insert("Sec-Fetch-Dest", "image".parse().unwrap());
+        assert!(media_request_allowed(&headers, None));
+        for origin in [
+            "null",
+            "https://example.com",
+            "purr-content://localhost",
+            "https://tauri.localhost.evil",
+        ] {
+            headers.insert(http::header::ORIGIN, origin.parse().unwrap());
+            assert!(!media_request_allowed(&headers, None));
+        }
+        headers.insert(http::header::ORIGIN, "tauri://localhost".parse().unwrap());
+        assert!(media_request_allowed(&headers, None));
+        let media = response(http::StatusCode::OK, "image/svg+xml", 0, None, vec![]);
+        assert!(media.headers()["Content-Security-Policy"]
+            .to_str()
+            .unwrap()
+            .contains("sandbox"));
+    }
 
     #[test]
     fn parses_open_closed_and_suffix_ranges() {

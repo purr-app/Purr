@@ -11,7 +11,7 @@ import { createGraphqlDocument, createHttpDocument, createSchemaDocument, create
   type ExtensionDocument, type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
 import type { SecretBatch, SecureStore } from "./ports/credentials";
 import type { LocalRecord } from "./ports/persistence";
-import { decodeFiles, encodeFile, encodeFiles, type FileAttachmentLoader, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
+import { decodeFiles, encodeFile, encodeFiles, type AttachmentPreparation, type TransientAttachments, type FileAttachmentLoader, type FileAttachmentRecord, type NativeFileAttachmentRecord } from "../storage/file-codec";
 import { protectRuntime, materializeCredential, resolveRuntime, credentialRef, CachedSecureStore, secretRef, storeCredential, SecretPreparationStore } from "../storage/secrets";
 import { isPureTemplateReference } from "../domain/template-expression";
 import type { ProjectFormatVersion } from "../storage/yaml";
@@ -276,7 +276,7 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     : { ...common, kind: "http" };
 }
 
-export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { includeExecutions?: boolean; globalVariables?: readonly Variable[]; localOnlyBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
+export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { transientAttachments?: TransientAttachments; attachments?: AttachmentPreparation; includeExecutions?: boolean; globalVariables?: readonly Variable[]; localOnlyBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
   const secure = source instanceof SecretPreparationStore ? source : new SecretPreparationStore(source);
   // Historical tabs are views of local executions, never saved documents or drafts.
   const historicalIds = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.historical).map((document) => document.id));
@@ -335,11 +335,11 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
         // The portable baseline tracks external edits; it is not a runtime secret snapshot.
         local.push({ table: "drafts", id: document.id, value: await encodeFiles({ ...compactLocalRequestDocument(draft) as Record<string, unknown>, base: baseline ? null : definition ?? null,
           ...(baseline && definition ? { baseFingerprint: await valueHash(serializeResource(definition, undefined, 1)) } : {}),
-        }, attachments) });
+        }, attachments, options.attachments, options.transientAttachments) });
       }
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, ...(isRequestDocument(document) ? { responseStorage: document.responseStorage ?? "inherit" } : {}), createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
         ...(definition && !hasDraft ? { ...(baseline ? { definitionHash: await valueHash(serializeResource(definition, undefined, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definitionHash: await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) }),
-          editor: await encodeFiles(compactLocalRequest(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)), attachments) } : {}) } });
+          editor: await encodeFiles(compactLocalRequest(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)), attachments, options.attachments, options.transientAttachments) } : {}) } });
       if (options.includeExecutions !== false && document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, protection: responseRecordProtection(document.lastResponse), value: { documentId: document.id, response: responseRecordProtection(document.lastResponse) === "plaintext" ? await protectResponseSnapshot(document.lastResponse, secure, workspace.id, `executions/${document.id}-${document.lastResponse.timeline.startedAtMs}`) : responseForPersistence(document.lastResponse) } });
     } else if (document.kind === "schema") {
       const previousSchema = baseline?.resources.find((item): item is SchemaDefinition => item.kind === "schema" && item.id === document.id);
@@ -382,7 +382,7 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
       variables: workspace.variables, environments: workspace.environments, requestConfig: workspace.requestConfig, extraResources: workspace.extraResources,
       documents: workspace.documents.map((document) => isRequestDocument(document) ? { ...document, lastResponse: null, sentAt: null } : document) };
     local.push({ table: "workspace_local_state", id: "legacy-definition-draft", value: { version: 1, sourceRevisions: options.sourceRevisions ?? {},
-      definitions: await encodeFiles(await protectRuntime(definitions, secure, workspace.id, "legacy-definition-draft"), attachments) } });
+      definitions: await encodeFiles(await protectRuntime(definitions, secure, workspace.id, "legacy-definition-draft"), attachments, options.attachments, options.transientAttachments) } });
   }
   for (const [id, value] of attachments) local.push({ table: "attachments", id, value });
   for (const cookie of workspace.cookies) local.push({ table: "cookie_jar", id: cookie.id, value: cookie });
@@ -437,7 +437,7 @@ export async function restoreWorkspace(
   secure: SecureStore,
   assets: Record<string, string>,
   loadAttachment?: FileAttachmentLoader,
-  options: { hydrateSecrets?: boolean; sourceVersion?: ProjectFormatVersion } = {},
+  options: { hydrateSecrets?: boolean; sourceVersion?: ProjectFormatVersion; transientAttachments?: TransientAttachments } = {},
 ): Promise<Workspace> {
   const hydrate = options.hydrateSecrets ?? true;
   // Public application consumers may still provide v1 in-memory rows. This is
@@ -506,7 +506,7 @@ export async function restoreWorkspace(
     }
   }
   for (const record of records.filter((item) => item.table === "drafts")) {
-    const draft = await resolveRuntime(expandLocalRequestDocument(decodeFiles(record.value, attachments, workspace.id, loadAttachment)), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
+    const draft = await resolveRuntime(expandLocalRequestDocument(decodeFiles(record.value, attachments, workspace.id, loadAttachment, options.transientAttachments?.files)), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
     if (index < 0 && !draft.saved) workspace.documents.push(draft);
     else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
@@ -557,7 +557,7 @@ export async function restoreWorkspace(
       if (session?.editor && definition && sessionMatches && !records.some((record) => record.table === "drafts" && record.id === result.id)) {
         const canonicalAuth = result.request.auth;
         const canonicalHeaders = result.request.headers;
-        const editor = await resolveRuntime(expandLocalRequest(decodeFiles(session.editor, attachments, workspace.id, loadAttachment)), secure, hydrate) as RequestDraft;
+        const editor = await resolveRuntime(expandLocalRequest(decodeFiles(session.editor, attachments, workspace.id, loadAttachment, options.transientAttachments?.files)), secure, hydrate) as RequestDraft;
         // Cached editor modes must not shadow a credential changed in SecureStore.
         // Dirty working copies use their own local refs until explicitly saved.
         const group = { bearer: "bearer", basic: "basic", "api-key": "apiKey", oauth2: "oauth2", inherit: "inherit", none: null }[canonicalAuth.type] as "bearer" | "basic" | "apiKey" | "oauth2" | "inherit" | null;
@@ -590,7 +590,7 @@ export async function restoreWorkspace(
     if (!isRecord(pending) || pending.version !== 1 || !isRecord(pending.sourceRevisions) || !isRecord(pending.definitions)
       || options.sourceVersion !== 1 || Object.keys(pending).some((key) => !["version", "sourceRevisions", "definitions"].includes(key)))
       throw new Error("Unsupported legacy definition overlay. Existing local data has not been changed.");
-    const definitions = await resolveRuntime(decodeFiles(pending.definitions, attachments, workspace.id, loadAttachment), secure, hydrate) as Record<string, unknown>;
+    const definitions = await resolveRuntime(decodeFiles(pending.definitions, attachments, workspace.id, loadAttachment, options.transientAttachments?.files), secure, hydrate) as Record<string, unknown>;
     if (Object.keys(definitions).some((key) => !["name", "description", "defaultGraphqlSchemaId", "variables", "environments", "requestConfig", "extraResources", "documents"].includes(key)) || !Array.isArray(definitions.documents))
       throw new Error("Unsupported legacy definition overlay. Existing local data has not been changed.");
     const documents = (definitions.documents as WorkspaceDocument[]).map((document) => {

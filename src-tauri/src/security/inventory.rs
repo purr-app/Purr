@@ -110,7 +110,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| corrupt())?;
-    if !(0..=8).contains(&version) {
+    if !(0..=9).contains(&version) {
         return Err(corrupt());
     }
     let mut statement = db
@@ -146,6 +146,12 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
             }
         }
     }
+    if version >= 9 || tables.contains("attachment_blobs") || tables.contains("attachment_chunks") {
+        expected.extend([
+            "attachment_blobs".to_string(),
+            "attachment_chunks".to_string(),
+        ]);
+    }
     if tables != expected {
         return Err(corrupt());
     }
@@ -167,6 +173,11 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
             "content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext",
         ),
         ("history_attachments", "workspace_id,id,payload"),
+        (
+            "attachment_blobs",
+            "stage_id,workspace_id,attachment_id,owner,state,metadata,received,chunks,created_at",
+        ),
+        ("attachment_chunks", "stage_id,chunk_index,payload"),
         ("secret_operations", "operation_id,state,payload"),
         ("workspace_cleanup", "workspace_id,payload"),
     ] {
@@ -188,7 +199,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
         if tables.contains(table) {
             encrypted |= db
                 .query_row(
-                    &if version==8 {
+                    &if version>=8 {
                         if table=="secret_values" {format!("SELECT EXISTS(SELECT 1 FROM {table})")}
                         else if table=="response_content_chunks" {"SELECT EXISTS(SELECT 1 FROM response_content_chunks c JOIN response_contents r ON r.id=c.content_id WHERE r.protection='encrypted')".into()}
                         else {format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE protection='encrypted')")}
@@ -199,7 +210,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
                 .map_err(|_| corrupt())?;
         }
     }
-    if version == 8 {
+    if version >= 8 {
         encrypted |= db
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM response_contents WHERE protection='encrypted')",
@@ -207,6 +218,9 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
                 |r| r.get::<_, bool>(0),
             )
             .map_err(|_| corrupt())?;
+    }
+    if tables.contains("attachment_blobs") {
+        encrypted |= db.query_row("SELECT EXISTS(SELECT 1 FROM attachment_blobs) OR EXISTS(SELECT 1 FROM attachment_chunks)", [], |r| r.get::<_, bool>(0)).map_err(|_| corrupt())?;
     }
     let derived = if version > 0 {
         let marker: Option<String> = db
@@ -221,7 +235,7 @@ fn database_inventory(db: &Connection) -> Result<DatabaseInventory, ProtectedErr
             None => false,
             Some("hkdf-sha256-v1") => true,
             Some("scoped-envelope-v2") if version == 7 => true,
-            Some("mixed-scoped-v3") if version == 8 => true,
+            Some("mixed-scoped-v3") if version >= 8 => true,
             _ => return Err(corrupt()),
         }
     } else {
@@ -261,7 +275,7 @@ impl EncryptedInventory {
             .ok()
             .flatten()
             .and_then(|db| {let established:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM app_state WHERE key='protected-store-established')",[],|r|r.get(0)).ok()?; if established {None}else{database_inventory(&db).ok()}})
-            .is_some_and(|inventory| inventory.version == 8 && !inventory.encrypted)
+            .is_some_and(|inventory| inventory.version >= 8 && !inventory.encrypted)
     }
     pub fn has_encrypted_data(&self) -> bool {
         self.encrypted
@@ -409,6 +423,55 @@ fn verify_database(
                     &format!("purr:secret:v1|{reference}"),
                 )
                 .map_err(|_| invalid_ciphertext())?;
+        }
+    }
+    if inventory.tables.contains("attachment_blobs") {
+        let orphan: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM attachment_chunks c LEFT JOIN attachment_blobs b ON b.stage_id=c.stage_id WHERE b.stage_id IS NULL)", [], |r| r.get(0)).map_err(|_| corrupt())?;
+        if orphan {
+            return Err(corrupt());
+        }
+        let mut statement = db
+            .prepare("SELECT workspace_id,stage_id,metadata,length(metadata) FROM attachment_blobs")
+            .map_err(|_| corrupt())?;
+        let mut rows = statement.query([]).map_err(|_| corrupt())?;
+        while let Some(row) = rows.next().map_err(|_| corrupt())? {
+            let length: i64 = row.get(3).map_err(|_| corrupt())?;
+            if !(29..=65536).contains(&length) {
+                return Err(corrupt());
+            }
+            let workspace: String = row.get(0).map_err(|_| corrupt())?;
+            let stage: String = row.get(1).map_err(|_| corrupt())?;
+            let payload: Vec<u8> = row.get(2).map_err(|_| corrupt())?;
+            let cipher = database
+                .for_scope(super::ProtectionScope::runtime(&workspace))
+                .map_err(|_| invalid_ciphertext())?;
+            let metadata = zeroize::Zeroizing::new(
+                cipher
+                    .decrypt(
+                        &payload,
+                        &format!("purr:attachment-metadata:v2|{workspace}|{stage}"),
+                    )
+                    .map_err(|_| invalid_ciphertext())?,
+            );
+            let metadata: serde_json::Value =
+                serde_json::from_slice(&metadata).map_err(|_| corrupt())?;
+            let size = metadata["size"].as_u64().ok_or_else(corrupt)?;
+            let mut chunks = db.prepare("SELECT chunk_index,payload,length(payload) FROM attachment_chunks WHERE stage_id=?1 ORDER BY chunk_index").map_err(|_| corrupt())?;
+            let mut chunks = chunks.query([&stage]).map_err(|_| corrupt())?;
+            while let Some(chunk) = chunks.next().map_err(|_| corrupt())? {
+                let length: i64 = chunk.get(2).map_err(|_| corrupt())?;
+                if !(29..=266240).contains(&length) {
+                    return Err(corrupt());
+                }
+                let index = u64::try_from(chunk.get::<_, i64>(0).map_err(|_| corrupt())?)
+                    .map_err(|_| corrupt())?;
+                let payload: Vec<u8> = chunk.get(1).map_err(|_| corrupt())?;
+                verify_envelope(
+                    &cipher,
+                    &payload,
+                    &format!("purr:attachment:v2|{workspace}|{stage}|{index}|{size}"),
+                )?;
+            }
         }
     }
     if inventory.tables.contains("response_content_chunks") {
@@ -705,5 +768,41 @@ mod tests {
         fs::remove_file(dir.path().join("legacy-workspaces.encrypted")).unwrap();
         std::os::unix::fs::symlink(target.path(), dir.path().join(DATABASE)).unwrap();
         assert!(EncryptedInventory::inspect(dir.path()).is_err());
+    }
+    #[test]
+    fn pending_attachment_alone_requires_its_key_and_authenticates_every_chunk() {
+        use crate::persistence::attachments::AttachmentMetadata;
+        let dir = tempfile::tempdir().unwrap();
+        let keys = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&dir.path().join(DATABASE), &keys).unwrap();
+        let stage = "99999999-9999-4999-8999-999999999999";
+        store
+            .begin_attachment(
+                "workspace",
+                "main",
+                stage,
+                AttachmentMetadata {
+                    name: "test".into(),
+                    media_type: "text/plain".into(),
+                    size: 6,
+                    last_modified: 0,
+                },
+            )
+            .unwrap();
+        store
+            .append_attachment("workspace", "main", stage, 0, b"secret")
+            .unwrap();
+        let inventory = EncryptedInventory::inspect(dir.path()).unwrap();
+        assert!(inventory.has_encrypted_data());
+        assert!(!inventory.is_public_profile());
+        let correct = RootCiphers::open(&keys, true, false).unwrap();
+        inventory.verify(&correct).unwrap();
+        let wrong = RootCiphers::open(&MemoryRootKeyStore::default(), false, true).unwrap();
+        assert!(inventory.verify(&wrong).is_err());
+        store
+            .db
+            .execute("UPDATE attachment_chunks SET payload=x'00'", [])
+            .unwrap();
+        assert!(inventory.verify(&correct).is_err());
     }
 }

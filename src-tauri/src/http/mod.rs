@@ -6,6 +6,7 @@ pub use transport::{
     http_url, perform_http_with_files, HttpClient, HttpEvent, HttpRequest, HttpResponse,
 };
 pub mod request_body;
+mod upload_stream;
 
 #[derive(Default)]
 pub struct HttpRuntimeState {

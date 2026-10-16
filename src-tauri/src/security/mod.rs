@@ -1,4 +1,5 @@
 pub mod availability;
+pub mod caller;
 pub mod context;
 pub mod inventory;
 pub mod layout;
@@ -310,6 +311,13 @@ impl LocalCipher {
             _ => Err("credential-scope-registry-required".into()),
         }
     }
+    /// Disposable transport key. It is never persisted or exported.
+    pub(crate) fn ephemeral() -> Result<Self, String> {
+        let mut key = Zeroizing::new([0_u8; 32]);
+        getrandom::fill(key.as_mut()).map_err(|_| "Cannot generate upload key")?;
+        Self::from_key(key.as_ref())
+    }
+
     fn from_key(key: &[u8]) -> Result<Self, String> {
         Ok(Self(CipherBackend::Raw(Arc::new(
             Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid local encryption key")?,

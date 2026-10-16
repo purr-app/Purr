@@ -12,7 +12,9 @@ use std::{
 };
 use tokio::sync::watch;
 
-use super::request_body::{stream_file, RequestBodyPart, RequestBodySource, RequestFileRef};
+#[cfg(test)]
+use super::request_body::stream_file;
+use super::request_body::{RequestBodyPart, RequestBodySource, RequestFileRef};
 use crate::content::{
     actor::{PendingContentWrite, ResponseContentHandle},
     contracts::{ContentMetadata, ResponseContentProtection, ResponseContentRef},
@@ -142,6 +144,9 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
     pub fn prepare_trace(
         &mut self,
         propagators: &crate::observability::propagation::PropagationRegistry,
@@ -348,7 +353,7 @@ pub async fn perform_http_with_files(
     request: HttpRequest,
     client: &Client,
     content: &ResponseContentHandle,
-    resolve_file: &(impl Fn(&RequestFileRef) -> Result<std::path::PathBuf, String> + Sync),
+    resolve_file: &(impl Fn(&RequestFileRef) -> Result<reqwest::Body, String> + Sync),
     mut cancellation: watch::Receiver<bool>,
     emit: impl Fn(HttpEvent),
 ) -> Result<HttpResponse, String> {
@@ -398,10 +403,10 @@ pub async fn perform_http_with_files(
     if let Some(source) = request.body_source {
         builder = match source {
             RequestBodySource::File { reference } => {
-                let path = resolve_file(&reference)?;
+                let body = resolve_file(&reference)?;
                 builder
                     .header(reqwest::header::CONTENT_LENGTH, reference.size)
-                    .body(stream_file(&path)?)
+                    .body(body)
             }
             RequestBodySource::Multipart { parts } => {
                 let mut form = reqwest::multipart::Form::new();
@@ -418,14 +423,12 @@ pub async fn perform_http_with_files(
                             form.part(name, part)
                         }
                         RequestBodyPart::File { name, reference } => {
-                            let path = resolve_file(&reference)?;
-                            let part = reqwest::multipart::Part::stream_with_length(
-                                stream_file(&path)?,
-                                reference.size,
-                            )
-                            .file_name(reference.name.clone())
-                            .mime_str(&reference.media_type)
-                            .map_err(|_| "Invalid multipart file media type.")?;
+                            let body = resolve_file(&reference)?;
+                            let part =
+                                reqwest::multipart::Part::stream_with_length(body, reference.size)
+                                    .file_name(reference.name.clone())
+                                    .mime_str(&reference.media_type)
+                                    .map_err(|_| "Invalid multipart file media type.")?;
                             form.part(name, part)
                         }
                     };
@@ -1053,8 +1056,8 @@ mod tests {
                 &content,
                 &|candidate| {
                     (candidate == &reference)
-                        .then(|| path.clone())
-                        .ok_or("stale".into())
+                        .then(|| stream_file(&path))
+                        .ok_or_else(|| "stale".to_string())?
                 },
                 cancellation,
                 |_| {},
@@ -1129,8 +1132,8 @@ mod tests {
             &content,
             &|candidate| {
                 (candidate == &reference)
-                    .then(|| path.clone())
-                    .ok_or("stale".into())
+                    .then(|| stream_file(&path))
+                    .ok_or_else(|| "stale".to_string())?
             },
             cancellation,
             |_| {},

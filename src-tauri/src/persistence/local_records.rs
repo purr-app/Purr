@@ -121,6 +121,14 @@ impl LocalStateStore {
     }
 
     fn attachment_metadata(value: &Value) -> Result<Value, String> {
+        if value["version"] == 2 {
+            let mut metadata = value.clone();
+            metadata
+                .as_object_mut()
+                .ok_or("Damaged local attachment")?
+                .remove("contentId");
+            return Ok(metadata);
+        }
         let (name, media_type, last_modified, _, size) = Self::attachment_fields(value)?;
         Ok(serde_json::json!({
             "version": 1,
@@ -200,13 +208,14 @@ impl LocalStateStore {
                 .unwrap_or(&ciphers.database);
             Self::upgrade_database_cipher(db, legacy, &ciphers.database)?;
         }
+        super::attachments::schema(db)?;
         Ok(())
     }
     pub(crate) fn initialize_public_database(db: &mut Connection) -> Result<(), String> {
         let version: i64 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(db_error)?;
-        if version == 8 {
+        if matches!(version, 8 | 9) {
             let marker: String = db
                 .query_row(
                     "SELECT value FROM app_state WHERE key='crypto-key-derivation'",
@@ -216,6 +225,13 @@ impl LocalStateStore {
                 .map_err(db_error)?;
             if marker != "mixed-scoped-v3" {
                 return Err("Unsupported local encryption format".into());
+            }
+            super::attachments::schema(db)?;
+            if version == 8 {
+                db.execute_batch(
+                    "INSERT INTO migrations(version) VALUES(9); PRAGMA user_version=9;",
+                )
+                .map_err(db_error)?;
             }
             return Ok(());
         }
@@ -227,7 +243,10 @@ impl LocalStateStore {
         let result = (|| {
             Self::create_schema(db)?;
             Self::add_protection_columns(db)?;
-            db.execute_batch("INSERT INTO app_state(key,value) VALUES('crypto-key-derivation','mixed-scoped-v3'); INSERT INTO migrations(version) VALUES(8); PRAGMA user_version=8;").map_err(db_error)
+            db.execute_batch("INSERT INTO app_state(key,value) VALUES('crypto-key-derivation','mixed-scoped-v3'); INSERT INTO migrations(version) VALUES(8); PRAGMA user_version=8;").map_err(db_error)?;
+            super::attachments::schema(db)?;
+            db.execute_batch("INSERT INTO migrations(version) VALUES(9); PRAGMA user_version=9;")
+                .map_err(db_error)
         })();
         match result {
             Ok(()) => db.execute_batch("COMMIT").map_err(db_error),
@@ -689,7 +708,11 @@ impl LocalStateStore {
             )
             .map_err(db_error)?;
         }
-        for table in ["history_attachment_links", "history_attachments"] {
+        for table in [
+            "history_attachment_links",
+            "history_attachments",
+            "attachment_blobs",
+        ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE workspace_id=?1"),
                 [workspace],
@@ -828,7 +851,29 @@ impl LocalStateStore {
         }
         Ok((records, unavailable))
     }
-    pub fn read_attachment(&self, workspace: &str, id: &str) -> Result<LocalAttachment, String> {
+    pub fn read_attachment(
+        &mut self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<LocalAttachment, String> {
+        use std::io::Read;
+        let source = self.prepare_attachment(workspace, id)?;
+        let mut bytes = Vec::new();
+        source
+            .open()?
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Cannot read local attachment")?;
+        Ok(LocalAttachment {
+            name: source.name,
+            media_type: source.media_type,
+            bytes,
+        })
+    }
+    pub(super) fn read_legacy_attachment(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<LocalAttachment, String> {
         let (payload,protection): (Vec<u8>,String) = self
             .db
             .query_row(
@@ -878,8 +923,10 @@ impl LocalStateStore {
         records: &[LocalRecord],
     ) -> Result<(), String> {
         for record in records {
-            if record.table == "cookie_jar" && record.protection != RecordProtection::Encrypted {
-                return Err("Cookie values require encryption".into());
+            if matches!(record.table.as_str(), "cookie_jar" | "attachments")
+                && record.protection != RecordProtection::Encrypted
+            {
+                return Err("Cookies and attachments require encryption".into());
             }
             let cipher = if record.protection == RecordProtection::Encrypted {
                 cipher.for_scope(ProtectionScope::runtime(workspace))?
@@ -950,6 +997,14 @@ impl LocalStateStore {
                 }
             } else {
                 if record.table == "attachments" && record.value["native"] == true {
+                    super::attachments::adopt(
+                        tx,
+                        &cipher,
+                        workspace,
+                        &record.id,
+                        &record.value,
+                        false,
+                    )?;
                     tx.execute("INSERT OR IGNORE INTO attachments(workspace_id,id,payload,protection) SELECT workspace_id,id,payload,protection FROM history_attachments WHERE workspace_id=?1 AND id=?2",params![workspace,record.id]).map_err(db_error)?;
                     let available: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE workspace_id=?1 AND id=?2)",params![workspace,record.id],|row|row.get(0)).map_err(db_error)?;
                     if !available {
@@ -1059,6 +1114,7 @@ impl LocalStateStore {
                     if let Some(files) = record.value["files"].as_object() {
                         for (id, value) in files {
                             if value["native"] == true {
+                                super::attachments::adopt(tx, &cipher, workspace, id, value, true)?;
                                 tx.execute("INSERT OR IGNORE INTO history_attachments SELECT workspace_id,id,payload,protection FROM attachments WHERE workspace_id=?1 AND id=?2", params![workspace,id]).map_err(db_error)?;
                             } else {
                                 let payload = record.protection.encode(
@@ -1084,6 +1140,7 @@ impl LocalStateStore {
             }
         }
         tx.execute("DELETE FROM history_attachments WHERE workspace_id=?1 AND NOT EXISTS(SELECT 1 FROM history_attachment_links l WHERE l.workspace_id=history_attachments.workspace_id AND l.attachment_id=history_attachments.id)",[workspace]).map_err(db_error)?;
+        super::attachments::collect(tx, workspace)?;
         Ok(())
     }
     pub(super) fn restore_response_body(

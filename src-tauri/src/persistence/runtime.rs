@@ -14,7 +14,7 @@ use crate::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{mpsc, Mutex},
@@ -29,6 +29,7 @@ pub struct PersistenceState(
     Mutex<Option<RuntimeStorage>>,
     Mutex<Option<ProtectedError>>,
     Mutex<HashMap<String, PathBuf>>,
+    Mutex<HashSet<String>>,
 );
 struct RuntimeStorage {
     local: LocalStateStore,
@@ -226,6 +227,7 @@ impl RuntimeStorage {
         // Keep operation-status/recovery APIs reachable when external edits
         // prevent rollback. Workspace reads and writes still enforce recovery.
         let _ = result.recover();
+        result.local.cleanup_attachment_staging()?;
         Ok(result)
     }
     fn recover(&mut self) -> Result<(), String> {
@@ -498,6 +500,117 @@ pub fn load_project(
             .cloned()
             .ok_or_else(|| "Workspace is not in the readable catalogue".into()),
     }
+}
+
+pub fn begin_attachment(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    workspace: &str,
+    owner: &str,
+    stage: &str,
+    metadata: super::attachments::AttachmentMetadata,
+) -> Result<(), String> {
+    valid_id(workspace)?;
+    access(app, state, |storage| {
+        if state
+            .3
+            .lock()
+            .map_err(|_| "Upload owner is unavailable")?
+            .contains(owner)
+            || app.get_webview_window(owner).is_none()
+        {
+            return Err("Upload owner is unavailable".into());
+        }
+        storage
+            .local
+            .begin_attachment(workspace, owner, stage, metadata)
+    })
+}
+pub fn append_attachment(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    workspace: &str,
+    owner: &str,
+    stage: &str,
+    index: u64,
+    bytes: &[u8],
+) -> Result<(), String> {
+    valid_id(workspace)?;
+    access(app, state, |storage| {
+        if state
+            .3
+            .lock()
+            .map_err(|_| "Upload owner is unavailable")?
+            .contains(owner)
+            || app.get_webview_window(owner).is_none()
+        {
+            return Err("Upload owner is unavailable".into());
+        }
+        storage
+            .local
+            .append_attachment(workspace, owner, stage, index, bytes)
+    })
+}
+pub fn finish_attachment(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    workspace: &str,
+    owner: &str,
+    stage: &str,
+) -> Result<super::attachments::PreparedAttachment, String> {
+    valid_id(workspace)?;
+    access(app, state, |storage| {
+        if state
+            .3
+            .lock()
+            .map_err(|_| "Upload owner is unavailable")?
+            .contains(owner)
+            || app.get_webview_window(owner).is_none()
+        {
+            return Err("Upload owner is unavailable".into());
+        }
+        storage.local.finish_attachment(workspace, owner, stage)
+    })
+}
+pub fn abort_attachment(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    workspace: &str,
+    owner: &str,
+    stage: &str,
+) -> Result<(), String> {
+    valid_id(workspace)?;
+    access(app, state, |storage| {
+        storage.local.abort_attachment(workspace, owner, stage)
+    })
+}
+pub fn release_attachment_owner(app: &tauri::AppHandle, owner: &str) -> Result<(), String> {
+    let state = app.state::<PersistenceState>();
+    // Cleanup must not initialize protected storage solely because a window closes.
+    let guard = state
+        .0
+        .lock()
+        .map_err(|_| "Persistence lock is unavailable")?;
+    state
+        .3
+        .lock()
+        .map_err(|_| "Upload owner is unavailable")?
+        .insert(owner.to_string());
+    if let Some(storage) = guard.as_ref() {
+        storage.local.release_attachment_owner(owner)?;
+    }
+    Ok(())
+}
+pub fn prepare_attachment(
+    app: &tauri::AppHandle,
+    state: &PersistenceState,
+    workspace: &str,
+    id: &str,
+) -> Result<super::attachments::AttachmentSource, String> {
+    valid_id(workspace)?;
+    access(app, state, |storage| {
+        storage.local.prepare_attachment(workspace, id)
+    })
 }
 
 pub fn read_attachment(
