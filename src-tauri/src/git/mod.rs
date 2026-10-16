@@ -346,6 +346,18 @@ impl Git {
         {
             return Err(GitError::new("unsupported", "Use a standalone repository with purr.yaml at its root. Nested projects and linked worktrees are not supported."));
         }
+        if self
+            .output(&["ls-files", "--stage", "-z"])
+            .await?
+            .stdout
+            .split(|b| *b == 0)
+            .any(|entry| entry.starts_with(b"160000 "))
+        {
+            return Err(GitError::new(
+                "unsupported",
+                "Repositories containing submodules are not supported by Purr Git.",
+            ));
+        }
         Ok(())
     }
     pub fn validate_files(&self, files: &BTreeMap<String, ProjectFile>) -> Result<()> {
@@ -393,6 +405,12 @@ impl Git {
         let mut files = BTreeMap::new();
         let mut total = 0usize;
         for (path, oid, mode) in paths {
+            if mode == "160000" {
+                return Err(GitError::new(
+                    "unsupported",
+                    "Branches containing submodules are not supported by Purr Git.",
+                ));
+            }
             if store.path(&path).is_err() {
                 continue;
             }

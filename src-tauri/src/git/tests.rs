@@ -297,6 +297,23 @@ async fn stash_application_restores_the_real_index_and_later_working_copy() {
     assert!(git.stashes().await.unwrap().is_empty());
 }
 #[tokio::test]
+async fn submodules_are_rejected_even_outside_canonical_directories() {
+    let (_dir, git) = repo();
+    let commit = command(&git.root, &["rev-parse", "HEAD"]);
+    command(
+        &git.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{commit},vendor"),
+        ],
+    );
+    assert_eq!(git.status().await.unwrap_err().code, "unsupported");
+    let tree = command(&git.root, &["write-tree"]);
+    assert_eq!(git.files_at(&tree).await.err().unwrap().code, "unsupported");
+}
+#[tokio::test]
 async fn pulls_fast_forward_and_blocks_other_workspace_identity() {
     let (_dir, mut first, mut peer) = peers();
     rename_workspace(&peer, "Incoming");
