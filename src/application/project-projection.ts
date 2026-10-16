@@ -56,6 +56,10 @@ function parseWorkspaceAuthRuntime(value: unknown, workspace: string): Workspace
   return { version: 1, entries };
 }
 
+function definitionText(resource: ProjectResource, version: 1 | 2): string {
+  const path = resource.kind === "schema" ? `schemas/${resource.id}.graphql` : resource.kind === "api-schema" ? `schemas/${resource.id}.openapi` : undefined;
+  return serializeResource(resource, path, version) + (resource.kind === "schema" ? resource.pinnedSdl ?? "" : resource.kind === "api-schema" ? resource.document : "");
+}
 async function valueHash(value: unknown): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -335,11 +339,11 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
         const draft = await protectRuntime({ ...document, lastResponse: null, sentAt: null }, secure, workspace.id, `drafts/${document.id}`) as Record<string, unknown>;
         // The portable baseline tracks external edits; it is not a runtime secret snapshot.
         local.push({ table: "drafts", id: document.id, value: await encodeFiles({ ...compactLocalRequestDocument(draft) as Record<string, unknown>, base: baseline ? null : definition ?? null,
-          ...(baseline && definition ? { baseFingerprint: await valueHash(serializeResource(definition, undefined, 1)) } : {}),
+          ...(baseline && definition ? { baseFingerprint: await valueHash(definitionText(definition, 1)) } : {}),
         }, attachments, options.attachments, options.transientAttachments) });
       }
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, ...(isRequestDocument(document) ? { responseStorage: document.responseStorage ?? "inherit" } : {}), createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
-        ...(definition && !hasDraft ? { ...(baseline ? { definitionHash: await valueHash(serializeResource(definition, undefined, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definitionHash: await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) }),
+        ...(definition && !hasDraft ? { ...(baseline ? { definitionHash: await valueHash(definitionText(definition, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definitionHash: await valueHash(definitionText(definition, options.sourceVersion ?? 2)) }),
           editor: await encodeFiles(compactLocalRequest(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)), attachments, options.attachments, options.transientAttachments) } : {}) } });
       if (options.includeExecutions !== false && document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, protection: responseRecordProtection(document.lastResponse), value: { documentId: document.id, response: responseRecordProtection(document.lastResponse) === "plaintext" ? await protectResponseSnapshot(document.lastResponse, secure, workspace.id, `executions/${document.id}-${document.lastResponse.timeline.startedAtMs}`) : responseForPersistence(document.lastResponse) } });
     } else if (document.kind === "schema") {
@@ -511,16 +515,19 @@ export async function restoreWorkspace(
   for (const record of records.filter((item) => item.table === "drafts")) {
     const draft = await resolveRuntime(expandLocalRequestDocument(decodeFiles(record.value, attachments, workspace.id, loadAttachment, options.transientAttachments?.files)), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
+    const incoming = project.resources.find((item) => item.id === draft.id);
     if (index < 0) {
-      if (draft.saved) workspace.editorConflicts![draft.id] = { version: 1, base: draft.base ?? null, incoming: null };
-      workspace.documents.push({ ...draft, saved: false });
+      const recoveryId = incoming ? crypto.randomUUID() : draft.id;
+      if (draft.saved) workspace.editorConflicts![recoveryId] = { version: 1, base: draft.base ?? null, incoming: incoming ?? null };
+      workspace.documents.push({ ...draft, id: recoveryId, saved: false });
+      if (incoming) workspace.ui = { ...workspace.ui, openDocumentIds: workspace.ui.openDocumentIds.map((id) => id === draft.id ? recoveryId : id), activeDocumentId: workspace.ui.activeDocumentId === draft.id ? recoveryId : workspace.ui.activeDocumentId };
     } else if (isRequestDocument(draft) || isExtensionDocument(draft)) {
       const canonical = workspace.documents[index];
-      const definition = project.resources.find((item) => item.id === draft.id);
+      const definition = incoming;
       const normalizedBase = draft.base && options.sourceVersion === 1 ? resourceSchema.parse(normalizeLegacyResource(draft.base as unknown as Record<string, unknown>)) : draft.base;
       const baseAtCanonicalLocation = normalizedBase && definition ? { ...normalizedBase, folderId: definition.folderId } : normalizedBase;
-      const changed = Boolean(draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)))
-        || Boolean(baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation, undefined, options.sourceVersion ?? 2) !== serializeResource(definition, undefined, options.sourceVersion ?? 2));
+      const changed = Boolean(draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(definitionText(definition, options.sourceVersion ?? 2)))
+        || Boolean(baseAtCanonicalLocation && definition && definitionText(baseAtCanonicalLocation, options.sourceVersion ?? 2) !== definitionText(definition, options.sourceVersion ?? 2));
       if (changed) workspace.editorConflicts![draft.id] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
       if (isRequestDocument(draft) && isRequestDocument(canonical) && draft.kind === canonical.kind) {
         workspace.documents[index] = { ...draft, name: canonical.name, savedRequest: canonical.savedRequest, folderId: canonical.folderId };
@@ -564,8 +571,8 @@ export async function restoreWorkspace(
     }
     if (isRequestDocument(result)) {
       const definition = project.resources.find((item) => item.id === result.id);
-      const sessionMatches = session?.definitionHash && definition ? session.definitionHash === await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) : session?.definition && definition && (() => {
-        try { return serializeResource(deserializeResourceFile(session.definition).value, undefined, options.sourceVersion ?? 2) === serializeResource(definition, undefined, options.sourceVersion ?? 2); }
+      const sessionMatches = session?.definitionHash && definition ? session.definitionHash === await valueHash(definitionText(definition, options.sourceVersion ?? 2)) : session?.definition && definition && (() => {
+        try { return definitionText(deserializeResourceFile(session.definition).value, options.sourceVersion ?? 2) === definitionText(definition, options.sourceVersion ?? 2); }
         catch { return false; }
       })();
       if (session?.editor && definition && sessionMatches && !records.some((record) => record.table === "drafts" && record.id === result.id)) {

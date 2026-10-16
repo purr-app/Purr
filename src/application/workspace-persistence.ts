@@ -590,7 +590,8 @@ export class WorkspacePersistence {
     workspace.documents = workspace.documents.map((document) => changedDocumentIds.includes(document.id) && isRequestDocument(document) ? { ...document, lastResponse: null, sentAt: null } : document);
     if (working?.ui.activeDocumentId && !workspace.documents.some((document) => document.id === working.ui.activeDocumentId)) {
       const index = working.ui.openDocumentIds.indexOf(working.ui.activeDocumentId);
-      workspace.ui.activeDocumentId = [...working.ui.openDocumentIds.slice(index + 1), ...working.ui.openDocumentIds.slice(0, index).reverse()].find((documentId) => workspace.ui.openDocumentIds.includes(documentId)) ?? null;
+      const recovered = workspace.documents.find((document) => workspace.editorConflicts?.[document.id]?.incoming?.id === working.ui.activeDocumentId);
+      workspace.ui.activeDocumentId = recovered?.id ?? [...working.ui.openDocumentIds.slice(index + 1), ...working.ui.openDocumentIds.slice(0, index).reverse()].find((documentId) => workspace.ui.openDocumentIds.includes(documentId)) ?? null;
     }
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; workspace.publicWritable = this.getWorkspaceStatus(id).publicWritable; return workspace;

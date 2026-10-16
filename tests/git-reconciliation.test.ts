@@ -58,3 +58,16 @@ test("a kind change keeps the incoming resource and recovers the old editor unde
   assert.equal(workspace.ui.activeDocumentId, recovered.id); assert.ok(workspace.editorConflicts?.[recovered.id]);
   await f.persistence.save(reconciled); assert.equal(deserializeResource(f.snapshot.files[f.path].content).kind, "graphql");
 });
+
+test("a request replaced by an API schema keeps a recoverable editor without reusing the canonical ID", async () => {
+  const f = await fixture(); f.document.request.url = "https://example.test/local"; await f.persistence.save(f.store);
+  const path = "schemas/incoming.openapi";
+  f.snapshot.files[path] = { content: "openapi: 3.1.0\ninfo:\n  title: Incoming\n  version: '1'\npaths: {}\n", revision: "new-sidecar" };
+  f.external(serializeResource({ id: f.document.id, kind: "api-schema", name: "Incoming schema", format: "openapi-3", source: { type: "text", location: "fixture" }, document: f.snapshot.files[path].content }, path));
+  const reconciled = await f.persistence.reconcileExternalChanges(f.store); const workspace = reconciled.workspaces[0];
+  const recovered = workspace.documents.find((document) => isRequestDocument(document) && document.request.url === "https://example.test/local");
+  assert.ok(recovered); assert.notEqual(recovered.id, f.document.id); assert.equal(recovered.saved, false);
+  assert.equal(workspace.editorConflicts?.[recovered.id].incoming?.kind, "api-schema"); assert.equal(workspace.ui.activeDocumentId, recovered.id);
+  await f.persistence.save(reconciled); assert.equal(deserializeResource(f.snapshot.files[f.path].content, (name) => f.snapshot.files[name].content).kind, "api-schema");
+  const reopened = await new WorkspacePersistence(f.backend, f.secure).load(); assert.ok(reopened.workspaces[0].documents.some((document) => document.id === recovered.id));
+});
