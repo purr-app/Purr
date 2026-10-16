@@ -479,10 +479,13 @@ test("external valid edits conflict with dirty working copies instead of discard
   const before = backend.snapshot.workspaces[0]; const path = Object.keys(before.files).find((path) => path.startsWith("documents/"))!;
   const resource = deserializeResource(before.files[path].content); assert.ok(resource.kind === "http"); resource.url = "https://external.example/changed";
   await backend.saveResource(workspace.id, { path, content: serializeResource(resource), expectedRevision: before.files[path].revision });
-  const error = await new Promise<string>((resolve, reject) => {
-    void persistence.watchChanges(() => reject(new Error("Conflicting edits must not reload")), resolve, () => current).then(() => backend.listener?.(workspace.id, [path]));
+  const restored = await new Promise<Workspace>((resolve, reject) => {
+    void persistence.watchChanges(resolve, (message) => reject(new Error(message)), () => current).then(() => backend.listener?.(workspace.id, [path]));
   });
-  assert.match(error, /could not be reconciled/); assert.equal(document.request.url, "https://local.example/unsaved");
+  const retained = restored.documents.find((item) => item.id === document.id); assert.ok(retained && isRequestDocument(retained));
+  assert.equal(retained.request.url, "https://local.example/unsaved");
+  assert.equal(retained.savedRequest?.url, "https://external.example/changed");
+  assert.ok(restored.editorConflicts?.[document.id]);
   assert.equal(deserializeResource(backend.snapshot.workspaces[0].files[path].content).id, document.id);
 });
 

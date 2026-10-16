@@ -108,7 +108,11 @@ export function getDocumentBadge(document: WorkspaceDocument) {
 export function getDocumentGroup(document: WorkspaceDocument) {
   return !document.saved ? "Drafts" : document.kind === "schema" ? "Schema Connections" : "Documents";
 }
+export type EditorConflict = { version: 1; base: ProjectResource | null; incoming: ProjectResource | null };
 export type Workspace = {
+  /** Local recovery metadata; never part of the canonical project. */
+  editorConflicts?: Record<string, EditorConflict>;
+  externalRevision?: string;
   schemaVersion: 1;
   /** Ephemeral capabilities; never project into canonical definitions. */
   projectFormatVersion?: 1 | 2;

@@ -154,6 +154,7 @@ export function WorkspaceWorkbench() {
   const { persistence } = rootServices;
   const historyRevision = useSyncExternalStore(persistence.history?.subscribe ?? noHistorySubscription, persistence.history?.getSnapshot ?? noHistoryRevision);
   const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets } = useWorkspaces();
+  const liveStore = useRef(store); liveStore.current = store;
   useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
   const [upgradeConfirmation, setUpgradeConfirmation] = useState<{ run: () => Promise<void>; cancel: () => void } | null>(null);
   const [explicitSaving, setExplicitSaving] = useState(false);
@@ -305,7 +306,15 @@ export function WorkspaceWorkbench() {
       updateWorkspace(workspaceId, (current) => ({ ...current, cookies: cookieJar.list() }));
     });
   }, [cookieJar, updateWorkspace, workspace?.id]);
+  useEffect(() => {
+    if (!workspace?.externalRevision) return;
+    const prefix = `${workspace.id}:`;
+    setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix))));
+    dynamicSessionCaches.current.get(workspace.id)?.clear();
+  }, [workspace?.id, workspace?.externalRevision]);
+  const documentGeneration = workspace?.externalRevision;
   const changeSession = (patch: Partial<RequestSession>) => {
+    if (workspace && liveStore.current?.workspaces.find((item) => item.id === workspace.id)?.externalRevision !== documentGeneration) return;
     setSessions((current) => ({ ...current, [sessionKey]: { ...(current[sessionKey] ?? restoredSession), ...patch } }));
     if (!workspace || !currentDocument || currentDocument.historical || (!("response" in patch) && patch.sending !== true)) return;
     const workspaceId = workspace.id;

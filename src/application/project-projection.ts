@@ -320,6 +320,7 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
     auth: await Promise.all(auth.map(async (entry) => ({ ...entry, value: await authFromDefinition(entry.config, canonicalReader, false) }))),
     headers: await Promise.all(headers.map(async (header) => ({ ...await headerFromDefinition(header, canonicalReader, false), scope: header.scope }))),
   };
+  local.push({ table: "workspace_local_state", id: "editor-conflicts", protection: "encrypted", value: { version: 1, conflicts: workspace.editorConflicts ?? {} } });
   const identityVariables = getEffectiveVariableValues(workspace, options.globalVariables ?? []);
   // Only acquired tokens are runtime state. Saved credentials remain canonical
   // definitions backed by SecureStore and inactive editor forms stay in session state.
@@ -457,6 +458,8 @@ export async function restoreWorkspace(
   workspace.requestConfig.tracePropagation = project.workspace.tracePropagation;
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
   const attachments = new Map(records.filter((item) => item.table === "attachments").map((item) => [item.id, item.value]));
+  const conflictsRecord = get("workspace_local_state", "editor-conflicts") as { version?: number; conflicts?: Workspace["editorConflicts"] } | undefined;
+  workspace.editorConflicts = conflictsRecord?.version === 1 && conflictsRecord.conflicts && typeof conflictsRecord.conflicts === "object" ? { ...conflictsRecord.conflicts } : {};
   const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null; responseStorage?: "plaintext" | "encrypted" } | undefined;
   if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; workspace.responseStorage = state.responseStorage === "encrypted" ? "encrypted" : "plaintext"; }
   else workspace.ui = { ...workspace.ui, openDocumentIds: [], activeDocumentId: null };
@@ -508,22 +511,29 @@ export async function restoreWorkspace(
   for (const record of records.filter((item) => item.table === "drafts")) {
     const draft = await resolveRuntime(expandLocalRequestDocument(decodeFiles(record.value, attachments, workspace.id, loadAttachment, options.transientAttachments?.files)), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
-    if (index < 0 && !draft.saved) workspace.documents.push(draft);
-    else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
+    if (index < 0) {
+      if (draft.saved) workspace.editorConflicts![draft.id] = { version: 1, base: draft.base ?? null, incoming: null };
+      workspace.documents.push({ ...draft, saved: false });
+    } else if (isRequestDocument(draft) || isExtensionDocument(draft)) {
+      const canonical = workspace.documents[index];
       const definition = project.resources.find((item) => item.id === draft.id);
-      if (draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)))
-        throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
       const normalizedBase = draft.base && options.sourceVersion === 1 ? resourceSchema.parse(normalizeLegacyResource(draft.base as unknown as Record<string, unknown>)) : draft.base;
-      const baseAtCanonicalLocation = normalizedBase && definition
-        ? { ...normalizedBase, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }
-        : draft.base;
-      if (baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation, undefined, options.sourceVersion ?? 2) !== serializeResource(definition, undefined, options.sourceVersion ?? 2))
-        throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
-      // documents/ owns hierarchy. Preserve the dirty request editor state but
-      // always take its location from the canonical filesystem projection.
-      workspace.documents[index] = { ...draft, ...(definition?.folderId ? { folderId: definition.folderId } : { folderId: undefined }) };
+      const baseAtCanonicalLocation = normalizedBase && definition ? { ...normalizedBase, folderId: definition.folderId } : normalizedBase;
+      const changed = Boolean(draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)))
+        || Boolean(baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation, undefined, options.sourceVersion ?? 2) !== serializeResource(definition, undefined, options.sourceVersion ?? 2));
+      if (changed) workspace.editorConflicts![draft.id] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
+      if (isRequestDocument(draft) && isRequestDocument(canonical)) {
+        workspace.documents[index] = { ...draft, name: canonical.name, savedRequest: canonical.savedRequest, folderId: canonical.folderId };
+      } else if (isExtensionDocument(draft) && isExtensionDocument(canonical)) {
+        workspace.documents[index] = { ...draft, name: canonical.name, savedConfig: canonical.savedConfig, savedConfigVersion: canonical.savedConfigVersion, folderId: canonical.folderId };
+      } else {
+        workspace.editorConflicts![draft.id] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
+        workspace.documents[index] = { ...draft, saved: false };
+      }
+      if (!isDocumentDirty(workspace.documents[index])) delete workspace.editorConflicts![draft.id];
     }
   }
+
   const canonicalFolderIds = new Set((workspace.extraResources ?? [])
     .filter((resource) => resource.kind === "folder")
     .map((resource) => resource.id));

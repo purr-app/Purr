@@ -104,6 +104,13 @@ export class WorkspacePersistence {
     this.queue = next;
     return next;
   }
+  runGit<T>(id: string, current: () => Workspace | undefined, onReload: (workspace: Workspace) => void, work: () => Promise<T>): Promise<T> {
+    const next = this.queue.catch(() => {}).then(async () => {
+      try { return await work(); }
+      finally { const refreshed = await this.reconcileWorkspace(id, ["*"], current()); if (refreshed) onReload(refreshed); }
+    });
+    this.queue = next; return next;
+  }
   private assertWritable(id: string) {
     const state = this.getWorkspaceStatus(id).protectedState;
     if (!this.getWorkspaceStatus(id).publicWritable) throw new Error(`Storage ${state.status}. This workspace is read-only; retry before saving.`);
@@ -517,11 +524,18 @@ export class WorkspacePersistence {
       const file = scanned ? scanned.files[path] : await this.backend.reloadResource(id, path); if (file?.revision === files[path]?.revision) continue;
       changed = true; if (file) files[path] = file; else delete files[path];
     }
-    if (!changed) return null;
-    const snapshot = { ...previous, files };
+    const protectedChanged = scanned && JSON.stringify(scanned.protectedState) !== JSON.stringify(previous.protectedState);
+    if (!changed && !protectedChanged) return null;
+    const snapshot = { ...previous, ...(scanned ? { protectedState: scanned.protectedState, local: scanned.local } : {}), files };
+    if (scanned?.protectedState?.status === "recovery-required" && scanned.protectedState.code === "git-operation-pending") {
+      this.protectedStates.set(id, scanned.protectedState);
+      if (working) return { ...working, protectedState: scanned.protectedState, publicWritable: false };
+    }
+    if (this.protectedStates.get(id)?.status === "recovery-required" && (this.protectedStates.get(id) as { code?: string }).code === "git-operation-pending") this.protectedStates.set(id, { status: "available" });
     let project: Project;
     try { project = this.readProject(snapshot, false); }
     catch (error) { this.protectedStates.set(id, { status: "recovery-required", code: "project-format-unreadable" }); throw error; }
+    if (project.workspace.id !== id) { this.protectedStates.set(id, { status: "recovery-required", code: "project-format-unreadable" }); throw new Error("The project identity changed externally. Files and local edits are preserved."); }
     const sourceVersion = deserializeManifestFile(files["purr.yaml"].content).sourceVersion;
     const legacyDraft = previous.local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-definition-draft")?.value as { sourceRevisions?: Record<string, string> } | undefined;
     if (legacyDraft?.sourceRevisions) try { assertLegacyBaseline(snapshot, legacyDraft.sourceRevisions); }
@@ -552,10 +566,21 @@ export class WorkspacePersistence {
         merged.resources = merged.resources.filter((item) => item.id !== resourceId);
         if (localResource) merged.resources.push(localResource);
       }
-      // Removing a saved definition must not discard an unsaved working copy.
-      if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
+      // restoreWorkspace keeps deleted dirty documents as local recovery drafts.
     }
     const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion, transientAttachments });
+    const changedDocumentIds = working?.documents.filter((document) => {
+      const before = baseline?.resources.find((resource) => resource.id === document.id);
+      const after = project.resources.find((resource) => resource.id === document.id);
+      return JSON.stringify(before) !== JSON.stringify(after);
+    }).map((document) => document.id) ?? [];
+    workspace.externalRevision = crypto.randomUUID();
+    if (changedDocumentIds.length || JSON.stringify(baseline?.workspace) !== JSON.stringify(project.workspace)) workspace.dynamicVariableCache = {};
+    workspace.documents = workspace.documents.map((document) => changedDocumentIds.includes(document.id) && isRequestDocument(document) ? { ...document, lastResponse: null, sentAt: null } : document);
+    if (working?.ui.activeDocumentId && !workspace.documents.some((document) => document.id === working.ui.activeDocumentId)) {
+      const index = working.ui.openDocumentIds.indexOf(working.ui.activeDocumentId);
+      workspace.ui.activeDocumentId = [...working.ui.openDocumentIds.slice(index + 1), ...working.ui.openDocumentIds.slice(0, index).reverse()].find((documentId) => workspace.ui.openDocumentIds.includes(documentId)) ?? null;
+    }
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; workspace.publicWritable = this.getWorkspaceStatus(id).publicWritable; return workspace;
   }

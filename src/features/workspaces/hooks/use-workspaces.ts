@@ -16,6 +16,8 @@ export function useWorkspaces() {
   const [saveError, setSaveError] = useState("");
   const [saveNeedsRecovery, setSaveNeedsRecovery] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [gitWorking, setGitWorking] = useState(false);
+  const gitPending = useRef(false);
   const pendingExplicit = useRef<{ candidate: Workspace; before?: Workspace; upgrade: boolean; secrets?: SecretPreparationStore } | null>(null);
   const latest = useRef(store);
   latest.current = store;
@@ -44,9 +46,10 @@ export function useWorkspaces() {
   useEffect(() => {
     if (!store) return;
     setSaving(true);
-    const timer = setTimeout(() => { void flush().catch(() => {}); }, 180);
+    if (gitPending.current) return;
+    const timer = setTimeout(() => { if (!gitPending.current) void flush().catch(() => {}); }, 180);
     return () => clearTimeout(timer);
-  }, [store, flush]);
+  }, [store, flush, gitWorking]);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -61,6 +64,17 @@ export function useWorkspaces() {
     }).then((listener) => { if (disposed) listener(); else unlisten = listener; }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };
   }, [flush, lifecycle]);
+  const runGitOperation = useCallback(async <T,>(id: string, work: () => Promise<T>): Promise<T> => {
+    if (gitPending.current) throw new Error("Another Git operation is running.");
+    gitPending.current = true; setGitWorking(true);
+    try {
+      await flush();
+      return await persistence.runGit(id, () => latest.current?.workspaces.find((workspace) => workspace.id === id), (workspace) => {
+        const current = latest.current;
+        if (current) { const next = { ...current, workspaces: current.workspaces.map((item) => item.id === id ? workspace : item) }; latest.current = next; setStore(next); }
+      }, work);
+    } finally { gitPending.current = false; setGitWorking(false); }
+  }, [flush, persistence]);
   const updateWorkspace = useCallback((id: string, update: (workspace: Workspace) => Workspace) => {
     setStore((current) => current ? { ...current, workspaces: current.workspaces.map((workspace) => {
       if (workspace.id !== id) return workspace;
@@ -151,5 +165,5 @@ export function useWorkspaces() {
     });
     return result;
   }, [persistence]);
-  return { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry: load, flush, retrySave, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets };
+  return { gitWorking, runGitOperation, store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry: load, flush, retrySave, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets };
 }
