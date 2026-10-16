@@ -348,8 +348,16 @@ impl Read for EncryptedReader {
             if !(29..=CHUNK_BYTES + 29).contains(&length) {
                 return Err(io::Error::other("Damaged upload"));
             }
-            let mut encrypted = vec![0; length];
-            self.input.read_exact(&mut encrypted)?;
+            let mut encrypted = Vec::with_capacity(length);
+            Read::by_ref(&mut self.input)
+                .take(length as u64)
+                .read_to_end(&mut encrypted)?;
+            if encrypted.len() != length {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Damaged upload",
+                ));
+            }
             self.buffer = zeroize::Zeroizing::new(
                 self.lease
                     .cipher

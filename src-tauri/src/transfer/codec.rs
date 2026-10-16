@@ -59,8 +59,11 @@ fn derive(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
         .map_err(|_| "transfer-kdf-failed")?;
     Ok(key)
 }
-fn random(bytes: &mut [u8]) -> Result<(), String> {
-    getrandom::fill(bytes).map_err(|_| "transfer-random-unavailable".into())
+fn random<const N: usize>() -> Result<[u8; N], String> {
+    let mut bytes = [std::mem::MaybeUninit::uninit(); N];
+    getrandom::fill_uninit(&mut bytes)
+        .map(|bytes| bytes.try_into().expect("random buffer length is fixed"))
+        .map_err(|_| "transfer-random-unavailable".into())
 }
 fn write(writer: &mut impl Write, bytes: &[u8]) -> Result<(), String> {
     writer
@@ -89,19 +92,15 @@ pub fn encode<W: Write>(
     for n in [19u32, 65536, 3, 4] {
         header.extend(n.to_be_bytes());
     }
-    let mut salt = [0; 16];
-    random(&mut salt)?;
-    let mut wrap_nonce = [0; 12];
-    random(&mut wrap_nonce)?;
-    let mut stream_nonce = [0; 7];
-    random(&mut stream_nonce)?;
+    let salt = random::<16>()?;
+    let wrap_nonce = random::<12>()?;
+    let stream_nonce = random::<7>()?;
     header.extend(salt);
     header.extend(wrap_nonce);
     header.extend(stream_nonce);
     header.extend((payload.len() as u64).to_be_bytes());
     let wrapping = derive(password, &salt)?;
-    let mut archive_key = Zeroizing::new([0; 32]);
-    random(archive_key.as_mut())?;
+    let archive_key = Zeroizing::new(random::<32>()?);
     let cipher =
         Aes256Gcm::new_from_slice(wrapping.as_ref()).map_err(|_| "transfer-key-invalid")?;
     let wrapped = cipher
@@ -145,8 +144,15 @@ pub fn decode<R: Read>(
     expected_kind: ContainerKind,
     password: &str,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
-    let mut header = vec![0; HEADER];
-    read(&mut reader, &mut header)?;
+    let mut header = Vec::with_capacity(HEADER);
+    reader
+        .by_ref()
+        .take(HEADER as u64)
+        .read_to_end(&mut header)
+        .map_err(|_| "transfer-file-incomplete")?;
+    if header.len() != HEADER {
+        return Err("transfer-file-incomplete".into());
+    }
     if &header[..8] != MAGIC || header[8] != 1 || header[9] != expected_kind as u8 {
         return Err("transfer-format-invalid".into());
     }
@@ -233,14 +239,21 @@ pub fn decode<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const PASSWORD: &str = "synthetic passphrase";
+    static PASSWORD: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(crate::security::test_password);
     fn package(payload: &[u8]) -> Vec<u8> {
         let mut file = Vec::new();
-        encode(&mut file, ContainerKind::SelectedSecrets, PASSWORD, payload).unwrap();
+        encode(
+            &mut file,
+            ContainerKind::SelectedSecrets,
+            &PASSWORD,
+            payload,
+        )
+        .unwrap();
         file
     }
     fn unpack(file: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
-        decode(file, ContainerKind::SelectedSecrets, PASSWORD)
+        decode(file, ContainerKind::SelectedSecrets, &PASSWORD)
     }
     #[test]
     fn roundtrip_all_kinds_empty_unicode_and_chunk_boundaries() {
@@ -254,8 +267,8 @@ mod tests {
             (ContainerKind::SelectedSecrets, vec![19; CHUNK * 2 + 1]),
         ] {
             let mut file = Vec::new();
-            encode(&mut file, kind, PASSWORD, &payload).unwrap();
-            assert_eq!(*decode(file.as_slice(), kind, PASSWORD).unwrap(), payload);
+            encode(&mut file, kind, &PASSWORD, &payload).unwrap();
+            assert_eq!(*decode(file.as_slice(), kind, &PASSWORD).unwrap(), payload);
         }
     }
     #[test]
@@ -264,10 +277,10 @@ mod tests {
         assert!(decode(
             file.as_slice(),
             ContainerKind::SelectedSecrets,
-            "different password"
+            &crate::security::test_password()
         )
         .is_err());
-        assert!(decode(file.as_slice(), ContainerKind::RecoveryKeys, PASSWORD).is_err());
+        assert!(decode(file.as_slice(), ContainerKind::RecoveryKeys, &PASSWORD).is_err());
         for offset in [
             0,
             8,
@@ -301,11 +314,17 @@ mod tests {
         let mut file = package(b"synthetic");
         file[61..69].copy_from_slice(&u64::MAX.to_be_bytes());
         assert_eq!(unpack(&file).unwrap_err(), "transfer-payload-too-large");
-        assert!(encode(Vec::new(), ContainerKind::SelectedSecrets, "short", b"").is_err());
         assert!(encode(
             Vec::new(),
             ContainerKind::SelectedSecrets,
-            &"x".repeat(1025),
+            &PASSWORD[..5],
+            b""
+        )
+        .is_err());
+        assert!(encode(
+            Vec::new(),
+            ContainerKind::SelectedSecrets,
+            &PASSWORD.repeat(29),
             b""
         )
         .is_err());
@@ -316,7 +335,7 @@ mod tests {
     fn argon2id_profile_timing() {
         for _ in 0..3 {
             let start = std::time::Instant::now();
-            let _key = derive(PASSWORD, &[42; 16]).unwrap();
+            let _key = derive(&PASSWORD, &random::<16>().unwrap()).unwrap();
             eprintln!("Argon2id v19 m=65536 t=3 p=4: {:?}", start.elapsed());
         }
     }

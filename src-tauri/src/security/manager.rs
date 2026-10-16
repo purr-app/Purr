@@ -911,8 +911,13 @@ mod tests {
             for checkpoint in ["after-prepared", "after-os-create", "before-complete"] {
                 let dir = tempfile::tempdir().unwrap();
                 let p = Arc::new(Provider::default());
-                legacy_file(dir.path(), 17);
-                let ciphertext = RootCiphers::from_root(&[17; 32], false)
+                let legacy_key = crate::security::test_key();
+                super::super::write_root_key_file(
+                    &dir.path().join(ROOT_KEY_FILE),
+                    &STANDARD.encode(legacy_key),
+                )
+                .unwrap();
+                let ciphertext = RootCiphers::from_root(&legacy_key, false)
                     .unwrap()
                     .secrets
                     .encrypt(b"legacy-secret", "fixture")
@@ -966,7 +971,12 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             let p = Arc::new(Provider::default());
-            legacy_file(dir.path(), 11);
+            let legacy_key = crate::security::test_key();
+            super::super::write_root_key_file(
+                &dir.path().join(ROOT_KEY_FILE),
+                &STANDARD.encode(legacy_key),
+            )
+            .unwrap();
             {
                 let m = manager(dir.path(), &p);
                 *m.fail_at.lock().unwrap() = Some(checkpoint);
@@ -987,7 +997,7 @@ mod tests {
             let m = manager(dir.path(), &p);
             let keys = m.open().unwrap();
             assert!(!dir.path().join(ROOT_KEY_FILE).exists(), "{checkpoint}");
-            let expected = RootCiphers::from_root(&[11; 32], true).unwrap();
+            let expected = RootCiphers::from_root(&legacy_key, true).unwrap();
             let envelope = expected
                 .database
                 .encrypt(b"after-interruption", "check")

@@ -1057,7 +1057,7 @@ mod tests {
 
     fn scoped_store() -> (tempfile::TempDir, RootCiphers, ResponseContentStore) {
         let directory = tempfile::tempdir().unwrap();
-        let ciphers = RootCiphers::from_root(&[73; 32], false)
+        let ciphers = RootCiphers::from_root(&crate::security::test_key(), false)
             .unwrap()
             .with_scope_keys(
                 &directory.path().join("scope-keys.sqlite3"),

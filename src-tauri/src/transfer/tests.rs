@@ -1028,8 +1028,8 @@ fn recovery_selection_is_scoped_cancellable_bounded_and_not_an_import_package() 
 
 #[test]
 fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() {
-    const KP: &str = "recovery key password";
-    const BP: &str = "backup file password";
+    let key_password = crate::security::test_password();
+    let backup_password = crate::security::test_password();
     let source = tempfile::tempdir().unwrap();
     let mut local = store(source.path(), 15);
     let definitions = files(source.path());
@@ -1050,7 +1050,7 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
     codec::encode(
         &mut key_bytes,
         ContainerKind::RecoveryKeys,
-        KP,
+        &key_password,
         &serde_json::to_vec(&keys).unwrap(),
     )
     .unwrap();
@@ -1058,7 +1058,7 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
     codec::encode(
         &mut backup_bytes,
         ContainerKind::CredentialBackup,
-        BP,
+        &backup_password,
         &serde_json::to_vec(&backup).unwrap(),
     )
     .unwrap();
@@ -1085,8 +1085,8 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
             &key.bytes,
             &backup.bytes,
             "alpha",
-            "wrong password",
-            BP,
+            &crate::security::test_password(),
+            &backup_password,
             || Ok(())
         )
         .err()
@@ -1098,8 +1098,8 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
             &key.bytes,
             &backup.bytes,
             "alpha",
-            KP,
-            "wrong password",
+            &key_password,
+            &crate::security::test_password(),
             || Ok(())
         )
         .err()
@@ -1107,9 +1107,16 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
         "recovery-backup-unlock-failed"
     );
     assert_eq!(
-        decode_recovery(&key.bytes, &backup.bytes, "beta", KP, BP, || Ok(()))
-            .err()
-            .unwrap(),
+        decode_recovery(
+            &key.bytes,
+            &backup.bytes,
+            "beta",
+            &key_password,
+            &backup_password,
+            || Ok(())
+        )
+        .err()
+        .unwrap(),
         "recovery-workspace-mismatch"
     );
     let dest = tempfile::tempdir().unwrap();
@@ -1140,18 +1147,33 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
     codec::encode(
         &mut mismatched_bytes,
         ContainerKind::RecoveryKeys,
-        KP,
+        &key_password,
         &serde_json::to_vec(&mismatched_keys).unwrap(),
     )
     .unwrap();
     assert_eq!(
-        decode_recovery(&mismatched_bytes, &backup.bytes, "alpha", KP, BP, || Ok(()))
-            .err()
-            .unwrap(),
+        decode_recovery(
+            &mismatched_bytes,
+            &backup.bytes,
+            "alpha",
+            &key_password,
+            &backup_password,
+            || Ok(())
+        )
+        .err()
+        .unwrap(),
         "recovery-key-mismatch"
     );
 
-    let archive = decode_recovery(&key.bytes, &backup.bytes, "alpha", KP, BP, || Ok(())).unwrap();
+    let archive = decode_recovery(
+        &key.bytes,
+        &backup.bytes,
+        "alpha",
+        &key_password,
+        &backup_password,
+        || Ok(()),
+    )
+    .unwrap();
     let state = TransferState::default();
     let preview = prepare(
         &state,
@@ -1200,7 +1222,12 @@ fn encrypted_recovery_pair_survives_workspace_deletion_and_reversed_selection() 
         codec::kind_hint(&forged_key).unwrap(),
         ContainerKind::RecoveryKeys
     );
-    assert!(codec::decode(forged_key.as_slice(), ContainerKind::RecoveryKeys, BP).is_err());
+    assert!(codec::decode(
+        forged_key.as_slice(),
+        ContainerKind::RecoveryKeys,
+        &backup_password
+    )
+    .is_err());
 }
 
 #[test]

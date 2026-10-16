@@ -786,7 +786,7 @@ mod tests {
     fn schema_eight_migrates_and_scoped_chunks_reopen_without_rekeying() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
-        let keys = crate::security::RootCiphers::from_root(&[73; 32], false)
+        let keys = crate::security::RootCiphers::from_root(&crate::security::test_key(), false)
             .unwrap()
             .with_scope_keys(&dir.path().join("scope-keys.sqlite3"), "synthetic-vault")
             .unwrap();

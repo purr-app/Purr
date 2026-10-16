@@ -727,9 +727,11 @@ fn envelope_aad(header: &[u8], context: &str) -> String {
 mod tests {
     use super::*;
     use crate::security::{CipherBackend, RootCiphers};
+    static ROOT_KEY: std::sync::LazyLock<[u8; 32]> =
+        std::sync::LazyLock::new(crate::security::test_key);
     fn fixture() -> (tempfile::TempDir, RootCiphers) {
         let dir = tempfile::tempdir().unwrap();
-        let keys = RootCiphers::from_root(&[19; 32], false)
+        let keys = RootCiphers::from_root(&*ROOT_KEY, false)
             .unwrap()
             .with_scope_keys(&dir.path().join("scope-keys.sqlite3"), "synthetic-vault")
             .unwrap();
@@ -988,7 +990,7 @@ mod tests {
         let journal = registry
             .active_key(&ProtectionScope::InstallationJournal)
             .unwrap();
-        let expected_journal = derive_key(&[19; 32], b"purr:installation-journal:v2").unwrap();
+        let expected_journal = derive_key(&*ROOT_KEY, b"purr:installation-journal:v2").unwrap();
         assert_eq!(journal.root.as_slice(), expected_journal.as_slice());
         let journal_bytes = journal
             .cipher(CipherPurpose::Database)
@@ -1010,7 +1012,7 @@ mod tests {
             )
             .unwrap();
         let aad = wrap_aad(&runtime.identity).unwrap();
-        let old = RootCiphers::from_root(&[18; 32], false).unwrap();
+        let old = RootCiphers::from_root(&crate::security::test_key(), false).unwrap();
         assert!(old.wrapping.decrypt(&wrapped, &aad).is_err());
         assert!(LocalCipher::from_key(&credential.root)
             .unwrap()
@@ -1036,9 +1038,9 @@ mod tests {
         drop(keys);
         let bytes = std::fs::read(dir.path().join("scope-keys.sqlite3")).unwrap();
         assert!(!bytes.windows(32).any(|b| b == root.as_slice()));
-        assert!(!bytes.windows(32).any(|b| b == [19; 32]));
+        assert!(!bytes.windows(32).any(|b| b == ROOT_KEY.as_slice()));
         let reopen = || {
-            RootCiphers::from_root(&[19; 32], false)
+            RootCiphers::from_root(&*ROOT_KEY, false)
                 .unwrap()
                 .with_scope_keys(&dir.path().join("scope-keys.sqlite3"), "synthetic-vault")
                 .unwrap()
@@ -1096,7 +1098,7 @@ mod tests {
             [scopes()[0].identity().unwrap()],
         )
         .unwrap();
-        let keys = RootCiphers::from_root(&[19; 32], false)
+        let keys = RootCiphers::from_root(&*ROOT_KEY, false)
             .unwrap()
             .with_scope_keys(&dir.path().join("scope-keys.sqlite3"), "synthetic-vault")
             .unwrap();
@@ -1160,17 +1162,17 @@ mod tests {
         let (dir, keys) = fixture();
         drop(keys);
         let path = dir.path().join("scope-keys.sqlite3");
-        assert!(RootCiphers::from_root(&[19; 32], false)
+        assert!(RootCiphers::from_root(&*ROOT_KEY, false)
             .unwrap()
             .with_scope_keys(&path, "other-vault")
             .is_err());
-        assert!(RootCiphers::from_root(&[20; 32], false)
+        assert!(RootCiphers::from_root(&crate::security::test_key(), false)
             .unwrap()
             .with_scope_keys(&path, "synthetic-vault")
             .is_err());
         std::fs::remove_file(&path).unwrap();
         std::fs::write(dir.path().join("local-state.sqlite3"), []).unwrap();
-        assert!(RootCiphers::from_root(&[19; 32], false)
+        assert!(RootCiphers::from_root(&*ROOT_KEY, false)
             .unwrap()
             .with_scope_keys(&path, "synthetic-vault")
             .is_err());

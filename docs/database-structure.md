@@ -46,7 +46,7 @@ S05 починає новий dataset у корені app-data. Попередн
 | `app_state` | `key` TEXT PK, `value` TEXT | Наприклад `active-workspace`, `crypto-key-derivation=mixed-scoped-v3`, retention settings |
 | `workspaces` | `id` TEXT PK, `directory` TEXT UNIQUE | Зв'язок workspace ID із managed або зовнішньою project directory |
 
-Поточний `PRAGMA user_version` — **8**. Схема не дорівнює версії canonical YAML або версії криптографічного envelope.
+Поточний `PRAGMA user_version` — **9**. Схема не дорівнює версії canonical YAML або версії криптографічного envelope.
 
 ### 3.2 Основні локальні записи
 

@@ -465,6 +465,20 @@ impl LocalCipher {
 }
 
 #[cfg(test)]
+pub(crate) fn test_key() -> [u8; 32] {
+    let mut bytes = [std::mem::MaybeUninit::uninit(); 32];
+    getrandom::fill_uninit(&mut bytes)
+        .expect("OS random source for test key")
+        .try_into()
+        .expect("fixed key length")
+}
+
+#[cfg(test)]
+pub(crate) fn test_password() -> String {
+    STANDARD.encode(test_key())
+}
+
+#[cfg(test)]
 pub mod tests {
     use super::*;
     use std::sync::Mutex;

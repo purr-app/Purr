@@ -722,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn unavailable_workspace_is_rejected_before_network_dispatch() {
         let directory = TempDir::new().unwrap();
-        let ciphers = crate::security::RootCiphers::from_root(&[74; 32], false)
+        let ciphers = crate::security::RootCiphers::from_root(&crate::security::test_key(), false)
             .unwrap()
             .with_scope_keys(
                 &directory.path().join("scope-keys.sqlite3"),

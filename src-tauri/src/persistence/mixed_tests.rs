@@ -60,7 +60,7 @@ fn public_profile_commits_recovers_and_replays_without_any_key() {
 fn unavailable_records_are_described_and_never_overwritten_by_public_projection() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("local-state.sqlite3");
-    let keys = RootCiphers::from_root(&[91; 32], false)
+    let keys = RootCiphers::from_root(&crate::security::test_key(), false)
         .unwrap()
         .with_scope_keys(&dir.path().join("scope-keys.sqlite3"), "synthetic-mixed")
         .unwrap();
@@ -192,7 +192,7 @@ fn public_commit_interruption_recovers_without_publishing_protected_state() {
 fn unreadable_ciphertext_cannot_be_deleted_or_downgraded_and_history_policy_is_immutable() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("local-state.sqlite3");
-    let keys = RootCiphers::from_root(&[81; 32], false)
+    let keys = RootCiphers::from_root(&crate::security::test_key(), false)
         .unwrap()
         .with_scope_keys(
             &dir.path().join("scope-keys.sqlite3"),

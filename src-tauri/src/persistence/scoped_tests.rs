@@ -7,8 +7,11 @@ use super::{
 use crate::security::{scoped::ProtectionScope, RootCiphers};
 use serde_json::json;
 
+static ROOT_KEY: std::sync::LazyLock<[u8; 32]> =
+    std::sync::LazyLock::new(crate::security::test_key);
+
 fn keys(directory: &std::path::Path) -> RootCiphers {
-    RootCiphers::from_root(&[73; 32], false)
+    RootCiphers::from_root(&*ROOT_KEY, false)
         .unwrap()
         .with_scope_keys(&directory.join("scope-keys.sqlite3"), "synthetic-vault")
         .unwrap()
