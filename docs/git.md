@@ -33,3 +33,19 @@ Clone uses a temporary sibling directory, validates the complete project and wor
 Diff preview offers Semantic and exact YAML views. Semantic parsing uses the canonical codecs, so omitted defaults and YAML formatting do not create false field changes. Requests expose URL/method, ordered query/path/header rows, auth, body fields, GraphQL, settings and documentation. Stable row IDs and occurrence keys retain duplicate and disabled rows, and distinguish reordering from insertion. Environments, workspace definitions, folders, schemas and opaque extension config use the same canonical boundary. Credential previews display references without reading SecureStore.
 
 CodeMirror's merge view renders real before/after file contents with Purr's editor theme; conflict editing adds source-to-result chunk controls. Binary or oversized previews show metadata. Unknown files fall back to the text view.
+
+## Interaction decisions
+
+[Bruno's Git UI](https://docs.usebruno.com/git-integration/using-gui/intro) separates file review, staging, history, stashes and remotes, and supports structural diff review and conflict editing. Purr uses that visible structure with its own rail/tab layout and tokens. [Yaak's directory sync](https://yaak.app/docs/collaboration/local-directory-git-sync) watches both directions and asks for confirmation on incoming filesystem changes. Purr adopts bidirectional watching while refreshing clean editors immediately; confirmation is scoped to dirty editors whose base changed. This preserves the existing saved-versus-working-copy lifecycle without interrupting every clean pull.
+
+| State | Pull / switch behavior |
+| --- | --- |
+| Pending persistence | Flush before starting Git |
+| Clean saved files | Proceed after project/identity/history validation |
+| Dirty compatible saved files | Warn; explicit Continue lets Git preserve them |
+| Files would be overwritten | Git refuses; offer Commit, Stash or Cancel |
+| Dirty editor changed by incoming files | Preserve local editor and incoming baseline; explicit review |
+| Deleted active clean document | Select next surviving tab, then previous |
+| Unresolved merge or pending checkpoint | Block new pull/switch; Resolve, Finish or guarded Abort |
+
+The native shape validator uses the [jsonschema crate](https://docs.rs/jsonschema/0.56.0/jsonschema/) with external retrieval disabled. Diff and result editing use CodeMirror's merge package through Purr's existing editor theme.
