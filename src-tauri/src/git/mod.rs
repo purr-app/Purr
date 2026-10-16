@@ -1,7 +1,9 @@
 //! System Git boundary. Arguments are never interpreted by a shell.
 mod reads;
+mod recovery;
 #[cfg(test)]
 mod tests;
+mod writes;
 
 use crate::persistence::project_files::{revision, FilesystemWorkspaceStore, ProjectFile};
 use serde::{Deserialize, Serialize};
@@ -235,7 +237,7 @@ impl Git {
         let mut command = Command::new("git");
         command
             .current_dir(&self.root)
-            .args(["--no-pager", "-c", "color.ui=false"])
+            .args(["--literal-pathspecs", "--no-pager", "-c", "color.ui=false"])
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
