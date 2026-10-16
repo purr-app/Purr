@@ -14,6 +14,30 @@
 - Control whether a request automatically sends and stores workspace cookies with independent switches.
 - Find these controls in clearly separated Settings sections, with Tracing first. Saved settings travel with the project; unsaved edits stay local.
 
+## 0.3.0
+
+### Minor Changes
+
+- 7fcceab: Add explicit secret availability and canonical format v2 credential/header definitions. Preserve legacy files until a confirmed workspace-wide upgrade, keep intentionally empty values distinct from removal, and protect complete literal or mixed credential expressions.
+  
+  Resolve required secrets for the active operation, provide redacted code without inventing missing values, and expose a local-secret inventory with omission preview and retry controls. Storage adapters now return typed availability and protected-state snapshots; encrypted transfer and OS root-key migration remain separate work.
+- c2fb193: Open exported, copied or Git-backed Purr workspace folders through the standard desktop New workspace → Import flow. Preserve workspace identity and secret references for encrypted secret import, validate files before registration, and protect existing workspaces from duplicate-identity replacement.
+- 50984ad: Move the macOS storage root into a scoped Keychain entry through a verified, resumable migration. Share cached key access across native storage workers, expose safe recovery messages, and scope storage by application identifier independently of debug/release build mode.
+- 8ef3f64: Add desktop selected-secret transfer, configuration-only export and password-protected workspace credential recovery. Authenticate bounded packages before preview, preserve destination keys, and publish selected values through revision-checked transactional imports. Browser builds expose transfer as unsupported.
+- 4a444d7: Restrict desktop WebView resources and native IPC to the trusted local main window. Stream local attachments through encrypted chunks, preserve legacy attachments with lazy conversion, and use disposable encrypted upload staging with explicit cancellation and cleanup. Downstream shells must include the core command capability manifest and inherit the CSP configuration.
+- 5d661a4: Add local workspace and per-request Encrypt responses settings with public/protected snapshots, immutable secret-bearing execution details, and key-independent public storage. Preserve explicit protection through streamed and derived content and expose unavailable protected dependencies. Archive the previous pre-release dataset intact before creating the fresh mixed-storage format; existing projects may be attached explicitly.
+  
+  Store local request editors in a compact versioned format that restores omitted defaults and preserves inactive edits, files and secret references. Consolidate workspace encryption and secret management settings, with request encryption help available on demand.
+- 8253e90: Prepare credential changes without modifying the vault, and commit them together with project and local-state changes. Failed saves preserve existing credentials; interrupted commits recover safely, and acknowledged operations can be reconciled without applying them twice.
+  
+  Add versioned credential reads and transactional batches to storage adapters. Imports, execution history and integration settings use the same publication boundary.
+- 54863c4: Start a fresh protected storage format with independent workspace and global credential/runtime keys wrapped by a new OS-held installation key. Archive previous managed profiles under deprecated while keeping new storage in the application data root, without automatic import, bind response content to its originating workspace, and isolate unavailable scopes while retaining public project navigation.
+
+### Patch Changes
+
+- c2fb193: Recognize recovery key and credential backup files in either selection order, explain package and recovery failures, and use the full password field width for single-package imports. Verify credential recovery after deleting and reimporting a workspace with fresh device keys.
+- 968e977: Update Rust TLS and QUIC dependencies to patched releases. Make random cryptographic inputs and bounded encrypted-file reads explicit to security analysis, and replace fixed test credentials with generated fixtures.
+
 ## 0.2.2
 
 ### Patch Changes
