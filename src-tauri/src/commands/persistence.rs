@@ -247,3 +247,8 @@ pub fn retry_protected_storage(
 ) -> Result<Value, String> {
     runtime::retry_protected_storage(app, state)
 }
+
+#[tauri::command]
+pub async fn project_directory(app:tauri::AppHandle,workspace_id:String,action:runtime::DirectoryAction)->Result<Value,String>{
+    tauri::async_runtime::spawn_blocking(move||runtime::project_directory(app,workspace_id,action)).await.map_err(|_|"Project directory operation failed".to_string())?
+}

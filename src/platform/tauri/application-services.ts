@@ -74,6 +74,12 @@ async function confirmedCommit<T>(work: () => Promise<T>, batch: SecretBatch, co
 }
 
 class TauriPersistence implements PersistencePort {
+  directoryInfo(id: string) { return invoke<{ directory: string; managed: boolean }>("project_directory", { workspaceId: id, action: { type: "info" } }); }
+  async createDirectory(id: string, directory: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch) {
+    const snapshot = await invoke<StoredWorkspace>("project_directory", { workspaceId: id, action: { type: "create", directory, files, local, secrets } });
+    this.cache.set(id, snapshot.files); return snapshot;
+  }
+
   readonly history = tauriHistory;
   readonly attachments = tauriAttachments;
   private cache = new Map<string, Record<string, ProjectFile>>();

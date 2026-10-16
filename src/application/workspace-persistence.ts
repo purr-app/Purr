@@ -681,6 +681,31 @@ export class WorkspacePersistence {
     const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
   }
 
+  directoryInfo(id: string) {
+    if (!this.backend.directoryInfo) return Promise.reject(new Error("Project directories require the desktop application."));
+    return this.backend.directoryInfo(id);
+  }
+  createWorkspaceAt(workspace: Workspace, directory: string): Promise<Workspace> {
+    const work = async () => {
+      if (!this.backend.createDirectory) throw new Error("Custom project directories require the desktop application.");
+      const prepared = new SecretPreparationStore(this.secure);
+      const { project, local } = await projectWorkspace(workspace, prepared, { includeExecutions: false });
+      if (project.resources.length) throw new Error("Create an empty workspace before adding saved documents.");
+      const snapshot = await this.backend.createDirectory(workspace.id, directory,
+        [{ path: "purr.yaml", content: serializeManifest(project.workspace), expectedRevision: null }], local, await prepared.batch());
+      prepared.acknowledge(); this.snapshots.set(workspace.id, snapshot); this.projects.set(workspace.id, this.readProject(snapshot));
+      this.protectedStates.set(workspace.id, snapshot.protectedState ?? { status: "available" });
+      return workspace;
+    };
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
+  moveDirectory(id: string, directory: string) {
+    const work = async () => {
+      if (!this.backend.moveDirectory) throw new Error("Moving projects requires the desktop application.");
+      return this.backend.moveDirectory(id, directory);
+    };
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
   async attachDirectory(id: string, directory: string): Promise<Workspace> {
     if (!this.backend.attachDirectory) throw new Error("Directory workspaces require the desktop application.");
     if (this.snapshots.has(id)) throw new Error("This workspace is already open.");

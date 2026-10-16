@@ -684,7 +684,7 @@ pub fn commit_project(
     access(&app, &state, |storage| {
         storage.recover_before_commit()?;
         let store = storage.files(&id)?;
-        if !files.is_empty() && storage.local.read(&id)?.iter().any(|record| record.table == "workspace_local_state" && record.id == "git-operation") {
+        if !files.is_empty() && storage.local.read_partial(&id)?.0.iter().any(|record| record.table == "workspace_local_state" && record.id == "git-operation") {
             return Err("Finish or abort the pending Git operation before saving project files".into());
         }
         workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
@@ -1582,7 +1582,7 @@ pub(crate) fn git_context(app:&tauri::AppHandle,id:&str)->Result<(PathBuf,Option
         storage.recover_before_commit()?;
         let root=storage.roots.get(id).cloned().ok_or("The workspace project directory is not registered")?;
         if !root.is_dir(){return Err("The workspace directory is missing. Restore it before continuing.".into());}
-        let checkpoint=storage.local.read(id)?.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="git-operation").map(|r|r.value);
+        let checkpoint=storage.local.read_partial(id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="git-operation").map(|r|r.value);
         Ok((root,checkpoint))
     })
 }
@@ -1604,5 +1604,40 @@ pub(crate) fn check_clone_identity(app:&tauri::AppHandle,id:&str,path:&Path)->Re
     access(app,&app.state::<PersistenceState>(),|storage|{
         if storage.local.workspaces()?.iter().any(|(owner,_)|owner==id)||storage.roots.contains_key(id){return Err("This workspace identity is already open. Select the existing workspace instead of cloning another copy.".into());}
         workspace_cleanup::ensure_available(&storage.local,id,path)
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag="type",rename_all="camelCase",deny_unknown_fields)]
+pub enum DirectoryAction {
+    Info,
+    Create { directory:String, files:Vec<FileChange>, local:Vec<LocalRecord>, secrets:SecretBatch },
+}
+pub fn project_directory(app:tauri::AppHandle,id:String,action:DirectoryAction)->Result<Value,String>{
+    valid_id(&id)?;crate::git::native::ensure_idle(&app,&id)?;
+    access(&app,&app.state::<PersistenceState>(),|storage|match action {
+        DirectoryAction::Info=>{let directory=storage.files(&id)?.directory;Ok(json!({"directory":directory,"managed":directory==storage.projects.join(&id)}))},
+        DirectoryAction::Create{directory,files,local,secrets}=>{
+            if storage.roots.contains_key(&id)||storage.local.workspaces()?.iter().any(|(owner,_)|owner==&id){return Err("This workspace already has a project directory".into());}
+            let selected=PathBuf::from(directory);
+            if selected==storage.projects.join(&id){fs::create_dir_all(&storage.projects).map_err(|_|"Cannot create projects directory")?;}
+            let parent=selected.parent().filter(|p|p.is_dir()).ok_or("Choose a project directory with an existing parent folder")?;
+            let parent=fs::canonicalize(parent).map_err(|_|"Cannot access the project directory")?;
+            let name=selected.file_name().ok_or("Choose a project directory")?;
+            let target=parent.join(name);
+            let data=fs::canonicalize(&storage.data).unwrap_or(storage.data.clone());
+            let managed=fs::canonicalize(&storage.projects).unwrap_or(storage.projects.clone()).join(&id);
+            if (target.starts_with(&data)||data.starts_with(&target))&&target!=managed{return Err("Choose a project directory outside private application storage".into());}
+            if storage.roots.values().any(|root|target.starts_with(root)||root.starts_with(&target)){return Err("Project directories cannot overlap another workspace".into());}
+            if fs::symlink_metadata(&target).is_ok_and(|meta|meta.file_type().is_symlink())||target.exists()&&(!target.is_dir()||fs::read_dir(&target).map_err(|_|"Cannot read project directory")?.next().is_some()){return Err("Choose a new or empty project directory. Use Import to open an existing project.".into());}
+            let contents:BTreeMap<String,ProjectFile>=files.iter().filter_map(|file|file.content.as_ref().map(|content|(file.path.clone(),ProjectFile{content:content.clone(),revision:String::new()}))).collect();
+            crate::transfer::validate_project_files(&contents,&id)?;
+            if files.iter().any(|file|file.expected_revision.is_some()){return Err("New project files cannot overwrite existing revisions".into());}
+            storage.recover_before_commit()?;workspace_cleanup::ensure_available(&storage.local,&id,&target)?;
+            storage.local.prepare_workspace_keys(&id)?;
+            let store=FilesystemWorkspaceStore{directory:target.clone()};
+            commit_coordinator::commit(&mut storage.local,&store,&id,&files,&local,&secrets)?;
+            storage.watch(&id,target)?;storage.workspace(&id)
+        }
     })
 }

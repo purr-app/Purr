@@ -37,6 +37,7 @@ import { CommandPalette, type PaletteAction } from "./components/command-palette
 import { DocumentTabs } from "./components/document-tabs";
 import { createDynamicVariable, VariablesExplorer, type VariableScope } from "./components/variables-explorer";
 import { DynamicVariableResolutionError, resolveDynamicVariables } from "./services/dynamic-variable-resolver";
+import { NewWorkspaceDialog } from "./components/new-workspace-dialog";
 import { NameDialog } from "./components/name-dialog";
 import { ImportWorkspaceDialog } from "./components/import-workspace-dialog";
 import { WorkspaceHeader } from "./components/workspace-header";
@@ -67,7 +68,6 @@ import {
   createGraphqlDocument,
   createSchemaDocument,
   createExtensionDocument,
-  createWorkspace,
   discardDocument,
   deleteDocument,
   duplicateDocument,
@@ -1058,12 +1058,13 @@ export function WorkspaceWorkbench() {
       </div>
     </Modal>}
     {dialog === "palette" && <CommandPalette workspace={workspace} actions={actions} onOpenDocument={(id) => update((current) => previewDocument(current, id))} onClose={() => setDialog(null)} />}
-    {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={async (name) => {
-      const created = createWorkspace(name);
+    {dialog === "new-workspace" && <NewWorkspaceDialog onClose={() => setDialog(null)} onCreate={async (created, directory, initializeGit) => {
       await flush();
-      await persistence.save({ ...store, activeWorkspaceId: created.id, workspaces: [...store.workspaces, created] });
+      if (services.runtime.kind === "desktop") await persistence.createWorkspaceAt(created, directory);
+      else await persistence.save({ ...store, activeWorkspaceId: created.id, workspaces: [...store.workspaces, created] });
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
+      if (initializeGit) { try { await services.git.execute(created.id, { type: "init" }); } catch (cause) { setActionError(`Workspace created. Git initialization failed: ${cause instanceof Error ? cause.message : String(cause)}`); } }
     }} />}
     {dialog === "new-environment" && <NameDialog title="New environment" label="Environment name" initial=""
       validate={(name) => workspace.environments.some((environment) => environment.name.trim() === name) ? "An environment with this name already exists." : null}
