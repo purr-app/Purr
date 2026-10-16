@@ -249,6 +249,54 @@ fn rename_workspace(git: &Git, name: &str) {
     command(&git.root, &["commit", "-m", name]);
 }
 #[tokio::test]
+async fn same_identity_with_unrelated_history_cannot_be_pulled_or_pushed_over() {
+    let (_dir, mut first, peer) = peers();
+    command(&peer.root, &["checkout", "--orphan", "unrelated"]);
+    rename_workspace(&peer, "Independent history");
+    command(&peer.root, &["push", "origin", "unrelated"]);
+    let original = command(&first.root, &["rev-parse", "HEAD"]);
+    for action in [
+        Action::Pull {
+            remote: Some("origin".into()),
+            branch: Some("unrelated".into()),
+            allow_dirty: false,
+        },
+        Action::Push {
+            remote: Some("origin".into()),
+            branch: Some("unrelated".into()),
+        },
+    ] {
+        assert_eq!(first.execute(action).await.unwrap_err().code, "unrelated");
+        assert_eq!(command(&first.root, &["rev-parse", "HEAD"]), original);
+        assert!(first.status().await.unwrap().files.is_empty());
+    }
+}
+#[tokio::test]
+async fn stash_application_restores_the_real_index_and_later_working_copy() {
+    let (_dir, mut git) = repo();
+    std::fs::write(git.root.join("notes.txt"), "staged").unwrap();
+    git.execute(Action::Stage {
+        paths: vec!["notes.txt".into()],
+    })
+    .await
+    .unwrap();
+    std::fs::write(git.root.join("notes.txt"), "working").unwrap();
+    git.execute(Action::Stash {
+        message: "Index snapshot".into(),
+    })
+    .await
+    .unwrap();
+    let id = git.stashes().await.unwrap()[0].id.clone();
+    assert!(!git.root.join("notes.txt").exists());
+    git.execute(Action::ApplyStash { id }).await.unwrap();
+    assert_eq!(command(&git.root, &["show", ":notes.txt"]), "staged");
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("notes.txt")).unwrap(),
+        "working"
+    );
+    assert!(git.stashes().await.unwrap().is_empty());
+}
+#[tokio::test]
 async fn pulls_fast_forward_and_blocks_other_workspace_identity() {
     let (_dir, mut first, mut peer) = peers();
     rename_workspace(&peer, "Incoming");
