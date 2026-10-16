@@ -3,6 +3,7 @@ mod composition;
 mod content;
 mod http;
 mod importing;
+mod git;
 #[cfg(target_os = "macos")]
 mod macos_window_controls;
 mod oauth;
