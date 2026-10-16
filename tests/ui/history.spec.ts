@@ -263,7 +263,7 @@ test("history searches entries beyond the first page and scopes them to the work
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
   await page.getByRole("menuitem", { name: "New empty", exact: true }).click();
   await page.getByLabel("Workspace name", { exact: true }).fill("Separate history");
-  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Create", exact: true }).click();
   await openHistory(page);
   await expect(historyPanel(page).getByText("No requests yet. Sent requests appear here.", { exact: true })).toBeVisible();
 });

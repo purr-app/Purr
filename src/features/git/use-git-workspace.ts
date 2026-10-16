@@ -1,0 +1,100 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useApplicationServices } from "../../app/application-services-context";
+import { GitError, type GitAction, type GitDiff, type GitDiffRequest, type GitStatus } from "../../application/ports/git";
+import type { Workspace } from "../workspaces/model/workspace";
+export type GitView = "overview" | "diff" | "history" | "stashes" | "remotes" | "conflicts" | "editor-conflicts";
+export type GitController = ReturnType<typeof useGitWorkspace>;
+export function useGitWorkspace(workspace: Workspace | undefined, runOperation: <T>(id: string, work: () => Promise<T>) => Promise<T>, onOpen: () => void) {
+  const { git, runtime } = useApplicationServices();
+  const id = workspace?.id; const activeId = useRef(id); activeId.current = id;
+  const [status, setStatus] = useState<GitStatus | null>(null); const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false); const [progress, setProgress] = useState(""); const running = useRef(new Set<string>());
+  const [view, setView] = useState<GitView>("overview"); const [diff, setDiff] = useState<GitDiff | null>(null); const [selected, setSelected] = useState<GitDiffRequest | null>(null);
+  const [dirtyAction, setDirtyAction] = useState<GitAction | null>(null); const [authorAction, setAuthorAction] = useState<Extract<GitAction, { type: "commit" }> | null>(null);
+  const [afterCommit, setAfterCommit] = useState<GitAction | null>(null);
+  const abort = useRef(new Map<string, AbortController>()); const requestGeneration = useRef(0);
+  const refreshGeneration = useRef(0);
+  const [networkAction, setNetworkAction] = useState<{ type: "fetch" | "pull" | "push"; remote: string; branch: string } | null>(null);
+  const refresh = useCallback(async () => {
+    if (!id || running.current.has(id) || runtime.kind !== "desktop") return;
+    const requested = refreshGeneration.current;
+    try { const next = await git.status(id); if (activeId.current === id && requested === refreshGeneration.current && !running.current.has(id)) { setStatus(next); } }
+    catch (cause) { if (activeId.current === id && !(cause instanceof GitError && cause.code === "busy")) setError(cause instanceof Error ? cause.message : String(cause)); }
+  }, [id, git, runtime.kind]);
+  useEffect(() => { setBusy(Boolean(id && running.current.has(id))); setProgress(""); setNetworkAction(null); pendingPush.current = false; setStatus(null); setError(""); setSelected(null); setDiff(null); setView("overview"); setDirtyAction(null); setAfterCommit(null); setAuthorAction(null); void refresh(); }, [id, refresh]);
+  useEffect(() => {
+    if (!id || runtime.kind !== "desktop") return;
+    let disposed = false; let stop: (() => void) | undefined; let timer: ReturnType<typeof setTimeout> | undefined;
+    void git.subscribe(id, () => { clearTimeout(timer); timer = setTimeout(() => { void refresh(); }, 180); }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
+    return () => { disposed = true; stop?.(); clearTimeout(timer); };
+  }, [id, runtime.kind, refresh, git]);
+  const execute = useCallback(async (action: GitAction): Promise<GitStatus | null> => {
+    if (!id || running.current.has(id)) return null;
+    refreshGeneration.current += 1; running.current.add(id); setBusy(true); setError(""); setProgress("Saving local state…"); const controller = new AbortController(); abort.current.set(id, controller);
+    try {
+      const next = await runOperation(id, () => git.execute(id, action, { signal: controller.signal, onProgress: (message) => { if (activeId.current === id) setProgress(message); } }));
+      if (activeId.current === id) { setStatus(next); setDirtyAction(null); setAuthorAction(null); if (action.type === "finishMerge" || action.type === "abortMerge") setView("overview"); }
+      return activeId.current === id ? next : null;
+    } catch (cause) {
+      if (activeId.current === id) {
+        if (cause instanceof GitError && cause.code === "dirty" && (action.type === "pull" || action.type === "switchBranch")) setDirtyAction(action);
+        else if (cause instanceof GitError && cause.code === "author" && action.type === "commit") setAuthorAction(action);
+        else { setError(cause instanceof Error ? cause.message : String(cause)); if (cause instanceof GitError && cause.code === "conflict") { setView("conflicts"); onOpen(); } }
+      }
+      return null;
+    } finally {
+      running.current.delete(id); abort.current.delete(id);
+      if (activeId.current === id) { try { const next = await git.status(id); if (activeId.current === id) setStatus(next); } catch { /* Keep the operation error. */ } if (activeId.current === id) { setBusy(false); setProgress(""); } }
+    }
+  }, [id, git, runOperation, onOpen]);
+  const selectFile = async (request: GitDiffRequest) => {
+    if (!id) return; const generation = ++requestGeneration.current; setSelected(request); setView("diff"); setError(""); setDiff(null); onOpen();
+    if (request.scope !== "commit") return;
+    try { const result = await git.diff(id, request); if (activeId.current === id && generation === requestGeneration.current) setDiff(result); } catch (cause) { if (generation === requestGeneration.current) setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  const openView = (next: GitView) => { setView(next); setError(""); onOpen(); };
+  useEffect(() => {
+    if (!id || !status || busy || view !== "diff" || !selected || selected.scope === "commit") return;
+    const file = status.files.find((file) => file.path === selected.path);
+    if (!file) { setView("overview"); return; }
+    let request = selected;
+    if (selected.scope === "working" && file.worktree === "." && file.index !== ".") { request = { ...selected, scope: "staged" }; setSelected(request); }
+    else if (selected.scope === "staged" && file.index === ".") { request = { ...selected, scope: "working" }; setSelected(request); }
+    let active = true;
+    void git.diff(id, request).then((result) => { if (active) setDiff(result); }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
+    return () => { active = false; };
+  }, [id, status, busy, view, selected, git]);
+  const network = (type: "fetch" | "pull" | "push") => {
+    if (!status) return;
+    const upstream = status.upstream?.split("/");
+    const remote = upstream?.[0] ?? status.remotes.find((entry) => entry.name === "origin")?.name ?? status.remotes[0]?.name ?? "";
+    if (status.remotes.length > 1 || !status.upstream && type !== "fetch") setNetworkAction({ type, remote, branch: upstream?.slice(1).join("/") ?? status.branch ?? "main" });
+    else void execute({ type });
+  };
+  const pendingPush = useRef(false);
+  const continueAfterCommit = async () => {
+    if (afterCommit) { const pending = afterCommit; setAfterCommit(null); await execute(pending); }
+    else if (pendingPush.current) { pendingPush.current = false; network("push"); }
+  };
+  const commit = async (message: string, push = false) => {
+    pendingPush.current = push;
+    if (!await execute({ type: "commit", message })) return false;
+    await continueAfterCommit(); return true;
+  };
+  const stashAndContinue = async () => {
+    if (!id || !dirtyAction) return;
+    const pending = dirtyAction; setDirtyAction(null);
+    if (!await execute({ type: "stash", message: `Before ${pending.type === "pull" ? "pull" : "switch"}` })) return;
+    const stash = (await git.stashes(id))[0];
+    const result = await execute({ ...pending, allowDirty: false } as GitAction);
+    if (result && pending.type === "pull" && stash) await execute({ type: "applyStash", id: stash.id });
+  };
+  const sync = async () => { if (await execute({ type: "pull" })) await execute({ type: "push" }); };
+  const changedFiles = status?.files.length ?? 0;
+  return { status, error, busy, progress, view, diff, selected, dirtyAction, authorAction, changedFiles, git, workspace,
+    execute, refresh, selectFile, openView, continueAfterCommit, network, networkAction, setNetworkAction, setView, setError, setDirtyAction, setAuthorAction, commit, sync, stashAndContinue,
+    commitBeforeContinue: () => { setAfterCommit(dirtyAction); setDirtyAction(null); openView("overview"); },
+    afterCommit, cancelAfterCommit: () => setAfterCommit(null),
+    cancel: () => { if (id) abort.current.get(id)?.abort(); },
+  };
+}

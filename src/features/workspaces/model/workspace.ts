@@ -144,6 +144,8 @@ export type Workspace = {
     settingsTabActive: boolean;
     variablesTabOpen: boolean;
     variablesTabActive: boolean;
+    gitTabOpen?: boolean;
+    gitTabActive?: boolean;
     sidebarOpen: boolean;
     sidebarActivity: SidebarActivity;
     sidebarWidth: number;
@@ -242,7 +244,7 @@ export function createExtensionDocument(extensionType: string, name: string, con
     configVersion, config: structuredClone(config), savedConfigVersion: null, savedConfig: null, ui: {} };
 }
 
-export type SidebarActivity = "documents" | "history";
+export type SidebarActivity = "documents" | "history" | "git";
 
 export function toggleWorkspaceSidebar(workspace: Workspace): Workspace {
   return { ...workspace, ui: { ...workspace.ui, sidebarOpen: !workspace.ui.sidebarOpen } };
@@ -264,7 +266,7 @@ export function createWorkspace(name = "Personal", id: string = crypto.randomUUI
       sidebarWidth: 15, sidebarActivity: "documents",
       sidebarItemOrder: [],
       documentOrder: [],
-      variablesTabOpen: false, variablesTabActive: false,
+      variablesTabOpen: false, variablesTabActive: false, gitTabOpen: false, gitTabActive: false,
       view: "canvas", lastRequestKind: "http", splitRatios: { horizontal: 50, vertical: 50 },
     },
   };
@@ -276,7 +278,7 @@ export function openDocument(workspace: Workspace, id: string): Workspace {
   return { ...workspace, ui: { ...workspace.ui,
     openDocumentIds: workspace.ui.openDocumentIds.includes(id) ? workspace.ui.openDocumentIds : [...workspace.ui.openDocumentIds, id],
     ...(document.kind === "schema" ? { lastGraphqlSchemaId: document.id } : isRequestDocument(document) && document.request.graphql?.schemaId ? { lastGraphqlSchemaId: document.request.graphql.schemaId } : {}),
-    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
+    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, gitTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
   } };
 }
 
@@ -291,7 +293,7 @@ export function previewDocument(workspace: Workspace, id: string): Workspace {
   const openDocumentIds = canReplace
     ? workspace.ui.openDocumentIds.map((value) => value === preview!.id ? id : value)
     : [...workspace.ui.openDocumentIds, id];
-  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false,
+  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, gitTabActive: false,
     lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind } };
 }
 
@@ -469,17 +471,17 @@ export function deleteDocument(workspace: Workspace, id: string): Workspace {
 
 function activateRemainingTab(workspace: Workspace): Workspace {
   const { ui } = workspace;
-  if (ui.cookiesTabOpen && ui.cookiesTabActive || ui.variablesTabOpen && ui.variablesTabActive || ui.settingsTabOpen && ui.settingsTabActive)
+  if (ui.gitTabOpen && ui.gitTabActive || ui.cookiesTabOpen && ui.cookiesTabActive || ui.variablesTabOpen && ui.variablesTabActive || ui.settingsTabOpen && ui.settingsTabActive)
     return workspace;
   if (ui.activeDocumentId && ui.openDocumentIds.includes(ui.activeDocumentId)) return workspace;
   const activeDocumentId = ui.openDocumentIds[0] ?? null;
   const cookiesTabActive = !activeDocumentId && ui.cookiesTabOpen;
   const variablesTabActive = !activeDocumentId && !cookiesTabActive && ui.variablesTabOpen;
   const settingsTabActive = !activeDocumentId && !cookiesTabActive && !variablesTabActive && ui.settingsTabOpen;
-  return { ...workspace, ui: { ...ui, activeDocumentId, cookiesTabActive, variablesTabActive, settingsTabActive } };
+  return { ...workspace, ui: { ...ui, activeDocumentId, cookiesTabActive, variablesTabActive, settingsTabActive, gitTabActive: !activeDocumentId && !cookiesTabActive && !variablesTabActive && !settingsTabActive && ui.gitTabOpen === true } };
 }
 
-export function closeWorkspaceTab(workspace: Workspace, tab: "cookies" | "variables" | "settings"): Workspace {
+export function closeWorkspaceTab(workspace: Workspace, tab: "cookies" | "variables" | "settings" | "git"): Workspace {
   return activateRemainingTab({ ...workspace, ui: { ...workspace.ui, [`${tab}TabOpen`]: false, [`${tab}TabActive`]: false } });
 }
 
@@ -704,7 +706,9 @@ export function validateWorkspace(value: unknown): Workspace {
         && workspace.ui.cookiesTabActive !== true && workspace.ui.settingsTabActive !== true,
       view: ["canvas", "horizontal", "vertical"].includes(workspace.ui.view) ? workspace.ui.view : "canvas",
       sidebarOpen: workspace.ui.sidebarOpen !== false,
-      sidebarActivity: workspace.ui?.sidebarActivity === "history" ? "history" : "documents",
+      sidebarActivity: workspace.ui?.sidebarActivity === "git" ? "git" : workspace.ui?.sidebarActivity === "history" ? "history" : "documents",
+      gitTabOpen: workspace.ui.gitTabOpen === true,
+      gitTabActive: workspace.ui.gitTabOpen === true && workspace.ui.gitTabActive === true,
       sidebarWidth: Math.max(12, Math.min(28, typeof workspace.ui.sidebarWidth === "number" ? workspace.ui.sidebarWidth : 15)),
       sidebarItemOrder: Array.isArray(workspace.ui.sidebarItemOrder)
         ? [...new Set(workspace.ui.sidebarItemOrder)].filter((id) => ids.has(id) || (workspace.extraResources ?? []).some((resource) => resource.kind === "folder" && resource.id === id))

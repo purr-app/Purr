@@ -26,7 +26,7 @@ export function NewWorkspaceDialog({ onCreate, onClose }: { onCreate: (workspace
   const [workspace] = useState(() => createWorkspace(""));
   const [name, setName] = useState(""); const [directory, setDirectory] = useState(""); const [initializeGit, setInitializeGit] = useState(false);
   const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  useEffect(() => { if (runtime.kind === "desktop") void persistence.directoryInfo(workspace.id).then((info) => setDirectory((current) => current || info.directory)).catch((cause) => setError(String(cause))); }, [persistence, workspace.id, runtime.kind]);
+  useEffect(() => { if (runtime.kind === "desktop") void persistence.directoryInfo(workspace.id).then((info) => { if (!info || typeof info.directory !== "string") throw new Error("Cannot read the default project directory."); setDirectory((current) => current || info.directory); }).catch((cause) => setError(String(cause))); }, [persistence, workspace.id, runtime.kind]);
   return <Modal title="New workspace" onClose={() => { if (!busy) onClose(); }} className="w-ui-name-dialog">
     <form className="space-y-ui-4 p-ui-5" onSubmit={(event) => { event.preventDefault(); if (!name.trim() || busy) return; setBusy(true); setError(""); void onCreate({ ...workspace, name: name.trim() }, directory.trim(), initializeGit).catch((cause) => { setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false); }); }}>
       <label className="block space-y-ui-2 text-ui-sm text-content-secondary">Workspace name<Input className="ui-focus-ring" autoFocus aria-label="Workspace name" maxLength={160} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} required /></label>

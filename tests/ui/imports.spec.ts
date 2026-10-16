@@ -37,8 +37,8 @@ async function openCollectionImport(page: Page) {
 test("collection import commits and shows grouped warnings only after completion", async ({ page }) => {
   await desktopImporter(page); await page.goto("/"); await openCollectionImport(page);
   const dialog = page.getByRole("dialog", { name: "Import workspace" });
-  await expect(dialog).toContainText("Postman Collection");
-  await dialog.getByLabel("File path or URL").fill("/slow.json");
+  await expect(dialog).toContainText("Choose a file or folder");
+  await dialog.getByLabel("Path or URL").fill("/slow.json");
   await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Importing…" })).toBeDisabled();
   await page.keyboard.press("Escape"); await expect(dialog).toBeVisible();
@@ -84,11 +84,11 @@ test("invalid environment stays in the dialog and can be corrected without parti
   await page.getByRole("button", { name: "Open variables", exact: true }).click();
   await page.getByRole("button", { name: "Import environment", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Import environment" });
-  await dialog.getByLabel("File path or URL").fill("/invalid.json");
+  await dialog.getByLabel("Path or URL").fill("/invalid.json");
   await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("environment export");
   await expect(page.getByRole("dialog", { name: "Import complete" })).toHaveCount(0);
-  await dialog.getByLabel("File path or URL").fill("/valid.json");
+  await dialog.getByLabel("Path or URL").fill("/valid.json");
   await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Import complete" })).toBeVisible();
 });

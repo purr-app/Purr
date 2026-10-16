@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { GitError, type GitPort, type GitOptions, type GitErrorCode } from "../../application/ports/git";
 
 async function call<T>(command: string, args: Record<string, unknown>, options?: GitOptions): Promise<T> {
@@ -16,6 +17,7 @@ async function call<T>(command: string, args: Record<string, unknown>, options?:
 }
 const query = <T>(workspaceId: string, query: Record<string, unknown>, options?: GitOptions) => call<T>("git_workspace", { workspaceId, query }, options);
 export const tauriGit: GitPort = {
+  subscribe: (id, onChange) => listen<{ workspaceId: string }>("git-state-changed", ({ payload }) => { if (payload.workspaceId === id) onChange(); }),
   status: (id) => query(id, { type: "status" }),
   execute: (id, action, options) => query(id, { type: "execute", action }, options),
   diff: (id, request) => query(id, { type: "diff", request }),

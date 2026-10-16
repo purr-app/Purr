@@ -1,3 +1,4 @@
+import { GitBranch } from "lucide-react";
 import { useUpdates, type ApplicationTab } from "../../updates/update-context";
 import { Braces, Clock, Cookie as CookieIcon, Save, Settings2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
@@ -12,6 +13,7 @@ import { NewDocumentButton } from "./new-document-button";
 const cookiesTabId = "workspace-cookies-tab";
 const settingsTabId = "workspace-settings-tab";
 const variablesTabId = "workspace-variables-tab";
+const gitTabId = "workspace-git-tab";
 type TabGeometry = { id: string; left: number; right: number; width: number };
 type TabDrag = {
   id: string;
@@ -27,7 +29,9 @@ type TabDrag = {
   moved: boolean;
 };
 
-export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensionTypes = [], onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onNewExtension, onSave }: {
+export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensionTypes = [], onOpen, onClose, onPin, onDuplicate, onCloseOther, onCloseAll, onReorder, onOpenCookies, onCloseCookies, onOpenSettings, onCloseSettings, onOpenVariables, onCloseVariables, onNew, onNewExtension, onSave, onOpenGit = () => {}, onCloseGit = () => {} }: {
+  onOpenGit?: () => void;
+  onCloseGit?: () => void;
   workspace: Workspace;
   cookieCount: number;
   extensionTypes?: readonly { extensionType: string; label: string }[];
@@ -49,7 +53,7 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
   onSave: () => void;
 }) {
   const updates = useUpdates();
-  const workspace = updates.activeTab ? { ...sourceWorkspace, ui: { ...sourceWorkspace.ui, activeDocumentId: null, cookiesTabActive: false, variablesTabActive: false, settingsTabActive: false } } : sourceWorkspace;
+  const workspace = updates.activeTab ? { ...sourceWorkspace, ui: { ...sourceWorkspace.ui, activeDocumentId: null, cookiesTabActive: false, variablesTabActive: false, settingsTabActive: false, gitTabActive: false } } : sourceWorkspace;
   const list = useRef<HTMLDivElement>(null);
   const geometry = useRef<TabGeometry[]>([]);
   const dragState = useRef<TabDrag | null>(null);
@@ -60,12 +64,13 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
   const [settling, setSettling] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
   const activeDocument = workspace.documents.find((item) => item.id === workspace.ui.activeDocumentId);
-  const showSave = Boolean(!workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && activeDocument.kind !== "schema" && (!activeDocument.saved || isDocumentDirty(activeDocument)));
-  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : []), ...updates.tabs];
+  const showSave = Boolean(!workspace.ui.gitTabActive && !workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && activeDocument && activeDocument.kind !== "schema" && (!activeDocument.saved || isDocumentDirty(activeDocument)));
+  const tabIds = [...workspace.ui.openDocumentIds, ...(workspace.ui.cookiesTabOpen ? [cookiesTabId] : []), ...(workspace.ui.variablesTabOpen ? [variablesTabId] : []), ...(workspace.ui.settingsTabOpen ? [settingsTabId] : []), ...(workspace.ui.gitTabOpen ? [gitTabId] : []), ...updates.tabs];
   const openTab = (id: string) => {
     if (updates.tabs.includes(id as ApplicationTab)) { updates.openTab(id as ApplicationTab); return; }
     updates.leaveTab();
-    if (id === cookiesTabId) onOpenCookies();
+    if (id === gitTabId) onOpenGit();
+    else if (id === cookiesTabId) onOpenCookies();
     else if (id === settingsTabId) onOpenSettings();
     else if (id === variablesTabId) onOpenVariables();
     else onOpen(id);
@@ -86,7 +91,7 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
   };
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive, workspace.ui.variablesTabActive, updates.activeTab]);
+  }, [workspace.ui.activeDocumentId, workspace.ui.cookiesTabActive, workspace.ui.settingsTabActive, workspace.ui.variablesTabActive, workspace.ui.gitTabActive, updates.activeTab]);
   useEffect(() => () => {
     if (scrollbarTimer.current) clearTimeout(scrollbarTimer.current);
   }, []);
@@ -211,7 +216,7 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
       {workspace.ui.openDocumentIds.map((id, index) => {
         const document = workspace.documents.find((item) => item.id === id)!;
         const name = getDocumentDisplayName(document);
-        const active = !workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && workspace.ui.activeDocumentId === id;
+        const active = !workspace.ui.gitTabActive && !workspace.ui.cookiesTabActive && !workspace.ui.settingsTabActive && !workspace.ui.variablesTabActive && workspace.ui.activeDocumentId === id;
         const preview = workspace.ui.previewDocumentId === id;
         const dirty = isDocumentDirty(document);
         const translateX = tabTranslateX(id, index);
@@ -273,6 +278,10 @@ export function DocumentTabs({ workspace: sourceWorkspace, cookieCount, extensio
         </button>
         <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden transition-opacity duration-ui-fast group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close workspace settings" onClick={onCloseSettings}><X className="size-ui-3" /></Button>
       </div> : null}
+      {workspace.ui.gitTabOpen && <div className={cn("group flex shrink-0 items-center rounded-ui-md border", workspace.ui.gitTabActive ? "border-border bg-purr-elevated" : "border-transparent")}>
+        <button type="button" role="tab" id={`document-tab-${gitTabId}`} aria-selected={workspace.ui.gitTabActive === true} aria-controls="git-workspace-panel" tabIndex={workspace.ui.gitTabActive ? 0 : -1} onClick={() => openTab(gitTabId)} onKeyDown={(event) => onTabKeyDown(event, gitTabId)} className="ui-focus-ring flex h-control-sm items-center gap-ui-2 rounded-ui-md px-ui-2 text-ui-sm text-content-secondary"><GitBranch className="size-ui-3-5 text-action-brand" />Source control</button>
+        <Button variant="ghost" size="icon" className="mr-ui-1 size-ui-5 opacity-ui-hidden group-hover:opacity-ui-visible group-focus-within:opacity-ui-visible" aria-label="Close source control" onClick={onCloseGit}><X className="size-ui-3" /></Button>
+      </div>}
       {updates.tabs.map((tab) => <div key={tab} className={cn("group flex shrink-0 items-center rounded-ui-md border", updates.activeTab === tab ? "border-border bg-purr-elevated" : "border-transparent")}>
         <button type="button" role="tab" id={`document-tab-${tab}`} aria-selected={updates.activeTab === tab} aria-controls="application-update-panel"
           tabIndex={updates.activeTab === tab ? 0 : -1} onClick={() => openTab(tab)} onKeyDown={(event) => onTabKeyDown(event, tab)}

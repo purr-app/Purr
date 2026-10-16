@@ -83,7 +83,7 @@ test("a direct purr.yaml path opens the same canonical workspace", async ({ page
   await installOpenWorkspaceMock(page);
   await page.goto("/");
   const dialog = await importDialog(page);
-  await dialog.getByRole("textbox", { name: /File.*path or URL/ }).fill("/synthetic/copied-workspace/purr.yaml");
+  await dialog.getByRole("textbox", { name: /Path or URL/i }).fill("/synthetic/copied-workspace/purr.yaml");
   await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Select workspace", exact: true })).toContainText("Portable workspace");
@@ -94,7 +94,7 @@ test("a non-Purr collection continues through the existing importer", async ({ p
   await installOpenWorkspaceMock(page, { nonPurr: true });
   await page.goto("/");
   const dialog = await importDialog(page);
-  await dialog.getByRole("textbox", { name: /File.*path or URL/ }).fill("/synthetic/postman.json");
+  await dialog.getByRole("textbox", { name: /Path or URL/i }).fill("/synthetic/postman.json");
   await dialog.getByRole("button", { name: "Import", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Import complete", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Select workspace", exact: true })).toContainText("Collection fixture");

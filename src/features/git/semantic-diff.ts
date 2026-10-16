@@ -67,6 +67,14 @@ export function displayValue(value: unknown): string {
   if (typeof value === "string") return value || "(empty)";
   if (object(value)) {
     if (value.kind === "secret" && typeof value.ref === "string") return `Stored credential · ${value.ref}`;
+    if (typeof value.name === "string" && ("value" in value || "secretRef" in value || "file" in value)) {
+      const content = typeof value.secretRef === "string" ? `Stored credential · ${value.secretRef}`
+        : object(value.value) && value.value.kind === "plain" ? String(value.value.value ?? "")
+          : object(value.value) && value.value.kind === "template" ? String(value.value.value ?? "")
+            : object(value.value) && value.value.kind === "secret" ? `Stored credential · ${value.value.ref}`
+              : typeof value.value === "string" ? value.value : object(value.file) ? String(value.file.name ?? "File") : "";
+      return `${value.name}: ${content || "(empty)"}${value.enabled === false ? "\nDisabled" : ""}`;
+    }
     const { id: _id, ...fields } = value;
     return JSON.stringify(fields, null, 2);
   }

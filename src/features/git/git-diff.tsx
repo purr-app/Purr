@@ -18,7 +18,7 @@ export function YamlDiff({ before, after }: { before: string; after: string }) {
     const view = new MergeView({ parent: host.current, a: { doc: before, extensions }, b: { doc: after, extensions }, highlightChanges: true, collapseUnchanged: { margin: 3, minSize: 8 } });
     return () => view.destroy();
   }, [before, after]);
-  return <div className="flex min-h-0 flex-1 flex-col"><div className="grid grid-cols-2 border-b border-border-subtle bg-purr-surface px-ui-4 py-ui-2 text-ui-xs text-content-secondary"><span>Before</span><span>After</span></div><div ref={host} className="purr-git-diff min-h-0 flex-1 overflow-auto" aria-label="YAML diff" /></div>;
+  return <div className="flex min-h-0 flex-1 flex-col"><div className="grid grid-cols-2 border-b border-border-subtle bg-purr-surface px-ui-4 py-ui-2 text-ui-xs text-content-secondary"><span>Before</span><span>After</span></div><div ref={host} className="purr-git-diff min-h-0 flex-1 overflow-auto" aria-label="File diff" /></div>;
 }
 export function GitDiffView({ diff }: { diff: GitDiff }) {
   const sections = useMemo(() => semanticSections(diff.before, diff.after), [diff.before, diff.after]);
@@ -28,7 +28,7 @@ export function GitDiffView({ diff }: { diff: GitDiff }) {
   return <div className="flex h-full min-h-0 flex-col">
     <div className="flex flex-wrap items-center justify-between gap-ui-3 border-b border-border-subtle px-ui-4 py-ui-2">
       <span className="min-w-0 flex-1 truncate font-code text-ui-xs text-content-secondary" title={diff.path}>{diff.path}</span>
-      <SegmentedTabs label="Diff view" id="git-diff-mode" panelId="git-diff-content" value={activeMode} onValueChange={setMode} options={[{ value: "semantic", label: "Semantic", disabled: !sections }, { value: "yaml", label: "YAML" }]} />
+      <SegmentedTabs label="Diff view" id="git-diff-mode" panelId="git-diff-content" value={activeMode} onValueChange={setMode} options={[{ value: "semantic", label: "Semantic", disabled: !sections }, { value: "yaml", label: sections || /\.ya?ml$/i.test(diff.path) ? "YAML" : "Text" }]} />
     </div>
     <div id="git-diff-content" className="flex min-h-0 flex-1 flex-col">
       {activeMode === "yaml" ? <YamlDiff before={diff.before} after={diff.after} /> : <div className="min-h-0 flex-1 space-y-ui-3 overflow-auto p-ui-4">
@@ -50,17 +50,23 @@ export function GitDiffView({ diff }: { diff: GitDiff }) {
 }
 
 /** The source can be Base, Local or Incoming; chunk controls copy into Result. */
-export function YamlMergeEditor({ source, value, onChange }: { source: string; value: string; onChange: (value: string) => void }) {
+export function YamlMergeEditor({ source, value, onChange, readOnly = false }: { source: string; value: string; onChange: (value: string) => void; readOnly?: boolean }) {
   const host = useRef<HTMLDivElement>(null); const live = useRef({ value, onChange }); live.current = { value, onChange };
+  const instance = useRef<MergeView | null>(null);
   useEffect(() => {
     if (!host.current) return;
     const extensions = [purrCodeTheme, purrCodeHighlighting, yaml(), lineNumbers(), EditorView.lineWrapping];
     const view = new MergeView({ parent: host.current,
       a: { doc: source, extensions: [...extensions, EditorState.readOnly.of(true), EditorView.editable.of(false)] },
-      b: { doc: live.current.value, extensions: [...extensions, EditorView.updateListener.of((update) => { if (update.docChanged) live.current.onChange(update.state.doc.toString()); })] },
-      revertControls: "a-to-b", renderRevertControl: () => { const button = document.createElement("button"); button.type = "button"; button.textContent = "→"; button.className = "ui-focus-ring rounded-ui-md bg-action-brand px-ui-2 font-ui text-content-primary"; button.setAttribute("aria-label", "Use this source change"); return button; },
+      b: { doc: live.current.value, extensions: [...extensions, EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly), EditorView.updateListener.of((update) => { if (update.docChanged) live.current.onChange(update.state.doc.toString()); })] },
+      revertControls: readOnly ? undefined : "a-to-b", renderRevertControl: () => { const button = document.createElement("button"); button.type = "button"; button.textContent = "→"; button.className = "ui-focus-ring rounded-ui-md bg-action-brand px-ui-2 font-ui text-content-primary"; button.setAttribute("aria-label", "Use this source change"); return button; },
     });
-    return () => view.destroy();
-  }, [source]);
+    instance.current = view;
+    return () => { instance.current = null; view.destroy(); };
+  }, [source, readOnly]);
+  useEffect(() => {
+    const editor = instance.current?.b;
+    if (editor && editor.state.doc.toString() !== value) editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } });
+  }, [value]);
   return <div ref={host} className="purr-git-diff min-h-0 flex-1 overflow-auto" aria-label="Conflict source and editable result" />;
 }
