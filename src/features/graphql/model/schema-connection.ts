@@ -1,5 +1,5 @@
 import { resolveEnvironmentValue } from "../../../shared/lib/resolve-variables";
-import type { SchemaDocument } from "../../workspaces/model/workspace";
+import { comparableDefinitionState, type SchemaDocument } from "../../workspaces/model/workspace";
 import { resolveAuth } from "../../request-workbench/model/request-auth";
 import { getWorkspaceAuth, getWorkspaceAuthProfiles, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 
@@ -10,17 +10,22 @@ export async function schemaConnectionIdentity(connection: SchemaDocument, confi
     workspace: profile ? { id: profile.id, name: profile.name, auth: profile.value } : undefined,
     workspaceProfiles: getWorkspaceAuthProfiles(config, "graphql").map((item) => ({ id: item.id, name: item.name, auth: item.value })),
   });
-  const auth = resolved.auth;
+  const auth = comparableDefinitionState(resolved.auth) as typeof resolved.auth;
   const activeAuth = auth.type === "bearer" ? auth.bearer : auth.type === "basic" ? auth.basic : auth.type === "api-key" ? auth.apiKey
     : auth.type === "oauth2" ? { ...auth.oauth2, token: undefined } : { type: auth.type, error: resolved.error };
   const source = connection.schemaSource;
   const ownNames = new Set(connection.introspectionHeaders.map((header) => header.name.toLowerCase()));
   const shared = config.headers.filter((header) => header.enabled && (header.scope === "graphql" || header.scope === "all") && !ownNames.has(header.name.toLowerCase()));
-  const substitute = (value: unknown): unknown => typeof value === "string" ? resolveEnvironmentValue(value, variables)
+  const substituteString = (value: string) => {
+    // Identity is a cache concern. Missing or cyclic expressions are validated by
+    // the actual operation, which may not need inactive OAuth acquisition inputs.
+    try { return resolveEnvironmentValue(value, variables); } catch { return value; }
+  };
+  const substitute = (value: unknown): unknown => typeof value === "string" ? substituteString(value)
     : Array.isArray(value) ? value.map(substitute) : value && typeof value === "object"
       ? Object.fromEntries(Object.entries(value).map(([key, child]) => [key, substitute(child)])) : value;
   const value = substitute({ endpoint: connection.endpoint, source: source ? { type: source.type, ...("location" in source ? { location: source.location } : {}) } : { type: "introspection" },
-    environmentId, auth: { type: auth.type, value: activeAuth }, headers: [...shared, ...connection.introspectionHeaders].filter((header) => header.enabled).map(({ name, value }) => ({ name, value })) });
+    environmentId, auth: { type: auth.type, value: activeAuth }, headers: [...shared, ...connection.introspectionHeaders].filter((header) => header.enabled).map((header) => { const { name, value } = comparableDefinitionState(header) as typeof header; return { name, value }; }) });
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

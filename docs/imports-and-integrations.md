@@ -13,10 +13,12 @@ This document distinguishes working import/export behavior from architectural ex
 | Native `ImportAdapter` contract and registry | Implemented boundary |
 | Validate and persist a `NormalizedImportResult` | Implemented application path |
 | New-workspace import UI | Working for file, folder, URL, and pasted text |
+| Open exported/copied Purr project folder | Desktop New workspace → Import → Choose folder instead; preserves identity and SecretRefs |
 | OpenAPI 3.0/3.1 adapter | Working first version |
 | Postman Collection v2.0/v2.1 and environment JSON adapters | Working; scripts and saved response examples are reported as unsupported |
 | Insomnia/Bruno/Yaak adapters | Not implemented |
-| Generic project export package | Not implemented; canonical directory is the portable artifact |
+| Workspace configuration export | Native export to an empty directory; saved YAML and referenced assets, secret values omitted |
+| Selected secrets / credential recovery | Native password-protected packages; same workspace identity and declared refs only |
 | Canonical integration envelope and unavailable-provider management | Working |
 | Build-time frontend extension/presentation registry | Implemented immutable composition boundary; no executable provider runtime yet |
 | Extension pages/navigation and workspace document types | Working composition and unavailable-document lifecycle |
@@ -39,7 +41,7 @@ Nothing is automatically saved. `importCurl` maps method, URL/query, headers, in
 
 Formats are cURL, wget, and HTTP/1.1. The cURL/wget renderers use POSIX single-quote escaping. Binary request bodies are represented by an informational placeholder rather than exported as a working file reference. Dynamic dependency requests are not executed merely to open the dialog.
 
-The canonical workspace directory remains the only current project-level export: copy/commit the Git-friendly files together with assets, and provision secret values separately.
+Export configuration copies the saved Git-friendly definitions and referenced assets to an empty directory. Secret references are retained; selected values can be transferred separately through Secrets and encryption.
 
 ## Native import pipeline
 
@@ -72,9 +74,9 @@ The project becomes visible and active only after the normal revision-checked pe
 - OpenAPI `{pathParam}` segments become Purr `:pathParam`; path parameters are enabled, while optional query/header parameters are retained disabled with their example/default when available;
 - JSON, XML, text, URL-encoded, multipart, and binary body modes are selected from request content. JSON schemas/examples create an editable example body, and the generated structure is also appended to request documentation;
 - every operation receives baseline Markdown in the request Docs tab: display name, operation ID when present, parameter location/required state, selected and available request-body content types, and response statuses/descriptions. OpenAPI descriptions, external documentation links, resolved schema descriptions, and generated body examples enrich that baseline when available;
-- the original OpenAPI source is stored as a canonical `api-schema` resource with a referenced `schemas/*.openapi` sidecar.
+- the original OpenAPI source is stored as a canonical `api-schema` resource with a referenced `schemas/*.openapi` sidecar. This source is preserved as public, opaque project content, not scrubbed by field classification. Credentials embedded in the source/examples remain the author’s responsibility; securing generated auth slots does not sanitize the original document.
 
-Every supported Bearer, Basic, header/query/cookie API-key, or OAuth 2.0 authorization-code/client-credentials security scheme becomes a named workspace shared-auth profile. Each imported request persists the stable profile ID selected by its effective operation/global `security` declaration; an explicit empty security declaration becomes a request auth opt-out. Credential placeholders are direct `SecretRef` fields on the profile, with empty values initialized in `SecureStore`; the importer does not invent credential variables or write plaintext values to YAML. OAuth endpoint `{variable}` placeholders become Purr `{{variable}}` templates. OpenID Connect currently imports as bearer-token auth with a warning because discovery is not implemented. Unsupported HTTP schemes, OAuth flows, combined auth beyond the first supported scheme, and mutual TLS produce diagnostics rather than invented transport behavior.
+Every supported Bearer, Basic, header/query/cookie API-key, or OAuth 2.0 authorization-code/client-credentials security scheme becomes a named workspace shared-auth profile. Each imported request persists the stable profile ID selected by its effective operation/global `security` declaration; an explicit empty security declaration becomes a request auth opt-out. Credential placeholders are direct `SecretRef` declarations on the profile, with no fabricated empty value initialized in `SecureStore`; the importer does not invent credential variables or write plaintext values to YAML. OAuth endpoint `{variable}` placeholders become Purr `{{variable}}` templates. OpenID Connect currently imports as bearer-token auth with a warning because discovery is not implemented. Unsupported HTTP schemes, OAuth flows, combined auth beyond the first supported scheme, and mutual TLS produce diagnostics rather than invented transport behavior.
 
 Schema-driven body completion is not implemented yet. The imported example body and `origin` link preserve enough canonical information for a future completion service without storing the OpenAPI AST inside each request. The first version maps root-level `servers`; path-item and operation-level server overrides are not yet projected. External reference documents participate in normalization, while the canonical `api-schema` resource currently retains the selected root source rather than a bundled copy of every dependency.
 
@@ -86,11 +88,17 @@ Collection import preserves nested folders, request order, descriptions, methods
 
 Collection variables become workspace variables. Environment import adds one environment to the current workspace; name collisions use ` (2)`, ` (3)` and so on, without merging or replacing existing values. The imported scope opens in Variables, but the active execution environment does not change. A pending variable draft disables Import. Existing requests, saved/working copies, tabs, and local session state are retained through the normal persistence path. Global-name conflicts and duplicate variable names within a scope fail before commit.
 
-Workspace/environment names may overlap: enabled environment values override workspace values, while disabled environment rows leave the workspace fallback available. Secret-typed variables (including empty values) retain secret references. Credential-like variable names and literal sensitive headers/query/form parameters are also protected; values reach SecureStore only through import persistence. Exact credential templates remain templates. The raw Postman export is never persisted as a project resource.
+Workspace/environment names may overlap: enabled environment values override workspace values, while disabled environment rows leave the workspace fallback available. Source-declared secret variables and explicitly marked sensitive fields retain their classification and refs. Present empty values are imported as available empty values; absent values produce missing declarations. Arbitrary credential-like variable/header/query/form names no longer imply sensitivity. Known auth and exact Cookie/Set-Cookie roles remain protected. Values reach SecureStore only through import persistence. Exactly one nonempty credential template with surrounding whitespace remains an explicit template; mixed/literal expressions are protected in full. The raw Postman export is never persisted as a project resource.
 
 Bearer, Basic, header/query API key, and compatible OAuth2 authorization-code/client-credentials configurations become shared auth profiles with explicit request bindings. Collection/folder inheritance and `noauth` are preserved. Existing OAuth tokens, unsupported auth configurations, scripts at all levels, saved response examples, folder variables, Postman dynamic templates, and transport overrides are reported with source paths. Scripts are never executed. Unsupported dynamic templates remain editable but are not generated by Purr. The report may require manual configuration before a request behaves like it did in Postman.
 
-Each import has fresh resource and secret identities. The application validates the result before writing, rejects pre-existing transient secret refs, and rolls back newly written secrets if a subsequent vault write or project commit fails. Empty secret values follow the normal Purr vault convention: the canonical ref remains even when no nonempty vault value is stored.
+Each import has fresh resource and secret identities. The application validates the result and rejects pre-existing transient secret refs before preparing a private credential overlay. Files, local records and secret changes publish through one recoverable commit; failure does not require deleting previously written secrets. Intentional empty strings are stored as available values, while absent source values remain missing. Explicit local removal preserves the declaration/ref. This distinction survives import, save and restart.
+
+## Sharing and unavailable credentials
+
+Imported definitions and preserved refs can open without local values. Required local secrets identifies their owners and availability and supports Set value or Retry/Unlock. A missing required active dependency blocks the relevant operation; it does not authorize a blank credential write during import or an unrelated save.
+
+Secrets and encryption provides native configuration-only export, selected secret export/import and separate recovery-key/credential-backup operations. All use saved canonical declarations; unsaved editors, globals, cookies, OAuth sessions and history are excluded. Imports target a copy of the same workspace, preview Keep/Replace decisions, and commit atomically under destination keys. Expressions are transferred verbatim without requests or variable evaluation. The Request Code dialog remains a separate wire-command feature. See [Secret transfer and recovery](secret-transfer-and-recovery.md). Environment/global and Postman export remain unsupported.
 
 ## Generic normalized boundary
 
@@ -126,7 +134,7 @@ Adapters must normalize into the existing canonical model. They do not get to wr
 - unrelated existing resources remain;
 - duplicate resource IDs are rejected before commit;
 - every transient secret ref must be unique and scoped to the destination workspace;
-- secret values are written directly to `SecureStore`, never diagnostics/preview/YAML, and are removed again if any later secret write or the canonical project commit fails;
+- secret values are staged outside the active vault, never diagnostics/preview/YAML, and publish with canonical/local changes after validation;
 - the normal persistence path performs canonical/local projection and commit.
 
 The TypeScript contract still exposes duplicate policy and preview/environment-candidate shapes for a future preview step. Current imports commit directly after validation, then show a report with resource/variable/secret counts and grouped warnings with expandable source paths. Failed imports stay in the source dialog; repeated submission and closing are blocked while committing.
@@ -269,3 +277,5 @@ registrar.menuItems.register({
   },
 });
 ```
+
+The standard **New workspace → Import** flow recognizes Purr-native project directories and selected `purr.yaml` files before trying the existing collection importers. Choose folder instead selects an exported/copied/Git directory. Non-Purr files and folders continue through OpenAPI/Postman import; invalid Purr projects show an error rather than silently falling back. This registers the selected external directory in place after canonical validation and revision checks. Exported/copy/Git directories retain workspace identity for subsequent encrypted secret import. Existing same-ID workspaces in another directory are never overwritten or silently reidentified.

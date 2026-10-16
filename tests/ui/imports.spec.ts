@@ -12,7 +12,7 @@ async function desktopImporter(page: Page) {
       (window as any).__importCalls.push(args);
       if (args.source.path === "/invalid.json") throw new Error("Select a Postman environment export.");
       const id = args.importId;
-      const ref = `purr/${args.workspaceId}/imports/postman/${id}`;
+      const ref = `purr/${args.workspaceId}/credentials/imports/postman/${id}`;
       const environment = args.target === "environment";
       const result = { adapter: environment ? "postman-environment" : "postman-collection",
         workspace: { id: args.workspaceId, name: "Postman fixture", variables: [], headers: [], auth: [] },

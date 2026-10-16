@@ -67,7 +67,9 @@ fn setup() -> (ObservabilityService, MemoryRepository, TraceQuery) {
             "apiToken".into(),
             Credential {
                 kind: "secret".into(),
-                reference: Some(format!("purr/workspace/integrations/{id}/apiToken")),
+                reference: Some(format!(
+                    "purr/workspace/credentials/integrations/{id}/apiToken"
+                )),
             },
         )]),
     });
@@ -297,7 +299,7 @@ async fn unavailable_disabled_bad_config_credentials_and_no_correlation_are_type
         .credentials
         .get_mut("apiToken")
         .unwrap()
-        .reference = Some("purr/another/integrations/alpha/apiToken".into());
+        .reference = Some("purr/another/credentials/integrations/alpha/apiToken".into());
     assert_eq!(
         service.lookup(&repository, query.clone(), cancel()).await,
         Err(ObservabilityError::CredentialUnavailable)
@@ -358,14 +360,14 @@ fn registries_reject_duplicate_providers_and_extractors_and_credentials_are_scop
         "ws",
         "integration",
         "token",
-        "purr/ws/integrations/integration/token"
+        "purr/ws/credentials/integrations/integration/token"
     )
     .is_ok());
     assert!(ScopedCredentials::validate_ref(
         "ws",
         "integration",
         "token",
-        "purr/ws/integrations/other/token"
+        "purr/ws/credentials/integrations/other/token"
     )
     .is_err());
 }

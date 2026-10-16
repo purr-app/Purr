@@ -67,6 +67,9 @@ test("activity rail stays visible while sidebar selection, shortcuts and resizin
   await separator.focus();
   await page.keyboard.press("ArrowRight");
   await expect(separator).toHaveAttribute("aria-valuenow", "16");
+  // Keyboard resizing starts a width transition. Wait for the handle to be
+  // stable before capturing coordinates for a real pointer drag.
+  await separator.hover();
   const handle = (await separator.boundingBox())!;
   await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
   await page.mouse.down();

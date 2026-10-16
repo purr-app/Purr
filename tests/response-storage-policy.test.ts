@@ -4,8 +4,8 @@ import { describe, it } from "node:test";
 import { resolveResponseStoragePolicy } from "../src/application/response-storage-policy";
 
 describe("response storage policy", () => {
-  it("defaults to encrypted and resolves workspace, folder, then document precedence", () => {
-    assert.deepEqual(resolveResponseStoragePolicy({}), { protection: "encrypted" });
+  it("defaults to plaintext and resolves workspace, folder, then document precedence", () => {
+    assert.deepEqual(resolveResponseStoragePolicy({}), { protection: "plaintext" });
     assert.deepEqual(resolveResponseStoragePolicy({ workspace: "plaintext" }), { protection: "plaintext" });
     assert.deepEqual(resolveResponseStoragePolicy({
       workspace: "plaintext",

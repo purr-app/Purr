@@ -107,6 +107,7 @@ export function OAuthAuthForm({
               secret
               secretVariablesOnly
               value={oauth.clientSecret}
+              state={auth.credentialStates?.["client-secret"]}
               placeholder="Client secret"
               variableActions={variableActions}
               onChange={(clientSecret) => setOAuth({ clientSecret })}
@@ -165,7 +166,7 @@ export function OAuthAuthForm({
                 )}
               >
                 <span className="size-ui-1-5 rounded-full bg-current" />
-                {oauth.token
+                {auth.credentialStates?.["oauth-access-token"] && auth.credentialStates["oauth-access-token"].status !== "available" ? `Local token ${auth.credentialStates["oauth-access-token"].status}` : oauth.token
                   ? tokenExpiryLabel(oauth.token.expiresAt, runtime.now)
                   : "Not authorized"}
               </span>
@@ -175,6 +176,7 @@ export function OAuthAuthForm({
             <>
               <SecretInput
                 value={oauth.token.accessToken}
+                placeholder={auth.credentialStates?.["oauth-access-token"]?.status !== "available" ? `Local token ${auth.credentialStates?.["oauth-access-token"]?.status ?? "unresolved"}` : undefined}
                 readOnly
                 aria-label="OAuth access token"
               />
@@ -239,7 +241,7 @@ export function OAuthAuthForm({
                   variant="secondary"
                   disabled={
                     oauth.grantType === "authorization_code" &&
-                    !oauth.token.refreshToken
+                    !oauth.token.refreshToken && !auth.credentialStates?.["oauth-refresh-token"]
                   }
                   onClick={() => {
                     void runtime.run("refresh");

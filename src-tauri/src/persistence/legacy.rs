@@ -66,7 +66,9 @@ pub fn archive_and_retire(
             &serde_json::to_vec(expected).map_err(|_| error())?,
             "purr/legacy-archive",
         )?;
-        let mut temporary = tempfile::NamedTempFile::new_in(archive.parent().ok_or_else(error)?)
+        let mut temporary = tempfile::Builder::new()
+            .prefix("legacy-workspaces.encrypted.staging-")
+            .tempfile_in(archive.parent().ok_or_else(error)?)
             .map_err(|_| error())?;
         temporary.write_all(&bytes).map_err(|_| error())?;
         temporary.as_file().sync_all().map_err(|_| error())?;

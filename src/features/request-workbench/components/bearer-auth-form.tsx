@@ -1,9 +1,9 @@
+import { templateTokens } from "../../../domain/template-expression";
 import { Braces, Fingerprint } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../../../shared/components/ui/button";
 import { AuthVariableField } from "./auth-variable-field";
 import type { TemplateVariableActions } from "./template-variable-popover";
-import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { JsonCodePreview } from "../../../shared/components/ui/json-code-preview";
 import { SelectField } from "../../../shared/components/ui/select-field";
 import { cn } from "../../../shared/lib/cn";
@@ -20,7 +20,6 @@ export function BearerAuthForm({
   onAuthChange,
   context,
   now,
-  secureStorageOnly = false,
   variableActions,
 }: {
   auth: RequestAuth;
@@ -72,6 +71,7 @@ export function BearerAuthForm({
         </div>
         <div className="space-y-ui-2"><AuthVariableField variableActions={variableActions}
             label="Bearer token"
+            state={auth.credentialStates?.bearer}
             secret
             placeholder="Paste your token"
             value={auth.bearer.token}
@@ -80,11 +80,11 @@ export function BearerAuthForm({
                 ...auth,
                 bearer: {
                   ...auth.bearer,
-                  token: value.trim().replace(/^Bearer\s+/i, ""),
+                  token: templateTokens(value).length ? value : value.trim().replace(/^Bearer\s+/i, ""),
                 },
               })
             }
-          />{!secureStorageOnly ? <Checkbox label="Store token as secret" checked={auth.credentialStorage?.bearer !== "plain"} onCheckedChange={(secret) => onAuthChange({ ...auth, credentialStorage: { ...auth.credentialStorage, bearer: secret ? "secret" : "plain" } })} /> : null}</div>
+          /></div>
       </div>
       {jwt ? (
         <div className="flex justify-end">

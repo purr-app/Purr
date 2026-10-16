@@ -33,7 +33,7 @@ export function EnvironmentEditor({ initial, onSave, onClose }: {
             }));
             const secret = variable.sensitive;
             const value = variable.kind === "static" ? variable.value : "";
-            const updateValue = (next: string) => variable.kind === "static" && update({ ...variable, value: next, loaded: true });
+            const updateValue = (next: string) => variable.kind === "static" && update({ ...variable, value: next, loaded: true, ...(variable.secretState ? { secretState: { ...variable.secretState, status: "available", edit: { kind: "set", value: next } } } : {}) });
             return <div key={variable.id} className="flex items-center gap-ui-2">
               <Checkbox checked={variable.enabled} onCheckedChange={(enabled) => update({ ...variable, enabled })} label={`Enable variable ${index + 1}`} hideLabel />
               <Input className="ui-focus-ring min-w-0 flex-1 font-code" aria-label={`Variable ${index + 1} name`} placeholder="variable_name" value={variable.name} onChange={(event) => update({ ...variable, name: event.target.value })} spellCheck={false} />

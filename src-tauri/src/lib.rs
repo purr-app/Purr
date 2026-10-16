@@ -9,6 +9,8 @@ mod oauth;
 mod observability;
 mod persistence;
 mod security;
+mod template;
+mod transfer;
 
 pub mod native_extension_api;
 pub use composition::{core_builder, run, PurrBuilder};

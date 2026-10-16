@@ -25,6 +25,10 @@ export class SessionCookieJar {
   private disabled = new Set<string>();
   private listeners = new Set<() => void>();
   private version = 0;
+  available = true;
+  assertAvailable() {
+    if (!this.available) throw new Error("Cookie storage is unavailable. Retry / Unlock in Workspace settings → Secrets, or explicitly disable both Send cookies and Store cookies in request settings.");
+  }
   constructor(cookies: SessionCookie[] = []) {
     for (const value of cookies) {
       try {

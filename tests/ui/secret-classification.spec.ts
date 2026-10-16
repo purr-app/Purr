@@ -1,0 +1,30 @@
+import { expect, test } from "@playwright/test";
+import { installPersistenceMock } from "./persistence-mock";
+
+test("header sensitivity is explicit and persists across literal edits; bearer has no plaintext option", async ({ page }) => {
+  await installPersistenceMock(page);
+  await page.goto("/");
+  await page.getByRole("tab", { name: /^Headers/ }).click();
+  await page.getByPlaceholder("Header-name").last().fill("X-Custom-Value");
+  const value = page.getByLabel("Value for X-Custom-Value", { exact: true });
+  await value.fill("synthetic-first-value");
+  const sensitive = page.getByRole("button", { name: "Sensitive X-Custom-Value", exact: true });
+  await expect(sensitive).toHaveAttribute("aria-pressed", "false");
+  await sensitive.click();
+  await expect(sensitive).toHaveAttribute("aria-pressed", "true");
+  await expect(value).toHaveAttribute("type", "password");
+  await value.fill("synthetic-replacement-value");
+  await expect(sensitive).toHaveAttribute("aria-pressed", "true");
+  await page.getByPlaceholder("Header-name").last().fill("X-API-Key");
+  await page.getByLabel("Value for X-API-Key", { exact: true }).fill("ordinary-public-value");
+  await expect(page.getByRole("button", { name: "Sensitive X-API-Key", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await page.getByPlaceholder("Header-name").last().fill("Cookie");
+  await page.getByLabel("Value for Cookie", { exact: true }).fill("session=synthetic-value");
+  await expect(page.getByRole("button", { name: "Sensitive Cookie", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Sensitive Cookie", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: /^Auth/ }).click();
+  await page.getByRole("tab", { name: "Bearer Token", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Store token as secret", exact: true })).toHaveCount(0);
+  await page.getByLabel("Bearer token", { exact: true }).fill("  {{ token }}  ");
+  await expect(page.getByLabel("Bearer token", { exact: true })).toHaveValue("  {{ token }}  ");
+});

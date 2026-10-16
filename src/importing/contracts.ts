@@ -28,7 +28,7 @@ export type NormalizedImportResult = {
   workspace: WorkspaceDefinition;
   resources: ProjectResource[];
   diagnostics: ImportDiagnostic[];
-  // Transient values go directly to SecureStore, never to preview/errors or serializers.
+  // Transient values join the prepared commit, never preview/errors or serializers.
   secrets: Array<{ ref: SecretRef; value: string }>;
   activeEnvironmentId?: string;
 };

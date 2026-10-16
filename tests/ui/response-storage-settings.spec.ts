@@ -1,0 +1,61 @@
+import { expect, test } from "@playwright/test";
+
+/** Real preview persistence exercises local projection; no native or user profiles. */
+test("response encryption preferences default Off, override locally and survive reload without YAML changes", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Request URL", { exact: true }).fill("https://example.com/policy");
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  const requestPolicy = page.getByRole("combobox", { name: "Encrypt response for this request", exact: true });
+  await expect(requestPolicy).toHaveText("Inherit");
+  const help = page.getByRole("button", { name: "About response encryption", exact: true });
+  await expect(page.getByRole("tooltip")).not.toBeVisible();
+  await expect(page.getByText("Effective:", { exact: false })).toHaveCount(0);
+  await help.hover();
+  await expect(page.getByRole("tooltip")).toContainText("Uses the workspace default: Off.");
+  await expect(page.getByRole("tooltip")).toContainText("including tokens or personal data");
+  await page.getByRole("tooltip").hover();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  await requestPolicy.hover();
+  await expect(page.getByRole("tooltip")).not.toBeVisible();
+  await help.focus();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).not.toBeVisible();
+  await requestPolicy.click(); await page.getByRole("option", { name: "On", exact: true }).click();
+  await help.hover();
+  await expect(page.getByRole("tooltip")).toContainText("Request override: On.");
+  await requestPolicy.hover();
+  await page.getByRole("button", { name: "Save document", exact: true }).click();
+  await page.getByLabel("Document name", { exact: true }).fill("Policy request");
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Select workspace" }).click();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  await expect(page.getByRole("switch", { name: "Encrypt responses for this workspace", exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Secrets and encryption", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Manage secrets", exact: true })).toBeVisible();
+  const workspacePolicy = page.getByRole("switch", { name: "Encrypt responses for this workspace", exact: true });
+  await expect(page.getByRole("button", { name: "Retry / Unlock", exact: true })).toHaveCount(0);
+  const content = await page.getByText("Encrypt responses", { exact: true }).locator("../..").boundingBox();
+  const secrets = await page.getByRole("button", { name: "Manage secrets", exact: true }).locator("../..").boundingBox();
+  expect(content).not.toBeNull(); expect(secrets).not.toBeNull();
+  expect(Math.abs(content!.width - secrets!.width)).toBeLessThan(2);
+  await expect(workspacePolicy).not.toBeChecked(); await workspacePolicy.click(); await expect(workspacePolicy).toBeChecked();
+  await expect.poll(() => page.evaluate(async () => {
+    const path = "/src/storage/browser-backend.ts"; const { BrowserPersistenceBackend } = await import(path); const snapshot = await new BrowserPersistenceBackend().load();
+    const workspace = snapshot.workspaces[0]; const state = workspace?.local.find((record: any) => record.table === "workspace_local_state" && record.id === "state")?.value;
+    return state?.responseStorage;
+  })).toBe("encrypted");
+  await page.reload();
+  await page.getByRole("tab", { name: "Secrets and encryption", exact: true }).click();
+  await expect(workspacePolicy).toBeChecked();
+  await page.getByRole("tab", { name: "GET Policy request", exact: true }).click();
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await expect(requestPolicy).toHaveText("On");
+  await requestPolicy.click(); await page.getByRole("option", { name: "Inherit", exact: true }).click();
+  await help.hover();
+  await expect(page.getByRole("tooltip")).toContainText("Uses the workspace default: On.");
+  const yaml = await page.evaluate(async () => {
+    const path = "/src/storage/browser-backend.ts"; const { BrowserPersistenceBackend } = await import(path); return JSON.stringify((await new BrowserPersistenceBackend().load()).workspaces.map((workspace: any) => workspace.files));
+  });
+  expect(yaml).not.toContain("responseStorage"); expect(yaml).not.toContain("encryptResponses");
+});

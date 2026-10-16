@@ -5,7 +5,10 @@ use super::{
     },
     store::{ContentWriteTiming, ResponseContentStore},
 };
-use crate::security::PlatformRootKeyStore;
+use crate::security::{
+    context::{data_directory, NativeKeyState},
+    RootCiphers,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{atomic::AtomicBool, Arc, Mutex},
@@ -31,12 +34,8 @@ impl PendingContentWrite {
 }
 
 impl ResponseContentHandle {
-    fn start(path: PathBuf) -> Result<Self, String> {
-        let data_directory = path
-            .parent()
-            .ok_or_else(|| "Cannot locate application storage".to_string())?;
-        let root_keys = PlatformRootKeyStore::new(data_directory);
-        Self::start_store(ResponseContentStore::open(&path, &root_keys)?)
+    fn start(path: PathBuf, ciphers: &RootCiphers) -> Result<Self, String> {
+        Self::start_store(ResponseContentStore::open_with_ciphers(&path, ciphers)?)
     }
 
     fn start_store(mut store: ResponseContentStore) -> Result<Self, String> {
@@ -68,6 +67,11 @@ impl ResponseContentHandle {
         receiver
             .await
             .map_err(|_| "Response storage worker stopped")?
+    }
+
+    pub async fn ensure_workspace(&self, workspace: String) -> Result<(), String> {
+        self.call(move |store| store.ensure_workspace(&workspace))
+            .await
     }
 
     pub async fn create_staging(
@@ -174,7 +178,7 @@ impl ResponseContentHandle {
 }
 
 #[derive(Default)]
-pub struct ResponseContentState(Mutex<Option<ResponseContentHandle>>);
+pub struct ResponseContentState(Mutex<Option<(ResponseContentHandle, bool)>>);
 
 impl ResponseContentState {
     pub fn handle(&self, app: &tauri::AppHandle) -> Result<ResponseContentHandle, String> {
@@ -182,19 +186,24 @@ impl ResponseContentState {
             .0
             .lock()
             .map_err(|_| "Response storage is unavailable")?;
-        if guard.is_none() {
-            let data = app
-                .path()
-                .app_data_dir()
-                .map_err(|_| "Cannot locate application storage")?;
-            std::fs::create_dir_all(&data).map_err(|_| "Cannot create application storage")?;
-            *guard = Some(ResponseContentHandle::start(
-                data.join("local-state.sqlite3"),
-            )?);
+        if guard.as_ref().is_none_or(|(_, available)| !available) {
+            let data = data_directory(app).map_err(|error| error.to_string())?;
+            let ciphers = app.state::<NativeKeyState>().open(app);
+            // A public store can run without OS key access. Keep its worker until
+            // an explicit Retry / Unlock has made real keys available.
+            if ciphers.is_err() && guard.is_some() {
+                return Ok(guard.as_ref().expect("existing public worker").0.clone());
+            }
+            let available = ciphers.is_ok();
+            let ciphers = ciphers.unwrap_or_else(|_| Arc::new(RootCiphers::unavailable()));
+            *guard = Some((
+                ResponseContentHandle::start(data.join("local-state.sqlite3"), &ciphers)?,
+                available,
+            ));
         }
         guard
             .as_ref()
-            .cloned()
+            .map(|(handle, _)| handle.clone())
             .ok_or_else(|| "Response storage is unavailable".into())
     }
 }

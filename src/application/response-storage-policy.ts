@@ -15,7 +15,7 @@ export type ResponseStoragePolicyHierarchy = {
 
 /**
  * Resolves local at-rest response policy. These preferences must remain local
- * settings: opening a shared project file must never disable encryption.
+ * settings: shared project files cannot choose a device’s storage policy.
  */
 export function resolveResponseStoragePolicy(
   hierarchy: ResponseStoragePolicyHierarchy,

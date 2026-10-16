@@ -1,3 +1,4 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultRequestSettings, normalizeRequestSettings } from "../src/domain/request-settings";
@@ -5,7 +6,7 @@ import { getRequestSettings, initialRequestDraft } from "../src/features/request
 import { SessionCookieJar } from "../src/features/request-workbench/model/cookie-jar";
 import { executeHttp, type WireRequest, type WireResponse } from "../src/features/request-workbench/services/http-client";
 import { executeRequest } from "../src/features/request-workbench/services/execute-request";
-import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { restoreWorkspace } from "../src/application/project-projection";
 import { cloneRequestDraft, createWorkspace, isMeaningfulDraft, isRequestDocument, validateWorkspace } from "../src/features/workspaces/model/workspace";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { deserializeResource, serializeResource } from "../src/storage/yaml";
@@ -41,7 +42,7 @@ test("saved settings survive canonical YAML while unsaved edits stay local", asy
   document.request.useCookieJar = false;
   document.request.settings.storeCookies = true;
   const secure = new MemorySecureStore();
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const canonical = projected.project.resources.find((item) => item.kind === "http");
   assert.ok(canonical?.kind === "http");
   assert.deepEqual(canonical.settings, document.savedRequest.settings);

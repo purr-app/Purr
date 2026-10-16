@@ -10,7 +10,7 @@ await mkdir(output); // Refuse to overwrite any existing folder or project.
 const credentialCommands = [];
 for (const name of ["alpha", "beta"]) {
   const id = `trace-${name}`;
-  const reference = `purr/${workspaceId}/integrations/${id}/apiToken`;
+  const reference = `purr/${workspaceId}/credentials/integrations/${id}/apiToken`;
   await writeFile(join(output, `${id}.yaml`), [
     "purr: 1", "kind: integration", `id: ${id}`, `name: Synthetic ${name}`,
     `provider: test.trace-${name}`, "enabled: true", "configVersion: 1",

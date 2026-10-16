@@ -62,7 +62,7 @@ export function ImportWorkspaceDialog({ onImport, onClose, target = "workspace" 
         <button type="button" className="ui-focus-ring flex w-full flex-col items-center gap-ui-2 rounded-ui-lg p-ui-5 text-center" aria-label="Choose import file" disabled={busy} onClick={() => { void choose(false); }}>
           <FileInput className="size-ui-6 text-action-brand" />
           <span className="text-ui-md font-medium text-content-primary">Choose a file or drag it here</span>
-          <span className="text-ui-xs text-content-tertiary">{target === "environment" ? "Postman environment JSON" : "OpenAPI 3.x or Postman Collection v2.0/v2.1"}</span>
+          <span className="text-ui-xs text-content-tertiary">{target === "environment" ? "Postman environment JSON" : "Purr workspace folder, OpenAPI 3.x or Postman Collection v2.0/v2.1"}</span>
         </button>
         {target === "workspace" && <div className="flex justify-center border-t border-border-subtle p-ui-1">
           <Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => { void choose(true); }}><FolderOpen className="size-ui-3-5" />Choose folder instead</Button>

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseContentRef {
+    #[serde(default)]
+    pub protection: ResponseContentProtection,
     pub id: String,
     pub byte_length: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,6 +28,7 @@ pub struct ByteRange {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentInfo {
+    pub protection: ResponseContentProtection,
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
@@ -130,6 +133,34 @@ pub enum ContentOperationResult {
 #[allow(dead_code)] // Constructed by native HTTP capture starting in Phase 6.
 #[derive(Clone, Debug)]
 pub struct ContentMetadata {
+    pub protection: ResponseContentProtection,
+    pub workspace_id: String,
     pub media_type: Option<String>,
     pub charset: Option<String>,
+}
+
+/// The stored discriminator is authoritative. A failed decryption never means public data.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ResponseContentProtection {
+    #[default]
+    Encrypted,
+    Plaintext,
+}
+
+impl ResponseContentProtection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Encrypted => "encrypted",
+            Self::Plaintext => "plaintext",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Result<Self, String> {
+        match value {
+            "encrypted" => Ok(Self::Encrypted),
+            "plaintext" => Ok(Self::Plaintext),
+            _ => Err("Response content protection is invalid".into()),
+        }
+    }
 }

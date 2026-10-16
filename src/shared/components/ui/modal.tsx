@@ -4,9 +4,11 @@ import { Button } from "./button";
 import { PopoverPortalProvider } from "./popover";
 import { cn } from "../../lib/cn";
 
-export function Modal({ title, children, onClose, className, initialFocus = "first-field" }: {
+export function Modal({ title, children, onClose, className, initialFocus = "first-field", surface = "default", footer }: {
   title: string; children: ReactNode; onClose: () => void; className?: string;
   initialFocus?: "first-field" | "dialog";
+  surface?: "default" | "layered";
+  footer?: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [portalContainer, setPortalContainer] = useState<HTMLDialogElement | null>(null);
@@ -32,11 +34,12 @@ export function Modal({ title, children, onClose, className, initialFocus = "fir
       } }}
       className={cn("ui-modal m-auto w-ui-dialog max-w-full overflow-visible rounded-ui-xl border border-border bg-purr-overlay p-ui-0 font-ui text-content-primary shadow-popover outline-none", className)}>
       <PopoverPortalProvider container={portalContainer}>
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-ui-5 py-ui-3">
+        <div className={cn("flex shrink-0 items-center justify-between rounded-t-ui-xl border-b border-border px-ui-5 py-ui-3", surface === "layered" && "bg-purr-highlight")}>
           <h2 className="text-ui-lg font-medium">{title}</h2>
           <Button variant="ghost" size="icon" aria-label="Close dialog" onClick={onClose}><X className="size-ui-4" /></Button>
         </div>
         {children}
+        {footer ? <div data-modal-footer className={cn("shrink-0 rounded-b-ui-xl border-t border-border px-ui-5 py-ui-3", surface === "layered" && "bg-purr-highlight")}>{footer}</div> : null}
       </PopoverPortalProvider>
     </dialog>
   );

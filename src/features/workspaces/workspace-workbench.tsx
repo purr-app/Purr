@@ -1,3 +1,9 @@
+import { secretRef } from "../../storage/secrets";
+import { resolveResponseStoragePolicy } from "../../application/response-storage-policy";
+import { workspaceHttpTransport } from "../request-workbench/services/workspace-http-transport";
+import { protectedStorageMessage } from "./model/protected-storage-message";
+import { invalidateSecretBuffers } from "../../application/invalidate-secret-buffers";
+import type { SecretPreparationStore } from "../../storage/secrets";
 import { renameVariableDefinitions, renameWorkspaceReferences, variableRenames } from "./model/rename-variable";
 import { TemplateVariableProvider } from "../../shared/components/ui/template-variable-context";
 import { ConnectionStatus } from "../graphql/components/schema-connection-status";
@@ -23,7 +29,7 @@ import { SessionCookieJar } from "../request-workbench/model/cookie-jar";
 import { createDependencyAuthRuntime } from "../request-workbench/services/dependency-auth-runtime";
 import type { RequestAuth } from "../request-workbench/model/request-auth";
 import { getRequestSettings, type RequestDraft } from "../request-workbench/model/request";
-import { snapshotSchemaRequest, withSchemaAuthContext, applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
+import { withSchemaAuthContext, applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withWorkspaceAuthDefault } from "../request-workbench/model/request-workspace-config";
 import { executeRequest } from "../request-workbench/services/execute-request";
 import { CookieJarEditor } from "../request-workbench/components/cookie-jar-editor";
 import { importCurl, isCurlCommand, type CurlImport } from "../request-workbench/model/curl-import";
@@ -42,14 +48,12 @@ import { ExtensionDocumentHost } from "./components/extension-document-host";
 import { Collapsible } from "../../shared/components/ui/collapsible";
 import { cn } from "../../shared/lib/cn";
 import { useWorkspaces } from "./hooks/use-workspaces";
-import { secretRef } from "../../storage/secrets";
-import { resolveEnvironmentSecrets } from "../../application/environment-secrets";
 import { importWorkspace as importWorkspaceSource } from "../../application/import-workspace";
 import { ImportReportDialog } from "./components/import-report-dialog";
 import { importEnvironment as importEnvironmentSource } from "../../application/import-environment";
 import type { ImportSource, ImportReport } from "../../importing/contracts";
 import type { ProjectResource } from "../../domain/project";
-import { useApplicationServices } from "../../app/application-services-context";
+import { ApplicationServicesProvider, useApplicationServices } from "../../app/application-services-context";
 import { useExtensionRegistry } from "../../extension-api/extension-context";
 import {
   selectSidebarActivity,
@@ -145,12 +149,14 @@ function mergeVariableCache(workspace: Workspace, incoming: Workspace["dynamicVa
 export function WorkspaceWorkbench() {
   const updates = useUpdates();
   const [tabStates] = useState(() => new TabStateStore());
-  const services = useApplicationServices();
+  const rootServices = useApplicationServices();
   const extensions = useExtensionRegistry();
-  const { persistence } = services;
+  const { persistence } = rootServices;
   const historyRevision = useSyncExternalStore(persistence.history?.subscribe ?? noHistorySubscription, persistence.history?.getSnapshot ?? noHistoryRevision);
-  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saving, retry, retrySave, flush } = useWorkspaces();
+  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets } = useWorkspaces();
   useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
+  const [upgradeConfirmation, setUpgradeConfirmation] = useState<{ run: () => Promise<void>; cancel: () => void } | null>(null);
+  const [explicitSaving, setExplicitSaving] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [sessions, setSessions] = useState<Record<string, RequestSession>>({});
   const [historyConflict, setHistoryConflict] = useState<{ workspaceId: string; historical: RequestDocument; change?: (request: RequestDraft) => RequestDraft; send?: { operationName?: string } } | null>(null);
@@ -170,19 +176,42 @@ export function WorkspaceWorkbench() {
   const { notify, dismiss } = useToasts();
   const [retryingSave, setRetryingSave] = useState(false);
   useEffect(() => {
+    if (!store) return;
+    const notice = persistence.getStorageNotice();
+    if (!notice) return;
+    const marker = `purr-storage-v2-notice:${notice.legacyDirectory}`;
+    try { if (localStorage.getItem(marker)) return; } catch { /* Notice remains dismissible for this session. */ }
+    notify({ id: "storage-v2-start", title: "Fresh protected storage", duration: 0,
+      description: `Purr now uses a new protected workspace store. Previous workspaces remain in ${notice.legacyDirectory}. You can create new workspaces or attach project folders; previous local secrets and history are not imported.`,
+      onClose: () => { try { localStorage.setItem(marker, "seen"); } catch { /* No storage fallback. */ } },
+    });
+  }, [store, persistence, notify]);
+  useEffect(() => {
+    if (!store) return;
+    const state = persistence.getGlobalProtectedState();
+    if (state.status === "available") { dismiss("global-storage-unavailable"); return; }
+    notify({ id: "global-storage-unavailable", title: "Global variables unavailable", variant: "warning", description: protectedStorageMessage(state) });
+  }, [store, persistence, notify, dismiss]);
+  useEffect(() => {
     if (!actionError) { dismiss("workspace-action-error"); return; }
     notify({ id: "workspace-action-error", title: "Action failed", description: actionError, variant: "error", onClose: () => setActionError("") });
   }, [actionError, notify, dismiss]);
   useEffect(() => {
     if (!saveError) { dismiss("workspace-save-error"); return; }
-    notify({ id: "workspace-save-error", title: "Could not save workspace", description: saveError, variant: "error",
+    notify({ id: "workspace-save-error", title: saveNeedsRecovery ? "Save needs recovery" : "Could not save workspace", description: saveError, variant: "error",
       actions: <Button variant="brand" size="sm" disabled={retryingSave} onClick={() => {
         setRetryingSave(true);
         void retrySave().catch(() => {}).finally(() => setRetryingSave(false));
-      }}>{retryingSave ? "Retrying…" : "Reload and retry"}</Button>,
+      }}>{retryingSave ? "Retrying…" : saveNeedsRecovery ? "Check and retry" : "Reload and retry"}</Button>,
     });
-  }, [saveError, retryingSave, retrySave, notify, dismiss]);
+  }, [saveError, saveNeedsRecovery, retryingSave, retrySave, notify, dismiss]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  const services = useMemo(() => workspace?.id ? {
+    ...rootServices,
+    httpTransport: workspaceHttpTransport(rootServices.httpTransport, workspace.id, workspace.responseStorage),
+  } : rootServices, [rootServices, workspace?.id, workspace?.responseStorage]);
+  const workspaceStatus = workspace ? persistence.getWorkspaceStatus(workspace.id) : undefined;
+  const writable = !workspaceStatus || workspaceStatus.publicWritable;
   useEffect(() => {
     setVariableScope("effective");
     setVariableSelection(null);
@@ -229,7 +258,7 @@ export function WorkspaceWorkbench() {
   const currentDocument = activeDocument && isRequestDocument(activeDocument) ? activeDocument : undefined;
   const sourceDocuments = useMemo(() => workspace?.documents
     .filter((document): document is RequestDocument => isRequestDocument(document) && document.saved && !document.historical)
-    .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
+    .map((document) => ({ id: document.id, name: getDocumentDisplayName(document), kind: document.kind, responseStorage: document.responseStorage, request: document.savedRequest ?? document.request })) ?? [], [workspace?.documents]);
   const linkedSchema = workspace?.documents.find((item): item is SchemaDocument => item.kind === "schema" && item.id === currentDocument?.request.graphql?.schemaId);
   const schemaSdl = linkedSchema?.sdl;
   const schema = useMemo(() => { try { return schemaSdl ? parseGraphqlSchema(schemaSdl) : undefined; } catch { return undefined; } }, [schemaSdl]);
@@ -261,6 +290,7 @@ export function WorkspaceWorkbench() {
     jars.current.set(workspace.id, created);
     return created;
   }, [workspace?.id]);
+  if (cookieJar) cookieJar.available = !workspaceStatus || workspaceStatus.runtimeProtectedState.status === "available" && !workspaceStatus.unavailableLocal.some((row) => row.table === "cookie_jar" || row.id === "*");
   const dynamicVariableSessionCache = useMemo(() => {
     const workspaceId = workspace?.id ?? "";
     const existing = dynamicSessionCaches.current.get(workspaceId);
@@ -295,18 +325,6 @@ export function WorkspaceWorkbench() {
       profile.id === profileId ? { ...profile, value: auth } : profile) },
     documents: current.documents.map((item) => item.id === profileId && item.kind === "schema" ? { ...item, auth } : item),
   }));
-  const removeUnusedVariableSecrets = (before: readonly Variable[], after: readonly Variable[]) => {
-    const retained = new Set(after.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
-    const removed = before.flatMap((variable) => {
-      if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retained.has(variable.secretRef)) return [variable.secretRef];
-      if (variable.kind === "dynamic-request" && variable.sensitive && !after.some((candidate) => candidate.id === variable.id
-        && candidate.kind === "dynamic-request" && candidate.sensitive && JSON.stringify(candidate) === JSON.stringify(variable)))
-        return Object.entries(workspace?.dynamicVariableCache ?? {}).filter(([key]) => key.startsWith(`${variable.id}:`))
-          .map(([, entry]) => secretRef(workspace?.id ?? "global", `dynamic-variables/${variable.id}`, `cache/${entry.environmentId ?? "none"}`));
-      return [];
-    });
-    if (removed.length) void Promise.all(removed.map((reference) => persistence.secure.delete(reference))).catch(() => setActionError("Could not remove an obsolete variable secret."));
-  };
   const updateDocument = (change: (document: RequestDocument) => RequestDocument) => {
     if (!currentDocument) return;
     update((current) => ({ ...current, documents: current.documents.map((document) => document.id === currentDocument.id && isRequestDocument(document) ? change(document) : document) }));
@@ -556,6 +574,7 @@ export function WorkspaceWorkbench() {
     setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix) || !ids.has(key.slice(prefix.length)))));
   };
   const deleteById = (id: string) => {
+    if (!writable) return;
     const release = (variable: Variable): Variable => variable.kind === "dynamic-request" && variable.documentId === id
       ? { ...variable, documentId: "" } : variable;
     setStore((current) => current ? { ...current,
@@ -597,26 +616,54 @@ export function WorkspaceWorkbench() {
   const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => closeWorkspaceTab(current, "variables")); };
   const showEnvironment = async () => {
     const existing = workspace?.environments.find((item) => item.id === workspace.activeEnvironmentId);
-    try {
-      if (existing) {
-        const environment = await resolveEnvironmentSecrets(existing, persistence.secure);
-        update((current) => ({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }));
-        openVariables(`environment:${environment.id}`, null, null);
-      } else openVariables("effective", null, null);
-    }
-    catch { setActionError("Could not unlock environment secrets."); }
+    openVariables(existing ? `environment:${existing.id}` : "effective", null, null);
+  };
+  const withRequestConfig = (current: Workspace, requestConfig: Workspace["requestConfig"]): Workspace => {
+    const reconcile = (request: RequestDraft, kind: "http" | "graphql") => {
+      const selected = request.auth.type === "inherit" ? request.auth.inherit.profileId : undefined;
+      if (!selected || requestConfig.auth.some((profile) => profile.id === selected && (profile.scope === "all" || profile.scope === kind)))
+        return request;
+      const fallback = getWorkspaceAuth(requestConfig, kind);
+      return { ...request, auth: fallback
+        ? { ...request.auth, type: "inherit" as const, inherit: { source: "workspace" as const, profileId: fallback.id } }
+        : { ...request.auth, type: "none" as const } };
+    };
+    return { ...current, requestConfig,
+      documents: current.documents.map((document) => {
+        if (!isRequestDocument(document) || document.historical) return document;
+        const request = reconcile(!document.saved ? withWorkspaceAuthDefault(document.request, document.kind, requestConfig) : document.request, document.kind);
+        const savedRequest = document.savedRequest ? reconcile(document.savedRequest, document.kind) : document.savedRequest;
+        return { ...document, request, savedRequest };
+      }),
+    };
+  };
+  const saveWithConfirmation = async (candidate: Workspace, upgrade = false, secrets?: SecretPreparationStore) => {
+    if (!writable) throw new Error("Protected storage is unavailable. Open Workspace settings → Secrets and retry before saving.");
+    const commit = async () => {
+      setExplicitSaving(true);
+      try { const saved = await saveExplicitWorkspace(candidate, upgrade, secrets); setUpgradeConfirmation(null); return saved; }
+      finally { setExplicitSaving(false); }
+    };
+    if (!persistence.getWorkspaceStatus(candidate.id).migrationRequired) return await commit();
+    return await new Promise<Workspace>((resolve, reject) => setUpgradeConfirmation({
+      run: async () => { resolve(await commit()); },
+      cancel: () => { setUpgradeConfirmation(null); reject(new Error("Workspace upgrade cancelled. Your entries are preserved.")); },
+    }));
+  };
+  const requestExplicitSave = (candidate: Workspace, upgrade = false, after?: () => void) => {
+    void saveWithConfirmation(candidate, upgrade).then(after).catch(() => {});
   };
   const saveCurrentDocument = () => {
+    if (!workspace || explicitSaving) return;
     if (activeDocument && isExtensionDocument(activeDocument)) {
-      update((current) => ({ ...current, documents: current.documents.map((document) => document.id === activeDocument.id && isExtensionDocument(document)
-        ? { ...document, saved: true, savedConfigVersion: document.configVersion, savedConfig: structuredClone(document.config), updatedAt: new Date().toISOString() }
-        : document) }));
+      requestExplicitSave({ ...workspace, documents: workspace.documents.map((document) => document.id === activeDocument.id && isExtensionDocument(document)
+        ? { ...document, saved: true, savedConfigVersion: document.configVersion, savedConfig: structuredClone(document.config), updatedAt: new Date().toISOString() } : document) });
       return;
     }
     if (!currentDocument || currentDocument.historical) return;
     if (!currentDocument.saved) { setDialog("save-document"); return; }
-    if (!isDocumentDirty(currentDocument)) return;
-    updateDocument((document) => ({ ...document, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() }));
+    requestExplicitSave({ ...workspace, documents: workspace.documents.map((document) => document.id === currentDocument.id && isRequestDocument(document)
+      ? { ...document, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() } : document) });
   };
   const actions: PaletteAction[] = [
     ...(activeDocument && isExtensionDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)) ? [
@@ -672,24 +719,11 @@ export function WorkspaceWorkbench() {
     {loadError ? <div className="max-w-ui-dialog space-y-ui-4"><p role="alert">{loadError}</p><Button onClick={retry}>Retry loading workspaces</Button></div> : <p>Opening workspace…</p>}
   </div>;
   const changeEnvironment = async (id: string | null, environments = workspace.environments) => {
-    try {
-      const selected = environments.find((item) => item.id === id);
-      const resolved = selected ? await resolveEnvironmentSecrets(selected, persistence.secure) : undefined;
-      update((current) => ({ ...current,
-    activeEnvironmentId: id, environments: environments.map((item) => item.id === resolved?.id ? resolved : item),
-    documents: current.documents.map((document) => isRequestDocument(document) ? ({ ...document, request: { ...document.request, auth: {
-      ...document.request.auth, oauth2: { ...document.request.auth.oauth2, token: null },
-    } } }) : document),
-  }));
-    } catch { setActionError("Could not unlock environment secrets."); }
+    update((current) => ({ ...current, activeEnvironmentId: id, environments,
+      documents: current.documents.map((document) => isRequestDocument(document) ? { ...document, request: { ...document.request, auth: { ...document.request.auth, oauth2: { ...document.request.auth.oauth2, token: null } } } } : document) }));
   };
-  const variablesForEnvironment = async (id: string | null) => {
-    const environment = workspace.environments.find((item) => item.id === id);
-    const resolved = environment ? await resolveEnvironmentSecrets(environment, persistence.secure) : undefined;
-    const environments = resolved ? workspace.environments.map((item) => item.id === resolved.id ? resolved : item) : workspace.environments;
-    if (resolved && resolved !== environment) update((current) => ({ ...current, environments: current.environments.map((item) => item.id === resolved.id ? resolved : item) }));
-    return getVariableNamespace({ ...workspace, environments }, store.globalVariables, id);
-  };
+  const variablesForEnvironment = async (id: string | null) => getVariableNamespace(workspace, store.globalVariables, id);
+  const variableStates = Object.fromEntries(getEffectiveVariables(workspace, store.globalVariables).flatMap((variable) => variable.kind === "static" && variable.enabled && variable.secretState ? [[variable.name.trim(), variable.secretState]] : []));
   const openVariableDefinition = (id: string) => {
     const scope: VariableScope = store.globalVariables.some((variable) => variable.id === id) ? "global"
       : workspace.variables.some((variable) => variable.id === id) ? "workspace"
@@ -714,6 +748,17 @@ export function WorkspaceWorkbench() {
     }
   };
   const importWorkspace = async (source: ImportSource) => {
+    if (source.kind === "directory" || source.kind === "path" || source.kind === "file") {
+      await flush();
+      const opened = await persistence.tryOpenDirectory(source.path);
+      if (opened) {
+        updates.leaveTab();
+        setStore((current) => current ? { ...current, activeWorkspaceId: opened.id,
+          workspaces: current.workspaces.some((item) => item.id === opened.id) ? current.workspaces : [...current.workspaces, opened] } : current);
+        setDialog(null); setImportResult(null);
+        return;
+      }
+    }
     const { workspace: imported, report } = await importWorkspaceSource(source, persistence, services.imports, store.globalVariables);
     setStore((current) => current ? { ...current, activeWorkspaceId: imported.id,
       workspaces: [...current.workspaces.filter((candidate) => candidate.id !== imported.id), imported] } : current);
@@ -721,14 +766,16 @@ export function WorkspaceWorkbench() {
     setImportResult(report);
   };
   const importEnvironment = async (source: ImportSource) => {
+    if (!writable) throw new Error("Protected storage is unavailable. Retry before importing an environment.");
     await flush();
-    const imported = await importEnvironmentSource(source, workspace, store.globalVariables, persistence, services.imports);
+    const target = persistence.getWorkspaceStatus(workspace.id).migrationRequired ? await saveWithConfirmation(workspace, true) : workspace;
+    const imported = await importEnvironmentSource(source, target, store.globalVariables, persistence, services.imports);
     setStore((current) => current ? { ...current, workspaces: current.workspaces.map((candidate) => candidate.id === imported.workspace.id
       ? { ...candidate, environments: [...candidate.environments, ...imported.workspace.environments.filter((item) => item.id === imported.environmentId)] } : candidate) } : current);
     setVariableScope(`environment:${imported.environmentId}`); setVariableSelection(null); setVariableDraft(null);
     setDialog(null); setImportResult(imported.report);
   };
-  return <div role="region" aria-label="Workspace" aria-busy={saving} className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
+  return <ApplicationServicesProvider services={services}><div role="region" aria-label="Workspace" aria-busy={saving} className="flex h-full min-h-0 flex-col overflow-hidden bg-purr-base font-ui text-content-primary">
     <WorkspaceHeader store={store} workspace={workspace} onWorkspace={(id) => setStore((current) => current ? { ...current, activeWorkspaceId: id } : current)}
       cookieJar={cookieJar!} cookiesActive={workspace.ui.cookiesTabActive} settingsActive={workspace.ui.settingsTabActive} variablesActive={workspace.ui.variablesTabActive} onCookies={openCookies} onVariables={() => openVariables("effective", null, null)}
       onNewWorkspace={() => setDialog("new-workspace")}
@@ -766,6 +813,7 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, ui: { ...current.ui, sidebarWidth: Math.max(12, Math.min(28, current.ui.sidebarWidth + (event.key === "ArrowRight" ? 1 : -1))) } }));
       }} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {!writable ? <div role="status" className="flex items-center justify-between gap-ui-3 border-b border-border-subtle bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-content-secondary"><span>{protectedStorageMessage(workspaceStatus!.protectedState)} Workspace definitions remain readable; editing and Send are unavailable.</span><Button variant="brand" size="sm" onClick={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "secrets"); openSettings(); }}>Required local secrets</Button></div> : null}
         <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
           onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
@@ -773,11 +821,40 @@ export function WorkspaceWorkbench() {
         <div hidden={Boolean(updates.activeTab)} id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
           <WorkspaceIntegrationsProvider workspaceId={workspace.id} request={currentDocument?.request} workspacePropagation={workspace.requestConfig.tracePropagation}
             definitions={requestConfig.integrations}
-            authContext={{ variables, workspaceProfiles: requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
+            authContext={{ variables, variableStates, secretStore: persistence.secure, workspaceProfiles: requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
             addProvider={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.catalog", true); openSettings(); }}>
           <TemplateVariableProvider value={{ definitions: getEffectiveVariables(workspace, store.globalVariables), onOpenVariable: openVariableDefinition, onCreateMissingVariable: createMissingVariableDefinition }}>
           <TabStateProvider store={tabStates} id={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`} key={`${workspace.id}:${workspace.ui.settingsTabActive ? "settings" : workspace.ui.variablesTabActive ? "variables" : workspace.ui.cookiesTabActive ? "cookies" : activeDocument?.id}`}>
-          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
+          {workspace.ui.settingsTabActive ? <WorkspaceSettings workspaceId={workspace.id} onImportedSecrets={applyImportedSecrets} onBeforeSecretTransfer={flush} responseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, responseStorage }))}
+            variableStates={variableStates} onUpgrade={() => requestExplicitSave(workspace, true)}
+            secrets={{ workspace, project: persistence.getProject(workspace.id), globalVariables: store.globalVariables, secure: persistence.secure,
+              migrationRequired: workspaceStatus!.migrationRequired, protectedState: workspaceStatus!.protectedState, runtimeProtectedState: workspaceStatus!.runtimeProtectedState,
+              onOpenOwner: (id, environmentId, field) => {
+                if (id === workspace.id) { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", field?.startsWith("Header ") ? "headers" : "auth"); return; }
+                if (workspace.documents.some((document) => document.id === id)) { update((current) => {
+                  const opened = openDocument(current, id);
+                  const section = field?.startsWith("Header ") ? "headers" : ["bearer", "password", "api-key", "client-secret"].includes(field ?? "") ? "auth" : undefined;
+                  return section ? { ...opened, documents: opened.documents.map((document) => document.id === id && isRequestDocument(document) ? { ...document, ui: { ...document.ui, requestSection: section as "headers" | "auth" } } : document) } : opened;
+                }); return; }
+                const integration = workspace.extraResources?.find((resource) => resource.id === id && resource.kind === "integration");
+                if (integration) { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "integrations"); tabStates.scope(`${workspace.id}:settings`).set("settings.editingIntegration", integration); return; }
+                if (workspace.requestConfig.auth.some((profile) => profile.id === id) || workspace.requestConfig.headers.some((header) => header.id === id)) { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", workspace.requestConfig.auth.some((profile) => profile.id === id) ? "auth" : "headers"); return; }
+                if (environmentId) openVariables(`environment:${environmentId}`, id, null); else openVariableDefinition(id);
+              },
+              onCreateSecret: async (name, value) => {
+                if (!name.trim() || !value) throw new Error("Secret name and value are required.");
+                if (workspace.variables.some((variable) => variable.name.trim() === name.trim())) throw new Error("A workspace variable with this name already exists.");
+                const id = crypto.randomUUID();
+                const variable: Variable = { id, name: name.trim(), kind: "static", enabled: true, sensitive: true, value, loaded: true, secretRef: secretRef(workspace.id, "variables", id) };
+                const next = { ...workspace, variables: [...workspace.variables, variable] };
+                await saveWithConfirmation({ ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) });
+              },
+              onSetValue: async (ref, value) => { await persistence.setSecretValue(workspace, ref, value); setStore((current) => current ? invalidateSecretBuffers(current, ref) : current); },
+              onRetry: async () => {
+                await retryProtectedStorage();
+                const status = persistence.getWorkspaceStatus(workspace.id);
+                return status.protectedState.status !== "available" ? status.protectedState : status.runtimeProtectedState;
+              } }} name={workspace.name} description={workspace.description} config={workspace.requestConfig}
             schemaConnections={requestConfig.schemaConnections} defaultGraphqlSchemaId={workspace.defaultGraphqlSchemaId}
             onDefaultGraphqlSchemaChange={(defaultGraphqlSchemaId) => update((current) => ({ ...current, defaultGraphqlSchemaId }))}
             integrations={(workspace.extraResources ?? []).filter((resource) => resource.kind === "integration")}
@@ -786,35 +863,47 @@ export function WorkspaceWorkbench() {
             onNameChange={(name) => update((current) => ({ ...current, name }))}
             onDescriptionChange={(description) => update((current) => ({ ...current, description }))}
             onIntegrationChange={(id, change) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.kind === "integration" && resource.id === id ? { ...resource, ...change } : resource) }))}
-            onIntegrationSave={(value) => update((current) => ({ ...current, extraResources: [...(current.extraResources ?? []).filter((resource) => resource.id !== value.id), value] }))}
+            onIntegrationSave={async (value, secrets) => {
+              const next = { ...workspace, extraResources: [...(workspace.extraResources ?? []).filter((resource) => resource.id !== value.id), value] };
+              await saveWithConfirmation(next, false, secrets);
+            }}
             onIntegrationDelete={(id) => update((current) => ({ ...current, extraResources: (current.extraResources ?? []).filter((resource) => resource.kind !== "integration" || resource.id !== id) }))}
-            onConfigChange={(requestConfig) => update((current) => {
-              const reconcile = (request: RequestDraft, kind: "http" | "graphql") => {
-                const selected = request.auth.type === "inherit" ? request.auth.inherit.profileId : undefined;
-                if (!selected || requestConfig.auth.some((profile) => profile.id === selected && (profile.scope === "all" || profile.scope === kind)))
-                  return request;
-                const fallback = getWorkspaceAuth(requestConfig, kind);
-                return { ...request, auth: fallback
-                  ? { ...request.auth, type: "inherit" as const, inherit: { source: "workspace" as const, profileId: fallback.id } }
-                  : { ...request.auth, type: "none" as const } };
-              };
-              return { ...current, requestConfig,
-                documents: current.documents.map((document) => {
-                  if (!isRequestDocument(document) || document.historical) return document;
-                  const request = reconcile(!document.saved ? withWorkspaceAuthDefault(document.request, document.kind, requestConfig) : document.request, document.kind);
-                  const savedRequest = document.savedRequest ? reconcile(document.savedRequest, document.kind) : document.savedRequest;
-                  return { ...document, request, savedRequest };
-                }),
-              };
-            })} onDelete={async () => { try {
-              await deleteWorkspace(workspace.id); jars.current.delete(workspace.id); dynamicSessionCaches.current.delete(workspace.id);
+            onConfigChange={(requestConfig) => update((current) => withRequestConfig(current, requestConfig))}
+            onConfigSave={async (requestConfig) => { await saveWithConfirmation(withRequestConfig(workspace, requestConfig)); }} onDelete={async () => { try {
+              const result = await deleteWorkspace(workspace.id); jars.current.delete(workspace.id); dynamicSessionCaches.current.delete(workspace.id);
+              if (result.cleanupPending) setActionError("Workspace removed. Its folder could not be cleaned up yet; Purr will retry on restart.");
               setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${workspace.id}:`))));
             } catch (cause) { setActionError(cause instanceof Error ? cause.message : String(cause)); } }} />
-          : workspace.ui.variablesTabActive ? <VariablesExplorer onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
-            onWorkspaceVariablesChange={(variables) => { removeUnusedVariableSecrets(workspace.variables, variables); update((current) => {
+          : workspace.ui.variablesTabActive ? <VariablesExplorer globalAvailable={persistence.getGlobalPublicWritable()} onImportEnvironment={() => setDialog("import-environment")} key={workspace.id} workspace={workspace} workspaces={store.workspaces} globalVariables={store.globalVariables} scope={variableScope} selectedId={variableSelection} draft={variableDraft} documents={sourceDocuments} requestConfig={requestConfig} onOpenHistory={(id) => { void openHistory(id); }}
+            onSaveVariables={async (scope, variables) => {
+              if (scope === "global") {
+                if (!persistence.getGlobalPublicWritable()) throw new Error("Global variable definitions are unavailable. Retry before editing global variables.");
+                const savedWorkspace = await saveWithConfirmation(workspace);
+                const renames = variableRenames(store.globalVariables, variables);
+                const globalVariables = renameVariableDefinitions(variables, renames);
+                const nextStore = { ...store, globalVariables, workspaces: store.workspaces.map((candidate) => {
+                  const next = renameWorkspaceReferences(candidate.id === savedWorkspace.id ? savedWorkspace : candidate, renames);
+                  return { ...next, dynamicVariableCache: pruneVariableCache(next, globalVariables) };
+                }) };
+                await persistence.save(nextStore);
+                setStore((current) => current ? { ...current, globalVariables, workspaces: current.workspaces.map((candidate) => {
+                  const before = store.workspaces.find((item) => item.id === candidate.id);
+                  const saved = nextStore.workspaces.find((item) => item.id === candidate.id);
+                  if (saved && candidate === before) return saved;
+                  const next = renameWorkspaceReferences(candidate, renames);
+                  return { ...next, dynamicVariableCache: pruneVariableCache(next, globalVariables) };
+                }) } : current);
+                return;
+              }
+              const environmentId = scope.startsWith("environment:") ? scope.slice("environment:".length) : undefined;
+              const prior = environmentId ? workspace.environments.find((item) => item.id === environmentId)?.variables ?? [] : workspace.variables;
+              const next = renameWorkspaceReferences(environmentId ? { ...workspace, environments: workspace.environments.map((item) => item.id === environmentId ? { ...item, variables } : item) } : { ...workspace, variables }, variableRenames(prior, variables));
+              await saveWithConfirmation({ ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) });
+            }}
+            onWorkspaceVariablesChange={(variables) => { update((current) => {
               const next = renameWorkspaceReferences({ ...current, variables }, variableRenames(current.variables, variables)); return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) };
             }); }}
-            onGlobalVariablesChange={(globalVariables) => { removeUnusedVariableSecrets(store.globalVariables, globalVariables); setStore((current) => {
+            onGlobalVariablesChange={(globalVariables) => { if (!writable) return; setStore((current) => {
               if (!current) return current;
               const renames = variableRenames(current.globalVariables, globalVariables);
               const nextGlobals = renameVariableDefinitions(globalVariables, renames);
@@ -824,14 +913,11 @@ export function WorkspaceWorkbench() {
               }) };
             }); }}
             onEnvironmentChange={(environment) => {
-              const previous = workspace.environments.find((item) => item.id === environment.id);
-              if (previous) removeUnusedVariableSecrets(previous.variables, environment.variables);
               update((current) => { const next = renameWorkspaceReferences({ ...current, environments: current.environments.map((item) => item.id === environment.id ? environment : item) }, variableRenames(current.environments.find((item) => item.id === environment.id)?.variables ?? [], environment.variables));
                 return { ...next, dynamicVariableCache: pruneVariableCache(next, store.globalVariables) }; });
             }}
             onDeleteEnvironment={(id) => {
-              const removed = workspace.environments.find((environment) => environment.id === id);
-              if (removed) removeUnusedVariableSecrets(removed.variables, []);
+              if (!writable) return;
               const releaseEnvironment = (variable: Variable): Variable => variable.kind === "dynamic-request" && variable.environment.type === "specific" && variable.environment.environmentId === id
                 ? { ...variable, environment: { type: "current" } } : variable;
               setStore((current) => current ? { ...current,
@@ -851,12 +937,13 @@ export function WorkspaceWorkbench() {
             onDraftChange={setVariableDraft}
             onResolveVariable={async (variable, onSteps) => {
               if (variable.kind !== "dynamic-request") return;
+              if (!writable) throw new Error("Protected storage is unavailable. Retry before resolving variables.");
               const root = { id: `variable-${variable.id}`, name: variable.name, kind: "http" as const,
                 request: { ...createHttpDocument().request, url: `http://purr.local/{{${variable.name}}}` } };
               const releaseAttachments = persistence.history?.retainAttachments(workspace.id);
               try {
-                const resolution = await resolveDynamicVariables({ root, onSteps, workspaceConfig: requestConfig, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
-                  onExecuted: async (record) => persistence.history?.append(workspace.id, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: snapshotSchemaRequest(record.document.request, requestConfig) }),
+                const resolution = await resolveDynamicVariables({ root, onSteps, secretStore: persistence.secure, workspaceConfig: requestConfig, environmentId: workspace.activeEnvironmentId, documents: sourceDocuments,
+                  onExecuted: async (record) => persistence.history?.append(workspace.id, { ...record, documentId: record.document.id, name: record.document.name, kind: record.document.kind, editor: { ...record.document.request, ...(record.document.request.graphql ? { graphql: { ...record.document.request.graphql, schemaId: undefined } } : {}) } }),
                   onHistoryError: () => setActionError("Could not save dependency history."),
                   variablesForEnvironment, persistentCache: workspace.dynamicVariableCache, sessionCache: dynamicVariableSessionCache,
                   responseContent: services.responseContent,
@@ -866,14 +953,14 @@ export function WorkspaceWorkbench() {
                     const auth = getWorkspaceAuth(requestConfig, document.kind,
                       document.request.auth.type === "inherit" ? document.request.auth.inherit.profileId : undefined);
                     const context = withSchemaAuthContext(document.request, requestConfig, {
-                      variables: resolvedVariables, sensitiveVariableNames: scoped.filter((item) => item.sensitive).map((item) => item.name),
+                      variables: resolvedVariables, secretStore: persistence.secure, variableStates: Object.fromEntries(scoped.flatMap((item) => item.kind === "static" && item.enabled && item.secretState ? [[item.name.trim(), item.secretState]] : [])), sensitiveVariableNames: scoped.filter((item) => item.sensitive).map((item) => item.name),
                       requestDocumentId: document.id,
                       workspaceProfiles: getWorkspaceAuthProfiles(requestConfig, document.kind).map((profile) => ({ id: profile.id, name: profile.name || workspace.name, auth: profile.value })),
                       workspace: document.request.workspace.authEnabled && auth
                         ? { id: auth.id, name: auth.name || workspace.name, auth: auth.value } : undefined,
                     });
                     const outgoing = applyWorkspaceRequestConfig(document.request, document.kind, requestConfig);
-                    return executeRequest(outgoing, context, cookieJar!, createDependencyAuthRuntime(outgoing, context, services.httpTransport, services.responseContent), services.httpTransport, services.responseContent, { onDispatch: dispatch.onDispatch }, services.requestBodies);
+                    return executeRequest(outgoing, context, cookieJar!, createDependencyAuthRuntime(outgoing, context, services.httpTransport, services.responseContent), services.httpTransport, services.responseContent, { responseStorage: resolveResponseStoragePolicy({ workspace: workspace.responseStorage, document: sourceDocuments.find((item) => item.id === document.id)?.responseStorage }), onDispatch: dispatch.onDispatch, onPrepared: dispatch.onPrepared }, services.requestBodies);
                   } });
                 update((current) => mergeVariableCache(current, resolution.cache));
                 return resolution.steps;
@@ -891,15 +978,16 @@ export function WorkspaceWorkbench() {
             onChange={(change) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && isExtensionDocument(item)
               ? { ...item, ...change, updatedAt: new Date().toISOString() } : item) }))} />
           : activeDocument?.kind === "schema" ? <SchemaExplorer key={`${workspace.id}:${activeDocument.id}:${contextKey}`} document={activeDocument}
-            variables={variables} workspaceConfig={requestConfig} cookieJar={cookieJar!}
+            workspaceResponseStorage={workspace.responseStorage ?? "plaintext"} publicWritable={writable} variables={variables} variableStates={variableStates} protectedState={workspaceStatus!.protectedState} workspaceConfig={requestConfig} cookieJar={cookieJar!}
             environmentId={workspace.activeEnvironmentId} isDefault={workspace.defaultGraphqlSchemaId === activeDocument.id}
             onDefaultChange={() => update((current) => ({ ...current, defaultGraphqlSchemaId: current.defaultGraphqlSchemaId === activeDocument.id ? undefined : activeDocument.id }))}
             onChange={(patch) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === activeDocument.id && item.kind === "schema" ? { ...item, ...patch, ...(item.sdl && !item.cacheIdentity && (patch.endpoint !== undefined || patch.auth || patch.schemaSource || patch.introspectionHeaders) ? { cacheIdentity: "changed" } : {}) } : item) }))}
             onWorkspaceAuthChange={updateWorkspaceAuth}
             onCreateRequest={createRequestFromSchema} />
           : currentDocument ? <div className="flex h-full min-h-0 flex-col">
+            {workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id) ? <p role="status" className="m-ui-0 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 text-ui-sm text-content-secondary">This document has unavailable local state. Editing is disabled until Retry / Unlock in Workspace settings → Secrets restores it. Other documents remain usable.</p> : null}
             <div className="min-h-0 flex-1">{currentDocument.historical?.readOnly && currentDocument.lastResponse ? <div className="h-full min-h-0 bg-purr-base p-ui-2"><ResponseViewer response={currentDocument.lastResponse} workspaceId={workspace.id} documentId={currentDocument.historical.documentId} onOpenHistory={(id) => { void openHistory(id, true); }} historyEntryId={currentDocument.historical.entryId} historyStartedAt={currentDocument.historical.startedAt}
-              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
+              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench localUnavailable={workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id)} publicWritable={writable} responseStorage={currentDocument.responseStorage ?? "inherit"} workspaceResponseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === currentDocument.id && isRequestDocument(item) ? { ...item, responseStorage } : item) }))} protectedState={workspaceStatus!.protectedState} dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={currentDocument.historical ? { ...requestConfig, schemaConnections: [] } : requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.historical?.documentId ?? currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             historyEntryId={currentDocument.historical?.entryId} historyStartedAt={currentDocument.historical?.startedAt}
@@ -946,6 +1034,10 @@ export function WorkspaceWorkbench() {
       </div>
     </div>
 
+    {upgradeConfirmation && <Modal title="Upgrade workspace format" onClose={() => { if (!explicitSaving) upgradeConfirmation.cancel(); }}>
+      <div className="space-y-ui-4 p-ui-5"><p className="text-ui-sm text-content-secondary">This Save upgrades the entire workspace from format v1 to v2. Known credential literals will move into local secret storage and public files will keep references. Previous Git history and other copies are unchanged. Other devices must provide their own local values.</p>
+        <div className="flex justify-end gap-ui-2"><Button variant="secondary" disabled={explicitSaving} onClick={() => upgradeConfirmation.cancel()}>Cancel</Button><Button variant="brand" disabled={explicitSaving} onClick={() => void upgradeConfirmation.run().catch(() => {})}>{explicitSaving ? "Upgrading…" : "Upgrade and save"}</Button></div>
+      </div></Modal>}
     {historyConflict && <Modal title="This document has unsaved changes" onClose={() => setHistoryConflict(null)}>
       <div className="space-y-ui-4 p-ui-5">
         <p className="text-ui-md text-content-secondary">Use the historical request as a working copy? Replacing current changes does not save the document. The historical execution stays unchanged.</p>
@@ -957,8 +1049,10 @@ export function WorkspaceWorkbench() {
       </div>
     </Modal>}
     {dialog === "palette" && <CommandPalette workspace={workspace} actions={actions} onOpenDocument={(id) => update((current) => previewDocument(current, id))} onClose={() => setDialog(null)} />}
-    {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={(name) => {
+    {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={async (name) => {
       const created = createWorkspace(name);
+      await flush();
+      await persistence.save({ ...store, activeWorkspaceId: created.id, workspaces: [...store.workspaces, created] });
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
@@ -974,7 +1068,7 @@ export function WorkspaceWorkbench() {
     {dialog === "import-environment" && <ImportWorkspaceDialog target="environment" onClose={() => setDialog(null)} onImport={importEnvironment} />}
     {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} />}
     {dialog === "save-document" && currentDocument && <NameDialog title="Save document" label="Document name" initial={getDocumentDisplayName(currentDocument)} onClose={() => setDialog(null)} onSave={(name) => {
-      updateDocument((document) => ({ ...document, name, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() })); setDialog(null);
+      requestExplicitSave({ ...workspace, documents: workspace.documents.map((document) => document.id === currentDocument.id && isRequestDocument(document) ? { ...document, name, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() } : document) }, false, () => setDialog(null));
     }} />}
     {dialog && typeof dialog === "object" && "renameDocument" in dialog && (() => {
       const document = workspace.documents.find((item) => item.id === dialog.renameDocument);
@@ -992,5 +1086,5 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, extraResources: (current.extraResources ?? []).map((resource) => resource.id === folder.id && resource.kind === "folder" ? { ...resource, name } : resource) })); setDialog(null);
       }} /> : null;
     })()}
-  </div>;
+  </div></ApplicationServicesProvider>;
 }

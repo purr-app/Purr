@@ -34,20 +34,27 @@ test("cURL import recognizes auth flags and moves credentials out of manual head
   assert.equal(imported.request.auth.type, "bearer");
   assert.equal(imported.request.auth.bearer.token, "top-secret");
   assert.deepEqual(imported.request.headers.map(({ name, value }) => [name, value]), [["X-Client-Secret", "do-not-store-me"]]);
-  assert.deepEqual(imported.secrets, [{ headerId: "header-2", headerName: "X-Client-Secret", value: "do-not-store-me" }]);
+  assert.deepEqual(imported.secrets, []);
+  assert.equal(imported.request.headers[0].secret, undefined);
 });
 
-test("cURL import keeps API keys in protected auth fields instead of the URL or headers", () => {
-  const fromHeader = importCurlRequest("curl https://example.com -H 'X-API-Key: secret-key'", initialRequestDraft);
-  assert.equal(fromHeader.auth.type, "api-key");
-  assert.deepEqual(fromHeader.auth.apiKey, { name: "X-API-Key", value: "secret-key", placement: "header" });
-  assert.deepEqual(fromHeader.headers, []);
+test("cURL import leaves ordinary header and query names unchanged without inferring credentials", () => {
+  const fromHeader = importCurlRequest("curl https://example.com -H 'X-API-Key: public-key'", initialRequestDraft);
+  assert.equal(fromHeader.auth.type, "none");
+  assert.deepEqual(fromHeader.headers.map(({ name, value, secret }) => ({ name, value, secret })), [{ name: "X-API-Key", value: "public-key", secret: undefined }]);
+  const fromQuery = importCurlRequest("curl 'https://example.com/search?q=purr&api_key=public-key'", initialRequestDraft);
+  assert.equal(fromQuery.url, "https://example.com/search?q=purr&api_key=public-key");
+  assert.equal(fromQuery.auth.type, "none");
+  assert.deepEqual(fromQuery.params.filter((param) => param.enabled).map(({ key, value }) => [key, value]), [["q", "purr"], ["api_key", "public-key"]]);
+});
 
-  const fromQuery = importCurlRequest("curl 'https://example.com/search?q=purr&api_key=secret-key'", initialRequestDraft);
-  assert.equal(fromQuery.url, "https://example.com/search?q=purr");
-  assert.equal(fromQuery.auth.type, "api-key");
-  assert.deepEqual(fromQuery.auth.apiKey, { name: "api_key", value: "secret-key", placement: "query" });
-  assert.deepEqual(fromQuery.params.filter((param) => param.enabled).map(({ key, value }) => [key, value]), [["q", "purr"]]);
+test("cURL protocol credentials remain classified while custom token and password names do not", () => {
+  const imported = importCurl("curl https://example.com --oauth2-bearer explicit-token -H 'Cookie: sid=one' -H 'Proxy-Authorization: Basic dXNlcjpwYXNz' -H 'X-Token: ordinary' -H 'X-Password: ordinary'", initialRequestDraft);
+  assert.equal(imported.request.auth.type, "bearer");
+  assert.equal(imported.request.auth.bearer.token, "explicit-token");
+  assert.deepEqual(imported.secrets.map((entry) => entry.headerName), ["Cookie", "Proxy-Authorization"]);
+  assert.equal(imported.request.headers.find((header) => header.name === "X-Token")?.secret, undefined);
+  assert.equal(imported.request.headers.find((header) => header.name === "X-Password")?.secret, undefined);
 });
 
 test("cURL detection accepts shell prompts and curl.exe without intercepting ordinary URLs", () => {

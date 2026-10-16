@@ -1,14 +1,16 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
-import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { restoreWorkspace } from "../src/application/project-projection";
 import { validateProject } from "../src/domain/project";
 import { createWorkspace, createGraphqlDocument, createSchemaDocument, cloneRequestDraft, isExtensionDocument, isRequestDocument } from "../src/features/workspaces/model/workspace";
 import { deserializeManifest, deserializeResource, deserializeResourceFile, serializeManifest, serializeResource } from "../src/storage/yaml";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
 import { persistImport } from "../src/application/import-project";
+import { resolveEnvironmentSecrets } from "../src/application/environment-secrets";
 
 test("versioned YAML fixtures round-trip with disabled params and stable references", async () => {
   for (const fixture of ["get-user", "get-customer"]) {
@@ -51,8 +53,8 @@ test("integration envelopes migrate legacy endpoints and preserve unavailable pr
   const workspace = createWorkspace("Integration fixture", "integration-fixture");
   workspace.extraResources = [unavailable];
   const secure = new MemorySecureStore();
-  await secure.set("purr/integration-fixture/integrations/private-observability/apiKey", "synthetic-private-token");
-  const first = await projectWorkspace(workspace, secure);
+  await secure.set("purr/integration-fixture/credentials/integrations/private-observability/apiKey", "synthetic-private-token");
+  const first = await projectAndCommit(workspace, secure);
   const yaml = first.project.resources.map((resource) => serializeResource(resource)).join("\n");
   assert.doesNotMatch(yaml, /synthetic-private-token/);
   const restored = await restoreWorkspace(first.project, first.local, secure, {});
@@ -60,13 +62,13 @@ test("integration envelopes migrate legacy endpoints and preserve unavailable pr
   assert.deepEqual(restoredIntegration, unavailable);
   if (!restoredIntegration || restoredIntegration.kind !== "integration") return;
   restoredIntegration.enabled = true;
-  const reprojected = await projectWorkspace(restored, secure);
+  const reprojected = await projectAndCommit(restored, secure);
   const enabled = reprojected.project.resources.find((resource) => resource.id === unavailable.id);
   assert.equal(enabled?.kind === "integration" ? enabled.enabled : false, true);
   assert.deepEqual(enabled?.kind === "integration" ? enabled.config : undefined, config);
 
   const wrongWorkspace = structuredClone(unavailable);
-  wrongWorkspace.credentials.apiKey = { kind: "secret", ref: "purr/another-workspace/integrations/private-observability/apiKey" };
+  wrongWorkspace.credentials.apiKey = { kind: "secret", ref: "purr/another-workspace/credentials/integrations/private-observability/apiKey" };
   assert.throws(() => validateProject({ workspace: first.project.workspace, resources: [wrongWorkspace] }), /belong to this workspace/);
   assert.throws(() => deserializeResource(privateText.replace("commercial.datadog", "Commercial/Datadog")), /Invalid Purr resource/);
   assert.throws(() => deserializeResource(privateText.replace("apiKey:", "api.key:")), /Invalid Purr resource/);
@@ -96,7 +98,7 @@ test("unknown extension documents preserve canonical config and local edits with
   document.config = { ...document.config, message: "local working copy" };
   document.configVersion = 3;
 
-  const projected = await projectWorkspace(restored, secure);
+  const projected = await projectAndCommit(restored, secure);
   const canonical = projected.project.resources.find((item) => item.id === unavailable.id);
   assert.equal(canonical?.name, "Renamed without module");
   assert.equal(canonical?.kind === "extension" ? canonical.configVersion : 0, 2);
@@ -113,12 +115,12 @@ test("unknown extension documents preserve canonical config and local edits with
 
   working.savedConfigVersion = working.configVersion;
   working.savedConfig = structuredClone(working.config);
-  const saved = await projectWorkspace(withWorkingCopy, secure);
+  const saved = await projectAndCommit(withWorkingCopy, secure);
   const savedDefinition = saved.project.resources.find((item) => item.id === unavailable.id);
   assert.equal(savedDefinition?.kind === "extension" ? savedDefinition.configVersion : 0, 3);
   assert.equal(savedDefinition?.kind === "extension" ? savedDefinition.config.message : undefined, "local working copy");
 
-  const backend = new MemoryPersistenceBackend();
+  const backend = new MemoryPersistenceBackend(secure);
   const persistence = new WorkspacePersistence(backend, secure);
   await persistence.save({ activeWorkspaceId: withWorkingCopy.id, workspaces: [withWorkingCopy], globalVariables: [] });
   const files = backend.snapshot.workspaces[0].files;
@@ -131,7 +133,7 @@ test("unknown extension documents preserve canonical config and local edits with
   assert.equal(reloadedDocument.config.message, "local working copy");
 });
 
-test("workspace load rewrites legacy integration YAML to the canonical envelope", async () => {
+test("workspace load preserves legacy integration YAML until an explicit canonical upgrade", async () => {
   const backend = new MemoryPersistenceBackend();
   const legacy = await readFile(new URL("./fixtures/projects/integration-legacy.yaml", import.meta.url), "utf8");
   backend.snapshot = {
@@ -149,6 +151,9 @@ test("workspace load rewrites legacy integration YAML to the canonical envelope"
   const store = await persistence.load();
   const integration = store.workspaces[0].extraResources?.find((resource) => resource.id === "legacy-jaeger");
   assert.equal(integration?.kind === "integration" ? integration.config.endpoint : undefined, "http://127.0.0.1:16686");
+  assert.equal(backend.snapshot.workspaces[0].files["integrations/legacy-jaeger.yaml"].content, legacy);
+  assert.equal(backend.writes.length, 0);
+  await persistence.upgradeWorkspace(store.workspaces[0]);
   const rewritten = backend.snapshot.workspaces[0].files["integrations/legacy-jaeger.yaml"].content;
   assert.doesNotMatch(rewritten, /^endpoint:/m);
   assert.match(rewritten, /configVersion: 1/);
@@ -165,7 +170,7 @@ test("project projection excludes drafts, execution data, cookies and all creden
     { id: "plain-id", name: "base_url", kind: "static", value: "https://example.com", sensitive: false, enabled: false },
   ] });
   workspace.activeEnvironmentId = "env";
-  let projected = await projectWorkspace(workspace, secure);
+  let projected = await projectAndCommit(workspace, secure);
   assert.equal(projected.project.resources.filter((resource) => resource.kind === "http").length, 0);
   assert.ok(projected.local.some((record) => record.table === "drafts"));
   request.saved = true; request.savedRequest = cloneRequestDraft(request.request);
@@ -174,7 +179,7 @@ test("project projection excludes drafts, execution data, cookies and all creden
   request.request.environmentId = "env"; request.savedRequest.environmentId = "env";
   request.sentAt = "2026-01-01";
   workspace.cookies.push({ id: "cookie-id", name: "session", value: "cookie-secret", domain: "example.com", path: "/", secure: true, httpOnly: true, sameSite: "lax", hostOnly: true, enabled: true });
-  projected = await projectWorkspace(workspace, secure);
+  projected = await projectAndCommit(workspace, secure);
   const documentedResource = projected.project.resources.find((resource) => resource.kind === "http");
   assert.ok(documentedResource?.kind === "http");
   const documentedYaml = serializeResource(documentedResource);
@@ -201,15 +206,15 @@ test("schema sources are shareable, caches local and explicit pinned SDL is sepa
   const query = createGraphqlDocument(); query.saved = true; query.request.graphql.schemaId = schema.id;
   query.request.graphql.query = "query Hello {\n  hello\n}"; query.savedRequest = cloneRequestDraft(query.request);
   workspace.documents = [schema, query];
-  const secure = new MemorySecureStore(); let projected = await projectWorkspace(workspace, secure);
+  const secure = new MemorySecureStore(); let projected = await projectAndCommit(workspace, secure);
   const resource = projected.project.resources.find((item) => item.id === schema.id)!;
   assert.ok(resource.kind === "schema" && resource.pin && resource.pinnedSdl === schema.sdl);
   assert.ok(projected.local.some((record) => record.table === "schema_cache"));
-  schema.pinned = true; projected = await projectWorkspace(workspace, secure);
+  schema.pinned = true; projected = await projectAndCommit(workspace, secure);
   const pinned = projected.project.resources.find((item) => item.id === schema.id)!;
   assert.ok(serializeResource(pinned, `schemas/${schema.id}.graphql`).includes("pinned:"));
   assert.deepEqual(deserializeResource(serializeResource(pinned, `schemas/${schema.id}.graphql`), () => schema.sdl), pinned);
-  schema.pinned = false; projected = await projectWorkspace(workspace, secure);
+  schema.pinned = false; projected = await projectAndCommit(workspace, secure);
   const unpinned = projected.project.resources.find((item) => item.id === schema.id)!;
   const unpinnedYaml = serializeResource(unpinned, `schemas/${schema.id}.graphql`);
   assert.match(unpinnedYaml, /pin: false/);
@@ -224,11 +229,11 @@ test("first-class workspace variables are deterministic and secret values never 
     { id: "api-token", name: "api_token", enabled: true, sensitive: true, kind: "static", value: "local-only-value", loaded: true },
     { id: "upload-url", name: "upload_url", enabled: true, sensitive: true, kind: "dynamic-request", documentId: "", expression: "$.media.url", language: "jsonpath", refresh: "cache", cacheTtlSeconds: 300, environment: { type: "current" } },
   ];
-  const first = await projectWorkspace(workspace, secure);
+  const first = await projectAndCommit(workspace, secure);
   const yaml = serializeManifest(first.project.workspace);
   assert.equal(serializeManifest(first.project.workspace), yaml);
   assert.match(yaml, /kind: dynamic-request/);
-  assert.match(yaml, /secretRef: purr\/variables\/variables\/api-token/);
+  assert.match(yaml, /secretRef: purr\/variables\/credentials\/variables\/api-token/);
   assert.doesNotMatch(yaml, /local-only-value/);
   const restored = await restoreWorkspace(first.project, first.local, secure, {});
   assert.equal(restored.variables.find((variable) => variable.name === "api_token")?.kind === "static"
@@ -236,7 +241,7 @@ test("first-class workspace variables are deterministic and secret values never 
 });
 
 test("legacy workspace migrates once; UI saves do not rewrite project files, rename keeps paths and secret references", async () => {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const workspace = createWorkspace("Legacy", "legacy");
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const workspace = createWorkspace("Legacy", "legacy");
   const request = workspace.documents[0]; assert.ok(isRequestDocument(request)); request.saved = true; request.savedRequest = cloneRequestDraft(request.request);
   workspace.environments.push({ id: "env", name: "Staging", variables: [{ id: "stable", name: "password", kind: "static", value: "do-not-export", loaded: true, sensitive: true, enabled: true }] });
   workspace.activeEnvironmentId = "env";
@@ -249,22 +254,27 @@ test("legacy workspace migrates once; UI saves do not rewrite project files, ren
   loaded.workspaces[0].documents[0].name = "Renamed request"; await persistence.save(loaded);
   assert.deepEqual(Object.keys(backend.snapshot.workspaces[0].files), paths);
   const reloaded = await new WorkspacePersistence(backend, secure).load();
-  assert.equal(reloaded.workspaces[0].environments[0].variables[0].kind === "static" ? reloaded.workspaces[0].environments[0].variables[0].value : "", "do-not-export");
+  const resolvedEnvironment = await resolveEnvironmentSecrets(reloaded.workspaces[0].environments[0], secure);
+  assert.equal(resolvedEnvironment.variables[0].kind === "static" ? resolvedEnvironment.variables[0].value : "", "do-not-export");
   assert.equal(reloaded.workspaces[0].environments[0].variables[0].name, "renamed_password");
 });
 
 test("external malformed YAML cannot destroy existing resources", async () => {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const loaded = await persistence.load(); const snapshot = backend.snapshot.workspaces[0];
   snapshot.files["purr.yaml"] = { content: "purr: [ broken-secret", revision: "external" };
-  await assert.rejects(new WorkspacePersistence(backend, secure).load(), /Invalid/);
+  const reopened = new WorkspacePersistence(backend, secure); const catalogue = await reopened.load();
+  assert.equal(catalogue.workspaces[0].id, snapshot.id);
+  assert.deepEqual(reopened.getWorkspaceStatus(snapshot.id).protectedState, { status: "recovery-required", code: "project-format-unreadable" });
+  await reopened.save(catalogue);
+  await assert.rejects(reopened.saveWorkspace(catalogue.workspaces[0]), /protected|recovery|read.only/i);
   loaded.workspaces[0].name = "Changed";
   await assert.rejects(persistence.save(loaded), /conflict/);
   assert.equal(snapshot.files["purr.yaml"].content, "purr: [ broken-secret");
 });
 
 test("normalized imports use the same persistence path", async () => {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const resource = deserializeResource(await readFile(new URL("./fixtures/projects/get-user.yaml", import.meta.url), "utf8"));
   await persistImport({ workspace: { id: "imported", name: "Imported", headers: [], auth: [] }, resources: [resource], diagnostics: [], secrets: [] }, persistence);
   assert.ok(Object.keys(backend.snapshot.workspaces[0].files).some((path) => path.startsWith("documents/")));
@@ -276,7 +286,7 @@ test("failed import commits remove transient secret values", async () => {
   backend.commit = async () => { throw new Error("Import commit failed"); };
   const secure = new MemorySecureStore();
   const persistence = new WorkspacePersistence(backend, secure);
-  const ref = "purr/failed-import/imports/openapi/access-token" as const;
+  const ref = "purr/failed-import/credentials/imports/openapi/access-token" as const;
   await assert.rejects(persistImport({
     workspace: { id: "failed-import", name: "Failed", headers: [], auth: [], variables: [
       { id: "access-token", name: "accessToken", enabled: true, sensitive: true, kind: "static", secretRef: ref },
@@ -287,9 +297,9 @@ test("failed import commits remove transient secret values", async () => {
 });
 
 test("OpenAPI imports persist operation metadata and the source document as a schema sidecar", async () => {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const schemaId = "api-schema-example";
-  const authRef = "purr/openapi-import/auth/bearer-auth/bearer" as const;
+  const authRef = "purr/openapi-import/credentials/auth/bearer-auth/bearer" as const;
   const result = {
     workspace: { id: "openapi-import", name: "Example API", headers: [], auth: [
       { id: "bearer-auth", name: "Bearer auth", enabled: true, scope: "all" as const,

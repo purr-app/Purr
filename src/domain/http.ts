@@ -43,7 +43,12 @@ export type HttpResponseMetadata = {
   remoteAddress?: string;
 };
 
+export type ResponseSnapshotProtection = { version: 1; ref: string; status?: "available" | "missing" | "locked" | "unavailable" | "corrupt" | "denied" | "recovery-required" };
+
 export type HttpTimeline = {
+  /** Dispatch-time provenance; values themselves never belong here. */
+  sensitivity?: { url: boolean; headers: string[]; headerNames?: boolean; body: boolean };
+  responseProtection?: "plaintext" | "encrypted";
   startedAtMs: number;
   prepareMs: number;
   waitingMs: number;
@@ -70,6 +75,7 @@ export type HttpTimeline = {
 // The ID is deliberately opaque. A platform adapter may interpret it as native
 // encrypted content or as a browser/test object-store key; feature code may not.
 export type ResponseContentRef = {
+  protection?: "plaintext" | "encrypted";
   id: string;
   byteLength: number;
   mediaType?: string;
@@ -80,6 +86,7 @@ export type ResponseContentRef = {
 };
 
 export type HttpExchange = {
+  protectedSnapshot?: ResponseSnapshotProtection;
   protocolVersion: 2;
   request: HttpRequestSnapshot;
   response: HttpResponseMetadata;
@@ -90,6 +97,7 @@ export type HttpExchange = {
 // Transitional materialized shape used by the current response UI. It is
 // domain-owned so runtime models no longer import a feature service type.
 export type InlineHttpResponse = {
+  protectedSnapshot?: ResponseSnapshotProtection;
   url: string;
   status: number;
   statusText: string;
@@ -137,6 +145,8 @@ const requestSnapshotSchema = z.object({
   bodySummary: requestBodySummarySchema.optional(),
 }).passthrough();
 const timelineSchema = z.object({
+  sensitivity: z.object({ url: z.boolean(), headers: z.array(z.string()), headerNames: z.boolean().optional(), body: z.boolean() }).optional(),
+  responseProtection: z.enum(["plaintext", "encrypted"]).optional(),
   startedAtMs: z.number().finite(),
   prepareMs: z.number().finite(),
   waitingMs: z.number().finite(),
@@ -173,6 +183,7 @@ const responseMetadataSchema = z.object({
   remoteAddress: z.string().optional(),
 }).passthrough();
 const responseContentRefSchema = z.object({
+  protection: z.enum(["plaintext", "encrypted"]).optional(),
   id: z.string().min(1),
   byteLength: z.number().finite().nonnegative(),
   mediaType: z.string().optional(),

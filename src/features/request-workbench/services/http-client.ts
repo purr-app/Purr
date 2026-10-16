@@ -6,6 +6,7 @@ import {
   type InlineHttpResponse,
   type StoredHttpResponse,
 } from "../../../domain/http";
+import { defaultResponseStoragePolicy } from "../../../application/ports/http";
 import type {
   HttpTransportProgress,
   HttpTransportPort,
@@ -121,6 +122,7 @@ export async function executeHttp(
     transport?: HttpTransport;
     sensitiveHeaders?: string[];
     sensitiveQueryParams?: string[];
+    sensitivity?: { url: boolean; headers: string[]; headerNames?: boolean; body: boolean };
     displayRequest?: WireRequest;
     followRedirects?: boolean;
     settings?: Partial<RequestSettings>;
@@ -133,6 +135,8 @@ export async function executeHttp(
 ): Promise<StoredHttpResponse> {
   const settings = requestSettingsSchema.parse({ ...defaultRequestSettings, ...options.settings,
     ...(options.followRedirects !== undefined ? { followRedirects: options.followRedirects } : {}) });
+  if (options.jar && (options.sendCookies !== false || settings.storeCookies)) options.jar.assertAvailable();
+  const policy = { ...(options.responseStorage ?? defaultResponseStoragePolicy) };
   const current = { ...request, headers: [...request.headers] };
   const initial = requireHttpUrl(current.url);
   const started = Date.now();
@@ -175,7 +179,7 @@ export async function executeHttp(
       {
         signal: options.signal,
         onProgress: options.onProgress,
-        responseStorage: options.responseStorage,
+        responseStorage: policy,
       },
     );
     if (response.injectedTraceHeaders?.length) {
@@ -299,6 +303,8 @@ export async function executeHttp(
       ],
     } : undefined;
     const timeline = {
+        responseProtection: isReferencedResponse(response) ? response.content.protection ?? policy.protection : policy.protection,
+        sensitivity: options.sensitivity ?? { url: Boolean(options.sensitiveQueryParams?.length), headers: options.sensitiveHeaders ?? [], body: false },
         startedAtMs: started,
         prepareMs: Math.max(0, elapsedMs - waitingMs - downloadMs),
         waitingMs,

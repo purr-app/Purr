@@ -3,7 +3,7 @@ import type { AuthRuntime } from "../hooks/use-auth-runtime";
 import type { RequestDraft } from "../model/request";
 import { resolveAuth, type AuthContext, type OAuthToken } from "../model/request-auth";
 import type { HttpTransport } from "./http-client";
-import { fetchOAuthToken, resolvedOAuth } from "./oauth-client";
+import { fetchOAuthToken, resolveOAuthOperation } from "./oauth-client";
 
 /** OAuth acquisition belongs to the dependency snapshot, never the open editor. */
 export function createDependencyAuthRuntime(
@@ -34,7 +34,7 @@ export function createDependencyAuthRuntime(
         const effective = resolveAuth(draft.auth, context);
         if (effective.error) throw new Error(effective.error);
         if (effective.auth.type !== "oauth2") return null;
-        const config = resolvedOAuth(effective.auth.oauth2, context);
+        const config = await resolveOAuthOperation(effective.auth, context, action);
         if (action === "initial" && config.grantType === "authorization_code") {
           throw new Error("Open the dependency request and authorize in your browser first.");
         }

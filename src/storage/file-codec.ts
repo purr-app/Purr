@@ -1,3 +1,4 @@
+import type { AttachmentWritePort, NativeFileAttachmentRecord, PreparedAttachment } from "../application/ports/attachments";
 import { base64Bytes } from "../features/request-workbench/model/request-auth";
 
 export type FileAttachmentRecord = {
@@ -9,9 +10,7 @@ export type FileAttachmentRecord = {
   base64: string;
 };
 
-export type NativeFileAttachmentRecord = Omit<FileAttachmentRecord, "base64"> & {
-  native: true;
-};
+export type { NativeFileAttachmentRecord, PreparedAttachment } from "../application/ports/attachments";
 
 export type LocalAttachmentReference = {
   workspaceId: string;
@@ -19,6 +18,73 @@ export type LocalAttachmentReference = {
 };
 
 export type FileAttachmentLoader = (attachmentId: string) => Promise<Uint8Array>;
+
+/** Reconciliation is in-memory: preserve File objects instead of serializing bytes. */
+export class TransientAttachments {
+  readonly files = new Map<string, File>();
+  private ids = new WeakMap<File, string>();
+  retain(file: File): string {
+    let id = this.ids.get(file);
+    if (!id) { id = `transient-${crypto.randomUUID()}`; this.ids.set(file, id); this.files.set(id, file); }
+    return id;
+  }
+}
+
+const publishedAttachments = new WeakMap<File, Map<string, PreparedAttachment>>();
+
+/** One publication owns its encrypted stages; never change the original File. */
+export class AttachmentPreparation {
+  private files = new WeakMap<File, Promise<PreparedAttachment>>();
+  private stages = new Set<string>();
+  private prepared = new Map<File, PreparedAttachment>();
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(readonly workspaceId: string, private port: AttachmentWritePort, private existing: ReadonlySet<string> = new Set()) {}
+
+  prepare(file: File): Promise<PreparedAttachment> {
+    const previous = this.files.get(file);
+    if (previous) return previous;
+    const published = publishedAttachments.get(file)?.get(this.workspaceId);
+    if (published && this.existing.has(published.attachmentId)) return Promise.resolve(published);
+    // Serializing files also bounds a projection with hundreds of attachments.
+    const result = this.queue.then(async () => {
+      if (getLocalAttachmentReference(file))
+        throw new Error("A local attachment cannot be moved to another workspace without exporting it first.");
+      const stageId = crypto.randomUUID();
+      this.stages.add(stageId);
+      await this.port.begin(this.workspaceId, stageId, { name: file.name, type: file.type, size: file.size, lastModified: file.lastModified });
+      const chunkSize = 256 * 1024;
+      for (let offset = 0, index = 0; offset < file.size; offset += chunkSize, index += 1) {
+        const bytes = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer();
+        await this.port.append(this.workspaceId, stageId, index, bytes);
+      }
+      const prepared = await this.port.finish(this.workspaceId, stageId);
+      this.prepared.set(file, prepared);
+      return prepared;
+    });
+    this.files.set(file, result);
+    this.queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /** Cache only confirmed publication, and reuse only while its owner is present. */
+  acknowledge(): void {
+    for (const [file, prepared] of this.prepared) {
+      const { stageId: _stageId, ...record } = prepared.record;
+      const scopes = publishedAttachments.get(file) ?? new Map<string, PreparedAttachment>();
+      scopes.set(this.workspaceId, { ...prepared, record });
+      publishedAttachments.set(file, scopes);
+    }
+  }
+
+  async dispose(): Promise<void> {
+    await this.queue;
+    // Adopted stages are already gone. Lost replies and projection failures
+    // still release every known stage; window/startup cleanup covers a lost abort.
+    await Promise.allSettled([...this.stages].map((stageId) => this.port.abort(this.workspaceId, stageId)));
+    this.stages.clear();
+    this.prepared.clear();
+  }
+}
 
 type EncodedFile = {
   attachmentId: string;
@@ -82,10 +148,13 @@ export async function encodeFile(file: File): Promise<EncodedFile> {
 export async function encodeFiles(
   value: unknown,
   attachments?: Map<string, FileAttachmentRecord | NativeFileAttachmentRecord>,
+  preparation?: AttachmentPreparation,
+  transient?: TransientAttachments,
 ): Promise<unknown> {
   if (value instanceof File) {
+    if (transient) return { __purrFileRef: transient.retain(value) };
     const local = localAttachments.get(value);
-    if (attachments && local) {
+    if (attachments && local && (!preparation || local.workspaceId === preparation.workspaceId)) {
       attachments.set(local.attachmentId, {
         version: 1,
         native: true,
@@ -96,7 +165,7 @@ export async function encodeFiles(
       });
       return { __purrFileRef: local.attachmentId };
     }
-    const encoded = await encodeFile(value);
+    const encoded = attachments && preparation ? await preparation.prepare(value) : await encodeFile(value);
     if (attachments) {
       attachments.set(encoded.attachmentId, encoded.record);
       return { __purrFileRef: encoded.attachmentId };
@@ -104,13 +173,13 @@ export async function encodeFiles(
     return { __purrFile: encoded.record };
   }
   if (Array.isArray(value))
-    return Promise.all(value.map((item) => encodeFiles(item, attachments)));
+    return Promise.all(value.map((item) => encodeFiles(item, attachments, preparation, transient)));
   if (value && typeof value === "object")
     return Object.fromEntries(
       await Promise.all(
         Object.entries(value).map(async ([key, child]) => [
           key,
-          await encodeFiles(child, attachments),
+          await encodeFiles(child, attachments, preparation, transient),
         ]),
       ),
     );
@@ -159,9 +228,9 @@ function fileFromRecord(
 ): File {
   if (!value || typeof value !== "object")
     throw new Error("A local request attachment is missing or damaged.");
-  const record = value as Partial<FileAttachmentRecord & { native: boolean }>;
+  const record = value as Partial<NativeFileAttachmentRecord & { base64: string }>;
   if (
-    record.version !== 1 ||
+    (record.version !== 1 && !(record.version === 2 && record.native === true)) ||
     typeof record.name !== "string" ||
     typeof record.type !== "string" ||
     typeof record.lastModified !== "number"
@@ -201,15 +270,16 @@ export function decodeFiles(
   attachments: ReadonlyMap<string, unknown> = new Map(),
   workspaceId?: string,
   loadAttachment?: FileAttachmentLoader,
+  transient?: ReadonlyMap<string, File>,
 ): unknown {
   if (Array.isArray(value))
     return value.map((item) =>
-      decodeFiles(item, attachments, workspaceId, loadAttachment),
+      decodeFiles(item, attachments, workspaceId, loadAttachment, transient),
     );
   if (value && typeof value === "object") {
     const object = value as Record<string, unknown>;
     if (typeof object.__purrFileRef === "string" && Object.keys(object).length === 1)
-      return fileFromRecord(
+      return transient?.get(object.__purrFileRef) ?? fileFromRecord(
         attachments.get(object.__purrFileRef),
         object.__purrFileRef,
         workspaceId,
@@ -231,7 +301,7 @@ export function decodeFiles(
     return Object.fromEntries(
       Object.entries(object).map(([key, child]) => [
         key,
-        decodeFiles(child, attachments, workspaceId, loadAttachment),
+        decodeFiles(child, attachments, workspaceId, loadAttachment, transient),
       ]),
     );
   }

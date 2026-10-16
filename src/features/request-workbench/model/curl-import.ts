@@ -20,8 +20,7 @@ export type CurlImport = {
 };
 
 const curlCommand = /^\s*(?:\$\s*)?curl(?:\.exe)?(?:\s|$)/i;
-const apiKeyName = /^(?:x[-_])?(?:api[-_]?key|api[-_]?token|access[-_]?token|auth[-_]?token|token)$/i;
-const sensitiveHeaderName = /^(?:authorization|proxy-authorization|cookie|set-cookie|x[-_].*(?:api[-_]?key|token|secret|password)|.*(?:api[-_]?key|token|secret|password))$/i;
+const sensitiveHeaderName = /^(?:authorization|proxy-authorization|cookie|set-cookie)$/i;
 
 export function isCurlCommand(value: string) {
   return curlCommand.test(value);
@@ -99,31 +98,8 @@ function authorizationAuth(value: string): RequestAuth | null {
   return auth;
 }
 
-function takeApiKeyFromUrl(url: string) {
-  const hashIndex = url.indexOf("#");
-  const urlWithoutHash = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
-  const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
-  const queryIndex = urlWithoutHash.indexOf("?");
-  if (queryIndex < 0) return { url, apiKey: null as null | { name: string; value: string } };
-  const base = urlWithoutHash.slice(0, queryIndex);
-  const search = new URLSearchParams(urlWithoutHash.slice(queryIndex + 1));
-  const candidate = Array.from(search.entries()).find(([name, value]) => apiKeyName.test(name) && Boolean(value));
-  if (!candidate) return { url, apiKey: null as null | { name: string; value: string } };
-  const [name, value] = candidate;
-  search.delete(name);
-  const remaining = search.toString();
-  return { url: `${base}${remaining ? `?${remaining}` : ""}${hash}`, apiKey: { name, value } };
-}
-
-function apiKeyAuth(name: string, value: string, placement: "header" | "query"): RequestAuth {
-  const auth = createRequestAuth();
-  auth.type = "api-key";
-  auth.apiKey = { name, value, placement };
-  return auth;
-}
-
 function appendHeader(headers: RequestHeader[], name: string, value: string) {
-  headers.push({ id: `header-${headers.length + 1}`, name, value, enabled: true });
+  headers.push({ id: `header-${headers.length + 1}`, name, value, enabled: true, ...(sensitiveHeaderName.test(name) ? { secret: true } : {}) });
 }
 
 export function importCurl(command: string, base: RequestDraft): CurlImport {
@@ -210,11 +186,6 @@ export function importCurl(command: string, base: RequestDraft): CurlImport {
   const authorizationIndex = headers.findIndex((header) => header.name.toLowerCase() === "authorization");
   const authorization = authorizationIndex >= 0 ? authorizationAuth(headers[authorizationIndex].value) : null;
   if (authorizationIndex >= 0 && authorization) headers.splice(authorizationIndex, 1);
-  const apiHeaderIndex = authorization ? -1 : headers.findIndex((header) => apiKeyName.test(header.name) && Boolean(header.value));
-  const apiHeader = apiHeaderIndex >= 0 ? headers[apiHeaderIndex] : undefined;
-  if (apiHeader) headers.splice(apiHeaderIndex, 1);
-  const urlApiKey = authorization || apiHeader ? { url, apiKey: null } : takeApiKeyFromUrl(url);
-  url = urlApiKey.url;
   const auth = authorization
     ?? (oauthBearer ? (() => {
       const next = createRequestAuth();
@@ -223,8 +194,6 @@ export function importCurl(command: string, base: RequestDraft): CurlImport {
       return next;
     })() : null)
     ?? basicAuth(userCredentials)
-    ?? (apiHeader ? apiKeyAuth(apiHeader.name, apiHeader.value, "header") : null)
-    ?? (urlApiKey.apiKey ? apiKeyAuth(urlApiKey.apiKey.name, urlApiKey.apiKey.value, "query") : null)
     ?? createRequestAuth();
   const secrets = headers.filter((header) => header.enabled && header.value && sensitiveHeaderName.test(header.name))
     .map((header) => ({ headerId: header.id, headerName: header.name, value: header.value }));

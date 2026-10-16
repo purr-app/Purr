@@ -10,16 +10,16 @@ test("integration connection reuses request auth and resolves variables without 
   const secureStore = new MemorySecureStore();
   const auth = createRequestAuth(); auth.type = "basic";
   auth.basic = { username: "{{user}}", password: "{{password}}" };
-  await secureStore.set("purr/workspace/integrations/provider/auth", JSON.stringify(auth));
+  await secureStore.set("purr/workspace/credentials/integrations/provider/auth", JSON.stringify(auth));
   const integration = integrationDefinitionSchema.parse({ kind: "integration", id: "provider", name: "Private", provider: "private.traces", configVersion: 1,
-    config: { endpoint: "{{endpoint}}/base", auth: "request" }, credentials: { auth: { kind: "secret", ref: "purr/workspace/integrations/provider/auth" } } });
+    config: { endpoint: "{{endpoint}}/base", auth: "request" }, credentials: { auth: { kind: "secret", ref: "purr/workspace/credentials/integrations/provider/auth" } } });
   const connection = await prepareIntegrationConnection(integration, "workspace", { variables: { endpoint: "https://example.test", user: "alice", password: "secret" } }, { secureStore } as ApplicationServices, new AbortController().signal);
   assert.equal(connection?.endpoint, "https://example.test/base");
   assert.deepEqual(connection?.headers, [["Authorization", `Basic ${Buffer.from("alice:secret").toString("base64")}`]]);
   assert.equal(integration.config.endpoint, "{{endpoint}}/base");
   assert.doesNotMatch(JSON.stringify(integration), /alice|Basic|password/);
   auth.type = "api-key"; auth.apiKey = { name: "key", value: "{{password}}", placement: "query" };
-  await secureStore.set("purr/workspace/integrations/provider/auth", JSON.stringify(auth));
+  await secureStore.set("purr/workspace/credentials/integrations/provider/auth", JSON.stringify(auth));
   const query = await prepareIntegrationConnection(integration, "workspace", { variables: { endpoint: "https://example.test", password: "secret" } }, { secureStore } as ApplicationServices, new AbortController().signal);
   assert.equal(query?.endpoint, "https://example.test/base?key=secret");
   assert.deepEqual(query?.headers, []);

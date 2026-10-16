@@ -12,10 +12,12 @@ use std::{
 };
 use tokio::sync::watch;
 
-use super::request_body::{stream_file, RequestBodyPart, RequestBodySource, RequestFileRef};
+#[cfg(test)]
+use super::request_body::stream_file;
+use super::request_body::{RequestBodyPart, RequestBodySource, RequestFileRef};
 use crate::content::{
     actor::{PendingContentWrite, ResponseContentHandle},
-    contracts::{ContentMetadata, ResponseContentRef},
+    contracts::{ContentMetadata, ResponseContentProtection, ResponseContentRef},
 };
 
 const MAX_RESPONSE_BYTES: u64 = 128 * 1024 * 1024;
@@ -122,6 +124,7 @@ impl Default for HttpClient {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpRequest {
+    workspace_id: String,
     #[serde(skip)]
     injected_trace_headers: Vec<(String, String)>,
     #[serde(default)]
@@ -141,6 +144,9 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
     pub fn prepare_trace(
         &mut self,
         propagators: &crate::observability::propagation::PropagationRegistry,
@@ -160,14 +166,6 @@ impl HttpRequest {
 pub struct ResponseStoragePolicy {
     #[serde(default)]
     protection: ResponseContentProtection,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ResponseContentProtection {
-    #[default]
-    Encrypted,
-    Plaintext,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -262,13 +260,19 @@ fn request_error(error: reqwest::Error) -> String {
     .into()
 }
 
-fn content_metadata(headers: &[(String, String)]) -> ContentMetadata {
+fn content_metadata(
+    workspace_id: &str,
+    headers: &[(String, String)],
+    protection: ResponseContentProtection,
+) -> ContentMetadata {
     let Some(value) = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
         .map(|(_, value)| value)
     else {
         return ContentMetadata {
+            protection,
+            workspace_id: workspace_id.into(),
             media_type: None,
             charset: None,
         };
@@ -287,6 +291,8 @@ fn content_metadata(headers: &[(String, String)]) -> ContentMetadata {
             .filter(|value| !value.is_empty())
     });
     ContentMetadata {
+        protection,
+        workspace_id: workspace_id.into(),
         media_type,
         charset,
     }
@@ -347,18 +353,21 @@ pub async fn perform_http_with_files(
     request: HttpRequest,
     client: &Client,
     content: &ResponseContentHandle,
-    resolve_file: &(impl Fn(&RequestFileRef) -> Result<std::path::PathBuf, String> + Sync),
+    resolve_file: &(impl Fn(&RequestFileRef) -> Result<reqwest::Body, String> + Sync),
     mut cancellation: watch::Receiver<bool>,
     emit: impl Fn(HttpEvent),
 ) -> Result<HttpResponse, String> {
     if *cancellation.borrow() {
         return Err("Request cancelled.".into());
     }
+    crate::content::store::validate_workspace(&request.workspace_id)?;
+    if request.response_storage.protection == ResponseContentProtection::Encrypted {
+        content
+            .ensure_workspace(request.workspace_id.clone())
+            .await?;
+    }
     let url = http_url(&request.url)?;
     let injected_trace_headers = request.injected_trace_headers;
-    if request.response_storage.protection != ResponseContentProtection::Encrypted {
-        return Err("Plaintext response storage is not enabled in this build.".into());
-    }
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|_| "Invalid HTTP method.")?;
     if request.body_base64.is_some() && request.body_source.is_some() {
@@ -394,10 +403,10 @@ pub async fn perform_http_with_files(
     if let Some(source) = request.body_source {
         builder = match source {
             RequestBodySource::File { reference } => {
-                let path = resolve_file(&reference)?;
+                let body = resolve_file(&reference)?;
                 builder
                     .header(reqwest::header::CONTENT_LENGTH, reference.size)
-                    .body(stream_file(&path)?)
+                    .body(body)
             }
             RequestBodySource::Multipart { parts } => {
                 let mut form = reqwest::multipart::Form::new();
@@ -414,14 +423,12 @@ pub async fn perform_http_with_files(
                             form.part(name, part)
                         }
                         RequestBodyPart::File { name, reference } => {
-                            let path = resolve_file(&reference)?;
-                            let part = reqwest::multipart::Part::stream_with_length(
-                                stream_file(&path)?,
-                                reference.size,
-                            )
-                            .file_name(reference.name.clone())
-                            .mime_str(&reference.media_type)
-                            .map_err(|_| "Invalid multipart file media type.")?;
+                            let body = resolve_file(&reference)?;
+                            let part =
+                                reqwest::multipart::Part::stream_with_length(body, reference.size)
+                                    .file_name(reference.name.clone())
+                                    .mime_str(&reference.media_type)
+                                    .map_err(|_| "Invalid multipart file media type.")?;
                             form.part(name, part)
                         }
                     };
@@ -471,7 +478,13 @@ pub async fn perform_http_with_files(
         total_bytes,
     });
 
-    let staging = content.create_staging(content_metadata(&headers)).await?;
+    let staging = content
+        .create_staging(content_metadata(
+            &request.workspace_id,
+            &headers,
+            request.response_storage.protection,
+        ))
+        .await?;
     let content_id = staging.id;
     let capture = async {
         let mut pending_bytes = Vec::with_capacity(WRITE_BATCH_BYTES);
@@ -673,6 +686,7 @@ mod tests {
 
     fn request(url: String) -> HttpRequest {
         HttpRequest {
+            workspace_id: "workspace".into(),
             trace_propagation: Default::default(),
             trace_headers: vec![],
             injected_trace_headers: vec![],
@@ -687,8 +701,65 @@ mod tests {
     }
 
     #[test]
+    fn native_request_requires_workspace_and_response_metadata_preserves_it() {
+        assert!(serde_json::from_value::<HttpRequest>(serde_json::json!({
+            "url": "https://example.test", "method": "GET", "headers": [], "bodyBase64": null
+        }))
+        .is_err());
+        assert_eq!(
+            content_metadata("workspace-a", &[], ResponseContentProtection::Encrypted).workspace_id,
+            "workspace-a"
+        );
+        let metadata = content_metadata(
+            "workspace-b",
+            &[("Content-Type".into(), "text/plain; charset=utf-8".into())],
+            ResponseContentProtection::Encrypted,
+        );
+        assert_eq!(metadata.workspace_id, "workspace-b");
+        assert_eq!(metadata.charset.as_deref(), Some("utf-8"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_workspace_is_rejected_before_network_dispatch() {
+        let directory = TempDir::new().unwrap();
+        let ciphers = crate::security::RootCiphers::from_root(&crate::security::test_key(), false)
+            .unwrap()
+            .with_scope_keys(
+                &directory.path().join("scope-keys.sqlite3"),
+                "synthetic-transport-vault",
+            )
+            .unwrap();
+        let store = ResponseContentStore::open_with_ciphers(
+            &directory.path().join("local-state.sqlite3"),
+            &ciphers,
+        )
+        .unwrap();
+        let content = ResponseContentHandle::for_test(store).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (_, cancellation) = watch::channel(false);
+        let result = perform_http(
+            request(format!(
+                "http://{}/must-not-send",
+                listener.local_addr().unwrap()
+            )),
+            &Client::new(),
+            &content,
+            cancellation,
+            |_| {},
+        )
+        .await;
+        assert!(result.unwrap_err().contains("scope-key"));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
     fn transport_settings_default_and_validate_at_the_native_boundary() {
         let legacy: HttpRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace",
             "url": "https://example.test", "method": "GET", "headers": [], "bodyBase64": null
         }))
         .unwrap();
@@ -707,7 +778,7 @@ mod tests {
         }
         assert!(
             serde_json::from_value::<TransportSettings>(serde_json::json!({
-                "httpVersion": "http3"
+            "httpVersion": "http3"
             }))
             .is_err()
         );
@@ -894,6 +965,7 @@ mod tests {
     #[test]
     fn response_storage_policy_defaults_encrypted_and_accepts_future_plaintext_value() {
         let encrypted: HttpRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace",
             "url": "https://example.com",
             "method": "GET",
             "headers": [],
@@ -905,6 +977,7 @@ mod tests {
             ResponseContentProtection::Encrypted
         );
         let plaintext: HttpRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace",
             "url": "https://example.com",
             "method": "GET",
             "headers": [],
@@ -962,6 +1035,7 @@ mod tests {
             let (_, cancellation) = watch::channel(false);
             let result = perform_http_with_files(
                 HttpRequest {
+                    workspace_id: "workspace".into(),
                     url: format!("http://{address}/upload"),
                     trace_propagation: Default::default(),
                     trace_headers: vec![],
@@ -982,8 +1056,8 @@ mod tests {
                 &content,
                 &|candidate| {
                     (candidate == &reference)
-                        .then(|| path.clone())
-                        .ok_or("stale".into())
+                        .then(|| stream_file(&path))
+                        .ok_or_else(|| "stale".to_string())?
                 },
                 cancellation,
                 |_| {},
@@ -1027,6 +1101,7 @@ mod tests {
         let (_, cancellation) = watch::channel(false);
         let result = perform_http_with_files(
             HttpRequest {
+                workspace_id: "workspace".into(),
                 url: format!("http://{address}/multipart"),
                 trace_propagation: Default::default(),
                 trace_headers: vec![],
@@ -1057,8 +1132,8 @@ mod tests {
             &content,
             &|candidate| {
                 (candidate == &reference)
-                    .then(|| path.clone())
-                    .ok_or("stale".into())
+                    .then(|| stream_file(&path))
+                    .ok_or_else(|| "stale".to_string())?
             },
             cancellation,
             |_| {},
@@ -1070,16 +1145,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plaintext_response_storage_fails_closed_until_implemented() {
+    async fn plaintext_response_storage_streams_without_a_key() {
         let directory = TempDir::new().unwrap();
-        let content = content_handle(&directory);
+        let content = ResponseContentHandle::for_test(
+            ResponseContentStore::open_with_ciphers(
+                &directory.path().join("state.sqlite3"),
+                &crate::security::RootCiphers::unavailable(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\npublic").unwrap();
+        });
         let (_, cancellation) = watch::channel(false);
-        let error = perform_http(
+        let result = perform_http(
             HttpRequest {
                 response_storage: ResponseStoragePolicy {
                     protection: ResponseContentProtection::Plaintext,
                 },
-                ..request("https://example.com".into())
+                ..request(format!("http://{address}/"))
             },
             &HttpClient::default().0,
             &content,
@@ -1087,11 +1177,13 @@ mod tests {
             |_| {},
         )
         .await
-        .unwrap_err();
+        .unwrap();
         assert_eq!(
-            error,
-            "Plaintext response storage is not enabled in this build."
+            result.content.protection,
+            ResponseContentProtection::Plaintext
         );
+        assert_eq!(result.content.byte_length, 6);
+        server.join().unwrap();
     }
 
     #[tokio::test]
@@ -1114,6 +1206,7 @@ mod tests {
         let emitted = events.clone();
         let result = perform_http(
             HttpRequest {
+                workspace_id: "workspace".into(),
                 url: format!("http://{address}/echo"),
                 trace_propagation: Default::default(),
                 trace_headers: vec![],

@@ -4,3 +4,7 @@ pub mod importing;
 pub mod observability;
 pub mod persistence;
 pub mod response;
+
+pub mod transfer;
+
+pub mod attachment;

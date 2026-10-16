@@ -1,17 +1,34 @@
+import { isPureTemplateReference, templateTokens } from "../../../domain/template-expression";
 import { getRequestQueryParamsFromUrl, type RequestDraft } from "../../request-workbench/model/request";
 import type { RequestBodyField } from "../../request-workbench/model/request-body";
 import { resolveEnvironmentValue } from "../../../shared/lib/resolve-variables";
 
 // Only the active fields are resolved. Templates in inactive body/auth modes and
 // disabled rows must not prevent a request from being sent. Binary bytes are opaque.
-export function resolveRequestEnvironment(draft: RequestDraft, variables: Record<string, string>): RequestDraft {
+export function resolveRequestEnvironment(draft: RequestDraft, variables: Record<string, string>, options: { redacted?: boolean } = {}): RequestDraft {
   const resolve = (value: string) => resolveEnvironmentValue(value, variables);
+  const resolveJson = (value: string) => {
+    if (!options.redacted) return resolve(value);
+    let cursor = 0;
+    let output = "";
+    let quoted = false;
+    for (const token of templateTokens(value)) {
+      for (let index = cursor; index < token.from; index++) {
+        if (value[index] === "\\" && quoted) index++;
+        else if (value[index] === '"') quoted = !quoted;
+      }
+      const replacement = resolve(token.text);
+      output += value.slice(cursor, token.from) + (!quoted && replacement.includes("********") ? JSON.stringify(replacement) : replacement);
+      cursor = token.to;
+    }
+    return output + value.slice(cursor);
+  };
   const resolveGraphqlVariables = (value: string) => {
     try {
       const visit = (current: unknown): unknown => {
         if (typeof current === "string") {
           const resolved = resolve(current);
-          if (/^\s*{{[^{}]+}}\s*$/.test(current)) {
+          if (isPureTemplateReference(current)) {
             try { return JSON.parse(resolved); } catch { return resolved; }
           }
           return resolved;
@@ -22,7 +39,7 @@ export function resolveRequestEnvironment(draft: RequestDraft, variables: Record
       };
       return JSON.stringify(visit(value.trim() ? JSON.parse(value) : {}), null, 2);
     } catch {
-      return resolve(value);
+      return resolveJson(value);
     }
   };
   const url = resolve(draft.url);
@@ -30,9 +47,10 @@ export function resolveRequestEnvironment(draft: RequestDraft, variables: Record
     ? { ...row, key: resolve(row.key), value: row.fieldType === "file" ? row.value : resolve(row.value), contentType: row.contentType ? resolve(row.contentType) : row.contentType }
     : row);
   const body = { ...draft.body };
-  if (body.type === "json" || body.type === "xml" || body.type === "text") body[body.type] = resolve(body[body.type]);
-  if (body.type === "form-data") body.formData = fields(body.formData);
-  if (body.type === "url-encoded") body.urlEncoded = fields(body.urlEncoded);
+  if (!draft.graphql && body.type === "json") body.json = resolveJson(body.json);
+  if (!draft.graphql && (body.type === "xml" || body.type === "text")) body[body.type] = resolve(body[body.type]);
+  if (!draft.graphql && body.type === "form-data") body.formData = fields(body.formData);
+  if (!draft.graphql && body.type === "url-encoded") body.urlEncoded = fields(body.urlEncoded);
   const params = draft.params.map((param) => param.enabled ? { ...param, key: resolve(param.key), value: resolve(param.value) } : param);
   const pathParams = draft.pathParams?.map((param) => param.enabled
     ? { ...param, key: resolve(param.key), value: resolve(param.value) }

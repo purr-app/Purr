@@ -1,19 +1,38 @@
+pub mod availability;
+pub mod caller;
+pub mod context;
+pub mod inventory;
+pub mod layout;
+pub mod manager;
+pub mod scoped;
+pub use scoped::{decrypt_recovery_secret, CredentialRecoveryKey, ProtectionScope};
+#[cfg(all(test, target_os = "macos"))]
+mod os_store_smoke;
+mod platform;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
+pub use availability::{ProtectedError, ProtectedStatus};
+#[cfg(test)]
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
 use sha2::Sha256;
+#[cfg(test)]
+use std::fs;
+#[cfg(test)]
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
-    fs::{self, OpenOptions},
-    io::{ErrorKind, Write},
-    path::{Path, PathBuf},
+    fs::OpenOptions,
+    io::{ErrorKind, Read},
+    path::Path,
+    sync::Arc,
 };
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "app.purr.credentials";
 pub const ROOT_KEY_REF: &str = "purr/local-storage/master-key-v1";
 const DATABASE_KEY_INFO: &[u8] = b"purr:database:v1";
@@ -22,9 +41,18 @@ const RESPONSE_CONTENT_KEY_INFO: &[u8] = b"purr:response-content:v1";
 
 // Application storage owns one root key only. SecretRef values are handled by
 // the encrypted SQLite vault and never become individual files or Keychain items.
+#[cfg(test)]
 pub trait RootKeyStore: Send + Sync {
     fn get_root_key(&self) -> Result<Option<String>, String>;
     fn set_root_key(&self, value: &str) -> Result<(), String>;
+    fn get_root_key_typed(&self) -> Result<Option<String>, ProtectedError> {
+        self.get_root_key()
+            .map_err(|_| ProtectedError::unavailable("root-provider-unavailable"))
+    }
+    fn set_root_key_typed(&self, value: &str) -> Result<(), ProtectedError> {
+        self.set_root_key(value)
+            .map_err(|_| ProtectedError::unavailable("root-provider-unavailable"))
+    }
 }
 pub fn validate_ref(reference: &str) -> Result<(), String> {
     if !reference.starts_with("purr/")
@@ -48,38 +76,53 @@ pub fn validate_secret_ref(reference: &str) -> Result<(), String> {
 
 const ROOT_KEY_FILE: &str = "root-key-v1";
 
-pub struct PlatformRootKeyStore {
-    path: PathBuf,
-}
-
-impl PlatformRootKeyStore {
-    pub fn new(data_directory: &Path) -> Self {
-        Self {
-            path: data_directory.join(ROOT_KEY_FILE),
-        }
-    }
-}
-
+#[cfg(test)]
 fn read_root_key_file(path: &Path) -> Result<Option<String>, String> {
-    match fs::read_to_string(path) {
-        Ok(value) => {
-            #[cfg(unix)]
-            if fs::metadata(path)
-                .map_err(|_| "Cannot inspect the local encryption key")?
-                .permissions()
-                .mode()
-                & 0o077
-                != 0
-            {
-                return Err("The local encryption key has unsafe file permissions".into());
-            }
-            Ok(Some(value.trim().into()))
+    read_root_key_file_typed(path).map_err(|error| error.to_string())
+}
+fn read_root_key_file_typed(path: &Path) -> Result<Option<String>, ProtectedError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(ProtectedError::corrupt("root-key-invalid"))
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(_) => Err("Cannot read the local encryption key".into()),
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            return Err(ProtectedError::unavailable("root-key-metadata-unavailable"))
+        }
+        _ => {}
     }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+            return Err(ProtectedError::denied("root-key-read-denied"))
+        }
+        Err(_) => return Err(ProtectedError::unavailable("root-key-read-unavailable")),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|_| ProtectedError::unavailable("root-key-metadata-unavailable"))?;
+    if !metadata.is_file() || metadata.len() > 1024 {
+        return Err(ProtectedError::corrupt("root-key-invalid"));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err(ProtectedError::denied("root-key-unsafe-permissions"));
+    }
+    let mut value = Zeroizing::new(String::new());
+    file.read_to_string(&mut value)
+        .map_err(|error| match error.kind() {
+            ErrorKind::InvalidData => ProtectedError::corrupt("root-key-invalid"),
+            ErrorKind::PermissionDenied => ProtectedError::denied("root-key-read-denied"),
+            _ => ProtectedError::unavailable("root-key-read-unavailable"),
+        })?;
+    Ok(Some(value.trim().into()))
 }
 
+#[cfg(test)]
 fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -93,47 +136,26 @@ fn write_root_key_file(path: &Path, value: &str) -> Result<(), String> {
         .map_err(|_| "Cannot save the local encryption key".into())
 }
 
-#[cfg(target_os = "macos")]
-impl RootKeyStore for PlatformRootKeyStore {
-    fn get_root_key(&self) -> Result<Option<String>, String> {
-        if let Some(value) = read_root_key_file(&self.path)? {
-            return Ok(Some(value));
-        }
-        // Versions before 0.1.2 stored this root in Keychain. Read it only
-        // when no file key exists, then migrate so unsigned updates no longer
-        // cause macOS to authorize each changed application binary.
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, ROOT_KEY_REF)
-            .map_err(|_| "Secure store is unavailable")?;
-        match entry.get_password() {
-            Ok(value) => {
-                write_root_key_file(&self.path, &value)?;
-                Ok(Some(value))
-            }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err("Cannot read from secure store".into()),
-        }
-    }
-    fn set_root_key(&self, value: &str) -> Result<(), String> {
-        write_root_key_file(&self.path, value)
-    }
+#[derive(Clone)]
+pub struct LocalCipher(CipherBackend);
+#[derive(Clone)]
+enum CipherBackend {
+    Unavailable,
+    Raw(Arc<Aes256Gcm>),
+    Scoped {
+        registry: Arc<scoped::ScopeRegistry>,
+        purpose: scoped::CipherPurpose,
+        scope: Option<ProtectionScope>,
+    },
 }
-// Other platforms deliberately fail closed until their native adapters are added.
-#[cfg(not(target_os = "macos"))]
-impl RootKeyStore for PlatformRootKeyStore {
-    fn get_root_key(&self) -> Result<Option<String>, String> {
-        Err("Native secure store is not configured for this platform".into())
-    }
-    fn set_root_key(&self, _: &str) -> Result<(), String> {
-        Err("Native secure store is not configured for this platform".into())
-    }
-}
-
-pub struct LocalCipher(Aes256Gcm);
 pub struct RootCiphers {
+    pub(crate) storage_initialization: std::sync::Mutex<()>,
     pub database: LocalCipher,
     pub secrets: LocalCipher,
     pub response_content: LocalCipher,
     pub legacy_database: Option<LocalCipher>,
+    wrapping: LocalCipher,
+    journal_seed: Arc<Zeroizing<[u8; 32]>>,
 }
 
 fn derive_key(root: &[u8], info: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
@@ -145,44 +167,127 @@ fn derive_key(root: &[u8], info: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
 }
 
 impl RootCiphers {
+    /// A public-storage handle. Every cryptographic operation fails closed.
+    pub fn unavailable() -> Self {
+        let cipher = LocalCipher(CipherBackend::Unavailable);
+        Self {
+            storage_initialization: std::sync::Mutex::new(()),
+            database: cipher.clone(),
+            secrets: cipher.clone(),
+            response_content: cipher.clone(),
+            legacy_database: None,
+            wrapping: cipher,
+            journal_seed: Arc::new(Zeroizing::new([0; 32])),
+        }
+    }
+    #[cfg(test)]
     pub fn open(
         store: &dyn RootKeyStore,
         existing_encrypted_data: bool,
         needs_legacy_database_key: bool,
     ) -> Result<Self, String> {
+        Self::open_typed(store, existing_encrypted_data, needs_legacy_database_key)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(test)]
+    pub fn open_typed(
+        store: &dyn RootKeyStore,
+        existing_encrypted_data: bool,
+        needs_legacy_database_key: bool,
+    ) -> Result<Self, ProtectedError> {
         // RuntimeStorage owns the derived ciphers until process exit.
-        let root = match store.get_root_key()? {
+        let root = match store.get_root_key_typed()? {
             Some(value) => {
                 let encoded = Zeroizing::new(value);
                 Zeroizing::new(
                     STANDARD
                         .decode(encoded.as_bytes())
-                        .map_err(|_| "Invalid local encryption key")?,
+                        .map_err(|_| ProtectedError::corrupt("root-key-invalid"))?,
                 )
             }
-            None if existing_encrypted_data => return Err("The local encryption key is missing. Restore the key before opening this database; no replacement key was created.".into()),
+            None if existing_encrypted_data => {
+                return Err(ProtectedError::new(
+                    ProtectedStatus::Unavailable,
+                    "root-key-missing",
+                    false,
+                ))
+            }
             None => {
                 let mut key = Zeroizing::new([0_u8; 32]);
                 getrandom::fill(&mut *key).map_err(|_| "Cannot generate local encryption key")?;
                 let encoded = Zeroizing::new(STANDARD.encode(key.as_slice()));
-                store.set_root_key(&encoded)?;
+                store.set_root_key_typed(&encoded)?;
                 Zeroizing::new(key.to_vec())
             }
         };
         if root.len() != 32 {
-            return Err("Invalid local encryption key".into());
+            return Err(ProtectedError::corrupt("root-key-invalid"));
         }
-        let database_key = derive_key(&root, DATABASE_KEY_INFO)?;
-        let secrets_key = derive_key(&root, SECRETS_KEY_INFO)?;
-        let response_content_key = derive_key(&root, RESPONSE_CONTENT_KEY_INFO)?;
+        Self::from_root(&root, needs_legacy_database_key)
+    }
+    pub(crate) fn from_root(
+        root: &[u8],
+        needs_legacy_database_key: bool,
+    ) -> Result<Self, ProtectedError> {
+        if root.len() != 32 {
+            return Err(ProtectedError::corrupt("root-key-invalid"));
+        }
+        let database_key = derive_key(root, DATABASE_KEY_INFO)?;
+        let secrets_key = derive_key(root, SECRETS_KEY_INFO)?;
+        let response_content_key = derive_key(root, RESPONSE_CONTENT_KEY_INFO)?;
+        let wrapping = derive_key(root, b"purr:installation-wrapping:v2")?;
         Ok(Self {
+            wrapping: LocalCipher::from_key(wrapping.as_slice())?,
+            journal_seed: Arc::new(derive_key(root, b"purr:installation-journal:v2")?),
+            storage_initialization: std::sync::Mutex::new(()),
             database: LocalCipher::from_key(&database_key[..])?,
             secrets: LocalCipher::from_key(&secrets_key[..])?,
             response_content: LocalCipher::from_key(&response_content_key[..])?,
             legacy_database: needs_legacy_database_key
-                .then(|| LocalCipher::from_key(&root))
+                .then(|| LocalCipher::from_key(root))
                 .transpose()?,
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn with_scope_keys(&self, path: &Path, vault_id: &str) -> Result<Self, String> {
+        self.with_scope_keys_policy(path, vault_id, true)
+    }
+    pub(crate) fn with_scope_keys_policy(
+        &self,
+        path: &Path,
+        vault_id: &str,
+        allow_initialize: bool,
+    ) -> Result<Self, String> {
+        let registry = scoped::ScopeRegistry::open(
+            path,
+            vault_id,
+            self.wrapping.clone(),
+            self.journal_seed.clone(),
+            allow_initialize,
+        )?;
+        let routed = |purpose| {
+            LocalCipher(CipherBackend::Scoped {
+                registry: registry.clone(),
+                purpose,
+                scope: None,
+            })
+        };
+        Ok(Self {
+            storage_initialization: std::sync::Mutex::new(()),
+            database: routed(scoped::CipherPurpose::Database),
+            secrets: routed(scoped::CipherPurpose::Secrets),
+            response_content: routed(scoped::CipherPurpose::ResponseContent),
+            legacy_database: None,
+            wrapping: self.wrapping.clone(),
+            journal_seed: self.journal_seed.clone(),
+        })
+    }
+    pub fn is_scoped(&self) -> bool {
+        self.database.is_scoped()
+    }
+    #[cfg(test)]
+    pub fn provision_scope(&self, scope: ProtectionScope) -> Result<(), String> {
+        self.database.provision_scope(scope)
     }
 }
 
@@ -193,16 +298,102 @@ pub struct SealedValue {
 }
 
 impl LocalCipher {
+    pub fn export_credential_recovery_keys(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<CredentialRecoveryKey>, String> {
+        match &self.0 {
+            CipherBackend::Scoped {
+                registry,
+                purpose: scoped::CipherPurpose::Secrets,
+                ..
+            } => registry.export_credential_recovery_keys(workspace_id),
+            _ => Err("credential-scope-registry-required".into()),
+        }
+    }
+    /// Disposable transport key. It is never persisted or exported.
+    pub(crate) fn ephemeral() -> Result<Self, String> {
+        let mut key = Zeroizing::new([0_u8; 32]);
+        getrandom::fill(key.as_mut()).map_err(|_| "Cannot generate upload key")?;
+        Self::from_key(key.as_ref())
+    }
+
     fn from_key(key: &[u8]) -> Result<Self, String> {
-        Ok(Self(
+        Ok(Self(CipherBackend::Raw(Arc::new(
             Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid local encryption key")?,
-        ))
+        ))))
+    }
+    pub fn is_scoped(&self) -> bool {
+        !matches!(self.0, CipherBackend::Raw(_))
+    }
+    pub fn is_available(&self) -> bool {
+        !matches!(self.0, CipherBackend::Unavailable)
+    }
+    pub fn for_scope(&self, scope: ProtectionScope) -> Result<Self, String> {
+        match &self.0 {
+            CipherBackend::Unavailable => Err("protected-storage-unavailable".into()),
+            CipherBackend::Scoped {
+                registry, purpose, ..
+            } => {
+                registry.ensure_scope(&scope)?;
+                Ok(Self(CipherBackend::Scoped {
+                    registry: registry.clone(),
+                    purpose: *purpose,
+                    scope: Some(scope),
+                }))
+            }
+            CipherBackend::Raw(_) => {
+                #[cfg(test)]
+                {
+                    let _ = scope;
+                    Ok(self.clone())
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = scope;
+                    Err("scope-key-registry-required".into())
+                }
+            }
+        }
+    }
+    pub fn provision_scope(&self, scope: ProtectionScope) -> Result<(), String> {
+        match &self.0 {
+            CipherBackend::Unavailable => Err("protected-storage-unavailable".into()),
+            CipherBackend::Scoped { registry, .. } => registry.provision(scope),
+            CipherBackend::Raw(_) => {
+                #[cfg(test)]
+                {
+                    let _ = scope;
+                    Ok(())
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = scope;
+                    Err("scope-key-registry-required".into())
+                }
+            }
+        }
     }
     pub fn seal(&self, bytes: &[u8], aad: &str) -> Result<SealedValue, String> {
+        let cipher = match &self.0 {
+            CipherBackend::Unavailable => return Err("protected-storage-unavailable".into()),
+            CipherBackend::Raw(cipher) => cipher,
+            CipherBackend::Scoped {
+                registry,
+                purpose,
+                scope,
+            } => {
+                return registry.seal(
+                    scope.as_ref().ok_or("scope-selection-required")?,
+                    *purpose,
+                    bytes,
+                    aad,
+                )
+            }
+        };
         let mut nonce = [0_u8; 12];
         getrandom::fill(&mut nonce).map_err(|_| "Cannot generate local encryption nonce")?;
-        let ciphertext = self
-            .0
+        let ciphertext = cipher
             .encrypt(
                 &nonce.into(),
                 Payload {
@@ -224,10 +415,28 @@ impl LocalCipher {
         ciphertext: &[u8],
         aad: &str,
     ) -> Result<Zeroizing<Vec<u8>>, String> {
+        let cipher = match &self.0 {
+            CipherBackend::Unavailable => return Err("protected-storage-unavailable".into()),
+            CipherBackend::Raw(cipher) => cipher,
+            CipherBackend::Scoped {
+                registry,
+                purpose,
+                scope,
+            } => {
+                return registry.open_sealed(
+                    scope.as_ref().ok_or("scope-selection-required")?,
+                    *purpose,
+                    version,
+                    nonce,
+                    ciphertext,
+                    aad,
+                )
+            }
+        };
         if version != 1 || nonce.len() != 12 {
             return Err("Invalid encrypted local data".into());
         }
-        self.0
+        cipher
             .decrypt(
                 &Nonce::try_from(nonce).map_err(|_| "Invalid encrypted local data")?,
                 Payload {
@@ -246,13 +455,27 @@ impl LocalCipher {
         Ok(envelope)
     }
     pub fn decrypt(&self, bytes: &[u8], context: &str) -> Result<Vec<u8>, String> {
-        if bytes.len() < 29 || bytes[0] != 1 {
+        if bytes.len() < 29 || ![1, 2].contains(&bytes[0]) {
             return Err("Invalid encrypted local data".into());
         }
         Ok(self
             .open_sealed(bytes[0] as i64, &bytes[1..13], &bytes[13..], context)?
             .to_vec())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_key() -> [u8; 32] {
+    let mut bytes = [std::mem::MaybeUninit::uninit(); 32];
+    getrandom::fill_uninit(&mut bytes)
+        .expect("OS random source for test key")
+        .try_into()
+        .expect("fixed key length")
+}
+
+#[cfg(test)]
+pub(crate) fn test_password() -> String {
+    STANDARD.encode(test_key())
 }
 
 #[cfg(test)]
@@ -348,10 +571,63 @@ pub mod tests {
     }
 
     #[test]
+    fn typed_provider_failures_never_generate_keys_and_can_be_retried() {
+        struct Provider {
+            reason: ProtectedError,
+            writes: std::sync::atomic::AtomicUsize,
+        }
+        impl RootKeyStore for Provider {
+            fn get_root_key(&self) -> Result<Option<String>, String> {
+                Err("untrusted platform diagnostic containing private data".into())
+            }
+            fn get_root_key_typed(&self) -> Result<Option<String>, ProtectedError> {
+                Err(self.reason.clone())
+            }
+            fn set_root_key(&self, _: &str) -> Result<(), String> {
+                self.writes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+        }
+        for status in [
+            ProtectedStatus::Locked,
+            ProtectedStatus::Denied,
+            ProtectedStatus::Unavailable,
+            ProtectedStatus::Corrupt,
+        ] {
+            let provider = Provider {
+                reason: ProtectedError::new(status, "safe-provider-code", true),
+                writes: Default::default(),
+            };
+            for _ in 0..2 {
+                let error = RootCiphers::open_typed(&provider, true, false)
+                    .err()
+                    .unwrap();
+                assert_eq!(error.status, status);
+                assert_eq!(error.to_string(), "safe-provider-code");
+            }
+            assert_eq!(
+                provider.writes.load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+        }
+        let provider = MemoryRootKeyStore::default();
+        provider
+            .set_root_key("invalid-base64-private-marker")
+            .unwrap();
+        let error = RootCiphers::open_typed(&provider, true, false)
+            .err()
+            .unwrap();
+        assert_eq!(error.status, ProtectedStatus::Corrupt);
+        assert_eq!(error.code, "root-key-invalid");
+        assert!(!error.to_string().contains("private-marker"));
+    }
+
+    #[test]
     fn encrypted_data_never_creates_a_replacement_for_a_missing_master_key() {
         let store = MemoryRootKeyStore::default();
         let error = RootCiphers::open(&store, true, false).err().unwrap();
-        assert!(error.contains("local encryption key is missing"));
+        assert_eq!(error, "root-key-missing");
         assert!(!store.has_key());
         assert_eq!(store.reads(), 1);
         assert_eq!(store.writes(), 0);
@@ -380,13 +656,6 @@ pub mod tests {
             encoded,
             "d69330ea806cdc19613eb56efbbfc17d8efe819d64f8ea533662ae264c70de91"
         );
-    }
-
-    #[test]
-    fn platform_adapter_is_root_key_only() {
-        fn accepts_root_store(_: &dyn RootKeyStore) {}
-        let directory = tempfile::tempdir().unwrap();
-        accepts_root_store(&PlatformRootKeyStore::new(directory.path()));
     }
 
     #[test]

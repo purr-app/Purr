@@ -1,3 +1,4 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
@@ -9,21 +10,20 @@ import { MemorySecureStore } from "../src/storage/secrets";
 import { createWorkspace, getEffectiveVariableValues, getVariableNamespace, validateWorkspace, cloneRequestDraft, isRequestDocument } from "../src/features/workspaces/model/workspace";
 import { resolveDynamicVariables } from "../src/features/workspaces/services/dynamic-variable-resolver";
 import { validateProject } from "../src/domain/project";
-import { projectWorkspace } from "../src/application/project-projection";
 import type { NormalizedImportResult } from "../src/importing/contracts";
 import type { ImportPort } from "../src/application/ports/platform";
 
 const source = { kind: "text" as const, name: "environment.json", content: "{}" };
 const staticVariable = (id: string, name: string, value: string, enabled = true) => ({ id, name, value, enabled, kind: "static" as const, sensitive: false });
 function environmentResult(workspaceId: string, id = "imported-env"): NormalizedImportResult {
-  const ref = `purr/${workspaceId}/imports/postman/${id}`;
+  const ref = `purr/${workspaceId}/credentials/imports/postman/${id}`;
   return { adapter: "postman-environment", workspace: { id: workspaceId, name: "Foreign name", headers: [], auth: [], variables: [] },
     resources: [{ id, name: "Local", kind: "environment", variables: [staticVariable(`${id}-url`, "baseUrl", "https://environment.test"),
       staticVariable(`${id}-disabled`, "disabled", "off", false), { id: `${id}-secret`, name: "token", kind: "static", sensitive: true, enabled: true, secretRef: ref }] }],
     secrets: [{ ref, value: "private-test-token" }], diagnostics: [] };
 }
 async function setup() {
-  const backend = new MemoryPersistenceBackend(); const secure = new MemorySecureStore(); const persistence = new WorkspacePersistence(backend, secure);
+  const secure = new MemorySecureStore(); const backend = new MemoryPersistenceBackend(secure); const persistence = new WorkspacePersistence(backend, secure);
   const workspace = createWorkspace("Original", "project");
   workspace.variables = [staticVariable("workspace-url", "baseUrl", "https://workspace.test")];
   workspace.environments = [{ id: "old-env", name: "Local", variables: [] }];
@@ -46,7 +46,7 @@ test("environment import is additive, renames collisions, preserves runtime and 
   assert.equal(result.workspace.environments[1].name, "Local (2)");
   assert.equal(result.report.counts.variables, 3); assert.equal(result.report.counts.secrets, 1);
   assert.equal(result.report.diagnostics[0].code, "duplicate-name");
-  assert.equal(await secure.get("purr/project/imports/postman/imported-env"), "private-test-token");
+  assert.equal(await secure.get("purr/project/credentials/imports/postman/imported-env"), "private-test-token");
   assert.ok(!JSON.stringify(backend.snapshot).includes("private-test-token"));
   const restored = (await new WorkspacePersistence(backend, secure).load()).workspaces[0];
   assert.equal(restored.environments.length, 2); assert.deepEqual(restored.ui, workspace.ui);
@@ -61,7 +61,7 @@ test("environment overrides survive projection and disabled values fall back to 
   const { workspace, secure } = await setup();
   workspace.environments[0].variables = [staticVariable("environment-url", "baseUrl", "https://env.test")];
   assert.doesNotThrow(() => validateWorkspace(workspace));
-  const projected = await projectWorkspace(workspace, secure); assert.doesNotThrow(() => validateProject(projected.project));
+  const projected = await projectAndCommit(workspace, secure); assert.doesNotThrow(() => validateProject(projected.project));
   assert.equal(getEffectiveVariableValues(workspace, []).baseUrl, "https://env.test");
   workspace.environments[0].variables[0].enabled = false;
   assert.equal(getEffectiveVariableValues(workspace, []).baseUrl, "https://workspace.test");
@@ -84,16 +84,20 @@ test("failed commit rolls back new credentials and leaves the existing workspace
   const { backend, persistence, secure, workspace } = await setup(); const before = structuredClone(backend.snapshot);
   backend.commit = async () => { throw new Error("Simulated revision conflict"); };
   await assert.rejects(importEnvironment(source, workspace, [], persistence, { normalize: async () => environmentResult("project") }), /revision conflict/);
-  assert.equal(await secure.exists("purr/project/imports/postman/imported-env"), false);
+  assert.equal(await secure.exists("purr/project/credentials/imports/postman/imported-env"), false);
   assert.deepEqual(backend.snapshot, before);
 });
 
-test("failed secret writes roll back earlier values and existing refs cannot be overwritten", async () => {
+test("failed prepared secret publication preserves all values and existing refs cannot be overwritten", async () => {
   const { persistence, secure } = await setup();
   const result = environmentResult("project");
-  result.secrets.push({ ref: "purr/project/imports/postman/failing", value: "second" });
+  result.secrets.push({ ref: "purr/project/credentials/imports/postman/failing", value: "second" });
   const originalSet = secure.set.bind(secure);
-  secure.set = async (ref, value) => { if (ref.endsWith("failing")) throw new Error("Vault unavailable"); await originalSet(ref, value); };
+  const originalCommit = secure.commitWith.bind(secure);
+  secure.commitWith = async (batch, publish, identity) => {
+    if (batch.mutations.some((mutation) => mutation.ref.endsWith("failing"))) throw new Error("Vault unavailable");
+    return originalCommit(batch, publish, identity);
+  };
   await assert.rejects(persistImport({ ...result, resources: [] }, persistence), /Vault unavailable/);
   assert.equal(await secure.exists(result.secrets[0].ref), false);
   await originalSet(result.secrets[0].ref, "existing-secret"); persistence.secure.clear();

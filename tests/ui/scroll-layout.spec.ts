@@ -5,6 +5,8 @@ test.beforeEach(async ({ page }) => installPersistenceMock(page));
 
 test("long environment scrolls inside Variables without moving the application page", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByLabel("Request URL", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Workspace", exact: true })).toHaveAttribute("aria-busy", "false");
   await page.evaluate(async () => {
     const { createCoreServices } = await import("/src/app/composition/core-services.ts" as string);
     const persistence = createCoreServices().persistence;

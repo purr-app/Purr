@@ -8,11 +8,11 @@ export function SettingsSection({ title, children }: { title: string; children: 
   </section>;
 }
 
-export function SettingsRow({ label, description, children }: { label: string; description: string; children: ReactNode }) {
+export function SettingsRow({ label, description, children }: { label: ReactNode; description?: string; children: ReactNode }) {
   return <div className="flex flex-wrap items-center justify-between gap-ui-3 py-ui-3">
     <div className="min-w-0 flex-1">
       <h3 className="m-ui-0 text-ui-md font-medium text-content-secondary">{label}</h3>
-      <p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">{description}</p>
+      {description ? <p className="mb-ui-0 mt-ui-1 text-ui-sm text-content-tertiary">{description}</p> : null}
     </div>
     <div className="shrink-0">{children}</div>
   </div>;

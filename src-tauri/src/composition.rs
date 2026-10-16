@@ -4,6 +4,7 @@ use crate::{
     http, oauth, observability, persistence,
 };
 use observability::registry::{IntegrationDescriptor, RegistryBuilder, TraceProvider};
+use tauri::Manager;
 
 /// Build-time native composition root for OSS and official Purr binaries.
 ///
@@ -61,8 +62,9 @@ impl PurrBuilder {
             .manage(observability::ObservabilityState::new(
                 self.observability.build(),
             ))
-            .invoke_handler(tauri::generate_handler![
+            .invoke_handler(crate::security::caller::guard(tauri::generate_handler![
                 commands::app::exit_app,
+                commands::transfer::secret_transfer,
                 commands::observability::observability_integrations,
                 commands::observability::observability_validate_config,
                 commands::observability::observability_trace,
@@ -77,6 +79,10 @@ impl PurrBuilder {
                 commands::response::response_content_query,
                 commands::response::cancel_response_content_operation,
                 commands::response::response_content_release,
+                commands::attachment::attachment_begin,
+                commands::attachment::attachment_append,
+                commands::attachment::attachment_finish,
+                commands::attachment::attachment_abort,
                 commands::http::request_file_create,
                 commands::http::request_file_append,
                 commands::http::request_file_finish,
@@ -100,11 +106,19 @@ impl PurrBuilder {
                 commands::persistence::finish_legacy_migration,
                 commands::persistence::open_project_folder,
                 commands::persistence::attach_project_directory,
+                commands::persistence::read_project_directory,
+                commands::persistence::open_project_directory,
+                commands::persistence::secure_read,
+                commands::persistence::secure_resolve,
+                commands::persistence::secure_inspect,
+                commands::persistence::retry_protected_storage,
+                commands::persistence::secure_commit,
+                commands::persistence::secure_operation_status,
                 commands::persistence::secure_get,
                 commands::persistence::secure_set,
                 commands::persistence::secure_delete,
                 commands::persistence::secure_exists
-            ])
+            ]))
             .run(context)
     }
 
@@ -122,11 +136,27 @@ impl PurrBuilder {
 /// providers. Additional modules are registered before `run` consumes it.
 pub fn core_builder() -> PurrBuilder {
     let builder = crate::content::protocol::register(tauri::Builder::default())
+        .plugin(crate::security::caller::navigation_guard())
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("purr-upload-lifecycle")
+                .setup(|app, _| {
+                    // Best effort during startup; the upload boundary retries and
+                    // fails closed if orphan cleanup/storage initialization fails.
+                    let _ = app
+                        .state::<http::HttpRuntimeState>()
+                        .request_files
+                        .initialize(app);
+                    Ok(())
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(http::HttpRuntimeState::default())
         .manage(oauth::OAuthCallbacks::default())
+        .manage(crate::security::context::NativeKeyState::default())
         .manage(persistence::PersistenceState::default())
+        .manage(crate::transfer::TransferState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default());
     #[cfg(target_os = "macos")]

@@ -1,3 +1,4 @@
+import { unavailableSecretTransfer } from "../../storage/unavailable-secret-transfer";
 import { externalHttpUrl } from "../../shared/lib/external-url";
 import type { PlatformAdapters } from "../../application/ports/platform";
 import type { ResponseContentRef } from "../../domain/http";
@@ -90,6 +91,7 @@ export function createBrowserPlatformAdapters(): PlatformAdapters {
     },
     persistenceBackend: new BrowserPersistenceBackend(),
     secureStore,
+    secretTransfer: unavailableSecretTransfer,
     httpTransport: () =>
       unavailable(
         "Send requests and authorize OAuth in the Purr desktop app (npm run tauri dev).",

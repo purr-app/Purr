@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { requestSettingsSchema } from "./request-settings";
+import { isPureTemplateReference } from "./template-expression";
 
 // Canonical definitions contain no editor rows, transport responses or storage paths.
 // Both import adapters and the current editor project into these types.
@@ -9,8 +10,15 @@ export type SecretRef = z.infer<typeof secretRefSchema>;
 export const credentialSchema = z.union([
   z.strictObject({ kind: z.literal("plain"), value: z.string() }),
   z.strictObject({ kind: z.literal("secret"), ref: secretRefSchema }),
+  z.strictObject({ kind: z.literal("template"), value: z.string().refine(isPureTemplateReference, "A credential template must contain exactly one variable reference.") }),
 ]);
 export type Credential = z.infer<typeof credentialSchema>;
+export const headerDefinitionSchema = z.strictObject({
+  id: entityId, name: z.string(), enabled: z.boolean().default(true), sensitive: z.boolean().default(false), value: credentialSchema,
+});
+export type HeaderDefinition = z.infer<typeof headerDefinitionSchema>;
+const headerDefinitions = z.array(headerDefinitionSchema).refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length,
+  "Duplicate header identifiers.");
 const variableBase = { id: entityId, name: z.string().trim().min(1).refine((value) => !/[{}]/.test(value), "Variable names cannot contain braces"),
   enabled: z.boolean().default(true), sensitive: z.boolean().default(false) };
 export const variableDefinitionSchema = z.discriminatedUnion("kind", [
@@ -60,7 +68,7 @@ const request = {
   tracing: z.strictObject({ enabled: z.boolean().default(true), integrationId: entityId.optional() }).optional(),
   tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
   ...base, url: z.string(), method: z.string().regex(/^[A-Z][A-Z0-9_-]*$/), documentation: z.string().optional(),
-  params: z.array(pair).default([]), pathParams: z.array(pair).default([]), headers: z.array(pair).default([]), body: body.default({ type: "none" }),
+  params: z.array(pair).default([]), pathParams: z.array(pair).default([]), headers: headerDefinitions.default([]), body: body.default({ type: "none" }),
   auth: authDefinitionSchema.default({ type: "none" }), environmentId: entityId.optional(),
   overrides: z.strictObject({ headers: z.boolean().default(true), auth: z.boolean().default(true),
     excludedHeaderIds: z.array(entityId).default([]), cookies: z.boolean().default(true) }).optional(),
@@ -74,7 +82,7 @@ export type RequestDefinition = z.infer<typeof requestDefinitionSchema>;
 export const schemaDefinitionSchema = z.strictObject({
   ...base, kind: z.literal("schema"),
   endpoint: z.string().optional(), auth: authDefinitionSchema.optional(),
-  introspectionHeaders: z.array(z.strictObject({ id: entityId, name: z.string(), value: credentialSchema, enabled: z.boolean().default(true) })).default([]),
+  introspectionHeaders: headerDefinitions.default([]),
   source: z.discriminatedUnion("type", [
     z.strictObject({ type: z.literal("introspection"), endpoint: z.string().optional(), requestId: entityId.optional() }),
     z.strictObject({ type: z.enum(["sdl-file", "introspection-json"]), location: z.string().optional(), endpoint: z.string().optional() }),
@@ -128,13 +136,48 @@ export type ProjectResource = z.infer<typeof resourceSchema>;
 export const workspaceDefinitionSchema = z.strictObject({
   defaultGraphqlSchemaId: entityId.optional(),
   tracePropagation: z.string().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/).optional(),
-  id: entityId, name: z.string(), description: z.string().optional(),
+  id: entityId.refine((id) => id !== "global" && id !== "__global__", "Reserved workspace identifier"), name: z.string(), description: z.string().optional(),
   variables: z.array(variableDefinitionSchema).default([]),
-  headers: z.array(pair.extend({ id: entityId, scope })).default([]),
+  headers: z.array(headerDefinitionSchema.extend({ scope })).default([]),
   auth: z.array(z.strictObject({ id: entityId, name: z.string(), scope, enabled: z.boolean().default(true), config: authDefinitionSchema })).default([]),
 });
 export type WorkspaceDefinition = z.infer<typeof workspaceDefinitionSchema>;
 export type Project = { workspace: WorkspaceDefinition; resources: ProjectResource[] };
+
+// The normalized model can temporarily contain v1 literals while it is open
+// read-only. These checks guard every v2 serialization/deserialization boundary.
+function validateProtectedCredential(value: Credential) {
+  if (value.kind === "plain") throw new Error("A protected credential must use a SecretRef or a template.");
+}
+function validateV2Auth(value: AuthDefinition) {
+  if (value.type === "bearer") validateProtectedCredential(value.token);
+  if (value.type === "basic") validateProtectedCredential(value.password);
+  if (value.type === "api-key") validateProtectedCredential(value.value);
+  if (value.type === "oauth2") validateProtectedCredential(value.clientSecret);
+}
+function validateV2Headers(values: readonly HeaderDefinition[]) {
+  for (const header of values) {
+    if (["cookie", "set-cookie"].includes(header.name.trim().toLowerCase()) && !header.sensitive)
+      throw new Error("Cookie protocol headers must be marked sensitive.");
+    if (header.sensitive) validateProtectedCredential(header.value);
+    if (header.value.kind === "secret" && !header.sensitive) throw new Error("A secret header must be marked sensitive.");
+  }
+}
+export function validateV2WorkspaceDefinition(value: WorkspaceDefinition): void {
+  validateV2Headers(value.headers);
+  for (const profile of value.auth) validateV2Auth(profile.config);
+}
+export function validateV2ResourceDefinition(value: ProjectResource): void {
+  if (value.kind === "http" || value.kind === "graphql") {
+    validateV2Headers(value.headers); validateV2Auth(value.auth);
+  } else if (value.kind === "schema") {
+    validateV2Headers(value.introspectionHeaders);
+    if (value.auth) validateV2Auth(value.auth);
+    if (value.source.type === "registry" && value.source.credential) validateProtectedCredential(value.source.credential);
+  } else if (value.kind === "integration") {
+    Object.values(value.credentials).forEach(validateProtectedCredential);
+  }
+}
 
 export function validateProject(project: Project): Project {
   const workspace = workspaceDefinitionSchema.parse(project.workspace);
@@ -143,6 +186,9 @@ export function validateProject(project: Project): Project {
   const checkRefs = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
     const object = value as Record<string, unknown>;
+    const reference = object.kind === "secret" ? object.ref : object.kind === "static" ? object.secretRef : undefined;
+    if (typeof reference === "string" && /^purr\/[^/]+\/runtime\//.test(reference))
+      throw new Error("Canonical definitions cannot reference local runtime secrets.");
     if (object.kind === "secret" && (typeof object.ref !== "string" || !object.ref.startsWith(`purr/${workspace.id}/`)))
       throw new Error("Secret references must belong to this workspace.");
     if (object.kind === "static" && object.sensitive === true

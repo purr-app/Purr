@@ -1,4 +1,6 @@
 import type { DynamicExecutionMetadata } from "../../../application/ports/history";
+import type { SecretFieldState } from "../../../application/ports/credentials";
+import type { ProtectedState } from "../../../application/ports/persistence";
 import { defaultRequestSettings, normalizeRequestSettings } from "../../../domain/request-settings";
 import { createRequestAuth, normalizeRequestAuth } from "../../request-workbench/model/request-auth";
 import { authTypeOptions } from "../../request-workbench/model/request-auth";
@@ -20,7 +22,7 @@ export type DocumentKind = "http" | "graphql" | "schema" | "extension" | "trace"
 export type DynamicVariableRefresh = "every-time" | "session" | "cache";
 type VariableBase = { id: string; name: string; enabled: boolean; sensitive: boolean };
 export type Variable = VariableBase & (
-  | { kind: "static"; value: string; secretRef?: SecretRef; loaded?: boolean }
+  | { kind: "static"; value: string; secretRef?: SecretRef; loaded?: boolean; secretState?: SecretFieldState }
   | { kind: "dynamic-request"; documentId: string; expression: string; language: "jsonpath" | "jq"; refresh: DynamicVariableRefresh;
       cacheTtlSeconds?: number; environment: { type: "current" } | { type: "specific"; environmentId: string } }
   | { kind: "external-secret"; provider: string; key: string }
@@ -28,6 +30,8 @@ export type Variable = VariableBase & (
 export type EnvironmentVariable = Variable;
 export type Environment = { id: string; name: string; description?: string; folderId?: string; variables: Variable[] };
 export type DynamicVariableCacheEntry = {
+  sensitivity?: boolean;
+  protection?: "plaintext" | "encrypted";
   status: "success" | "error";
   value?: string;
   error?: string;
@@ -35,6 +39,7 @@ export type DynamicVariableCacheEntry = {
   durationMs: number;
   environmentId: string | null;
   fingerprint: string;
+  secretState?: SecretFieldState;
 };
 type DocumentBase = {
   id: string;
@@ -50,6 +55,8 @@ export type RequestDocumentKind = "http" | "graphql";
 export type CreatableDocumentKind = RequestDocumentKind | "schema";
 export type RequestDocument = DocumentBase & {
   kind: RequestDocumentKind;
+  /** Device-local response storage preference; never part of canonical YAML. */
+  responseStorage?: "inherit" | "plaintext" | "encrypted";
   /** Ephemeral immutable execution tab; never projected to workspace files. */
   historical?: { dynamicExecution?: DynamicExecutionMetadata; entryId: string; documentId: string; startedAt: number; error: string; readOnly?: boolean; inPlace?: boolean };
   request: RequestDraft;
@@ -68,6 +75,7 @@ export type SchemaDocument = DocumentBase & {
   auth: ReturnType<typeof createRequestAuth>;
   introspectionHeaders: RequestHeader[];
   cacheIdentity?: string;
+  cacheProtection?: "plaintext" | "encrypted";
   fetchStatus?: "loading" | "error";
   fetchError?: string;
   endpoint: string;
@@ -102,6 +110,10 @@ export function getDocumentGroup(document: WorkspaceDocument) {
 }
 export type Workspace = {
   schemaVersion: 1;
+  /** Ephemeral capabilities; never project into canonical definitions. */
+  projectFormatVersion?: 1 | 2;
+  protectedState?: ProtectedState;
+  publicWritable?: boolean;
   id: string;
   name: string;
   description: string;
@@ -113,6 +125,8 @@ export type Workspace = {
   cookies: SessionCookie[];
   activeEnvironmentId: string | null;
   requestConfig: WorkspaceRequestConfig;
+  /** Device-local default for future executions. */
+  responseStorage?: "plaintext" | "encrypted";
   dynamicVariableCache: Record<string, DynamicVariableCacheEntry>;
   ui: {
     openDocumentIds: string[];
@@ -239,7 +253,7 @@ export function createWorkspace(name = "Personal", id: string = crypto.randomUUI
   const document = createHttpDocument();
   return {
     schemaVersion: 1, id, name, description: "", documents: [document], variables: [], environments: [], cookies: [], activeEnvironmentId: null,
-    requestConfig: createWorkspaceRequestConfig(), dynamicVariableCache: {},
+    requestConfig: createWorkspaceRequestConfig(), responseStorage: "plaintext", dynamicVariableCache: {},
     ui: {
       openDocumentIds: [document.id], activeDocumentId: document.id, previewDocumentId: null, cookiesTabOpen: false, cookiesTabActive: false,
       settingsTabOpen: false, settingsTabActive: false, sidebarOpen: true,
@@ -333,26 +347,54 @@ export function duplicateDocument(workspace: Workspace, id: string): Workspace {
     const created = createSchemaDocument();
     const duplicate: SchemaDocument = { ...created, saved: true, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
       folderId: source.folderId, sourceRequestId: source.sourceRequestId, endpoint: source.endpoint, sdl: source.sdl, source: source.source,
-      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders), cacheIdentity: source.cacheIdentity,
+      auth: { ...structuredClone(source.auth), secretRefs: undefined }, introspectionHeaders: structuredClone(source.introspectionHeaders).map((header) => ({ ...header, secretRef: undefined })), cacheIdentity: source.cacheIdentity, cacheProtection: source.cacheProtection,
       sourceLabel: source.sourceLabel, loadedAt: source.loadedAt, schemaSource: source.schemaSource, pinned: source.pinned, ui: { ...source.ui } };
     return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
   }
   const created: RequestDocument = source.kind === "graphql" ? createGraphqlDocument() : createHttpDocument();
   const request = cloneRequestDraft(source.request);
   request.auth = { ...request.auth, secretRefs: undefined, oauth2: { ...request.auth.oauth2, token: null } };
+  request.headers = request.headers.map((header) => ({ ...header, secretRef: undefined }));
   const duplicate: RequestDocument = { ...created, kind: source.kind, name: `${getDocumentDisplayName(source)} copy`, description: source.description,
-    folderId: source.folderId, request, ui: { ...source.ui } };
+    folderId: source.folderId, responseStorage: source.responseStorage ?? "inherit", request, ui: { ...source.ui } };
   return openDocument({ ...workspace, documents: [...workspace.documents, duplicate] }, duplicate.id);
 }
 
-function comparableRequest(value: unknown): unknown {
+/** Resolution changes editor buffers, not definitions. Keep compares the source identity. */
+export function comparableDefinitionState(value: unknown): unknown {
   if (typeof File !== "undefined" && value instanceof File)
     return { name: value.name, size: value.size, type: value.type, lastModified: value.lastModified };
-  if (Array.isArray(value)) return value.map(comparableRequest);
-  if (value && typeof value === "object") return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, comparableRequest(child)]),
-  );
-  return value;
+  if (Array.isArray(value)) return value.map(comparableDefinitionState);
+  if (!value || typeof value !== "object") return value;
+  const record = { ...value } as Record<string, unknown>;
+  const comparableCredential = (state: SecretFieldState) => state.edit?.kind === "set"
+    ? { credential: "set", value: state.edit.value }
+    : state.edit?.kind === "delete"
+      ? { credential: "delete", ref: state.ref }
+      : { credential: "keep", ref: state.ref };
+  const state = record.secretState as SecretFieldState | undefined;
+  if (state) record.value = comparableCredential(state);
+  const states = record.credentialStates as Record<string, SecretFieldState> | undefined;
+  if (states) {
+    const replace = (section: string, field: string, slot: string) => {
+      if (states[slot] && record[section] && typeof record[section] === "object")
+        record[section] = { ...record[section] as object, [field]: comparableCredential(states[slot]) };
+    };
+    replace("bearer", "token", "bearer");
+    replace("basic", "password", "password");
+    replace("apiKey", "value", "api-key");
+    replace("oauth2", "clientSecret", "client-secret");
+    const oauth = record.oauth2 as Record<string, unknown> | undefined;
+    if (oauth?.token && typeof oauth.token === "object") {
+      const token = { ...oauth.token } as Record<string, unknown>;
+      if (states["oauth-access-token"]) token.accessToken = comparableCredential(states["oauth-access-token"]);
+      if (states["oauth-refresh-token"]) token.refreshToken = comparableCredential(states["oauth-refresh-token"]);
+      record.oauth2 = { ...oauth, token };
+    }
+  }
+  return Object.fromEntries(Object.entries(record)
+    .filter(([key]) => !["secretRefs", "secretRef", "credentialStorage", "credentialStates", "secretState", "loaded"].includes(key))
+    .map(([key, child]) => [key, comparableDefinitionState(child)]));
 }
 
 export function isDocumentDirty(document: WorkspaceDocument): boolean {
@@ -361,8 +403,8 @@ export function isDocumentDirty(document: WorkspaceDocument): boolean {
   if (!isRequestDocument(document)) return false;
   if (document.historical) return false;
   if (!document.saved) return isMeaningfulDraft(document);
-  return JSON.stringify(comparableRequest(document.request)) !==
-    JSON.stringify(comparableRequest(document.savedRequest ?? document.request));
+  return JSON.stringify(comparableDefinitionState(document.request)) !==
+    JSON.stringify(comparableDefinitionState(document.savedRequest ?? document.request));
 }
 
 export function isMeaningfulDraft(document: WorkspaceDocument): boolean {
@@ -621,8 +663,10 @@ export function validateWorkspace(value: unknown): Workspace {
     cookies: Array.isArray(workspace.cookies) ? workspace.cookies : [],
     dynamicVariableCache: workspace.dynamicVariableCache && typeof workspace.dynamicVariableCache === "object" ? workspace.dynamicVariableCache : {},
     requestConfig,
+    responseStorage: workspace.responseStorage === "encrypted" ? "encrypted" : "plaintext",
     documents: workspace.documents.map((document) => isRequestDocument(document) ? ({
       ...document,
+      responseStorage: document.responseStorage === "encrypted" || document.responseStorage === "plaintext" ? document.responseStorage : "inherit",
       request: normalizeRequest(document.request),
       savedRequest: document.saved
         ? cloneRequestDraft(normalizeRequest(document.savedRequest && validRequest(document.savedRequest, document.kind) ? document.savedRequest : document.request))

@@ -1,9 +1,10 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { executeHttp } from "../src/features/request-workbench/services/http-client";
 import { prepareWireRequest } from "../src/features/request-workbench/services/execute-request";
 import { createWorkspace, isRequestDocument, cloneRequestDraft, applyWorkspaceRequestConfig } from "../src/features/workspaces/model/workspace";
-import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { restoreWorkspace } from "../src/application/project-projection";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { deserializeManifest, serializeManifest, serializeResource, deserializeResource } from "../src/storage/yaml";
 
@@ -16,7 +17,7 @@ test("propagation selection survives YAML and saved-versus-working-copy projecti
   document.savedRequest = cloneRequestDraft(document.request);
   document.request.tracePropagation = "b3";
   const secure = new MemorySecureStore();
-  const projected = await projectWorkspace(workspace, secure);
+  const projected = await projectAndCommit(workspace, secure);
   const manifest = serializeManifest(projected.project.workspace);
   assert.equal(deserializeManifest(manifest).tracePropagation, "w3c");
   const resource = projected.project.resources.find((item) => item.id === document.id)!;
@@ -90,7 +91,7 @@ test("per-request tracing selection round trips saved and working copies without
   document.savedRequest = cloneRequestDraft(document.request);
   document.request.tracing = { enabled: false, integrationId: "provider-two" };
   const secure = new MemorySecureStore();
-  const result = await projectWorkspace(workspace, secure);
+  const result = await projectAndCommit(workspace, secure);
   const restored = await restoreWorkspace(result.project, result.local, secure, result.assets);
   const request = restored.documents.find(isRequestDocument)!;
   assert.deepEqual(request.request.tracing, { enabled: false, integrationId: "provider-two" });

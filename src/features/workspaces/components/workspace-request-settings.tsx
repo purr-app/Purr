@@ -1,7 +1,13 @@
+import { SecretTransfer, WorkspaceExport } from "./secret-transfer";
+import { integrationCredentialRef, readIntegrationCredential, stageIntegrationCredential } from "../../../integrations/auth-storage";
+import { RequiredLocalSecrets, type RequiredLocalSecretsProps } from "./required-local-secrets";
+import type { SecretFieldState } from "../../../application/ports/credentials";
+import { Switch } from "../../../shared/components/ui/switch";
+import { SettingsRow, SettingsSection } from "../../../shared/components/ui/settings-section";
 import { Modal } from "../../../shared/components/ui/modal";
 import { useTabState, useForgetTabState } from "../../../shared/state/tab-state";
 import { Pencil, Plus, Trash2, Unplug } from "lucide-react";
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 
 import { AuthEditor } from "../../request-workbench/components/auth-editor";
 import { KeyValueEditor, type KeyValueEntry } from "../../request-workbench/components/key-value-editor";
@@ -25,8 +31,9 @@ import { integrationDefinitionSchema, type IntegrationDefinition } from "../../.
 import type { IntegrationSummary } from "../../../domain/observability";
 import { useExtensionRegistry } from "../../../extension-api/extension-context";
 import { useApplicationServices } from "../../../app/application-services-context";
+import { SecretPreparationStore } from "../../../storage/secrets";
 
-type SettingsTab = "general" | "headers" | "auth" | "graphql" | "integrations";
+type SettingsTab = "general" | "headers" | "auth" | "graphql" | "integrations" | "secrets";
 
 const scopeLabel = (scope: RequestScope) => scope === "all" ? "All requests" : `${scope === "graphql" ? "GraphQL" : "HTTP"} requests`;
 const authLabel = (auth: WorkspaceSharedAuth) => authTypeOptions.find((option) => option.value === auth.value.type)?.label ?? auth.value.type;
@@ -36,7 +43,9 @@ function availableAuthScopes(_auth: WorkspaceSharedAuth[], _editingId?: string) 
 }
 
 export function WorkspaceSettings({
-  workspaceId,
+  workspaceId, onImportedSecrets, onBeforeSecretTransfer,
+  responseStorage = "plaintext", onResponseStorageChange,
+  secrets, variableStates, onUpgrade,
   name,
   description,
   config,
@@ -46,13 +55,20 @@ export function WorkspaceSettings({
   variableActions,
   onNameChange,
   onDescriptionChange,
-  onConfigChange,
+  onConfigChange, onConfigSave,
   onIntegrationChange,
   onIntegrationSave,
   onIntegrationDelete,
   onDelete,
 }: {
   workspaceId: string;
+  onImportedSecrets: (references: readonly string[]) => void;
+  onBeforeSecretTransfer: () => Promise<void>;
+  responseStorage?: "plaintext" | "encrypted";
+  onResponseStorageChange?: (value: "plaintext" | "encrypted") => void;
+  secrets: RequiredLocalSecretsProps;
+  variableStates?: Record<string, SecretFieldState>;
+  onUpgrade: () => void;
   name: string;
   description: string;
   config: WorkspaceRequestConfig;
@@ -65,16 +81,18 @@ export function WorkspaceSettings({
   onNameChange: (name: string) => void;
   onDescriptionChange: (description: string) => void;
   onConfigChange: (config: WorkspaceRequestConfig) => void;
+  onConfigSave: (config: WorkspaceRequestConfig) => Promise<void>;
   onIntegrationChange: (id: string, change: Partial<Pick<IntegrationDefinition, "enabled">>) => void;
-  onIntegrationSave: (value: IntegrationDefinition) => void;
+  onIntegrationSave: (value: IntegrationDefinition, secrets: SecretPreparationStore) => Promise<void>;
   onIntegrationDelete: (id: string) => void;
   onDelete: () => Promise<void>;
 }) {
-  const { observability, secureStore } = useApplicationServices();
+  const { observability, persistence } = useApplicationServices();
   const extensions = useExtensionRegistry();
   const forgetState = useForgetTabState();
   const [catalogOpen, setCatalogOpen] = useTabState("settings.catalog", false);
   const [editingIntegration, setEditingIntegration] = useTabState<IntegrationDefinition | null>("settings.editingIntegration", null);
+  const editingSecrets = useMemo(() => new SecretPreparationStore(persistence.secure), [persistence, editingIntegration?.id]);
   const closeIntegrationEditor = () => {
     if (editingIntegration) forgetState(`integration.${editingIntegration.id}.`);
     setEditingIntegration(null); setCatalogOpen(false);
@@ -91,16 +109,18 @@ export function WorkspaceSettings({
     }).catch(() => { if (live) setAvailableIntegrations([]); });
     return () => { live = false; };
   }, [observability, workspaceId, tab, integrations]);
+  const [savingAuth, setSavingAuth] = useState(false);
+  const [authSaveError, setAuthSaveError] = useState("");
   const [editingAuth, setEditingAuth] = useTabState<WorkspaceSharedAuth | null>("settings.editingAuth", null);
-  const [authContext, setAuthContext] = useState<AuthContext>({ variables });
+  const [authContext, setAuthContext] = useState<AuthContext>({ variables, variableStates, secretStore: persistence.secure });
   const [emptyHeaderId, setEmptyHeaderId] = useState(() => crypto.randomUUID());
   const [confirmDelete, setConfirmDelete] = useTabState("settings.confirmDelete", false);
   const [confirmDeleteIntegration, setConfirmDeleteIntegration] = useTabState<string | null>("settings.confirmDeleteIntegration", null);
   const [deleting, setDeleting] = useState(false);
-  useEffect(() => setAuthContext((current) => ({ ...current, variables })), [variables]);
+  useEffect(() => setAuthContext((current) => ({ ...current, variables, variableStates, secretStore: persistence.secure })), [variables, variableStates, persistence.secure]);
   const authDraft: RequestDraft = {
     ...initialRequestDraft,
-    auth: editingAuth?.value ?? createRequestAuth(),
+    auth: secrets.workspace.publicWritable || secrets.protectedState.status === "available" ? editingAuth?.value ?? createRequestAuth() : createRequestAuth(),
   };
   const setAuthDraft: Dispatch<SetStateAction<RequestDraft>> = (change) => {
     setEditingAuth((current) => {
@@ -118,6 +138,7 @@ export function WorkspaceSettings({
       value: header.value,
       enabled: header.enabled,
       scope: header.scope,
+      secret: header.secret, secretRef: header.secretRef, secretState: header.secretState,
     })),
     { id: emptyHeaderId, key: "", value: "", enabled: false, scope: "all" },
   ];
@@ -144,13 +165,18 @@ export function WorkspaceSettings({
                     <AuthEditor auth={editingAuth.value} onAuthChange={(value) => setEditingAuth((current) => current ? { ...current, value } : current)}
                       context={authContext} runtime={authRuntime} variableActions={variableActions} allowInherit={false} idPrefix="workspace-shared" ariaLabel="Workspace shared authentication" />
                   </div>
+                  {authSaveError && <p role="alert" className="text-ui-sm text-accent-red">{authSaveError}</p>}
                   <div className="flex justify-end gap-ui-2">
-                    <Button variant="ghost" onClick={() => setEditingAuth(null)}>Cancel</Button>
-                    <Button variant="brand" disabled={!canSaveAuth} onClick={() => {
+                    <Button variant="ghost" disabled={savingAuth} onClick={() => { setEditingAuth(null); setAuthSaveError(""); }}>Cancel</Button>
+                    <Button variant="brand" disabled={!canSaveAuth || savingAuth} onClick={async () => {
                       if (!editingAuth || !canSaveAuth) return;
                       const saved = { ...editingAuth, name: editingAuth.name.trim() };
-                      onConfigChange({ ...config, auth: config.auth.some((entry) => entry.id === saved.id) ? config.auth.map((entry) => entry.id === saved.id ? saved : entry) : [...config.auth, saved] });
-                      setEditingAuth(null);
+                      setSavingAuth(true); setAuthSaveError("");
+                      try {
+                        await onConfigSave({ ...config, auth: config.auth.some((entry) => entry.id === saved.id) ? config.auth.map((entry) => entry.id === saved.id ? saved : entry) : [...config.auth, saved] });
+                        setEditingAuth(null);
+                      } catch (error) { setAuthSaveError(error instanceof Error ? error.message : String(error)); }
+                      finally { setSavingAuth(false); }
                     }}>Save authentication</Button>
                   </div>
                 </div>
@@ -167,10 +193,20 @@ export function WorkspaceSettings({
         </header>
         <div className="shrink-0 border-b border-border-subtle px-ui-2 py-ui-1">
           <SegmentedTabs id="workspace-settings" panelId="workspace-settings-panel" label="Workspace settings"
-            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }]} onValueChange={setTab} />
+            value={tab} options={[{ value: "general", label: "General" }, { value: "headers", label: "Shared headers" }, { value: "auth", label: "Shared auth" }, { value: "graphql", label: "GraphQL" }, { value: "integrations", label: "Integrations" }, { value: "secrets", label: "Secrets and encryption" }]} onValueChange={setTab} />
         </div>
         <div id="workspace-settings-panel" role="tabpanel" className="min-h-0 flex-1 overflow-auto p-ui-3">
-          {tab === "general" ? (
+          <fieldset disabled={secrets.protectedState.status !== "available" && tab !== "secrets" && tab !== "general"} className="m-ui-0 h-full min-w-0 border-0 p-ui-0">
+          {tab === "secrets" ? <div className="w-full space-y-ui-4">
+              <SettingsSection title="Secrets and encryption">
+                <SettingsRow label="Encrypt responses" description="Default for future executions on this device. Individual requests can override it.">
+                  <Switch label="Encrypt responses for this workspace" checked={responseStorage === "encrypted"} onCheckedChange={(enabled) => onResponseStorageChange?.(enabled ? "encrypted" : "plaintext")} />
+                </SettingsRow>
+                <RequiredLocalSecrets {...secrets} />
+                <SecretTransfer workspaceId={workspaceId} onImported={onImportedSecrets} onBeforeTransfer={onBeforeSecretTransfer} />
+              </SettingsSection>
+            {secrets.migrationRequired ? <Button variant="brand" disabled={secrets.protectedState.status !== "available"} onClick={onUpgrade}>Upgrade workspace format</Button> : null}
+          </div> : tab === "general" ? (
             <div className="flex min-h-full max-w-ui-dialog flex-col gap-ui-3">
               <FormField label="Workspace name" value={name} placeholder="Workspace name" onChange={(event) => onNameChange(event.target.value)} />
               <div className="space-y-ui-2">
@@ -178,6 +214,7 @@ export function WorkspaceSettings({
                 <textarea id="workspace-description" aria-label="Workspace description" className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 font-ui text-ui-md text-content-primary outline-none placeholder:text-content-tertiary"
                   value={description} placeholder="What is this workspace used for?" onChange={(event) => onDescriptionChange(event.target.value)} />
               </div>
+              <WorkspaceExport workspaceId={workspaceId} onBeforeTransfer={onBeforeSecretTransfer} />
               <div className="mt-auto border-t border-border-subtle pt-ui-3">
                 <h2 className="m-ui-0 text-ui-md font-medium text-accent-red">Delete workspace</h2>
                 <p className="mb-ui-3 mt-ui-1 text-ui-xs text-content-tertiary">Removes Purr’s local state and managed project directory. An attached external directory is left on disk.</p>
@@ -204,7 +241,7 @@ export function WorkspaceSettings({
                 <p className="mb-ui-0 mt-ui-1 text-ui-xs text-content-tertiary">The final empty row creates a header. Local request headers with the same name take precedence.</p>
               </div>
               <div className="overflow-visible rounded-ui-lg border border-border-subtle bg-purr-codefield">
-                <KeyValueEditor entries={headerEntries} createEmptyEntry={() => ({ id: emptyHeaderId, key: "", value: "", enabled: false, scope: "all" })}
+                <KeyValueEditor allowSensitive entries={headerEntries} createEmptyEntry={() => ({ id: emptyHeaderId, key: "", value: "", enabled: false, scope: "all" })}
                   onEntriesChange={(entries) => {
                     if (entries.some((entry) => entry.id === emptyHeaderId && (entry.key || entry.value))) setEmptyHeaderId(crypto.randomUUID());
                     onConfigChange({ ...config, headers: entries.filter((entry) => entry.key || entry.value).map((entry) => ({
@@ -213,6 +250,7 @@ export function WorkspaceSettings({
                     value: entry.value,
                     enabled: entry.enabled,
                     scope: (entry.scope ?? "all") as RequestScope,
+                    secret: entry.secret, secretRef: entry.secretRef, secretState: entry.secretState,
                   })) });
                   }}
                   keyLabel="shared header" keyPlaceholder="Header-name" valuePlaceholder="value or {{variable}}" keyTextClassName="text-syntax-property"
@@ -263,21 +301,21 @@ export function WorkspaceSettings({
                     onCancel={closeIntegrationEditor}
                     getCredential={async (key) => {
                       if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                      return secureStore.get(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`);
+                      return readIntegrationCredential(editingSecrets, workspaceId, editingIntegration.id, key);
                     }}
                     setCredential={async (key, value) => {
                       if (!integrationPresentation?.credentialKeys?.includes(key)) throw new Error("Undeclared credential slot");
-                      await secureStore.set(`purr/${workspaceId}/integrations/${editingIntegration.id}/${key}`, value);
+                      await stageIntegrationCredential(editingSecrets, workspaceId, editingIntegration.id, key, value);
                     }}
                     onSave={async (value) => {
                       if (value.id !== editingIntegration.id || value.provider !== editingIntegration.provider) throw new Error("Integration identity cannot change");
                       const normalized = await observability.validateConfig(value.provider, value.configVersion, value.config);
                       const credentials = { ...value.credentials };
                       for (const key of integrationPresentation?.credentialKeys ?? []) {
-                        const ref = `purr/${workspaceId}/integrations/${value.id}/${key}`;
-                        if (await secureStore.exists(ref)) credentials[key] = { kind: "secret", ref };
+                        const ref = integrationCredentialRef(workspaceId, value.id, key);
+                        if (await editingSecrets.exists(ref)) credentials[key] = { kind: "secret", ref };
                       }
-                      onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }));
+                      await onIntegrationSave(integrationDefinitionSchema.parse({ ...value, config: normalized, credentials }), editingSecrets);
                       closeIntegrationEditor();
                     }} /> : <div className="space-y-ui-5 p-ui-5">
                     <p className="m-ui-0 text-ui-md text-content-secondary">Choose a provider to connect to this workspace.</p>
@@ -317,6 +355,7 @@ export function WorkspaceSettings({
               </div>
             </div>
           )}
+          </fieldset>
         </div>
       </div>
     </section>

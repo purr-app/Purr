@@ -1,3 +1,5 @@
+import type { SecretFieldState } from "../../../application/ports/credentials";
+import type { ProtectedState } from "../../../application/ports/persistence";
 import { Modal } from "../../../shared/components/ui/modal";
 import { Checkbox } from "../../../shared/components/ui/checkbox";
 import { SegmentedTabs } from "../../../shared/components/ui/segmented-tabs";
@@ -75,14 +77,17 @@ function analysis(type: GraphQLNamedType) {
   return { fields: fields.length, deprecated: deprecatedPaths.length, lists: listPaths.length, depth: depthPath.length, depthPath, listPaths, deprecatedPaths };
 }
 
-export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar, onChange, onWorkspaceAuthChange, onCreateRequest, environmentId, isDefault, onDefaultChange }: {
+export function SchemaExplorer({ workspaceResponseStorage = "plaintext", publicWritable, document, variables, variableStates, protectedState, workspaceConfig, cookieJar, onChange, onWorkspaceAuthChange, onCreateRequest, environmentId, isDefault, onDefaultChange }: {
+  workspaceResponseStorage?: "plaintext" | "encrypted";
+  publicWritable?: boolean;
+  variableStates?: Record<string, SecretFieldState>; protectedState?: ProtectedState;
   document: SchemaDocument; environmentId: string | null; isDefault: boolean; onDefaultChange: () => void; variables: Record<string, string>; cookieJar: SessionCookieJar;
   workspaceConfig: WorkspaceRequestConfig;
   onChange: (patch: Partial<SchemaDocument>) => void;
   onWorkspaceAuthChange: (profileId: string, auth: RequestAuth) => void;
   onCreateRequest: (operation: { name: string; query: string; variables: string }) => void;
 }) {
-  const { httpTransport, responseContent, requestBodies, downloads } = useApplicationServices();
+  const { httpTransport, responseContent, requestBodies, downloads, persistence } = useApplicationServices();
   const [downloading, setDownloading] = useState(false);
   const [settings, setSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "auth" | "headers">("general");
@@ -102,8 +107,8 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
   const workspaceAuth = useMemo(() => workspaceAuthEntry
     ? { id: workspaceAuthEntry.id, name: workspaceAuthEntry.name || "Workspace", auth: workspaceAuthEntry.value } : undefined,
   [workspaceAuthEntry]);
-  const [context, setContext] = useState<AuthContext>({ variables, workspace: workspaceAuth, workspaceProfiles });
-  useEffect(() => setContext((current) => ({ ...current, variables, workspace: workspaceAuth, workspaceProfiles })), [variables, workspaceAuth, workspaceProfiles]);
+  const [context, setContext] = useState<AuthContext>({ variables, variableStates, secretStore: persistence.secure, workspace: workspaceAuth, workspaceProfiles });
+  useEffect(() => setContext((current) => ({ ...current, variables, variableStates, secretStore: persistence.secure, workspace: workspaceAuth, workspaceProfiles })), [variables, variableStates, persistence.secure, workspaceAuth, workspaceProfiles]);
   const upload = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   const mounted = useRef(true);
@@ -131,7 +136,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
     const next = typeof change === "function" ? change(currentDraft) : change;
     changeRef.current({ endpoint: next.url, auth: next.auth, introspectionHeaders: next.headers, updatedAt: new Date().toISOString() });
   }, []);
-  const runtime = useAuthRuntime(schemaDraft, setSchemaDraft, context, setContext, onWorkspaceAuthChange);
+  const runtime = useAuthRuntime(publicWritable || !protectedState || protectedState.status === "available" ? schemaDraft : { ...schemaDraft, auth: { ...schemaDraft.auth, type: "none" } }, setSchemaDraft, context, setContext, onWorkspaceAuthChange);
   const parsed = useMemo(() => { try { return { schema: document.sdl ? parseGraphqlSchema(document.sdl) : undefined, error: "" }; } catch (cause) { return { schema: undefined, error: String(cause) }; } }, [document.sdl]);
   const schema = parsed.schema;
   const types = useMemo(() => schema ? Object.values(schema.getTypeMap()).filter((type) => !type.name.startsWith("__")) : [], [schema]);
@@ -141,7 +146,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
   useEffect(() => setCopied(false), [code]);
   const selectType = (name: string) => onChange({ ui: { ...document.ui, selectedType: name, selectedField: null } });
   const selectField = (type: string, field: string) => onChange({ ui: { ...document.ui, selectedType: type, selectedField: field } });
-  const install = async (text: string, sourceKind: "file" | "introspection", sourceLabel: string, signal: AbortSignal, expectedIdentity: string) => {
+  const install = async (text: string, sourceKind: "file" | "introspection", sourceLabel: string, signal: AbortSignal, expectedIdentity: string, cacheProtection: "plaintext" | "encrypted" = "plaintext") => {
     const { normalizedSdl: sdl } = await schemaAnalyzer.current!.analyze(text, signal);
     const current = latest.current;
     if (!mounted.current || signal.aborted || await schemaConnectionIdentity(current.document, current.workspaceConfig, current.variables, current.environmentId) !== expectedIdentity) return;
@@ -150,9 +155,10 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
       : { type: text.trim().startsWith("{") ? "introspection-json" : "sdl-file", location: sourceLabel };
     const cacheIdentity = await schemaConnectionIdentity({ ...document, schemaSource }, workspaceConfig, variables, environmentId);
     if (!mounted.current || signal.aborted) return;
-    onChange({ sdl, saved: true, source: sourceKind, sourceLabel, loadedAt, updatedAt: loadedAt, schemaSource, cacheIdentity }); setError("");
+    onChange({ sdl, cacheProtection, ...(sourceKind === "introspection" && cacheProtection === "encrypted" ? { pinned: false } : {}), saved: true, source: sourceKind, sourceLabel, loadedAt, updatedAt: loadedAt, schemaSource, cacheIdentity }); setError("");
   };
   const introspect = async () => {
+    if (!publicWritable && protectedState && protectedState.status !== "available") { setError("Protected storage is unavailable. Retry in Workspace settings → Secrets before fetching a schema."); return; }
     if (!endpoint.trim() || pending.current) return; pending.current = true; setBusy(true); setError(""); onChange({ fetchStatus: "loading", fetchError: undefined });
     const controller = new AbortController(); operation.current = controller;
     try {
@@ -165,7 +171,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
         runtime,
         httpTransport,
         responseContent,
-        { signal: controller.signal },
+        { signal: controller.signal, responseStorage: { protection: workspaceResponseStorage } },
         requestBodies,
       );
       const response = isInlineHttpResponse(result) ? result : result.response;
@@ -180,7 +186,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
         }
         finally { await responseContent.release(result.content).catch(() => {}); }
       }
-      await install(text, "introspection", endpoint, controller.signal, identity);
+      await install(text, "introspection", endpoint, controller.signal, identity, result.timeline.responseProtection ?? "encrypted");
     } catch (cause) { if (mounted.current && !controller.signal.aborted) { const message = cause instanceof Error ? cause.message : String(cause); setError(message); onChange({ fetchStatus: "error", fetchError: message }); } }
     finally {
       if (operation.current === controller) operation.current = undefined;
@@ -244,7 +250,7 @@ export function SchemaExplorer({ document, variables, workspaceConfig, cookieJar
         <input ref={upload} type="file" accept=".graphql,.gql,.graphqls,.sdl,.json,text/plain,application/json" aria-label="Schema file" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; void loadFile(file); }} />
         <Button variant="toolbar" size="icon" aria-label={document.ui.sourcePaneOpen ? "Hide SDL pane" : "Show SDL pane"} title={document.ui.sourcePaneOpen ? "Hide source pane" : "Show source pane"} aria-pressed={document.ui.sourcePaneOpen} onClick={() => onChange({ ui: { ...document.ui, sourcePaneOpen: !document.ui.sourcePaneOpen } })}>{document.ui.sourcePaneOpen ? <PanelRightClose className="size-ui-4" /> : <PanelRightOpen className="size-ui-4" />}</Button>
         <Button variant="toolbar" size="icon" aria-label="Download schema" title="Download schema" onClick={() => void download()} disabled={!schema || downloading}><Download className="size-ui-4" /></Button>
-        <Button variant="toolbar" size="icon" aria-label="Pin schema SDL to project" title="Include the schema SDL in the project" aria-pressed={document.pinned !== false} className={document.pinned !== false ? "text-action-brand" : undefined} onClick={() => onChange({ pinned: document.pinned === false })} disabled={!schema}><Pin className="size-ui-4" /></Button>
+        <Button variant="toolbar" size="icon" aria-label="Pin schema SDL to project" title="Include schema SDL as a public project file, even when Encrypt responses is On" aria-pressed={document.pinned !== false} className={document.pinned !== false ? "text-action-brand" : undefined} onClick={() => onChange({ pinned: document.pinned === false })} disabled={!schema}><Pin className="size-ui-4" /></Button>
       </div>
       <div className="mt-ui-1 flex min-w-0 items-center gap-ui-3 text-ui-xs text-content-tertiary">
         <span className="flex items-center gap-ui-2"><SchemaStatusDot status={status} />{status}</span>

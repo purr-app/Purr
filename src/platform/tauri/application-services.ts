@@ -1,3 +1,4 @@
+import { nativeSecretTransfer } from "./secret-transfer";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -16,8 +17,9 @@ import type {
   ProjectFile,
   StorageSnapshot,
   StoredWorkspace,
+  WorkspaceDeletionResult,
 } from "../../application/ports/persistence";
-import type { SecureStore } from "../../application/ports/credentials";
+import { commitRejection, isCommitRejected, RecoveryRequiredError, type CommitState, type SecretBatch, type SecretResolution, type SecretSnapshot, type SecureStore } from "../../application/ports/credentials";
 import type {
   FormatRequest,
   JsonQueryRequest,
@@ -28,9 +30,18 @@ import type { ResponseContentRef } from "../../domain/http";
 import type { SecretRef } from "../../domain/project";
 import { getLocalAttachmentReference } from "../../storage/file-codec";
 import { tauriObservability } from "./observability";
+import { tauriAttachments } from "./attachments";
 import { tauriHistory } from "./history";
 
 class TauriSecureStore implements SecureStore {
+  inspect(references: readonly SecretRef[]) { return invoke<import("../../application/ports/credentials").SecretInspection[]>("secure_inspect", { references }); }
+  async resolve(reference: SecretRef): Promise<SecretResolution> {
+    try { return await invoke<SecretResolution>("secure_resolve", { reference }); }
+    catch { return { status: "unavailable", code: "secure-resolution-unavailable", retryable: true }; }
+  }
+  read(reference: SecretRef) { return invoke<SecretSnapshot>("secure_read", { reference }); }
+  operationStatus(operationId: string) { return invoke<CommitState>("secure_operation_status", { operationId }); }
+  async commit(batch: SecretBatch) { await confirmedCommit(() => invoke<void>("secure_commit", { batch }), batch); }
   get(reference: SecretRef) {
     return invoke<string | null>("secure_get", { reference });
   }
@@ -48,14 +59,35 @@ class TauriSecureStore implements SecureStore {
   }
 }
 
+async function confirmedCommit<T>(work: () => Promise<T>, batch: SecretBatch, committed?: () => Promise<T>): Promise<T> {
+  try { return await work(); }
+  catch (error) {
+    if (isCommitRejected(error)) throw commitRejection(error);
+    let status: CommitState;
+    try { status = await invoke<CommitState>("secure_operation_status", { operationId: batch.operationId }); }
+    catch { throw new RecoveryRequiredError(batch.operationId); }
+    if (status.status === "committed") return committed ? committed() : undefined as T;
+    if (status.status === "recovery-required") throw new RecoveryRequiredError(batch.operationId);
+    throw error;
+  }
+}
+
 class TauriPersistence implements PersistencePort {
   readonly history = tauriHistory;
+  readonly attachments = tauriAttachments;
   private cache = new Map<string, Record<string, ProjectFile>>();
 
   async load() {
     const snapshot = await invoke<StorageSnapshot>("load_persistence");
     for (const workspace of snapshot.workspaces)
       this.cache.set(workspace.id, workspace.files);
+    return snapshot;
+  }
+
+  async retryProtectedStorage() {
+    const snapshot = await invoke<StorageSnapshot>("retry_protected_storage");
+    this.cache.clear();
+    for (const workspace of snapshot.workspaces) this.cache.set(workspace.id, workspace.files);
     return snapshot;
   }
 
@@ -66,14 +98,17 @@ class TauriPersistence implements PersistencePort {
   }
 
   async readLocal(id: string) {
-    return (await this.loadWorkspace(id)).local;
+    const workspace = await this.loadWorkspace(id);
+    if (workspace.protectedState && workspace.protectedState.status !== "available")
+      throw new Error(workspace.protectedState.code);
+    return workspace.local;
   }
 
-  async commit(id: string, files: FileChange[], local: LocalChange[]) {
-    const changed = await invoke<Record<string, ProjectFile | null>>(
+  async commit(id: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch = { operationId: crypto.randomUUID(), mutations: [] }) {
+    const changed = await confirmedCommit(() => invoke<Record<string, ProjectFile | null>>(
       "commit_project",
-      { id, files, local },
-    );
+      { id, files, local, secrets },
+    ), secrets, async () => (await invoke<StoredWorkspace>("load_project", { id })).files);
     const next = { ...(this.cache.get(id) ?? {}) };
     for (const [path, file] of Object.entries(changed)) {
       if (file) next[path] = file;
@@ -137,13 +172,16 @@ class TauriPersistence implements PersistencePort {
     return invoke<void>("set_local_active_workspace", { id });
   }
 
-  writeGlobal(local: LocalChange[]) {
-    return invoke<void>("write_global_state", { local });
+  async writeGlobal(local: LocalChange[], secrets: SecretBatch = { operationId: crypto.randomUUID(), mutations: [] }) {
+    await confirmedCommit(() => invoke<void>("write_global_state", { local, secrets }), secrets);
   }
 
   async deleteWorkspace(id: string) {
-    await invoke<void>("delete_project", { id });
+    const batch = { operationId: crypto.randomUUID(), mutations: [] };
+    const request = () => invoke<WorkspaceDeletionResult>("delete_project", { id, operationId: batch.operationId });
+    const result = await confirmedCommit(request, batch, request);
     this.cache.delete(id);
+    return result;
   }
 
   finishMigration() {
@@ -166,6 +204,16 @@ class TauriPersistence implements PersistencePort {
           listener(change.id, change.paths);
       },
     );
+  }
+
+  inspectDirectory(directory: string, optional = false) {
+    return invoke<StoredWorkspace | null>("read_project_directory", { directory, optional });
+  }
+
+  async openDirectory(directory: string, expectedRevisions: Record<string, string>) {
+    const workspace = await invoke<StoredWorkspace>("open_project_directory", { directory, expectedRevisions });
+    this.cache.set(workspace.id, workspace.files);
+    return workspace;
   }
 
   async attachDirectory(id: string, directory: string) {
@@ -282,6 +330,9 @@ async function startHttp(
   options?: HttpTransportOptions,
 ): Promise<HttpTransportResponse> {
   options?.signal?.throwIfAborted();
+  const workspaceId = options?.workspaceId;
+  if (!workspaceId || !/^[a-zA-Z0-9_-]{1,128}$/.test(workspaceId))
+    throw new Error("A workspace is required for protected response storage.");
   const operationId = crypto.randomUUID();
   const invokedAt = performance.now();
   const cancel = () => {
@@ -304,6 +355,7 @@ async function startHttp(
       operationId,
       request: {
         ...request,
+        workspaceId,
         responseStorage: options?.responseStorage ?? defaultResponseStoragePolicy,
       },
       ...(channel ? { onEvent: channel } : {}),
@@ -452,6 +504,7 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
     observability: tauriObservability,
     persistenceBackend: new TauriPersistence(),
     secureStore,
+    secretTransfer: nativeSecretTransfer,
     httpTransport: startHttp,
     responseContent: new TauriResponseContent(),
     oauthCallback: {
@@ -477,11 +530,17 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
       stage: async (file, signal) => {
         signal?.throwIfAborted();
         const local = getLocalAttachmentReference(file);
-        if (local)
-          return invoke<RequestFileRef>("request_file_from_attachment", {
+        if (local) {
+          const reference = await invoke<RequestFileRef>("request_file_from_attachment", {
             workspaceId: local.workspaceId,
             attachmentId: local.attachmentId,
           });
+          if (signal?.aborted) {
+            await invoke<void>("request_file_release", { reference }).catch(() => {});
+            signal.throwIfAborted();
+          }
+          return reference;
+        }
         const pending = await invoke<RequestFileRef>("request_file_create", {
           name: file.name,
           size: file.size,
@@ -502,9 +561,11 @@ export function createTauriPlatformAdapters(): PlatformAdapters {
             });
           }
           signal?.throwIfAborted();
-          return await invoke<RequestFileRef>("request_file_finish", {
+          const reference = await invoke<RequestFileRef>("request_file_finish", {
             reference: pending,
           });
+          signal?.throwIfAborted();
+          return reference;
         } catch (cause) {
           await invoke<void>("request_file_release", { reference: pending }).catch(() => {});
           throw cause;

@@ -1,3 +1,4 @@
+import { projectAndCommit } from "./helpers/project-workspace";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bindGraphqlSchema, createGraphqlDocument, createSchemaDocument, createWorkspace, defaultGraphqlSchema, deleteDocument, detachGraphqlSchema, migrateSchemaConnections, openDocument, validateWorkspace } from "../src/features/workspaces/model/workspace";
@@ -5,7 +6,7 @@ import { applyWorkspaceRequestConfig, createWorkspaceRequestConfig, snapshotSche
 import { createRequestAuth, getAuthBinding, resolveAuth } from "../src/features/request-workbench/model/request-auth";
 import { effectiveDynamicRequest } from "../src/features/workspaces/services/dynamic-variable-resolver";
 import { schemaConnectionIdentity, schemaConnectionStatus } from "../src/features/graphql/model/schema-connection";
-import { projectWorkspace, restoreWorkspace } from "../src/application/project-projection";
+import { restoreWorkspace } from "../src/application/project-projection";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { deserializeResource, serializeResource } from "../src/storage/yaml";
 
@@ -65,7 +66,7 @@ test("detach and deletion materialize settings while preserving saved and dirty 
   request.request.graphql.query = "query Dirty { ping }";
   request.savedRequest.graphql!.query = "query Saved { ping }";
   connection.endpoint = "https://updated.example/graphql";
-  connection.auth.secretRefs = { bearer: "purr/workspace/schemas/connection/bearer" };
+  connection.auth.secretRefs = { bearer: "purr/workspace/credentials/schemas/connection/bearer" };
   const detached = detachGraphqlSchema(request.request, connection);
   assert.equal(detached.url, connection.endpoint); assert.equal(detached.auth.type, "bearer");
   assert.equal(detached.auth.secretRefs, undefined); // independent owner on the next projection
@@ -99,13 +100,13 @@ test("connection cache freshness tracks settings and environment but ignores rot
 test("canonical connection config and protected runtime survive reload without leaking secrets", async () => {
   const { connection, request } = fixture(); const workspace = createWorkspace();
   workspace.defaultGraphqlSchemaId = connection.id; workspace.ui.lastGraphqlSchemaId = connection.id;
-  connection.introspectionHeaders = [{ id: "tenant", name: "X-Tenant", value: "public", enabled: true }, { id: "key", name: "X-Api-Key", value: "header-private", enabled: false }];
+  connection.introspectionHeaders = [{ id: "tenant", name: "X-Tenant", value: "public", enabled: true }, { id: "key", name: "X-Api-Key", value: "header-private", enabled: false, secret: true }];
   connection.sdl = "type Query { ping: String }"; connection.loadedAt = "2026-01-01T00:00:00.000Z"; connection.cacheIdentity = "cached-context";
   connection.auth.basic.password = "inactive-password";
   connection.auth.oauth2.token = { accessToken: "oauth-private", refreshToken: "refresh-private", obtainedAt: 1, tokenType: "Bearer" };
   request.saved = true; request.savedRequest = structuredClone(request.request);
   workspace.documents = [connection, request];
-  const secure = new MemorySecureStore(); const projected = await projectWorkspace(workspace, secure);
+  const secure = new MemorySecureStore(); const projected = await projectAndCommit(workspace, secure);
   for (const secret of ["connection-private-token", "header-private", "inactive-password", "oauth-private", "refresh-private"]) assert.equal(JSON.stringify(projected).includes(secret), false);
   const definition = projected.project.resources.find((item) => item.kind === "schema")!;
   assert.deepEqual(deserializeResource(serializeResource(definition, `schemas/${connection.id}.graphql`), () => connection.sdl), definition);
@@ -121,11 +122,11 @@ test("canonical connection config and protected runtime survive reload without l
 
 test("unsaved connection auth and headers are protected and settings persist without a fetched schema", async () => {
   const { connection } = fixture(); const workspace = createWorkspace(); const secure = new MemorySecureStore();
-  connection.saved = false; connection.introspectionHeaders = [{ id: "key", name: "Authorization", value: "header-private", enabled: true }]; workspace.documents = [connection];
-  let projected = await projectWorkspace(workspace, secure); assert.equal(JSON.stringify(projected).includes("header-private"), false);
+  connection.saved = false; connection.introspectionHeaders = [{ id: "key", name: "Authorization", value: "header-private", enabled: true, secret: true }]; workspace.documents = [connection];
+  let projected = await projectAndCommit(workspace, secure); assert.equal(JSON.stringify(projected).includes("header-private"), false);
   let restored = await restoreWorkspace(projected.project, projected.local, secure, projected.assets);
   assert.equal(restored.documents[0].kind === "schema" && restored.documents[0].auth.bearer.token, "connection-private-token");
-  connection.saved = true; projected = await projectWorkspace(workspace, secure); restored = await restoreWorkspace(projected.project, projected.local, secure, projected.assets);
+  connection.saved = true; projected = await projectAndCommit(workspace, secure); restored = await restoreWorkspace(projected.project, projected.local, secure, projected.assets);
   assert.equal(restored.documents[0].saved, true); assert.equal(restored.documents[0].kind === "schema" && restored.documents[0].sdl, "");
 });
 
@@ -149,7 +150,7 @@ test("connection settings cannot form an authentication inheritance cycle silent
 
 test("damaged or unknown schema cache and auth runtime do not prevent opening a workspace", async () => {
   const { connection } = fixture(); const workspace = createWorkspace(); workspace.documents = [connection];
-  connection.pinned = false; const secure = new MemorySecureStore(); const projected = await projectWorkspace(workspace, secure);
+  connection.pinned = false; const secure = new MemorySecureStore(); const projected = await projectAndCommit(workspace, secure);
   for (const value of [{ version: 2, sdl: 12 }, { version: 99, sdl: "bad" }, null]) {
     const local = projected.local.map((record) => record.table === "schema_cache" ? { ...record, value } : record.table === "document_session_state" ? { ...record, value: { ...(record.value as object), auth: { oauth2: 42 } } } : record);
     const restored = await restoreWorkspace(projected.project, local, secure, projected.assets);
@@ -163,11 +164,16 @@ test("detaching creates independent credential owners and introspection headers 
   assert.equal(applyWorkspaceRequestConfig(request.request, "graphql", config).headers.some((item) => item.value === "introspection-only"), false);
   request.request = detachGraphqlSchema(request.request, connection) as typeof request.request;
   request.saved = true; request.savedRequest = structuredClone(request.request); workspace.documents = [request, connection];
-  let projected = await projectWorkspace(workspace, secure);
+  let projected = await projectAndCommit(workspace, secure);
   const restored = await restoreWorkspace(projected.project, projected.local, secure, projected.assets);
   const restoredRequest = restored.documents.find((item) => item.kind === "graphql")!;
-  restoredRequest.request.auth.bearer.token = "request-only-change"; restoredRequest.savedRequest = structuredClone(restoredRequest.request);
-  projected = await projectWorkspace(restored, secure);
+  restoredRequest.request.auth.bearer.token = "request-only-change";
+  const state = restoredRequest.request.auth.credentialStates?.bearer; assert.ok(state);
+  restoredRequest.request.auth.credentialStates = { ...restoredRequest.request.auth.credentialStates, bearer: { ...state, edit: { kind: "set", value: "request-only-change" } } };
+  restoredRequest.savedRequest = structuredClone(restoredRequest.request);
+  projected = await projectAndCommit(restored, secure);
   const again = await restoreWorkspace(projected.project, projected.local, secure, projected.assets);
   assert.equal(again.documents.find((item) => item.kind === "schema")?.auth.bearer.token, "connection-private-token");
+  const independent = again.documents.find((item) => item.kind === "graphql"); assert.ok(independent?.kind === "graphql");
+  assert.equal(independent.request.auth.bearer.token, "request-only-change");
 });

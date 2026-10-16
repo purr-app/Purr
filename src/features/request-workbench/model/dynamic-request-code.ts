@@ -1,3 +1,4 @@
+import { resolveRequestSecrets, type RequestCompositionPurpose } from "../../../application/resolve-request-secrets";
 import type { HttpRequestSnapshot } from "../../../domain/http";
 import type { Variable, WorkspaceRequestConfig } from "../../workspaces/model/workspace";
 import { referencedNames, requestTemplateText, type DynamicVariableRequest } from "../../workspaces/services/dynamic-variable-resolver";
@@ -13,6 +14,7 @@ import { applyWorkspaceRequestConfig } from "./request-workspace-config";
 
 export type DynamicRequestCodeContext = {
   cookieJar?: SessionCookieJar;
+  purpose?: RequestCompositionPurpose;
   rootId: string;
   environmentId: string | null;
   documents: readonly DynamicVariableRequest[];
@@ -168,14 +170,19 @@ export async function prepareDynamicRequestCode(draft: RequestDraft, rootContext
     if (auth.error) throw new Error(auth.error);
     const namespace = (await options.variablesForEnvironment(environmentId)).filter((value) => value.name.trim());
     const values: Record<string, string> = Object.fromEntries(namespace.filter((value) => value.enabled && value.kind === "static").map((value) => [value.name.trim(), value.kind === "static" ? value.value : ""]));
-    const needed = new Set(referencedNames(requestTemplateText({ ...document.request, auth: auth.auth })));
+    const variableStates = { ...context.variableStates, ...Object.fromEntries(namespace.flatMap((value) => value.kind === "static" && value.secretState ? [[value.name.trim(), value.secretState]] : [])) };
+    const initial = await resolveRequestSecrets({ ...document.request, auth: auth.auth }, { ...context, variables: values, variableStates }, options.purpose);
+    Object.assign(values, initial.context.variables);
+    document = { ...document, request: initial.draft };
+    auth.auth = initial.draft.auth;
+    const needed = new Set(referencedNames(requestTemplateText(initial.draft)));
     for (const name of needed) {
       const matches = namespace.filter((value) => value.name.trim() === name);
       if (matches.length > 1) throw new Error(`Variable "${name}" has multiple definitions in the effective namespace.`);
       const definition = matches[0];
       if (!definition) throw new Error(`Variable "${name}" is not defined.`);
       if (!definition.enabled) throw new Error(`Variable "${name}" is disabled.`);
-      if (definition.kind === "static") referencedNames(definition.value).forEach((dependency) => needed.add(dependency));
+      if (definition.kind === "static") referencedNames(values[name]).forEach((dependency) => needed.add(dependency));
     }
     const bindings: Binding[] = [];
     for (const definition of namespace) {
@@ -229,7 +236,7 @@ export async function prepareDynamicRequestCode(draft: RequestDraft, rootContext
     }
     const dynamicNames = namespace.filter((value) => value.kind === "dynamic-request").map((value) => value.name.trim());
     const sensitiveNames = (context.sensitiveVariableNames ?? []).filter((name) => !dynamicNames.includes(name));
-    const prepared = await prepareWireRequest(requestDraft, { ...context, variables: values, sensitiveVariableNames: sensitiveNames }, { fileMode: "summary" });
+    const prepared = await prepareWireRequest(requestDraft, { ...context, variables: values, variableStates: Object.fromEntries(Object.entries(variableStates).map(([name, state]) => [name, { ...state, status: "available" as const, edit: { kind: "keep" as const } }])), sensitiveVariableNames: sensitiveNames }, { fileMode: "summary", purpose: options.purpose });
     for (const snapshot of [prepared.request, prepared.displayRequest]) {
       const queryIndex = snapshot.url.indexOf("?");
       if (queryIndex >= 0) {

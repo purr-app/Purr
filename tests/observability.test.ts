@@ -42,7 +42,7 @@ test("synthetic integration generator produces canonical refs and never embeds t
       assert.equal(resource.credentials.apiToken.kind, "secret");
       assert.deepEqual(deserializeResource(serializeResource(resource)), resource);
       assert.doesNotMatch(yaml, /purr-synthetic-token/);
-      assert.match(yaml, new RegExp(`purr/synthetic-workspace/integrations/trace-${name}/apiToken`));
+      assert.match(yaml, new RegExp(`purr/synthetic-workspace/credentials/integrations/trace-${name}/apiToken`));
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

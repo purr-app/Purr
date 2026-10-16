@@ -43,17 +43,17 @@ export function RequestCodeDialog({ draft, context, cookieJar, dynamicContext, o
     let current = true;
     setError(""); setRequest(null); setDisplayRequest(null); setChain(null); setHasDynamic(false);
     void (async () => {
-      const dynamic = dynamicContext ? await prepareDynamicRequestCode(draft, context, { ...dynamicContext, cookieJar }) : null;
+      const dynamic = dynamicContext ? await prepareDynamicRequestCode(draft, context, { ...dynamicContext, cookieJar, purpose: revealed ? "resolved-code" : "redacted-code" }) : null;
       if (!current) return;
       if (dynamic) { setHasDynamic(true); setChain(dynamic); setFormat("curl"); return; }
-      const prepared = await prepareWireRequest(draft, context, { fileMode: "summary" });
+      const prepared = await prepareWireRequest(draft, context, { fileMode: "summary", purpose: revealed ? "resolved-code" : "redacted-code" });
       if (current) {
         setRequest(withCookies(prepared.request, cookieJar, draft.useCookieJar));
         setDisplayRequest(withCookies(prepared.displayRequest, cookieJar, draft.useCookieJar, true));
       }
     })().catch((cause) => { if (current) { setError(cause instanceof Error ? cause.message : String(cause)); if (cause instanceof DynamicRequestCodeError) { setHasDynamic(true); setFormat("curl"); } } });
     return () => { current = false; };
-  }, [context, cookieJar, draft, dynamicContext]);
+  }, [context, cookieJar, draft, dynamicContext, revealed]);
   const shownRequest = revealed ? request : displayRequest;
   const code = useMemo(() => chain ? (revealed ? chain.code : chain.displayCode) : shownRequest ? formatRequestCode(shownRequest, format) : "", [chain, revealed, format, shownRequest]);
   useEffect(() => setCopied(false), [format]);

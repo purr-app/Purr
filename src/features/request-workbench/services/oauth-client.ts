@@ -1,3 +1,4 @@
+import { credentialState, resolveSecretField, resolveSecretVariables } from "../../../application/resolve-request-secrets";
 import type { OAuthCallbackPort } from "../../../application/ports/platform";
 import type { ResponseContentPort } from "../../../application/ports/response-content";
 import { isInlineHttpResponse } from "../../../domain/http";
@@ -8,6 +9,7 @@ import {
   type AuthContext,
   type OAuthConfig,
   type OAuthToken,
+  type RequestAuth,
 } from "../model/request-auth";
 import { executeHttp, requireHttpUrl, type HttpTransport } from "./http-client";
 
@@ -57,6 +59,29 @@ export function resolvedOAuth(
     redirectUri: read(config.redirectUri),
   };
 }
+/** Acquisition resolves its own inputs; sending an existing token never calls this. */
+export async function oauthOperationInputs(auth: RequestAuth, context: AuthContext, action: "initial" | "refresh") {
+  const source = auth.oauth2;
+  const refreshState = credentialState(auth, "oauth-refresh-token");
+  const refresh = action === "refresh" && Boolean(source.token?.refreshToken || refreshState);
+  const authorize = action === "initial" && source.grantType === "authorization_code";
+  const secret = await resolveSecretField(source.clientSecret, credentialState(auth, "client-secret"), context.secretStore);
+  const refreshToken = refresh ? await resolveSecretField(source.token?.refreshToken ?? "", refreshState, context.secretStore) : undefined;
+  if (refresh && !refreshToken) throw new Error("A refresh token is required. Authorize in the browser again.");
+  const selected = [source.clientId, source.tokenUrl, secret, ...(refresh ? [refreshToken!] : [source.scopes]), ...(authorize ? [source.authorizationUrl, source.redirectUri] : [])];
+  return { source, refresh, authorize, secret, refreshToken, selected };
+}
+
+export async function resolveOAuthOperation(auth: RequestAuth, context: AuthContext, action: "initial" | "refresh"): Promise<OAuthConfig> {
+  const { source, refresh, authorize, secret, refreshToken, selected } = await oauthOperationInputs(auth, context, action);
+  const { values, variableStates } = await resolveSecretVariables(selected, context);
+  const read = (value: string) => resolveAuthValue(value, { ...context, variables: values, variableStates });
+  return { ...source, clientId: read(source.clientId), tokenUrl: read(source.tokenUrl), clientSecret: read(secret),
+    scopes: refresh ? "" : read(source.scopes), authorizationUrl: authorize ? read(source.authorizationUrl) : "",
+    redirectUri: authorize ? read(source.redirectUri) : "",
+    token: source.token ? { ...source.token, ...(refreshToken !== undefined ? { refreshToken: read(refreshToken) } : {}) } : null };
+}
+
 // Ignores token/refresh preferences so in-flight work may be accepted only for the same client and endpoints.
 export const oauthIdentity = (config: OAuthConfig) =>
   JSON.stringify([
@@ -120,7 +145,7 @@ export async function fetchOAuthToken(
       headers,
       bodyBase64: base64Bytes(new TextEncoder().encode(params.toString())),
     },
-    { transport, content, signal, followRedirects: false },
+    { transport, content, signal, followRedirects: false, responseStorage: { protection: "encrypted" }, sensitivity: { url: true, headers: ["authorization"], body: true } },
   );
   if (!isInlineHttpResponse(result)) {
     await content?.release(result.content).catch(() => {});

@@ -1,11 +1,15 @@
+import type { CommitState, SecretBatch } from "../application/ports/credentials";
 import type { HistoryEntry, HistoryPort, HistoryQuery, HistorySummary } from "../application/ports/history";
 import type { LocalRecord } from "../application/ports/persistence";
 import { legacyHistoryEntry } from "../application/history-legacy";
 
-/** Encrypted browser-preview storage. Desktop uses native indexed metadata. */
+/** Browser-preview storage of sanitized snapshots and explicit protected variants. */
 export type BrowserHistoryStorage = {
   read<T>(key: string): Promise<T | undefined>;
   write(changes: { key: string; value?: unknown }[]): Promise<void>;
+  commit?(changes: { key: string; value?: unknown }[], batch: SecretBatch, expected?: { key: string; value?: unknown }[], identity?: unknown): Promise<void>;
+  remove?(changes: { key: string; value?: unknown }[], prefixes: string[], expected?: { key: string; value?: unknown }[]): Promise<void>;
+  operationStatus?(operationId: string): Promise<CommitState>;
   legacy(workspaceId: string): Promise<LocalRecord[]>;
   finishLegacy?(workspaceId: string): Promise<void>;
   deleteSecrets(prefix: string): Promise<void>;
@@ -13,8 +17,14 @@ export type BrowserHistoryStorage = {
 const prefix = (workspaceId: string) => `history/${workspaceId}/`;
 const indexKey = (workspaceId: string) => `${prefix(workspaceId)}index`;
 const entryKey = (workspaceId: string, id: string) => `${prefix(workspaceId)}entry/${id}`;
+const summaryKey = (workspaceId: string, id: string) => `${prefix(workspaceId)}summary/${id}`;
 const settingsKey = (workspaceId: string) => `${prefix(workspaceId)}settings`;
-const metadata = ({ editor: _editor, response: _response, error: _error, files: _files, version: _version, ...summary }: HistoryEntry): HistorySummary => summary;
+const metadata = ({ editor: _editor, response: _response, error: _error, files: _files, version: _version, ...summary }: HistoryEntry): HistorySummary & { protection?: "plaintext" | "encrypted" } => {
+  if ((summary as { protection?: string }).protection === "plaintext") return summary;
+  // Indexes remain usable without keys; response-specific details stay in the protected entry.
+  return { id: summary.id, documentId: summary.documentId, name: "Encrypted response", kind: "http", method: "", url: "",
+    startedAt: summary.startedAt, durationMs: 0, outcome: summary.status === null ? "error" : "response", status: summary.status, size: summary.size, pinned: summary.pinned, protection: "encrypted" };
+};
 
 export class BrowserHistory implements HistoryPort {
   constructor(private storage: BrowserHistoryStorage) {}
@@ -34,19 +44,38 @@ export class BrowserHistory implements HistoryPort {
     await this.storage.finishLegacy?.(workspaceId);
     return summaries;
   }
-  async append(workspaceId: string, entry: HistoryEntry) {
+  async append(workspaceId: string, entry: HistoryEntry, batch?: SecretBatch) {
+    if (batch?.mutations.some((mutation) => !mutation.ref.startsWith(`purr/${workspaceId}/runtime/history/${entry.id}/`))) throw new Error("Secret changes must belong to the history entry");
+    if (batch && !this.storage.commit) throw new Error("Atomic history secret storage is unavailable");
+    const identity = { kind: "history", workspaceId, entry };
     const items = await this.index(workspaceId);
-    if (!items.some((item) => item.id === entry.id)) await this.storage.write([
+    if (items.some((item) => item.id === entry.id)) {
+      if (batch) {
+        if ((await this.storage.operationStatus?.(batch.operationId))?.status !== "committed") throw new Error("History entry already exists");
+        await this.storage.commit!([], batch, [], identity);
+      }
+      return;
+    }
+    const changes = [
       { key: entryKey(workspaceId, entry.id), value: entry },
+      ...(entry.protection === "plaintext" ? [] : [{ key: summaryKey(workspaceId, entry.id), value: (({ editor: _editor, response: _response, error: _error, files: _files, version: _version, ...summary }) => summary)(entry) }]),
       { key: indexKey(workspaceId), value: [...items, metadata(entry)] },
-    ]);
-    await this.prune(workspaceId);
+    ];
+    if (batch) await this.storage.commit!(changes, batch, [{ key: indexKey(workspaceId), value: items }], identity);
+    else await this.storage.write(changes);
+    // Retention is a separate operation; its failure cannot undo this committed append.
+    await this.prune(workspaceId).catch(() => {});
   }
   async list(workspaceId: string, query: HistoryQuery) {
     await this.prune(workspaceId);
     const search = query.search?.trim().toLocaleLowerCase() ?? "";
     const limit = Math.max(1, Math.min(query.limit ?? 50, 100));
-    const matched = (await this.index(workspaceId)).filter((item) => (!query.documentId || item.documentId === query.documentId)
+    const visible = await Promise.all((await this.index(workspaceId)).map(async (item) => {
+      if ((item as { protection?: string }).protection !== "encrypted") return item;
+      try { const full = await this.storage.read<HistorySummary>(summaryKey(workspaceId, item.id)); return full ? { ...full, pinned: item.pinned } : item; }
+      catch { return item; } // The index remains usable while this immutable summary is unavailable.
+    }));
+    const matched = visible.filter((item) => (!query.documentId || item.documentId === query.documentId)
       && (!search || `${item.name} ${item.method} ${item.url} ${item.status ?? item.outcome}`.toLocaleLowerCase().includes(search))
       && (!query.cursor || item.startedAt < query.cursor.startedAt || item.startedAt === query.cursor.startedAt && item.id < query.cursor.id))
       .sort((a, b) => b.startedAt - a.startedAt || (a.id > b.id ? -1 : a.id < b.id ? 1 : 0));
@@ -68,9 +97,10 @@ export class BrowserHistory implements HistoryPort {
   private async removeItems(workspaceId: string, items: HistorySummary[], removed: HistorySummary[]) {
     if (!removed.length) return;
     const ids = new Set(removed.map((item) => item.id));
-    await this.storage.write([{ key: indexKey(workspaceId), value: items.filter((item) => !ids.has(item.id)) },
-      ...removed.map((item) => ({ key: entryKey(workspaceId, item.id) }))]);
-    for (const item of removed) await this.storage.deleteSecrets(`purr/${workspaceId}/history/${item.id}/`);
+    if (!this.storage.remove) throw new Error("Atomic history deletion is unavailable");
+    await this.storage.remove([{ key: indexKey(workspaceId), value: items.filter((item) => !ids.has(item.id)) },
+      ...removed.flatMap((item) => [{ key: entryKey(workspaceId, item.id) }, { key: summaryKey(workspaceId, item.id) }])],
+    removed.map((item) => `purr/${workspaceId}/runtime/history/${item.id}/`), [{ key: indexKey(workspaceId), value: items }]);
   }
   async remove(workspaceId: string, filter: { id?: string; documentId?: string }) {
     const items = await this.index(workspaceId);
@@ -93,20 +123,25 @@ export class BrowserHistory implements HistoryPort {
     const items = await this.index(workspaceId);
     await this.removeItems(workspaceId, items, items.filter((item) => !item.pinned && item.startedAt < cutoff));
   }
-  async latestExecutions(workspaceId: string): Promise<LocalRecord[]> {
+  async latestExecutions(workspaceId: string, unavailable?: (id: string, error: unknown) => void): Promise<LocalRecord[]> {
     await this.prune(workspaceId);
     const items = (await this.index(workspaceId)).filter((item) => item.status !== null).sort((a, b) => b.startedAt - a.startedAt);
     const seen = new Set<string>(); const records: LocalRecord[] = [];
     for (const item of items) {
       if (seen.has(item.documentId)) continue;
       seen.add(item.documentId);
-      const entry = await this.storage.read<HistoryEntry>(entryKey(workspaceId, item.id));
-      if (entry) records.push({ table: "request_executions", id: item.id, value: entry });
+      try {
+        const entry = await this.storage.read<HistoryEntry>(entryKey(workspaceId, item.id));
+        if (entry) records.push({ table: "request_executions", id: item.id, protection: entry.protection ?? "encrypted", value: entry });
+      } catch (error) { if (!unavailable) throw error; unavailable(item.id, error); }
     }
     return records;
   }
   async deleteWorkspace(workspaceId: string) {
-    await this.remove(workspaceId, {});
-    await this.storage.write([{ key: indexKey(workspaceId) }, { key: settingsKey(workspaceId) }]);
+    if (!this.storage.remove) throw new Error("Atomic history deletion is unavailable");
+    const items = await this.index(workspaceId);
+    await this.storage.remove([{ key: indexKey(workspaceId) }, { key: settingsKey(workspaceId) },
+      ...items.flatMap((item) => [{ key: entryKey(workspaceId, item.id) }, { key: summaryKey(workspaceId, item.id) }])], [`purr/${workspaceId}/runtime/history/`],
+    [{ key: indexKey(workspaceId), value: items }]);
   }
 }

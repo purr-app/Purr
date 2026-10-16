@@ -1,3 +1,7 @@
+import { oauthOperationInputs } from "../../request-workbench/services/oauth-client";
+import { templateTokens } from "../../../domain/template-expression";
+import { requestExpressions, resolveSecretField, resolveRequestSecrets } from "../../../application/resolve-request-secrets";
+import type { SecureStore } from "../../../application/ports/credentials";
 import { resolveAuth } from "../../request-workbench/model/request-auth";
 import { applyWorkspaceRequestConfig, getWorkspaceAuth, getWorkspaceAuthProfiles, withSchemaAuthContext, type WorkspaceRequestConfig } from "../../request-workbench/model/request-workspace-config";
 import type { DynamicExecutionMetadata } from "../../../application/ports/history";
@@ -75,12 +79,13 @@ type ResolveOptions = {
   environmentId: string | null;
   documents: readonly DynamicVariableRequest[];
   variablesForEnvironment: (environmentId: string | null) => Promise<readonly Variable[]>;
-  execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null, execution: { onDispatch: () => void }) => Promise<StoredHttpResponse>;
+  execute: (document: DynamicVariableRequest, values: Record<string, string>, environmentId: string | null, execution: { onDispatch: () => void; onPrepared: (editor: RequestDraft) => void }) => Promise<StoredHttpResponse>;
   persistentCache: Record<string, DynamicVariableCacheEntry>;
   sessionCache: Map<string, DynamicVariableCacheEntry>;
   responseContent?: ResponseContentPort;
   forceVariableIds?: ReadonlySet<string>;
   workspaceConfig?: WorkspaceRequestConfig;
+  secretStore?: SecureStore;
   signal?: AbortSignal;
   onSteps?: (steps: DynamicExecutionStep[]) => void;
   onExecuted?: (record: DynamicExecutionRecord) => Promise<string | undefined>;
@@ -88,24 +93,10 @@ type ResolveOptions = {
 };
 
 const placeholder = (name: string) => `{{${name}}}`;
-export const referencedNames = (value: string) => [...value.matchAll(/{{\s*([^{}]+?)\s*}}/g)].map((match) => match[1].trim());
+export const referencedNames = (value: string) => templateTokens(value).map((token) => token.name);
 
 export function requestTemplateText(request: RequestDraft) {
-  const body = request.body.type === "json" || request.body.type === "xml" || request.body.type === "text"
-    ? request.body[request.body.type]
-    : request.body.type === "form-data" ? request.body.formData.filter((row) => row.enabled).map((row) => `${row.key}\n${row.fieldType === "file" ? "" : row.value}\n${row.contentType ?? ""}`).join("\n")
-      : request.body.type === "url-encoded" ? request.body.urlEncoded.filter((row) => row.enabled).map((row) => `${row.key}\n${row.value}`).join("\n") : "";
-  const auth = request.auth.type === "bearer" ? `${request.auth.bearer.prefix}\n${request.auth.bearer.token}`
-    : request.auth.type === "basic" ? `${request.auth.basic.username}\n${request.auth.basic.password}`
-      : request.auth.type === "api-key" ? `${request.auth.apiKey.name}\n${request.auth.apiKey.value}`
-        : request.auth.type === "oauth2" ? `${request.auth.oauth2.authorizationUrl}\n${request.auth.oauth2.tokenUrl}\n${request.auth.oauth2.clientId}\n${request.auth.oauth2.clientSecret}\n${request.auth.oauth2.scopes}\n${request.auth.oauth2.redirectUri}` : "";
-  return [request.url,
-    ...request.params.filter((row) => row.enabled).flatMap((row) => [row.key, row.value]),
-    ...(request.pathParams ?? []).filter((row) => row.enabled).flatMap((row) => [row.key, row.value]),
-    ...(request.traceHeaderTemplates ?? []).flatMap((row) => [row.name, row.value.replace(/{{\s*\$(?:traceparent|b3|traceId|spanId)\s*}}/g, "")]),
-    ...request.headers.filter((row) => row.enabled).flatMap((row) => [row.name, row.value]),
-    request.graphql?.query ?? "", request.graphql?.variables ?? "", request.graphql?.operationName ?? "", body, auth,
-  ].join("\n");
+  return requestExpressions(request).map((entry) => entry.value).join("\n");
 }
 
 function valueText(value: unknown): string {
@@ -151,14 +142,33 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
     const values = Object.fromEntries(scoped.flatMap((variable) => variable.kind === "static"
       ? [[variable.name.trim(), variable.value] as const] : []));
     const sensitiveNames = new Set(scoped.filter((variable) => variable.sensitive).map((variable) => variable.name.trim()));
-    const templates = requestTemplateText(effectiveDynamicRequest(document, options.workspaceConfig));
+    let effectiveRequest = effectiveDynamicRequest(document, options.workspaceConfig);
+    const variableStates = Object.fromEntries(scoped.flatMap((variable) => variable.kind === "static" && variable.secretState ? [[variable.name.trim(), variable.secretState]] : []));
+    const resolutionContext = { variables: values, variableStates, secretStore: options.secretStore, sensitiveVariableNames: [...sensitiveNames] };
+    let oauthInputs: string[] = [];
+    if (effectiveRequest.auth.type === "oauth2") {
+      const config = effectiveRequest.auth.oauth2;
+      if (!config.token && config.grantType === "authorization_code") throw new Error("Open Auth and authorize in your browser first.");
+      if (config.token?.expiresAt !== undefined && config.token.expiresAt <= Date.now() && !config.autoRefresh) throw new Error("Access token expired. Refresh it in Auth before sending.");
+      if (!config.token || (config.autoRefresh && config.token.expiresAt !== undefined && config.token.expiresAt <= Date.now())) {
+        // The expired access token is not an input to its replacement operation.
+        const inputs = await oauthOperationInputs(effectiveRequest.auth, resolutionContext, config.token ? "refresh" : "initial");
+        oauthInputs = inputs.selected;
+        effectiveRequest = { ...effectiveRequest, auth: { ...effectiveRequest.auth, type: "none" } };
+      }
+    }
+    const prepared = await resolveRequestSecrets(effectiveRequest, resolutionContext);
+    Object.assign(values, prepared.context.variables);
+    const templates = [requestTemplateText(prepared.draft), ...oauthInputs].join("\n");
     const needed = new Set(referencedNames(templates));
+    const hydrated = new Set<string>();
     let expanded = true;
     while (expanded) {
       expanded = false;
       for (const variable of scoped) {
         if (!needed.has(variable.name.trim()) || variable.kind !== "static") continue;
-        for (const dependency of referencedNames(variable.value)) if (!needed.has(dependency)) { needed.add(dependency); expanded = true; }
+        if (variable.secretState && !hydrated.has(variable.id)) { values[variable.name.trim()] = await resolveSecretField(variable.value, variable.secretState, options.secretStore); hydrated.add(variable.id); }
+        for (const dependency of referencedNames(values[variable.name.trim()])) if (!needed.has(dependency)) { needed.add(dependency); expanded = true; }
       }
     }
     for (const name of needed) {
@@ -187,6 +197,7 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
         if (!sourceDocument) { step.state = "failed"; step.error = `Dynamic variable “${variable.name}” refers to a missing saved request.`; publish(); throw new Error(step.error); }
         const startedAt = performance.now();
         let dispatched = false;
+        let historyDocument = sourceDocument;
         let executionStartedAt = Date.now();
         let response: StoredHttpResponse | null = null;
         let extraction: DynamicExecutionMetadata["extraction"];
@@ -195,7 +206,7 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
           options.signal?.throwIfAborted();
           step.state = "running"; publish();
           executionStartedAt = Date.now();
-          response = await options.execute(sourceDocument, dependency.values, sourceEnvironmentId, { onDispatch: () => { dispatched = true; } });
+          response = await options.execute(sourceDocument, dependency.values, sourceEnvironmentId, { onDispatch: () => { dispatched = true; }, onPrepared: (editor) => { historyDocument = { ...sourceDocument, request: editor }; } });
           dispatched = true;
           step.status = isInlineHttpResponse(response) ? response.status : response.response.status;
           const expression = variable.expression || (variable.language === "jq" ? "." : "$");
@@ -223,7 +234,7 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
           }
           extraction = { language: variable.language, expression, status: "success" };
           step.state = "resolved";
-          entry = { status: "success", value: valueText(extracted), resolvedAt: new Date().toISOString(), durationMs: performance.now() - startedAt,
+          entry = { status: "success", sensitivity: variable.sensitive, protection: response.timeline.responseProtection ?? "encrypted", value: valueText(extracted), resolvedAt: new Date().toISOString(), durationMs: performance.now() - startedAt,
             environmentId: sourceEnvironmentId, fingerprint: hash };
           nextPersistent[key] = entry;
           if (variable.refresh === "session") options.sessionCache.set(key, entry);
@@ -239,7 +250,7 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
           step.durationMs = performance.now() - startedAt;
           if (dispatched) {
             try {
-              step.historyEntryId = await options.onExecuted?.({ document: sourceDocument, response,
+              step.historyEntryId = await options.onExecuted?.({ document: historyDocument, response,
                 error: response ? "" : step.error ?? "", outcome: response ? "response" : options.signal?.aborted ? "cancelled" : "error",
                 startedAt: executionStartedAt, durationMs: Date.now() - executionStartedAt,
                 dynamicExecution: { groupId, rootDocumentId: options.root.id, parentDocumentId: document.id, variableId: variable.id, variableName: variable.name, environmentId: sourceEnvironmentId, extraction } });
@@ -249,7 +260,8 @@ export async function resolveDynamicVariables(options: ResolveOptions): Promise<
           publish();
         }
       } else { step.state = "cached"; publish(); }
-      values[variable.name.trim()] = entry.value ?? "";
+      if (entry.secretState) sensitiveNames.add(variable.name.trim());
+      values[variable.name.trim()] = entry.secretState ? await resolveSecretField(entry.value ?? "", entry.secretState, options.secretStore) : entry.value ?? "";
     }
     return { values, sensitiveNames };
   };

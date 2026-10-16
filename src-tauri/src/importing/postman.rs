@@ -29,25 +29,12 @@ fn array<'a>(value: Option<&'a Value>, path: &str) -> Result<&'a [Value], String
         _ => Err(format!("Expected an array at {path}.")),
     }
 }
-fn sensitive_name(name: &str) -> bool {
-    let name = name.to_ascii_lowercase().replace(['-', '_'], "");
-    [
-        "authorization",
-        "cookie",
-        "password",
-        "secret",
-        "token",
-        "apikey",
-    ]
-    .iter()
-    .any(|part| name.contains(part))
+fn source_sensitive(row: &Value) -> bool {
+    row.get("type").and_then(Value::as_str) == Some("secret")
+        || row.get("secret") == Some(&Value::Bool(true))
+        || row.get("sensitive") == Some(&Value::Bool(true))
 }
-fn template_only(value: &str) -> bool {
-    let value = value.trim();
-    value.starts_with("{{")
-        && value.ends_with("}}")
-        && !value[2..value.len() - 2].contains(['{', '}'])
-}
+pub(super) use crate::template::template_only;
 
 impl ImportAdapter for CollectionAdapter {
     fn can_import(&self, source: &LoadedSource) -> bool {
@@ -162,10 +149,10 @@ impl<'a> Builder<'a> {
     }
     fn credential(&mut self, value: &str, path: &str) -> Value {
         if template_only(value) {
-            return json!({"kind":"plain","value":value});
+            return json!({"kind":"template","value":value});
         }
         let reference = format!(
-            "purr/{}/imports/postman/{}",
+            "purr/{}/credentials/imports/postman/{}",
             self.workspace_id,
             self.id("secret", path)
         );
@@ -173,6 +160,24 @@ impl<'a> Builder<'a> {
             .secrets
             .push(json!({"ref":reference,"value":value}));
         json!({"kind":"secret","ref":reference})
+    }
+    fn optional_credential(&mut self, value: Option<&Value>, path: &str) -> Value {
+        match value.filter(|value| !value.is_null()) {
+            Some(value) => self.credential(&text(Some(value)), path),
+            None => {
+                json!({"kind":"secret","ref":format!("purr/{}/credentials/imports/postman/{}",self.workspace_id,self.id("secret",path))})
+            }
+        }
+    }
+    fn headers(&mut self, input: Option<&Value>, path: &str) -> Result<Vec<Value>, String> {
+        array(input,path)?.iter().enumerate().map(|(index,row)| {
+            if !row.is_object() { return Err(format!("Invalid header at {path}/{index}.")); }
+            let pointer=format!("{path}/{index}");
+            let name=text(row.get("key"));
+            let sensitive=source_sensitive(row)||name.trim().eq_ignore_ascii_case("cookie")||name.trim().eq_ignore_ascii_case("set-cookie");
+            let value=if sensitive {self.optional_credential(row.get("value"),&pointer)}else{json!({"kind":"plain","value":text(row.get("value"))})};
+            Ok(json!({"id":self.id("header",&pointer),"name":name,"enabled":row.get("enabled")!=Some(&Value::Bool(false)) && row.get("disabled")!=Some(&Value::Bool(true)),"sensitive":sensitive,"value":value}))
+        }).collect()
     }
     fn variables(&mut self, input: Option<&Value>, path: &str) -> Result<Vec<Value>, String> {
         let mut names = HashSet::new();
@@ -183,12 +188,12 @@ impl<'a> Builder<'a> {
                 return Err(format!("Invalid or duplicate variable name at {pointer}."));
             }
             let value = text(variable.get("value"));
-            let sensitive = variable.get("type").and_then(Value::as_str) == Some("secret") || sensitive_name(&name);
+            let sensitive = source_sensitive(variable);
             let mut definition = json!({"id":self.id("variable", &pointer),"name":name,"kind":"static","enabled":variable.get("enabled").and_then(Value::as_bool).unwrap_or(true) && !variable.get("disabled").and_then(Value::as_bool).unwrap_or(false),"sensitive":sensitive});
             if sensitive {
                 // Secret variables always have a vault entry, including empty values and templates.
-                let reference = format!("purr/{}/imports/postman/{}", self.workspace_id, self.id("variable", &pointer));
-                self.result.secrets.push(json!({"ref":reference,"value":value}));
+                let reference = format!("purr/{}/credentials/imports/postman/{}", self.workspace_id, self.id("variable", &pointer));
+                if variable.get("value").is_some_and(|value|!value.is_null()) { self.result.secrets.push(json!({"ref":reference,"value":value})); }
                 definition["secretRef"] = json!(reference);
             } else { definition["value"] = json!(value); }
             Ok(definition)
@@ -259,15 +264,21 @@ impl<'a> Builder<'a> {
                     .and_then(|v| v.get("value")),
             )
         };
+        let credential_value = |key: &str| {
+            entries
+                .iter()
+                .find(|value| value.get("key").and_then(Value::as_str) == Some(key))
+                .and_then(|value| value.get("value"))
+        };
         let config = match kind {
             "bearer" => {
-                json!({"type":"bearer","token":self.credential(&get("token"), &format!("{path}/token")),"prefix":"Bearer"})
+                json!({"type":"bearer","token":self.optional_credential(credential_value("token"), &format!("{path}/token")),"prefix":"Bearer"})
             }
             "basic" => {
-                json!({"type":"basic","username":get("username"),"password":self.credential(&get("password"), &format!("{path}/password"))})
+                json!({"type":"basic","username":get("username"),"password":self.optional_credential(credential_value("password"), &format!("{path}/password"))})
             }
             "apikey" if matches!(get("in").as_str(), "header" | "query") => {
-                json!({"type":"api-key","name":get("key"),"placement":get("in"),"value":self.credential(&get("value"), &format!("{path}/value"))})
+                json!({"type":"api-key","name":get("key"),"placement":get("in"),"value":self.optional_credential(credential_value("value"), &format!("{path}/value"))})
             }
             "oauth2"
                 if matches!(
@@ -282,7 +293,7 @@ impl<'a> Builder<'a> {
                         path,
                     );
                 }
-                json!({"type":"oauth2","grantType":get("grant_type"),"tokenUrl":get("accessTokenUrl"),"authorizationUrl":get("authUrl"),"clientId":get("clientId"),"clientSecret":self.credential(&get("clientSecret"), &format!("{path}/clientSecret")),"scopes":get("scope"),"redirectUri":get("redirect_uri"),"clientAuthentication":if get("client_authentication") == "header" {"basic"} else {"body"},"autoRefresh":true})
+                json!({"type":"oauth2","grantType":get("grant_type"),"tokenUrl":get("accessTokenUrl"),"authorizationUrl":get("authUrl"),"clientId":get("clientId"),"clientSecret":self.optional_credential(credential_value("clientSecret"), &format!("{path}/clientSecret")),"scopes":get("scope"),"redirectUri":get("redirect_uri"),"clientAuthentication":if get("client_authentication") == "header" {"basic"} else {"body"},"autoRefresh":true})
             }
             _ => {
                 self.warn("unsupported-auth", "This Postman authentication configuration is unsupported; configure authentication in Purr.", path);
@@ -302,11 +313,22 @@ impl<'a> Builder<'a> {
     }
     fn protect_pair(&mut self, mut pair: Value, path: &str) -> Value {
         let value = text(pair.get("value"));
-        if sensitive_name(&text(pair.get("name"))) && !value.is_empty() && !template_only(&value) {
+        let sensitive =
+            pair.as_object_mut().unwrap().remove("sensitive") == Some(Value::Bool(true));
+        if sensitive {
             let id = self.id("variable", path);
             let name = format!("postman_{}", self.id("credential", path));
-            let credential = self.credential(&value, path);
-            self.result.workspace["variables"].as_array_mut().unwrap().push(json!({"id":id,"name":name,"kind":"static","enabled":true,"sensitive":true,"secretRef":credential["ref"]}));
+            // Query/form models stay unchanged. An explicitly marked source
+            // field uses a sensitive static variable, including pure templates.
+            let reference = format!(
+                "purr/{}/credentials/imports/postman/{}",
+                self.workspace_id,
+                self.id("secret", path)
+            );
+            self.result
+                .secrets
+                .push(json!({"ref":reference,"value":value}));
+            self.result.workspace["variables"].as_array_mut().unwrap().push(json!({"id":id,"name":name,"kind":"static","enabled":true,"sensitive":true,"secretRef":reference}));
             pair["value"] = json!(format!("{{{{{name}}}}}"));
         }
         pair
@@ -314,7 +336,7 @@ impl<'a> Builder<'a> {
     fn pairs(&mut self, input: Option<&Value>, path: &str) -> Result<Vec<Value>, String> {
         array(input, path)?.iter().enumerate().map(|(index, row)| {
             if !row.is_object() { return Err(format!("Invalid parameter at {path}/{index}.")); }
-            let pair = json!({"name":text(row.get("key")),"value":text(row.get("value")),"enabled":!row.get("disabled").and_then(Value::as_bool).unwrap_or(false)});
+            let pair = json!({"name":text(row.get("key")),"value":text(row.get("value")),"enabled":!row.get("disabled").and_then(Value::as_bool).unwrap_or(false),"sensitive":source_sensitive(row)});
             Ok(self.protect_pair(pair, &format!("{path}/{index}")))
         }).collect()
     }
@@ -360,7 +382,7 @@ impl<'a> Builder<'a> {
                         );
                         continue;
                     }
-                    let mut pair = self.protect_pair(json!({"name":text(row.get("key")),"value":text(row.get("value")),"enabled":!row.get("disabled").and_then(Value::as_bool).unwrap_or(false)}), &pointer);
+                    let mut pair = self.protect_pair(json!({"name":text(row.get("key")),"value":text(row.get("value")),"enabled":!row.get("disabled").and_then(Value::as_bool).unwrap_or(false),"sensitive":source_sensitive(row)}), &pointer);
                     if let Some(content_type) = row.get("contentType").and_then(Value::as_str) {
                         pair["contentType"] = json!(content_type);
                     }
@@ -487,7 +509,7 @@ impl<'a> Builder<'a> {
                 rest.split_once('@').filter(|(info, _)| !info.contains('/'))
             {
                 let pair = self.protect_pair(
-                    json!({"name":"password","value":userinfo,"enabled":true}),
+                    json!({"name":"password","value":userinfo,"enabled":true,"sensitive":true}),
                     &format!("{path}/userinfo"),
                 );
                 base = format!("{scheme}://{}@{host}", text(pair.get("value")));
@@ -563,7 +585,7 @@ impl<'a> Builder<'a> {
                     &format!("{pointer}/request/auth"),
                 )?;
                 let mut headers =
-                    self.pairs(request.get("header"), &format!("{pointer}/request/header"))?;
+                    self.headers(request.get("header"), &format!("{pointer}/request/header"))?;
                 let (url, params, path_params) = self.url(
                     request
                         .get("url")
@@ -587,7 +609,7 @@ impl<'a> Builder<'a> {
                     };
                     if let Some(media_type) = media_type {
                         headers
-                            .push(json!({"name":"Content-Type","value":media_type,"enabled":true}));
+                            .push(json!({"id":self.id("header",&format!("{pointer}/request/implicit-content-type")),"name":"Content-Type","value":{"kind":"plain","value":media_type},"enabled":true,"sensitive":false}));
                     }
                 }
                 let (body, graphql) =
@@ -776,9 +798,9 @@ mod tests {
         assert_eq!(result.secrets[0]["value"], "literal-token");
     }
     #[test]
-    fn secrets_are_protected_even_in_disabled_headers_query_and_form_fields() {
+    fn explicit_source_flags_protect_disabled_fields_without_header_or_parameter_name_guessing() {
         let source = collection(
-            json!([{"request":{"method":"POST","url":"https://api.test/?api_key=query-secret&x=%2B&x=a+b","header":[{"key":"Authorization","value":"Bearer header-secret","disabled":true}],"body":{"mode":"urlencoded","urlencoded":[{"key":"password","value":"form-secret"},{"key":"tag","value":"one"},{"key":"tag","value":"two","disabled":true}]}}}]),
+            json!([{"request":{"method":"POST","url":"https://api.test/?api_key=query-secret&x=%2B&x=a+b","header":[{"key":"Authorization","value":"Bearer header-secret","disabled":true,"secret":true}],"body":{"mode":"urlencoded","urlencoded":[{"key":"password","value":"form-secret","secret":true},{"key":"tag","value":"one"},{"key":"tag","value":"two","disabled":true}]}}}]),
         );
         let result = normalize(source, false, "first").unwrap();
         let canonical = format!(
@@ -786,13 +808,82 @@ mod tests {
             result.workspace,
             serde_json::to_string(&result.resources).unwrap()
         );
-        for secret in ["query-secret", "header-secret", "form-secret"] {
+        for secret in ["header-secret", "form-secret"] {
             assert!(!canonical.contains(secret));
         }
-        assert_eq!(result.secrets.len(), 3);
+        assert_eq!(result.secrets.len(), 2);
+        assert!(canonical.contains("query-secret"));
         assert_eq!(result.resources[0]["params"][1]["value"], "+");
         assert_eq!(result.resources[0]["params"][2]["value"], "a+b");
         assert_eq!(result.resources[0]["body"]["fields"][2]["enabled"], false);
+    }
+    #[test]
+    fn classification_conforms_to_shared_parser_and_preserves_expression_bytes() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/secret-classification.json"
+        ))
+        .unwrap();
+        for case in fixtures.as_array().unwrap() {
+            let value = case["value"].as_str().unwrap();
+            let pure = case["pure"].as_bool().unwrap();
+            assert_eq!(
+                template_only(value),
+                pure,
+                "classification mismatch for {value:?}"
+            );
+            let mut builder =
+                Builder::new("workspace", "same-import", "postman-collection", "test");
+            let result = builder.credential(value, "field");
+            if pure {
+                assert_eq!(result["kind"], "template");
+                assert_eq!(result["value"], value);
+                assert!(builder.result.secrets.is_empty());
+            } else {
+                assert_eq!(result["kind"], "secret");
+                assert_eq!(builder.result.secrets[0]["value"], value);
+            }
+        }
+    }
+    #[test]
+    fn header_identity_cookie_roles_missing_and_empty_survive_repeated_import() {
+        let source = collection(json!([{"request":{"url":"https://example.test","header":[
+            {"key":"Authorization","value":"user-public"},
+            {"key":"X-Key","value":"mixed-{{token}}","secret":true,"disabled":true},
+            {"key":"X-Key","value":"  {{ public }} ","secret":true},
+            {"key":" Cookie ","value":"session=token"},
+            {"key":"Empty","value":"","sensitive":true},
+            {"key":"Absent","sensitive":true}
+        ],"auth":{"type":"basic","basic":[{"key":"username","value":"user"}]}}}]));
+        let first = normalize(source.clone(), false, "same").unwrap();
+        let second = normalize(source, false, "same").unwrap();
+        let rows = first.resources[0]["headers"].as_array().unwrap();
+        assert_eq!(
+            first.resources[0]["headers"],
+            second.resources[0]["headers"]
+        );
+        assert_ne!(rows[1]["id"], rows[2]["id"]);
+        assert_eq!(rows[0]["sensitive"], false);
+        assert_eq!(rows[0]["value"]["kind"], "plain");
+        assert_eq!(rows[1]["enabled"], false);
+        assert_eq!(rows[1]["value"]["kind"], "secret");
+        assert_eq!(
+            rows[2]["value"],
+            json!({"kind":"template","value":"  {{ public }} "})
+        );
+        assert_eq!(rows[3]["sensitive"], true);
+        assert_eq!(first.secrets.len(), 3);
+        assert!(first
+            .secrets
+            .iter()
+            .any(|row| row["ref"] == rows[4]["value"]["ref"] && row["value"] == ""));
+        assert!(!first
+            .secrets
+            .iter()
+            .any(|row| row["ref"] == rows[5]["value"]["ref"]));
+        assert!(!first
+            .secrets
+            .iter()
+            .any(|row| row["ref"] == first.workspace["auth"][0]["config"]["password"]["ref"]));
     }
     #[test]
     fn raw_body_is_verbatim_and_files_are_never_read() {
@@ -839,7 +930,7 @@ mod tests {
         assert_eq!(profiles[0]["config"]["password"]["kind"], "secret");
         assert_eq!(
             profiles[1]["config"]["value"],
-            json!({"kind":"plain","value":"{{api_key}}"})
+            json!({"kind":"template","value":"{{api_key}}"})
         );
         assert_eq!(profiles[2]["config"]["tokenUrl"], "{{auth_url}}/token");
         assert_eq!(profiles[2]["config"]["clientAuthentication"], "basic");

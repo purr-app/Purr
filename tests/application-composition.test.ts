@@ -1,3 +1,4 @@
+import { unavailableSecretTransfer } from "../src/storage/unavailable-secret-transfer";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
@@ -23,13 +24,14 @@ const unavailable = () => Promise.reject(new Error("unused test port"));
 function memoryServices(): ApplicationServices {
   const secureStore = new MemorySecureStore();
   const persistence = new WorkspacePersistence(
-    new MemoryPersistenceBackend(),
+    new MemoryPersistenceBackend(secureStore),
     secureStore,
   );
   return Object.freeze({
     observability: { validateConfig: unavailable, integrations: async () => [], trace: unavailable },
     persistence,
     secureStore,
+    secretTransfer: unavailableSecretTransfer,
     credentialResolver: {
       resolve: async (credential) =>
         credential.kind === "plain"

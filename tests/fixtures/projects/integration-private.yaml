@@ -22,4 +22,4 @@ config:
 credentials:
   apiKey:
     kind: secret
-    ref: purr/integration-fixture/integrations/private-observability/apiKey
+    ref: purr/integration-fixture/credentials/integrations/private-observability/apiKey

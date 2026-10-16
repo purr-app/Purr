@@ -554,8 +554,8 @@ function ResponseHeadersPanel({ response }: { response: ResponseDetails }) {
 
 function ResponseRequestPanel({ response }: { response: ResponseDetails }) {
   const [revealed, setRevealed] = useState(false);
-  const request = revealed ? response.timeline.request : response.timeline.displayRequest ?? response.timeline.request;
-  const value = useMemo(() => formatHttpRequest(request), [request]);
+  const request = revealed ? response.timeline.request : response.timeline.displayRequest;
+  const value = useMemo(() => request ? formatHttpRequest(request) : "", [request]);
   return <div className="flex h-full min-h-0 flex-col bg-purr-codefield">
     <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-ui-3 py-ui-2">
       <span className="font-code text-ui-xs text-content-tertiary">HTTP/1.1 message</span>
@@ -563,7 +563,7 @@ function ResponseRequestPanel({ response }: { response: ResponseDetails }) {
         {revealed ? <EyeOff className="size-ui-4" /> : <Eye className="size-ui-4" />}
       </Button><CopyResponseButton value={value} label="Copy HTTP request" /></div>
     </div>
-    <div className="min-h-0 flex-1"><ResponseCodeViewer value={value} language="text" ariaLabel="HTTP request viewer" /></div>
+    <div className="min-h-0 flex-1">{request ? <ResponseCodeViewer value={value} language="text" ariaLabel="HTTP request viewer" /> : <p role="status" className="p-ui-4 text-ui-sm text-content-secondary">A redacted preview is unavailable for this older execution. Reveal explicitly to inspect its recorded request.</p>}</div>
   </div>;
 }
 
@@ -1292,6 +1292,7 @@ export function ResponseViewer({ response: storedResponse, graphql = false, onCr
       aria-label="HTTP response"
       className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-ui-xl bg-purr-surface shadow-panel"
     >
+      {storedResponse.protectedSnapshot && storedResponse.protectedSnapshot.status !== "available" ? <p role="status" className="m-ui-0 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 text-ui-xs text-content-secondary">Exact protected request/response details are {storedResponse.protectedSnapshot.status ?? "unresolved"}. Public response content remains available. Retry / Unlock in Workspace settings → Secrets.</p> : null}
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-ui-2 bg-purr-elevated p-ui-2">
         <div
           className="flex min-w-0 flex-wrap items-center gap-ui-1"

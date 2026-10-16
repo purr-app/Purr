@@ -105,7 +105,7 @@ test("catalog, shared auth and readable propagation options keep credentials in 
   const data = await page.evaluate(() => ({ project: localStorage.getItem("purr-native-persistence-test")!, secrets: JSON.parse(localStorage.getItem("purr-native-secure-test")!) }));
   expect(data.project).not.toContain("synthetic-jaeger-token");
   const reference = Object.keys(data.secrets).find((key) => data.secrets[key].includes("synthetic-jaeger-token"))!;
-  expect(reference).toMatch(/^purr\/[^/]+\/integrations\/[^/]+\/auth$/);
+  expect(reference).toMatch(/^purr\/[^/]+\/credentials\/integrations\/[^/]+\/auth$/);
   expect(data.project).toContain(reference);
   await page.reload();
   await settings(page);

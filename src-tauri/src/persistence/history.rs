@@ -70,7 +70,7 @@ impl LocalStateStore {
         for row in rows {
             let (workspace, id, payload) = row.map_err(db)?;
             let plain = self
-                .cipher()
+                .runtime_cipher(&workspace)?
                 .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?;
             let Ok(value) = serde_json::from_slice::<Value>(&plain) else {
                 continue;
@@ -79,7 +79,7 @@ impl LocalStateStore {
             if !valid_summary(&metadata) {
                 continue;
             }
-            let encrypted = self.cipher().encrypt(
+            let encrypted = self.runtime_cipher(&workspace)?.encrypt(
                 &serde_json::to_vec(&metadata).map_err(|_| "Invalid history metadata")?,
                 &format!("{workspace}/history-summary/{id}"),
             )?;
@@ -108,18 +108,52 @@ impl LocalStateStore {
                 {
                     return Err("Invalid history entry".into());
                 }
-                let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM request_executions WHERE workspace_id=?1 AND id=?2)",params![workspace,id],|r|r.get(0)).map_err(db)?;
-                if !exists {
-                    self.write(
-                        workspace,
-                        &[LocalRecord {
-                            table: "request_executions".into(),
-                            id: id.into(),
-                            value: entry.clone(),
-                        }],
-                    )?;
+                use super::{
+                    commit_coordinator, project_files::FilesystemWorkspaceStore,
+                    secret_commits::SecretBatch,
+                };
+                let batch: SecretBatch = match action.get("secrets") {
+                    Some(value) if !value.is_null() => serde_json::from_value(value.clone())
+                        .map_err(|_| "Invalid history secret batch")?,
+                    _ => SecretBatch::fresh(vec![])?,
+                };
+                batch.validate(Some(workspace))?;
+                let prefix = format!("purr/{workspace}/runtime/history/{id}/");
+                if batch
+                    .mutations
+                    .iter()
+                    .any(|mutation| !mutation.reference.starts_with(&prefix))
+                {
+                    return Err("History secret mutation is outside its execution scope".into());
                 }
-                self.prune_history(workspace)?;
+                let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM request_executions WHERE workspace_id=?1 AND id=?2)",params![workspace,id],|r|r.get(0)).map_err(db)?;
+                let replay = self.operation(&batch.operation_id)?.is_some();
+                if exists && !replay && !batch.mutations.is_empty() {
+                    return Err("History entries and their credentials are immutable".into());
+                }
+                let records = if !exists || replay {
+                    vec![LocalRecord {
+                        protection: serde_json::from_value(
+                            entry
+                                .get("protection")
+                                .cloned()
+                                .unwrap_or(json!("encrypted")),
+                        )
+                        .map_err(|_| "Invalid history protection")?,
+                        table: "request_executions".into(),
+                        id: id.into(),
+                        value: entry.clone(),
+                    }]
+                } else {
+                    vec![]
+                };
+                let store = FilesystemWorkspaceStore {
+                    directory: std::path::PathBuf::new(),
+                };
+                commit_coordinator::commit(self, &store, workspace, &[], &records, &batch)?;
+                // Retention is independent maintenance; its failure must not turn
+                // a durably published append into an apparent aborted operation.
+                let _ = self.prune_history(workspace);
                 Ok(Value::Null)
             }
             "existing" => {
@@ -153,7 +187,7 @@ impl LocalStateStore {
                 let before = query["cursor"]["startedAt"].as_i64().unwrap_or(i64::MAX);
                 let before_id = query["cursor"]["id"].as_str().unwrap_or("");
                 let search = query["search"].as_str().unwrap_or("").trim().to_lowercase();
-                let mut stmt = self.db.prepare("SELECT id,summary,CASE WHEN summary IS NULL THEN payload ELSE NULL END,pinned FROM request_executions WHERE workspace_id=?1 AND (?2 IS NULL OR document_id=?2) AND (started_at<?3 OR (started_at=?3 AND id<?4)) ORDER BY started_at DESC,id DESC").map_err(db)?;
+                let mut stmt = self.db.prepare("SELECT id,summary,CASE WHEN summary IS NULL THEN payload ELSE NULL END,pinned,protection,document_id,started_at,status FROM request_executions WHERE workspace_id=?1 AND (?2 IS NULL OR document_id=?2) AND (started_at<?3 OR (started_at=?3 AND id<?4)) ORDER BY started_at DESC,id DESC").map_err(db)?;
                 let rows = stmt
                     .query_map(
                         params![workspace, query["documentId"].as_str(), before, before_id],
@@ -163,23 +197,41 @@ impl LocalStateStore {
                                 r.get::<_, Option<Vec<u8>>>(1)?,
                                 r.get::<_, Option<Vec<u8>>>(2)?,
                                 r.get::<_, bool>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, Option<String>>(5)?,
+                                r.get::<_, Option<i64>>(6)?,
+                                r.get::<_, Option<i64>>(7)?,
                             ))
                         },
                     )
                     .map_err(db)?;
                 let mut items = Vec::new();
+                let encrypted_available = self.runtime_cipher(workspace).is_ok();
                 for row in rows {
-                    let (id, metadata, payload, pinned) = row.map_err(db)?;
+                    let (id, metadata, payload, pinned, protection, document, started_at, status) =
+                        row.map_err(db)?;
+                    if protection == "encrypted" && !encrypted_available {
+                        items.push(json!({"id":id,"documentId":document.unwrap_or_default(),"startedAt":started_at.unwrap_or(0),"status":status,"size":0,"pinned":pinned,"name":"Protected response unavailable","kind":"http","method":"","url":"Protected response unavailable","durationMs":0,"outcome":"response","protectedState":{"status":"unavailable","code":"history-key-unavailable"}}));
+                        if items.len() > limit {
+                            break;
+                        }
+                        continue;
+                    }
                     let mut item = if let Some(metadata) = metadata {
-                        let plain = self
-                            .cipher()
-                            .decrypt(&metadata, &format!("{workspace}/history-summary/{id}"))?;
+                        let plain = self.decode_runtime(
+                            workspace,
+                            &protection,
+                            &metadata,
+                            &format!("{workspace}/history-summary/{id}"),
+                        )?;
                         let Ok(metadata) = serde_json::from_slice::<Value>(&plain) else {
                             continue;
                         };
                         metadata
                     } else {
-                        let plain = self.cipher().decrypt(
+                        let plain = self.decode_runtime(
+                            workspace,
+                            &protection,
                             &payload.ok_or("Missing history payload")?,
                             &format!("{workspace}/request_executions/{id}"),
                         )?;
@@ -225,15 +277,16 @@ impl LocalStateStore {
             "read" => {
                 self.prune_history(workspace)?;
                 let id = action["id"].as_str().ok_or("Missing history id")?;
-                let row:Option<(Vec<u8>,bool)>=self.db.query_row("SELECT payload,pinned FROM request_executions WHERE workspace_id=?1 AND id=?2",params![workspace,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db)?;
-                let Some((payload, pinned)) = row else {
+                let row:Option<(Vec<u8>,bool,String)>=self.db.query_row("SELECT payload,pinned,protection FROM request_executions WHERE workspace_id=?1 AND id=?2",params![workspace,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db)?;
+                let Some((payload, pinned, protection)) = row else {
                     return Ok(Value::Null);
                 };
-                let mut value: Value = serde_json::from_slice(
-                    &self
-                        .cipher()
-                        .decrypt(&payload, &format!("{workspace}/request_executions/{id}"))?,
-                )
+                let mut value: Value = serde_json::from_slice(&self.decode_runtime(
+                    workspace,
+                    &protection,
+                    &payload,
+                    &format!("{workspace}/request_executions/{id}"),
+                )?)
                 .map_err(|_| "Damaged history entry")?;
                 self.restore_response_body(workspace, id, &mut value)?;
                 let meta = summary(id, &value, pinned);
@@ -311,6 +364,10 @@ impl LocalStateStore {
         Ok(value.and_then(|v| v.parse().ok()).unwrap_or(30))
     }
     pub fn prune_history(&mut self, workspace: &str) -> Result<(), String> {
+        // Do not perform destructive retention without the protected owner.
+        if self.runtime_cipher(workspace).is_err() {
+            return Ok(());
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "Invalid system clock")?
@@ -331,7 +388,7 @@ impl LocalStateStore {
         }
         let tx = self.db.transaction().map_err(db)?;
         for id in ids {
-            let secret_prefix = format!("purr/{workspace}/history/{id}/");
+            let secret_prefix = format!("purr/{workspace}/runtime/history/{id}/");
             tx.execute(
                 "DELETE FROM secret_values WHERE substr(reference,1,length(?1))=?1",
                 [secret_prefix],
@@ -355,6 +412,7 @@ impl LocalStateStore {
             .map_err(db)?;
         }
         tx.execute("DELETE FROM history_attachments WHERE workspace_id=?1 AND NOT EXISTS(SELECT 1 FROM history_attachment_links l WHERE l.workspace_id=history_attachments.workspace_id AND l.attachment_id=history_attachments.id)",[workspace]).map_err(db)?;
+        super::attachments::collect(&tx, workspace)?;
         tx.commit().map_err(db)
     }
 }
@@ -379,6 +437,52 @@ mod tests {
     }
     fn append(store: &mut LocalStateStore, value: Value) {
         run(store, json!({"operation":"append","entry":value}));
+    }
+
+    #[test]
+    fn history_credentials_publish_with_entry_and_replay_cannot_change_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        let keys = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&directory.path().join("state.db"), &keys).unwrap();
+        let reference = "purr/workspace/runtime/history/execution/editor/auth/token";
+        let secrets = json!({"operationId":"history-commit","mutations":[{"ref":reference,"expectedRevision":0,"value":"historical-token"}]});
+        let mut value = entry("execution", "document", now());
+        value["files"] = json!({"missing":{"native":true}});
+        assert!(store
+            .request_history(
+                "workspace",
+                json!({"operation":"append","entry":value,"secrets":secrets})
+            )
+            .is_err());
+        assert!(store.get_secret(reference).unwrap().is_none());
+        assert_eq!(
+            store
+                .history("workspace", "document", i64::MAX, 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        let mut secrets = secrets;
+        secrets["operationId"] = json!("history-success");
+        value["files"] = json!({});
+        let action = json!({"operation":"append","entry":value,"secrets":secrets});
+        store.request_history("workspace", action.clone()).unwrap();
+        store.request_history("workspace", action.clone()).unwrap();
+        assert_eq!(store.read_secret(reference).unwrap().revision, 1);
+        let mut changed = action.clone();
+        changed["entry"]["name"] = json!("different");
+        assert!(store
+            .request_history("workspace", changed)
+            .unwrap_err()
+            .starts_with("operation-conflict:"));
+        let mut malformed = action;
+        malformed["secrets"]["mutations"][0]["expectedRevision"] = json!("bad");
+        assert!(store.request_history("workspace", malformed).is_err());
+        assert_eq!(
+            store.get_secret(reference).unwrap().as_deref(),
+            Some("historical-token")
+        );
+        assert_eq!(store.read_secret(reference).unwrap().revision, 1);
     }
 
     #[test]
@@ -498,11 +602,14 @@ mod tests {
             json!({"operation":"pin","id":"pinned","pinned":true}),
         );
         store
-            .set_secret("purr/workspace/history/old/editor/auth/token", "secret")
+            .set_secret(
+                "purr/workspace/runtime/history/old/editor/auth/token",
+                "secret",
+            )
             .unwrap();
         store
             .set_secret(
-                "purr/workspace/history/pinned/editor/auth/token",
+                "purr/workspace/runtime/history/pinned/editor/auth/token",
                 "retained",
             )
             .unwrap();
@@ -510,6 +617,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "drafts".into(),
                     id: "draft".into(),
                     value: Value::Null,
@@ -533,7 +641,7 @@ mod tests {
             Value::Null
         );
         assert!(store
-            .get_secret("purr/workspace/history/old/editor/auth/token")
+            .get_secret("purr/workspace/runtime/history/old/editor/auth/token")
             .unwrap()
             .is_none());
         assert_eq!(
@@ -545,7 +653,7 @@ mod tests {
             json!({"operation":"remove","filter":{"id":"pinned"}}),
         );
         assert!(store
-            .get_secret("purr/workspace/history/pinned/editor/auth/token")
+            .get_secret("purr/workspace/runtime/history/pinned/editor/auth/token")
             .unwrap()
             .is_none());
     }
@@ -561,6 +669,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "file".into(),
                     value: file.clone(),
@@ -577,6 +686,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "file".into(),
                     value: Value::Null,
@@ -596,6 +706,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "attachments".into(),
                     id: "file".into(),
                     value: metadata,
@@ -627,6 +738,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "legacy".into(),
                     value,
@@ -657,7 +769,7 @@ mod tests {
         let mut store =
             LocalStateStore::open(&dir.path().join("state.db"), &MemoryRootKeyStore::default())
                 .unwrap();
-        store.db.execute("INSERT INTO response_contents(id,state,byte_length,created_at) VALUES('content','ready',3,0)",[]).unwrap();
+        store.db.execute("INSERT INTO response_contents(id,workspace_id,state,byte_length,created_at) VALUES('content','workspace','ready',3,0)",[]).unwrap();
         store.db.execute("INSERT INTO response_content_chunks(content_id,chunk_index,plain_offset,plain_length,crypto_version,nonce,ciphertext) VALUES('content',0,0,3,1,X'00',X'00')",[]).unwrap();
         let mut value = entry("body", "draft", now());
         value["outcome"] = json!("response");
@@ -781,6 +893,7 @@ mod tests {
             .write(
                 "workspace",
                 &[LocalRecord {
+                    protection: Default::default(),
                     table: "request_executions".into(),
                     id: "masked".into(),
                     value,

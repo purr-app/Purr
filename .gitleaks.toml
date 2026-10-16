@@ -8,3 +8,20 @@ regexes = [
   '''Authorization: Bearer (?:top-secret|imported-token)''',
   '''X-API-Key: secret-key''',
 ]
+
+[[allowlists]]
+description = "Public storage format marker, not cryptographic key material (including Git history)"
+condition = "AND"
+paths = [
+  '''^src-tauri/src/persistence/local_records\.rs$''',
+  '''^docs/database-structure\.md$''',
+]
+regexTarget = "match"
+regexes = ['''crypto-key-derivation.{1,12}mixed-scoped-v3''']
+
+[[allowlists]]
+description = "Literal public-key fixture in cURL classification tests"
+condition = "AND"
+paths = ['''^tests/curl-import\.test\.ts$''']
+regexTarget = "match"
+regexes = ['''X-API-Key: public-key''']
