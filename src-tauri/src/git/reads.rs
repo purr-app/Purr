@@ -2,6 +2,24 @@ use super::*;
 impl Git {
     pub async fn status(&self) -> Result<Status> {
         let version = self.run(&["--version"]).await?;
+        let parts: Vec<_> = version
+            .trim_start_matches("git version ")
+            .split('.')
+            .collect();
+        let major = parts
+            .first()
+            .and_then(|part| part.parse::<u32>().ok())
+            .unwrap_or(0);
+        let minor = parts
+            .get(1)
+            .and_then(|part| part.parse::<u32>().ok())
+            .unwrap_or(0);
+        if major < 2 || major == 2 && minor < 38 {
+            return Err(GitError::new(
+                "unavailable",
+                "Git 2.38 or newer is required. Update Git and restart Purr.",
+            ));
+        }
         let mut status = Status {
             directory: self.root.to_string_lossy().into(),
             initialized: false,
@@ -95,13 +113,23 @@ impl Git {
             .map(|d| d.as_millis() as u64);
         Ok(status)
     }
-    async fn blob(&self, reference: &str) -> Result<Vec<u8>> {
-        let out = self.output(&["cat-file", "blob", reference]).await?;
-        // A missing side of additions/deletions is an empty blob.
-        if !out.success {
-            return Ok(vec![]);
+    async fn blob_preview(&self, reference: &str) -> Result<(Vec<u8>, usize)> {
+        let size = self.output(&["cat-file", "-s", reference]).await?;
+        if !size.success {
+            return Ok((vec![], 0));
         }
-        Ok(out.stdout)
+        let length = size
+            .text()
+            .parse::<usize>()
+            .map_err(|_| GitError::new("git", "Invalid Git blob size."))?;
+        if length > 1024 * 1024 {
+            return Ok((vec![], length));
+        }
+        let out = self.output(&["cat-file", "blob", reference]).await?;
+        if !out.success {
+            return Err(classify(&out.stderr));
+        }
+        Ok((out.stdout, length))
     }
     pub async fn diff(&self, request: DiffRequest) -> Result<Diff> {
         self.repository().await?;
@@ -109,17 +137,29 @@ impl Git {
         let old = request.old_path.as_deref().unwrap_or(&request.path);
         self.path(old)?;
         let (before, after) = match request.scope.as_str() {
-            "working" => (
-                self.blob(&format!(":{old}")).await?,
-                match std::fs::read(path) {
-                    Ok(v) => v,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
-                    Err(e) => return Err(e.into()),
-                },
-            ),
+            "working" => {
+                let before = self.blob_preview(&format!(":{}", request.path)).await?;
+                let after = match std::fs::File::open(path) {
+                    Ok(file) => {
+                        use std::io::Read;
+                        let length = file.metadata()?.len() as usize;
+                        if length > 1024 * 1024 {
+                            (vec![], length)
+                        } else {
+                            let mut bytes = vec![];
+                            file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                            let actual = bytes.len();
+                            (bytes, actual)
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (vec![], 0),
+                    Err(error) => return Err(error.into()),
+                };
+                (before, after)
+            }
             "staged" => (
-                self.blob(&format!("HEAD:{old}")).await?,
-                self.blob(&format!(":{}", request.path)).await?,
+                self.blob_preview(&format!("HEAD:{old}")).await?,
+                self.blob_preview(&format!(":{}", request.path)).await?,
             ),
             "commit" => {
                 let commit = request
@@ -131,33 +171,35 @@ impl Git {
                     .await?;
                 (
                     if parent.success {
-                        self.blob(&format!("{}:{old}", parent.text())).await?
+                        self.blob_preview(&format!("{}:{old}", parent.text()))
+                            .await?
                     } else {
-                        vec![]
+                        (vec![], 0)
                     },
-                    self.blob(&format!("{commit}:{}", request.path)).await?,
+                    self.blob_preview(&format!("{commit}:{}", request.path))
+                        .await?,
                 )
             }
             _ => return Err(GitError::new("git", "Invalid diff scope.")),
         };
-        let binary = before.contains(&0)
-            || after.contains(&0)
-            || std::str::from_utf8(&before).is_err()
-            || std::str::from_utf8(&after).is_err();
-        let truncated = before.len() > 1024 * 1024 || after.len() > 1024 * 1024;
+        let truncated = before.1 > 1024 * 1024 || after.1 > 1024 * 1024;
+        let binary = before.0.contains(&0)
+            || after.0.contains(&0)
+            || std::str::from_utf8(&before.0).is_err()
+            || std::str::from_utf8(&after.0).is_err();
         Ok(Diff {
             path: request.path,
-            before_bytes: before.len(),
-            after_bytes: after.len(),
+            before_bytes: before.1,
+            after_bytes: after.1,
             before: if binary || truncated {
                 String::new()
             } else {
-                String::from_utf8_lossy(&before).into()
+                String::from_utf8_lossy(&before.0).into()
             },
             after: if binary || truncated {
                 String::new()
             } else {
-                String::from_utf8_lossy(&after).into()
+                String::from_utf8_lossy(&after.0).into()
             },
             binary,
             truncated,
@@ -204,6 +246,7 @@ impl Git {
         let out = self
             .output(&[
                 "diff-tree",
+                "--diff-merges=first-parent",
                 "--root",
                 "--no-commit-id",
                 "--name-status",
@@ -260,6 +303,14 @@ impl Git {
             let mut binary = false;
             let mut sides = vec![];
             for n in 1..=3 {
+                let reference = format!(":{n}:{}", file.path);
+                let size = self.output(&["cat-file", "-s", &reference]).await?;
+                if size.success && size.text().parse::<usize>().unwrap_or(usize::MAX) > 1024 * 1024
+                {
+                    binary = true;
+                    sides.push(None);
+                    continue;
+                }
                 let out = self
                     .output(&["cat-file", "blob", &format!(":{n}:{}", file.path)])
                     .await?;

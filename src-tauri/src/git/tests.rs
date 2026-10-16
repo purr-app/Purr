@@ -68,6 +68,72 @@ fn repo() -> (tempfile::TempDir, Git) {
     let git = Git::new(std::fs::canonicalize(&root).unwrap(), "fixture".into());
     (dir, git)
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn cancellation_reaps_git_and_still_records_abortable_recovery() {
+    let (_dir, mut git) = repo();
+    let token = git.cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        token.cancel();
+    });
+    let start = std::time::Instant::now();
+    assert_eq!(
+        git.run(&["-c", "alias.purr-block=!sleep 30", "purr-block"])
+            .await
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    assert!(start.elapsed() < Duration::from_secs(3));
+    git.cancel = CancellationToken::new();
+    git.begin_checkpoint("merge").await.unwrap();
+    std::fs::write(git.root.join("introduced.txt"), "operation output").unwrap();
+    git.cancel.cancel();
+    assert_eq!(
+        git.complete_checkpoint(Err(GitError::new("cancelled", "Cancelled")))
+            .await
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    git.abort_checkpoint().await.unwrap();
+    assert!(!git.root.join("introduced.txt").exists());
+}
+#[tokio::test]
+async fn validates_complete_staged_project_and_branch_before_changing_head() {
+    let (_dir, mut git) = repo();
+    let original = command(&git.root, &["rev-parse", "HEAD"]);
+    std::fs::create_dir(git.root.join("documents")).unwrap();
+    let path = git.root.join("documents/request.yaml");
+    for invalid in [
+        "purr: 2\nkind: http\nid: request\nname: Missing URL\nmethod: GET\n",
+        "purr: 2\nkind: http\nid: request\nname: Missing folder\nurl: https://example.test\nmethod: GET\nfolderId: missing\n",
+        "purr: 2\nkind: schema\nid: schema\nname: Missing sidecar\nsource:\n  type: sdl-file\npinned: schemas/schema.graphql\n",
+    ] {
+        std::fs::write(&path,invalid).unwrap();
+        command(&git.root,&["add","documents/request.yaml"]);
+        assert_eq!(git.execute(Action::Commit{message:"Invalid".into(),author:None}).await.unwrap_err().code,"invalid-project");
+        assert_eq!(command(&git.root,&["rev-parse","HEAD"]),original);
+    }
+    // An external client can create invalid commits; switching must still fail
+    // before touching the current branch or files.
+    command(&git.root, &["switch", "-c", "broken"]);
+    command(&git.root, &["commit", "-m", "Invalid external schema"]);
+    command(&git.root, &["switch", "main"]);
+    assert_eq!(
+        git.execute(Action::SwitchBranch {
+            name: "broken".into(),
+            allow_dirty: false
+        })
+        .await
+        .unwrap_err()
+        .code,
+        "invalid-project"
+    );
+    assert_eq!(command(&git.root, &["branch", "--show-current"]), "main");
+    assert!(!path.exists());
+}
 #[tokio::test]
 async fn reads_real_index_worktree_renames_and_history() {
     let (_dir, git) = repo();
@@ -336,4 +402,101 @@ async fn rejects_abort_after_external_edits_and_preserves_stash_on_conflict() {
         "stale"
     );
     assert!(git.root.join("external.txt").exists());
+}
+
+#[tokio::test]
+async fn bounds_large_previews_and_uses_the_renamed_index_path() {
+    let (_dir, git) = repo();
+    std::fs::write(git.root.join("before.txt"), "before\n").unwrap();
+    command(&git.root, &["add", "before.txt"]);
+    command(&git.root, &["commit", "-m", "Before"]);
+    command(&git.root, &["mv", "before.txt", "after.txt"]);
+    std::fs::write(git.root.join("after.txt"), "after\n").unwrap();
+    let diff = git
+        .diff(DiffRequest {
+            path: "after.txt".into(),
+            old_path: Some("before.txt".into()),
+            scope: "working".into(),
+            commit: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(diff.before, "before\n");
+    let file = std::fs::File::create(git.root.join("large.txt")).unwrap();
+    file.set_len(128 * 1024 * 1024).unwrap();
+    let preview = git
+        .diff(DiffRequest {
+            path: "large.txt".into(),
+            old_path: None,
+            scope: "working".into(),
+            commit: None,
+        })
+        .await
+        .unwrap();
+    assert!(preview.truncated);
+    assert!(preview.after.is_empty());
+    assert_eq!(preview.after_bytes, 128 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn invalid_external_stash_can_be_aborted_without_losing_the_original_project() {
+    let (_dir, mut git) = repo();
+    std::fs::write(
+        git.root.join("purr.yaml"),
+        "purr: 2\nworkspace:\n  id: unrelated\n  name: Other\n",
+    )
+    .unwrap();
+    command(
+        &git.root,
+        &["stash", "push", "-m", "External invalid identity"],
+    );
+    let stash = git.stashes().await.unwrap().remove(0);
+    assert_eq!(
+        git.execute(Action::ApplyStash { id: stash.id })
+            .await
+            .unwrap_err()
+            .code,
+        "identity"
+    );
+    assert!(git.checkpoint.as_ref().unwrap().get("after").is_some());
+    git.execute(Action::AbortMerge).await.unwrap();
+    git.validate_worktree().unwrap();
+    assert_eq!(git.stashes().await.unwrap().len(), 1);
+}
+#[test]
+fn read_queries_can_overlap_but_git_mutations_hold_an_exclusive_lease() {
+    let state = native::GitState::default();
+    let (read_a, _) = state.acquire("read-a", "workspace", false).unwrap();
+    let (read_b, _) = state.acquire("read-b", "workspace", false).unwrap();
+    let (write, _) = state.acquire("write", "workspace", true).unwrap();
+    assert!(state.acquire("read-c", "workspace", false).is_err());
+    assert!(state.acquire("write-b", "workspace", true).is_err());
+    drop(write);
+    drop(read_a);
+    drop(read_b);
+    assert!(!state.busy("workspace"));
+}
+#[tokio::test]
+async fn switching_never_overwrites_an_ignored_file() {
+    let (_dir, mut git) = repo();
+    command(&git.root, &["switch", "-c", "with-file"]);
+    std::fs::write(git.root.join("kept.txt"), "tracked").unwrap();
+    command(&git.root, &["add", "kept.txt"]);
+    command(&git.root, &["commit", "-m", "Track file"]);
+    command(&git.root, &["switch", "main"]);
+    std::fs::write(git.root.join(".gitignore"), "kept.txt\n").unwrap();
+    command(&git.root, &["add", ".gitignore"]);
+    command(&git.root, &["commit", "-m", "Ignore file"]);
+    std::fs::write(git.root.join("kept.txt"), "local ignored bytes").unwrap();
+    assert!(git
+        .execute(Action::SwitchBranch {
+            name: "with-file".into(),
+            allow_dirty: true
+        })
+        .await
+        .is_err());
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("kept.txt")).unwrap(),
+        "local ignored bytes"
+    );
 }

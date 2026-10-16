@@ -1,4 +1,4 @@
-//! IPC operations are serialized per workspace without holding the SQLite lock.
+//! Git mutations are serialized per workspace without holding the SQLite lock.
 use super::*;
 use serde_json::Value;
 use std::{
@@ -33,7 +33,11 @@ impl GitState {
             .0
             .lock()
             .map_err(|_| GitError::new("busy", "Git is busy."))?;
-        if registry.contains_key(id) || registry.values().any(|(owner, _, _)| owner == workspace) {
+        if registry.contains_key(id)
+            || registry
+                .values()
+                .any(|(owner, mutating, _)| owner == workspace && *mutating)
+        {
             return Err(GitError::new(
                 "busy",
                 "Another Git operation is running for this workspace.",
@@ -80,7 +84,6 @@ pub enum Query {
     Stashes,
     Conflicts,
 }
-#[tauri::command]
 pub async fn git_workspace(
     webview: tauri::Webview,
     app: tauri::AppHandle,
@@ -93,7 +96,8 @@ pub async fn git_workspace(
     let mutation = matches!(query, Query::Execute { .. });
     let (lease, cancel) = state.acquire(&operation_id, &workspace_id, mutation)?;
     let (root, checkpoint) =
-        crate::persistence::runtime::git_context(&app, &workspace_id).map_err(GitError::from)?;
+        crate::persistence::runtime::git_context(&app, &workspace_id, mutation)
+            .map_err(GitError::from)?;
     let mut git = Git::new(root, workspace_id.clone());
     git.cancel = cancel;
     git.checkpoint = checkpoint;
@@ -146,7 +150,6 @@ pub async fn git_workspace(
     drop(lease);
     result
 }
-#[tauri::command]
 pub fn git_cancel(app: tauri::AppHandle, operation_id: String) -> Result<()> {
     let state = app.state::<GitState>();
     let registry = state
@@ -158,7 +161,6 @@ pub fn git_cancel(app: tauri::AppHandle, operation_id: String) -> Result<()> {
     }
     Ok(())
 }
-#[tauri::command]
 pub async fn git_clone(
     webview: tauri::Webview,
     app: tauri::AppHandle,

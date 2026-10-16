@@ -64,9 +64,9 @@ impl PurrBuilder {
             ))
             .invoke_handler(crate::security::caller::guard(tauri::generate_handler![
                 commands::app::exit_app,
-                crate::git::native::git_workspace,
-                crate::git::native::git_cancel,
-                crate::git::native::git_clone,
+                commands::git::git_workspace,
+                commands::git::git_cancel,
+                commands::git::git_clone,
                 commands::transfer::secret_transfer,
                 commands::observability::observability_integrations,
                 commands::observability::observability_validate_config,

@@ -31,14 +31,30 @@ impl Git {
             let target = self.path(&path)?;
             files.insert(
                 path,
-                match std::fs::read(target) {
-                    Ok(bytes) => Some(revision(&bytes)),
+                match std::fs::read(&target) {
+                    Ok(bytes) => {
+                        let mut signature = bytes;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            signature.extend_from_slice(
+                                &std::fs::metadata(&target)?
+                                    .permissions()
+                                    .mode()
+                                    .to_le_bytes(),
+                            );
+                        }
+                        Some(revision(&signature))
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                     Err(e) => return Err(e.into()),
                 },
             );
         }
-        let index = std::fs::read(self.root.join(".git/index")).unwrap_or_default();
+        let index = self
+            .output(&["ls-files", "--stage", "-v", "-z"])
+            .await?
+            .stdout;
         let head = self.output(&["rev-parse", "--verify", "HEAD"]).await?;
         Ok(json!({"files":files,"index":revision(&index),"head":head.success.then(||head.text())}))
     }
@@ -52,6 +68,7 @@ impl Git {
         let status = self.status().await?;
         let mut backup = BTreeMap::new();
         let mut total = 0;
+        let mut modes = BTreeMap::<String, u32>::new();
         for file in &status.files {
             for path in std::iter::once(&file.path).chain(file.old_path.as_ref()) {
                 let bytes = match std::fs::read(self.path(path)?) {
@@ -63,6 +80,13 @@ impl Git {
                 if total > 64 * 1024 * 1024 {
                     return Err(GitError::new("git","Uncommitted files exceed the 64 MiB recovery budget. Commit or stash them before continuing."));
                 }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(self.path(path)?) {
+                        modes.insert(path.clone(), meta.permissions().mode());
+                    }
+                }
                 backup.insert(path.clone(), bytes.map(|b| STANDARD.encode(b)));
             }
         }
@@ -72,7 +96,7 @@ impl Git {
         }
         .load()
         .map_err(GitError::from)?;
-        let checkpoint = json!({"version":1,"projectFiles":project_files,"kind":kind,"head":status.head,"branch":status.branch,"originalPaths":self.tracked_paths().await?,"backup":backup,"index":index.map(|b|STANDARD.encode(b)),"before":self.fingerprint().await?});
+        let checkpoint = json!({"version":1,"projectFiles":project_files,"kind":kind,"head":status.head,"branch":status.branch,"originalPaths":self.tracked_paths().await?,"backup":backup,"modes":modes,"index":index.map(|b|STANDARD.encode(b)),"before":self.fingerprint().await?});
         self.persist_checkpoint(Some(&checkpoint))?;
         self.checkpoint = Some(checkpoint);
         Ok(())
@@ -104,6 +128,11 @@ impl Git {
         Ok(())
     }
     pub async fn complete_checkpoint(&mut self, result: Result<()>) -> Result<()> {
+        // Cancellation stops the Git child, not the short recovery bookkeeping.
+        // Otherwise the cancelled token would prevent recording the new state.
+        if self.cancel.is_cancelled() {
+            self.cancel = CancellationToken::new();
+        }
         match result {
             Ok(()) => self.clear_checkpoint(),
             Err(error) => {
@@ -178,7 +207,17 @@ impl Git {
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(target, bytes)?;
+                std::fs::write(&target, bytes)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Some(mode) = checkpoint["modes"][path].as_u64() {
+                        std::fs::set_permissions(
+                            &target,
+                            std::fs::Permissions::from_mode(mode as u32),
+                        )?;
+                    }
+                }
             } else if target.is_file() {
                 std::fs::remove_file(target)?;
             }

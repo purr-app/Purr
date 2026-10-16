@@ -108,9 +108,13 @@ impl Git {
                         "Select a branch from the branch list.",
                     ))
                 } else if status.branches.iter().any(|b| !b.remote && b.name == name) {
-                    self.run(&["switch", &name]).await.map(|_| ())
+                    self.run(&["switch", "--no-overwrite-ignore", &name])
+                        .await
+                        .map(|_| ())
                 } else {
-                    self.run(&["switch", "--track", &name]).await.map(|_| ())
+                    self.run(&["switch", "--no-overwrite-ignore", "--track", &name])
+                        .await
+                        .map(|_| ())
                 };
                 self.complete_checkpoint(result).await?;
             }
@@ -185,30 +189,40 @@ impl Git {
                 }
                 self.begin_checkpoint("merge").await?;
                 let out = self
-                    .output(&["merge", "--ff", "--no-edit", "--no-commit", &target])
+                    .output(&[
+                        "merge",
+                        "--no-overwrite-ignore",
+                        "--ff",
+                        "--no-edit",
+                        "--no-commit",
+                        &target,
+                    ])
                     .await;
-                let result = match out {
-                    Ok(out) if out.success => {
-                        if self.root.join(".git/MERGE_HEAD").exists() {
-                            let tree = self.run(&["write-tree"]).await?;
-                            self.validate_files(&self.files_at(&tree).await?)?;
-                            self.run(&["commit", "--no-edit"]).await.map(|_| ())
-                        } else {
-                            Ok(())
+                let result = async {
+                    match out {
+                        Ok(out) if out.success => {
+                            if self.root.join(".git/MERGE_HEAD").exists() {
+                                let tree = self.run(&["write-tree"]).await?;
+                                self.validate_files(&self.files_at(&tree).await?)?;
+                                self.run(&["commit", "--no-edit"]).await.map(|_| ())
+                            } else {
+                                Ok(())
+                            }
                         }
-                    }
-                    Ok(out) => {
-                        if self.status().await?.files.iter().any(|f| f.conflicted) {
-                            Err(GitError::new(
+                        Ok(out) => {
+                            if self.status().await?.files.iter().any(|f| f.conflicted) {
+                                Err(GitError::new(
                                 "conflict",
                                 "Pull has merge conflicts. Resolve the files or abort the merge.",
                             ))
-                        } else {
-                            Err(classify(&out.stderr))
+                            } else {
+                                Err(classify(&out.stderr))
+                            }
                         }
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(error),
-                };
+                }
+                .await;
                 self.complete_checkpoint(result).await?;
             }
             Action::Stash { message } => {
@@ -237,7 +251,7 @@ impl Git {
                 self.stash_ref(&id).await?;
                 self.begin_checkpoint("stash").await?;
                 let out = self.output(&["stash", "apply", "--index", &id]).await;
-                let result = match out {
+                let result = async { match out {
                     Ok(out) if out.success => {
                         self.validate_worktree()?;
                         let reference = self.stash_ref(&id).await?;
@@ -251,7 +265,7 @@ impl Git {
                         }
                     }
                     Err(e) => Err(e),
-                };
+                } }.await;
                 if let Some(checkpoint) = self.checkpoint.as_mut() {
                     checkpoint["stashId"] = json!(id);
                 }
@@ -267,6 +281,16 @@ impl Git {
                 side,
                 revision: expected,
             } => {
+                if status
+                    .operation
+                    .as_deref()
+                    .is_some_and(|operation| operation != "merge")
+                {
+                    return Err(GitError::new(
+                        "unsupported",
+                        "Resolve this operation in your external Git client.",
+                    ));
+                }
                 if !status.files.iter().any(|f| f.path == path && f.conflicted) {
                     return Err(GitError::new(
                         "stale",
@@ -395,11 +419,11 @@ impl Git {
     }
     async fn validate_target(&self, reference: &str) -> Result<()> {
         self.validate_files(&self.files_at(reference).await?)?;
-        if self
+        if !self
             .output(&["rev-parse", "--verify", "HEAD"])
             .await?
             .success
-            && !self
+            || !self
                 .output(&["merge-base", "HEAD", reference])
                 .await?
                 .success
@@ -444,7 +468,7 @@ impl Git {
         Ok((remote, branch))
     }
     async fn inspect_url(&self, url: &str) -> Result<()> {
-        let out = self.output(&["ls-remote", "--heads", url]).await?;
+        let out = self.output(&["ls-remote", "--refs", url]).await?;
         if !out.success {
             return Err(classify(&out.stderr));
         }
@@ -464,25 +488,25 @@ impl Git {
         Ok(())
     }
     async fn verify_remote(&self, remote: &str, branch: &str) -> Result<()> {
-        let out = self.output(&["ls-remote", "--heads", remote]).await?;
+        let out = self.output(&["ls-remote", "--refs", remote]).await?;
         if !out.success {
             return Err(classify(&out.stderr));
         }
         if out.stdout.is_empty() {
             return Ok(());
         }
-        let target = self.fetch(remote, Some(branch)).await;
-        match target {
-            Ok(Some(target)) => self.validate_target(&target).await,
-            Ok(None)
-            | Err(GitError {
-                code: _,
-                message: _,
-            }) => {
-                let url = self.run(&["remote", "get-url", remote]).await?;
-                self.inspect_url(&url).await
+        let url = self.run(&["remote", "get-url", remote]).await?;
+        self.inspect_url(&url).await?;
+        let target_name = format!("refs/heads/{branch}");
+        if out.text().lines().any(|line| {
+            line.split_once('\t')
+                .is_some_and(|(_, name)| name == target_name)
+        }) {
+            if let Some(target) = self.fetch(remote, Some(branch)).await? {
+                self.validate_target(&target).await?;
             }
         }
+        Ok(())
     }
     async fn fetch(&self, remote: &str, branch: Option<&str>) -> Result<Option<String>> {
         if let Some(branch) = branch {
@@ -553,6 +577,7 @@ fn dirty() -> GitError {
 }
 fn remote_name(name: &str) -> Result<()> {
     if name.is_empty()
+        || name.starts_with('-')
         || name.len() > 128
         || !name
             .bytes()

@@ -16,7 +16,7 @@ export function ProjectDirectorySettings({ workspaceId, onBeforeChange }: { work
   const move = async () => { setBusy(true); setError(""); try { await onBeforeChange(); await persistence.moveDirectory(workspaceId, directory.trim()); await refresh(); setOpen(false); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); await refresh().catch(() => {}); } finally { setBusy(false); } };
   return <>
     <SettingsSection title="Project directory">
-      <SettingsRow label="Location" description={info?.directory ?? "Loading project directory…"}>
+      <SettingsRow label={<><span>Location</span><span className="mt-ui-1 block truncate font-code text-ui-xs text-content-tertiary" title={info?.directory}>{info?.directory ?? "Loading project directory…"}</span></>}>
         <Button variant="secondary" size="sm" title="Open project directory" onClick={() => { void workspaceShell.openWorkspaceFolder(workspaceId).catch((cause) => setError(String(cause))); }}><FolderOpen className="size-ui-4" />Open folder</Button>
         <Button variant="secondary" size="sm" disabled={!info || busy} onClick={() => { setDirectory(info?.pendingMove ?? ""); setError(""); setOpen(true); }}><MoveRight className="size-ui-4" />{info?.pendingMove ? "Resume move…" : "Move project…"}</Button>
       </SettingsRow>
@@ -28,7 +28,7 @@ export function ProjectDirectorySettings({ workspaceId, onBeforeChange }: { work
         <ProjectDirectoryField value={directory} onChange={setDirectory} disabled={busy || Boolean(info?.pendingMove)} />
         {error && <p role="alert" className="text-ui-sm text-accent-red">{error}</p>}
         <div className="flex flex-wrap justify-end gap-ui-2">
-          {info?.pendingMove && <Button variant="ghost" type="button" disabled={busy} onClick={() => { setBusy(true); void persistence.backend.cancelMove?.(workspaceId).then(refresh).then(() => setOpen(false)).catch((cause) => setError(String(cause))).finally(() => setBusy(false)); }}>Cancel pending move</Button>}
+          {info?.pendingMove && <Button variant="ghost" type="button" disabled={busy} onClick={() => { setBusy(true); void persistence.backend.cancelMove?.(workspaceId).then(refresh).then(() => setOpen(false)).catch((cause) => setError(String(cause))).finally(() => setBusy(false)); }}>{info.directory === info.pendingMove ? "Keep both directories" : "Cancel pending move"}</Button>}
           <Button variant="ghost" type="button" disabled={busy} onClick={() => setOpen(false)}>Close</Button><Button variant="brand" type="submit" disabled={busy || !directory.trim() || directory.trim() === info?.directory && !info?.pendingMove}>{busy ? "Moving…" : info?.pendingMove ? "Resume move" : "Move project"}</Button>
         </div>
       </form>

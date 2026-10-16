@@ -65,6 +65,7 @@ serde-transcode = "1.1.1"
 jsonpath-rfc9535 = { version = "0.1.1", features = ["scan"] }
 argon2 = { version = "0.5", features = ["zeroize"] }
 aead-stream = { version = "0.6", features = ["alloc"] }
+jsonschema = { version = "0.56.0", default-features = false }
 
 [dev-dependencies]
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

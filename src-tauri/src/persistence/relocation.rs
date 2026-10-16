@@ -23,6 +23,10 @@ pub struct Job {
     pub files: Tree,
 }
 pub fn fingerprint(root: &Path) -> Result<Tree, String> {
+    let root_meta = fs::symlink_metadata(root).map_err(|_| "Cannot inspect project directory")?;
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+        return Err("The project directory was replaced. Existing paths are preserved.".into());
+    }
     let mut result = Tree::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -73,7 +77,11 @@ pub fn fingerprint(root: &Path) -> Result<Tree, String> {
                 }
                 Stamp {
                     kind: "file".into(),
-                    digest: hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect(),
+                    digest: hasher
+                        .finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect(),
                 }
             } else {
                 return Err("Special filesystem entries cannot be moved by Purr".into());
@@ -136,7 +144,9 @@ fn copy_link(source: &Path, target: &Path) -> Result<(), String> {
 }
 pub fn publish(job: &Job) -> Result<(), String> {
     if job.target.is_dir() && fingerprint(&job.target)? == job.files {
-        if job.source.exists() && fingerprint(&job.source)? != job.files { return Err("The source changed outside Purr. Both directories are preserved.".into()); }
+        if job.source.exists() && fingerprint(&job.source)? != job.files {
+            return Err("The source changed outside Purr. Both directories are preserved.".into());
+        }
         return Ok(());
     }
     if fingerprint(&job.source)? != job.files || fingerprint(&job.staging)? != job.files {
@@ -231,5 +241,17 @@ mod tests {
         fs::write(job.source.join("later.txt"), "preserved").unwrap();
         assert!(cleanup(&job).is_err());
         assert!(job.source.join("later.txt").exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn refuses_replaced_directory_roots_before_cleanup() {
+        let (_dir, job) = fixture();
+        copy(&job).unwrap();
+        publish(&job).unwrap();
+        fs::remove_dir_all(&job.target).unwrap();
+        std::os::unix::fs::symlink(&job.source, &job.target).unwrap();
+        assert!(publish(&job).is_err());
+        assert!(cleanup(&job).is_err());
+        assert!(job.source.join("purr.yaml").exists());
     }
 }

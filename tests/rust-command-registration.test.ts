@@ -8,6 +8,9 @@ const nativeRoot = join(root, "src-tauri", "src");
 
 const registeredCommands = [
   "exit_app",
+  "git_workspace",
+  "git_cancel",
+  "git_clone",
   "secret_transfer",
   "observability_integrations",
   "observability_validate_config",
@@ -49,6 +52,7 @@ const registeredCommands = [
   "delete_project",
   "finish_legacy_migration",
   "open_project_folder",
+  "project_directory",
   "attach_project_directory",
   "read_project_directory",
   "open_project_directory",

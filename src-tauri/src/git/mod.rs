@@ -4,6 +4,7 @@ mod reads;
 mod recovery;
 #[cfg(test)]
 mod tests;
+mod validation;
 mod writes;
 
 use crate::persistence::project_files::{revision, FilesystemWorkspaceStore, ProjectFile};
@@ -223,19 +224,15 @@ impl Git {
         }
     }
     pub async fn output(&self, args: &[&str]) -> Result<Output> {
-        self.cancel
-            .clone()
-            .run_until_cancelled(self.command(args))
-            .await
-            .ok_or_else(|| {
-                GitError::new(
-                    "cancelled",
-                    "Git operation cancelled. Refreshing repository state.",
-                )
-            })?
+        self.command(args).await
     }
     async fn command(&self, args: &[&str]) -> Result<Output> {
+        if self.cancel.is_cancelled() {
+            return Err(GitError::new("cancelled", "Git operation cancelled."));
+        }
         let mut command = Command::new("git");
+        #[cfg(unix)]
+        command.process_group(0);
         command
             .current_dir(&self.root)
             .args(["--literal-pathspecs", "--no-pager", "-c", "color.ui=false"])
@@ -292,11 +289,21 @@ impl Git {
                 stderr: sanitize(&String::from_utf8_lossy(&errors)),
             })
         };
-        tokio::time::timeout(Duration::from_secs(300), output)
-            .await
-            .map_err(|_| {
-                GitError::new("git", "Git operation timed out. Refresh before retrying.")
-            })?
+        let result = tokio::select! {
+            result = output => return result,
+            _ = self.cancel.cancelled() => GitError::new("cancelled", "Git operation cancelled. Refreshing repository state."),
+            _ = tokio::time::sleep(Duration::from_secs(300)) => GitError::new("git", "Git operation timed out. Refresh before retrying."),
+        };
+        // Reap Git before releasing the lease or inspecting its index. On Unix,
+        // terminate its credential/SSH/hook children as part of the same group.
+        #[cfg(unix)]
+        if let Some(id) = child.id() {
+            unsafe {
+                libc::killpg(id as i32, libc::SIGKILL);
+            }
+        }
+        let _ = child.kill().await;
+        Err(result)
     }
     pub async fn run(&self, args: &[&str]) -> Result<String> {
         let out = self.output(args).await?;
@@ -332,7 +339,11 @@ impl Git {
     pub async fn repository(&self) -> Result<()> {
         let top = self.run(&["rev-parse", "--show-toplevel"]).await?;
         let top = std::fs::canonicalize(top)?;
-        if top != std::fs::canonicalize(&self.root)? || !self.root.join(".git").is_dir() {
+        if top != std::fs::canonicalize(&self.root)?
+            || !self.root.join(".git").is_dir()
+            || std::fs::symlink_metadata(self.root.join(".git"))
+                .is_ok_and(|m| m.file_type().is_symlink())
+        {
             return Err(GitError::new("unsupported", "Use a standalone repository with purr.yaml at its root. Nested projects and linked worktrees are not supported."));
         }
         Ok(())
@@ -355,7 +366,9 @@ impl Git {
                 "This branch or remote belongs to a different workspace.",
             ));
         }
-        crate::transfer::validate_project_files(files, &self.workspace).map_err(|_|GitError::new("invalid-project", "The saved project is invalid or uses an older format. Save/upgrade the workspace and include all required schema, folder and asset files."))
+        crate::transfer::validate_project_files(files, &self.workspace)
+            .and_then(|_| validation::project(files))
+            .map_err(|_|GitError::new("invalid-project", "The saved project is invalid or uses an older format. Save/upgrade the workspace and include all required schema, folder and asset files."))
     }
     pub fn validate_worktree(&self) -> Result<()> {
         self.validate_files(
@@ -387,6 +400,17 @@ impl Git {
                 return Err(GitError::new(
                     "invalid-project",
                     "Canonical resources cannot be symbolic links or submodules.",
+                ));
+            }
+            let size = self
+                .run(&["cat-file", "-s", &oid])
+                .await?
+                .parse::<usize>()
+                .map_err(|_| GitError::new("git", "Invalid Git blob size."))?;
+            if size > 64 * 1024 * 1024 || total + size > 64 * 1024 * 1024 {
+                return Err(GitError::new(
+                    "invalid-project",
+                    "The canonical project exceeds 64 MiB.",
                 ));
             }
             let out = self.output(&["cat-file", "blob", &oid]).await?;

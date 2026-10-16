@@ -686,7 +686,7 @@ pub fn commit_project(
         storage.recover_before_commit()?;
         let store = storage.files(&id)?;
         if !files.is_empty() && storage.local.read_partial(&id)?.0.iter().any(|record| record.table == "workspace_local_state" && ["git-operation", "directory-relocation"].contains(&record.id.as_str())) {
-            return Err("Finish or abort the pending Git operation before saving project files".into());
+            return Err("Finish the pending Git operation or project move before saving project files".into());
         }
         workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
         let protected = !batch.mutations.is_empty()
@@ -1577,13 +1577,16 @@ mod open_directory_tests {
 }
 
 /// Resolve registered roots without holding the SQLite lock during Git/network I/O.
-pub(crate) fn git_context(app:&tauri::AppHandle,id:&str)->Result<(PathBuf,Option<Value>),String>{
+pub(crate) fn git_context(app:&tauri::AppHandle,id:&str,mutation:bool)->Result<(PathBuf,Option<Value>),String>{
     valid_id(id)?;
     access(app,&app.state::<PersistenceState>(),|storage|{
         storage.recover_before_commit()?;
         let root=storage.roots.get(id).cloned().ok_or("The workspace project directory is not registered")?;
+        if fs::symlink_metadata(&root).is_ok_and(|meta|meta.file_type().is_symlink()){return Err("The project directory was replaced by a symbolic link. Restore the original directory.".into());}
         if !root.is_dir(){return Err("The workspace directory is missing. Restore it before continuing.".into());}
-        let checkpoint=storage.local.read_partial(id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="git-operation").map(|r|r.value);
+        let records=storage.local.read_partial(id)?.0;
+        if mutation && records.iter().any(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation"){return Err("Finish or cancel the pending project move before changing its Git repository".into());}
+        let checkpoint=records.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="git-operation").map(|r|r.value);
         Ok((root,checkpoint))
     })
 }
@@ -1624,9 +1627,10 @@ pub fn project_directory(app:tauri::AppHandle,id:String,action:DirectoryAction)-
         DirectoryAction::CancelMove => {
             let record=storage.local.read_partial(&id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation").ok_or("No project move is pending")?;
             let job:super::relocation::Job=serde_json::from_value(record.value).map_err(|_|"Invalid relocation record")?;
-            if storage.roots.get(&id)!=Some(&job.source){return Err("The project is already at its destination. Retry the move to finish cleanup.".into());}
+            let current=storage.roots.get(&id).cloned().ok_or("The workspace directory is unavailable")?;
+            if current!=job.source&&current!=job.target{return Err("The workspace directory changed outside this move".into());}
             storage.local.write(&id,&[relocation_record(Value::Null)])?;
-            Ok(json!({"directory":job.source,"managed":job.source==storage.projects.join(&id)}))
+            Ok(json!({"directory":current,"managed":current==storage.projects.join(&id)}))
         },
         DirectoryAction::Info=>{let directory=storage.files(&id)?.directory;let pending=storage.local.read_partial(&id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation").and_then(|r|r.value["target"].as_str().map(str::to_string));Ok(json!({"directory":directory,"managed":directory==storage.projects.join(&id),"pendingMove":pending}))},
         DirectoryAction::Create{directory,files,local,secrets}=>{
