@@ -1,4 +1,5 @@
 //! System Git boundary. Arguments are never interpreted by a shell.
+pub mod native;
 mod reads;
 mod recovery;
 #[cfg(test)]

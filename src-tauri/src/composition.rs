@@ -64,6 +64,9 @@ impl PurrBuilder {
             ))
             .invoke_handler(crate::security::caller::guard(tauri::generate_handler![
                 commands::app::exit_app,
+                crate::git::native::git_workspace,
+                crate::git::native::git_cancel,
+                crate::git::native::git_clone,
                 commands::transfer::secret_transfer,
                 commands::observability::observability_integrations,
                 commands::observability::observability_validate_config,
@@ -156,6 +159,7 @@ pub fn core_builder() -> PurrBuilder {
         .manage(oauth::OAuthCallbacks::default())
         .manage(crate::security::context::NativeKeyState::default())
         .manage(persistence::PersistenceState::default())
+        .manage(crate::git::native::GitState::default())
         .manage(crate::transfer::TransferState::default())
         .manage(ResponseContentState::default())
         .manage(ContentOperationState::default());

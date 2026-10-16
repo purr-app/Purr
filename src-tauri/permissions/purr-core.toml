@@ -3,6 +3,9 @@ identifier = "purr-core"
 description = "Purr core commands available only to the trusted local main webview."
 commands.allow = [
   "exit_app",
+  "git_workspace",
+  "git_cancel",
+  "git_clone",
   "secret_transfer",
   "observability_integrations",
   "observability_validate_config",

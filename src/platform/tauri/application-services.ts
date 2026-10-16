@@ -1,3 +1,4 @@
+import { tauriGit } from "./git";
 import { nativeSecretTransfer } from "./secret-transfer";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -501,6 +502,7 @@ class TauriResponseContent implements ResponseContentPort {
 export function createTauriPlatformAdapters(): PlatformAdapters {
   const secureStore = new TauriSecureStore();
   return {
+    git: tauriGit,
     observability: tauriObservability,
     persistenceBackend: new TauriPersistence(),
     secureStore,

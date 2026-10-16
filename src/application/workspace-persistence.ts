@@ -255,7 +255,7 @@ export class WorkspacePersistence {
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(raw)));
       const legacySource = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
       if (!workspaces.some((item) => item.id === workspace.id)) { await this.persist(workspace, legacySource); workspaces.push(workspace); }
-      else if (this.snapshots.get(workspace.id)?.local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-source")?.value !== legacySource)
+      else if (this.snapshots.get(workspace.id)?.local.find((record) => record.table === "workspace_local_state" && ["legacy-source", "git-operation", "directory-relocation"].includes(record.id))?.value !== legacySource)
         throw new Error("Legacy data changed after migration started. Both versions are preserved; resolve the legacy change before continuing.");
     }
     if (!workspaces.length) workspaces.push(createWorkspace("Personal", "personal"));
@@ -363,7 +363,7 @@ export class WorkspacePersistence {
       const projection = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history, localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
         sourceRevisions: Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.revision])) });
       const local = projection.local.filter((record) => !this.backend.history || record.table !== "request_executions");
-      const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source").map((record) => [key(record), record]));
+      const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && ["legacy-source", "git-operation", "directory-relocation"].includes(record.id)).map((record) => [key(record), record]));
       for (const record of local) retained.set(key(record), record);
       if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local) if (record.table === "attachments" && !retained.has(key(record))) retained.set(key(record), record);
       const old = new Map(snapshot.local.map((record) => [key(record), record]));
@@ -455,7 +455,7 @@ export class WorkspacePersistence {
     }
     if (changes.some((change) => [...unavailableDocuments].some((id) => change.path === paths.get(id)))) throw new Error("This document has unavailable local state. Retry / Unlock before saving it.");
     const oldLocal = new Map(snapshot.local.map((record) => [key(record), record])); const nextLocal = new Map(local.map((record) => [key(record), record]));
-    for (const record of snapshot.local) if ((record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source") && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
+    for (const record of snapshot.local) if ((record.table === "request_executions" || record.table === "workspace_local_state" && ["legacy-source", "git-operation", "directory-relocation"].includes(record.id)) && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
     // An in-flight request can outlive its source document. Its lazy native
     // upload files must survive until the completed history entry adopts them.
     if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local)

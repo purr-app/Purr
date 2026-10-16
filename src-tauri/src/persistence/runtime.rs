@@ -187,6 +187,9 @@ impl RuntimeStorage {
                                 .roots
                                 .iter()
                                 .filter_map(|(id, root)| {
+                                    if crate::git::native::ensure_idle(&handle, id).is_err() { return None; }
+                                    let relevant_git = rescan || paths.iter().any(|path| path.strip_prefix(root).is_ok_and(|p| { let text = p.to_string_lossy(); !text.starts_with(".git/objects/") && !text.starts_with(".git/logs/") }));
+                                    if relevant_git { let _ = handle.emit("git-state-changed", json!({"workspaceId":id})); }
                                     let relative = project_change_paths(root, &paths, rescan);
                                     if relative.is_empty() {
                                         None
@@ -267,9 +270,15 @@ impl RuntimeStorage {
     }
     fn workspace(&mut self, id: &str) -> Result<Value, String> {
         self.recover()?;
-        let files = self.files(id)?.load()?;
+        let mut files = self.files(id)?.load()?;
         let (local, unavailable) = self.local.read_partial(id)?;
-        let state = if self.local.validate_owner_keys(id).is_ok() {
+        let git_checkpoint = local.iter().find(|record| record.table == "workspace_local_state" && record.id == "git-operation");
+        if let Some(original) = git_checkpoint.and_then(|record| record.value.get("projectFiles")) {
+            files = serde_json::from_value(original.clone()).map_err(|_| "The Git recovery snapshot is unreadable")?;
+        }
+        let state = if git_checkpoint.is_some() {
+            json!({"status":"recovery-required","code":"git-operation-pending"})
+        } else if self.local.validate_owner_keys(id).is_ok() {
             json!({"status":"available"})
         } else {
             json!({"status":"unavailable","code":"protected-storage-unavailable"})
@@ -668,12 +677,16 @@ pub fn commit_project(
     secrets: Option<SecretBatch>,
 ) -> Result<BTreeMap<String, Option<ProjectFile>>, String> {
     valid_id(&id)?;
+    crate::git::native::ensure_idle(&app, &id)?;
     let batch = secrets
         .map(Ok)
         .unwrap_or_else(|| SecretBatch::fresh(vec![]))?;
     access(&app, &state, |storage| {
         storage.recover_before_commit()?;
         let store = storage.files(&id)?;
+        if !files.is_empty() && storage.local.read(&id)?.iter().any(|record| record.table == "workspace_local_state" && record.id == "git-operation") {
+            return Err("Finish or abort the pending Git operation before saving project files".into());
+        }
         workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
         let protected = !batch.mutations.is_empty()
             || local.iter().any(|record| {
@@ -1374,6 +1387,22 @@ mod open_directory_tests {
             .collect()
     }
     #[test]
+    fn git_checkpoint_keeps_conflicted_workspace_open_after_restart() {
+        let data = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        fixture(project.path());
+        let mut runtime = storage(data.path());
+        let (path, id, files) = directory_candidate(data.path(), project.path().to_str().unwrap()).unwrap();
+        runtime.open_directory(path, &id, files.clone(), &revisions(&files)).unwrap();
+        runtime.local.write(&id, &[LocalRecord { table: "workspace_local_state".into(), id: "git-operation".into(), protection: super::super::local_records::RecordProtection::Encrypted,
+            value: json!({"version":1,"kind":"merge","projectFiles":files}) }]).unwrap();
+        fs::write(project.path().join("purr.yaml"), "<<<<<<< HEAD\ninvalid: [\n=======\n>>>>>>> incoming").unwrap();
+        let snapshot = runtime.workspace(&id).unwrap();
+        assert_eq!(snapshot["protectedState"]["code"], "git-operation-pending");
+        assert_eq!(snapshot["files"]["purr.yaml"]["content"], files["purr.yaml"].content);
+        assert!(fs::read_to_string(project.path().join("purr.yaml")).unwrap().contains("<<<<<<<"));
+    }
+    #[test]
     fn portable_directory_open_preserves_identity_and_refs_without_copying_runtime_or_secrets() {
         let data = tempfile::tempdir().unwrap();
         let exported = tempfile::tempdir().unwrap();
@@ -1544,4 +1573,36 @@ mod open_directory_tests {
         assert!(directory_candidate(data.path(), data.path().to_str().unwrap()).is_err());
         assert!(storage.local.workspaces().unwrap().is_empty());
     }
+}
+
+/// Resolve registered roots without holding the SQLite lock during Git/network I/O.
+pub(crate) fn git_context(app:&tauri::AppHandle,id:&str)->Result<(PathBuf,Option<Value>),String>{
+    valid_id(id)?;
+    access(app,&app.state::<PersistenceState>(),|storage|{
+        storage.recover_before_commit()?;
+        let root=storage.roots.get(id).cloned().ok_or("The workspace project directory is not registered")?;
+        if !root.is_dir(){return Err("The workspace directory is missing. Restore it before continuing.".into());}
+        let checkpoint=storage.local.read(id)?.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="git-operation").map(|r|r.value);
+        Ok((root,checkpoint))
+    })
+}
+pub(crate) fn git_journal(app:&tauri::AppHandle,id:&str,value:Option<Value>)->Result<(),String>{
+    access(app,&app.state::<PersistenceState>(),|storage|{
+        storage.recover_before_commit()?;
+        storage.local.write(id,&[LocalRecord{table:"workspace_local_state".into(),id:"git-operation".into(),value:value.unwrap_or(Value::Null),protection:super::local_records::RecordProtection::Encrypted}])
+    })
+}
+pub(crate) fn check_project_destination(app:&tauri::AppHandle,path:&Path)->Result<(),String>{
+    let data=data_directory(app).map_err(|e|e.to_string())?;
+    if path.starts_with(&data)||data.starts_with(path){return Err("Choose a project directory outside Purr's private application storage".into());}
+    access(app,&app.state::<PersistenceState>(),|storage|{
+        if storage.roots.values().any(|root|path.starts_with(root)||root.starts_with(path)){return Err("Choose a directory outside existing workspaces".into());}Ok(())
+    })
+}
+pub(crate) fn check_clone_identity(app:&tauri::AppHandle,id:&str,path:&Path)->Result<(),String>{
+    valid_id(id)?;
+    access(app,&app.state::<PersistenceState>(),|storage|{
+        if storage.local.workspaces()?.iter().any(|(owner,_)|owner==id)||storage.roots.contains_key(id){return Err("This workspace identity is already open. Select the existing workspace instead of cloning another copy.".into());}
+        workspace_cleanup::ensure_available(&storage.local,id,path)
+    })
 }

@@ -15,3 +15,11 @@ Initialization appends missing system/editor ignore rules without replacing user
 Pull uses fetch and merge with explicit policy: fast-forward when possible, merge when histories diverge, never rebase or force push. A target with a different workspace ID or no common ancestor is rejected before changing the worktree. Empty remotes accept the initial push. Branch switching validates the target workspace first. Dirty trees require explicit continuation; Git still refuses overwriting changes.
 
 Before merge, switch or stash application, Purr records an encrypted recovery checkpoint of the original index, dirty files and file fingerprints. A failed or conflicted operation retains the checkpoint. Abort restores only when the entire current post-operation fingerprint still matches, so later external edits are preserved. Stash application retains its stash until successful validation or conflict completion. Git conflict editing uses expected file revisions and validates the entire resolved project before completing the merge.
+
+## Native coordination and restart
+
+Native Git IPC is restricted by the same trusted-main-webview guard as persistence. A per-workspace lease prevents concurrent Git mutations and canonical saves without holding SQLite during network access. Completion emits the normal full project rescan and a separate Git-status invalidation, including on failure. The watcher also invalidates status for external worktree/HEAD/index/ref changes, ignoring object/log churn.
+
+The version-1 `workspace_local_state/git-operation` record is encrypted and owned by the native Git adapter. Normal projection preserves it. While it exists, startup restores the pre-operation canonical snapshot and local working copies in recovery mode; partially merged YAML cannot prevent the workspace opening or be overwritten by autosave. Resolve/finish/abort remain available through Git IPC.
+
+Clone uses a temporary sibling directory, validates the complete project and workspace identity, then publishes into a new or empty destination. A duplicate registered workspace ID is rejected. The selected project is subsequently registered through the existing revision-checked open-directory pipeline.
