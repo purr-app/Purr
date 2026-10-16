@@ -1768,3 +1768,10 @@ mod tests {
         );
     }
 }
+
+impl LocalStateStore {
+    pub(crate) fn relocate_directory(&self,id:&str,source:&std::path::Path,target:&std::path::Path)->Result<(),String>{
+        let changed=self.db.execute("UPDATE workspaces SET directory=?3 WHERE id=?1 AND directory=?2",rusqlite::params![id,source.to_string_lossy(),target.to_string_lossy()]).map_err(db_error)?;
+        if changed!=1{return Err("The workspace directory changed during relocation".into());}Ok(())
+    }
+}

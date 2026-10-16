@@ -1,3 +1,4 @@
+import { ProjectDirectorySettings } from "./project-directory-settings";
 import { SecretTransfer, WorkspaceExport } from "./secret-transfer";
 import { integrationCredentialRef, readIntegrationCredential, stageIntegrationCredential } from "../../../integrations/auth-storage";
 import { RequiredLocalSecrets, type RequiredLocalSecretsProps } from "./required-local-secrets";
@@ -214,6 +215,7 @@ export function WorkspaceSettings({
                 <textarea id="workspace-description" aria-label="Workspace description" className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 font-ui text-ui-md text-content-primary outline-none placeholder:text-content-tertiary"
                   value={description} placeholder="What is this workspace used for?" onChange={(event) => onDescriptionChange(event.target.value)} />
               </div>
+              <ProjectDirectorySettings workspaceId={workspaceId} onBeforeChange={onBeforeSecretTransfer} />
               <WorkspaceExport workspaceId={workspaceId} onBeforeTransfer={onBeforeSecretTransfer} />
               <div className="mt-auto border-t border-border-subtle pt-ui-3">
                 <h2 className="m-ui-0 text-ui-md font-medium text-accent-red">Delete workspace</h2>

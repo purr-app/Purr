@@ -331,3 +331,9 @@ S06 adds no SQLite table, schema upgrade, root-key change or legacy workspace mi
 ### Choosing a new project directory
 
 New workspace creates a canonical project directly in the selected new/empty directory through `project_directory`. The native adapter validates its v2 files and uses the existing revision-checked commit coordinator for files, encrypted editor state, credentials and registry publication. Its default comes from the native profile's `projects/<workspace-id>` directory. The UI never assembles a platform-specific app-data path. Custom directories cannot overlap another workspace or private application storage. Creation never imports or replaces a nonempty directory.
+
+### Moving an existing project
+
+Workspace settings moves the entire project directory, including `.git`, hidden files, empty directories, symlinks and binary assets. The encrypted version-1 `workspace_local_state/directory-relocation` record owns the source, target, staging path and content fingerprints. File copying runs outside the SQLite lock under a per-workspace mutation lease. Publication switches the registry and watcher only after the copy and unchanged source have been verified; original files are removed only while their fingerprints still match. Explicit destinations remain user-owned.
+
+Startup resumes already-verifiable publication/cleanup. An interrupted or externally changed copy stays recoverable through Resume move or Cancel pending move. Cancelling before registry publication keeps the original active and preserves temporary copies. A published project can retry cleanup; externally changed originals are retained. Canonical saves cannot bypass a pending relocation.

@@ -8,7 +8,7 @@ use std::{
 use tauri::{Emitter, Manager};
 #[derive(Default)]
 pub struct GitState(Arc<Mutex<HashMap<String, (String, bool, CancellationToken)>>>);
-struct Lease {
+pub(crate) struct Lease {
     registry: Arc<Mutex<HashMap<String, (String, bool, CancellationToken)>>>,
     id: String,
 }
@@ -20,7 +20,7 @@ impl Drop for Lease {
     }
 }
 impl GitState {
-    fn acquire(
+    pub(crate) fn acquire(
         &self,
         id: &str,
         workspace: &str,
