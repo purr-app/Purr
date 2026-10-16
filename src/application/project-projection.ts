@@ -522,13 +522,17 @@ export async function restoreWorkspace(
       const changed = Boolean(draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)))
         || Boolean(baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation, undefined, options.sourceVersion ?? 2) !== serializeResource(definition, undefined, options.sourceVersion ?? 2));
       if (changed) workspace.editorConflicts![draft.id] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
-      if (isRequestDocument(draft) && isRequestDocument(canonical)) {
+      if (isRequestDocument(draft) && isRequestDocument(canonical) && draft.kind === canonical.kind) {
         workspace.documents[index] = { ...draft, name: canonical.name, savedRequest: canonical.savedRequest, folderId: canonical.folderId };
       } else if (isExtensionDocument(draft) && isExtensionDocument(canonical)) {
         workspace.documents[index] = { ...draft, name: canonical.name, savedConfig: canonical.savedConfig, savedConfigVersion: canonical.savedConfigVersion, folderId: canonical.folderId };
       } else {
-        workspace.editorConflicts![draft.id] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
-        workspace.documents[index] = { ...draft, saved: false };
+        const recoveryId = crypto.randomUUID();
+        workspace.editorConflicts![recoveryId] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
+        delete workspace.editorConflicts![draft.id];
+        workspace.documents.push({ ...draft, id: recoveryId, saved: false, name: `${draft.name} (recovered)` });
+        workspace.ui = { ...workspace.ui, openDocumentIds: workspace.ui.openDocumentIds.map((id) => id === draft.id ? recoveryId : id), activeDocumentId: workspace.ui.activeDocumentId === draft.id ? recoveryId : workspace.ui.activeDocumentId };
+
       }
       if (!isDocumentDirty(workspace.documents[index])) delete workspace.editorConflicts![draft.id];
     }

@@ -72,6 +72,7 @@ export class WorkspacePersistence {
   getGlobalProtectedState() { return this.globalState; }
   private globalVariables: Variable[] = [];
   private deleted = new Set<string>();
+  private externalGenerations = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
   readonly history: RequestHistory | null;
@@ -94,6 +95,12 @@ export class WorkspacePersistence {
     return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
   }
   getProject(id: string) { return this.projects.get(id); }
+  fileOwner(id: string, path: string): { id: string; name: string } | undefined {
+    const project = this.projects.get(id);
+    if (path === "purr.yaml") return project?.workspace;
+    const resourceId = [...this.paths.get(id)?.entries() ?? [], ...this.sdlPaths.get(id)?.entries() ?? []].find(([, value]) => value === path)?.[0];
+    return project?.resources.find((resource) => resource.id === resourceId);
+  }
   /** Native transfer publishes through the same save/history queue. Secret
    * buffers are invalidated even when transport loses the commit response. */
   runSecretTransfer<T>(work: () => Promise<T>): Promise<T> {
@@ -216,6 +223,7 @@ export class WorkspacePersistence {
     } return project;
   }
   async load(): Promise<WorkspaceStore> {
+    this.externalGenerations.clear();
     this.secure.clear();
     const stored = await this.backend.load(); const workspaces: Workspace[] = [];
     this.storageState = stored.protectedState ?? { status: "available" };
@@ -352,6 +360,8 @@ export class WorkspacePersistence {
       && !after.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await secure.delete(variable.secretRef);
   }
   private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure), intent: "automatic" | "explicit" = "automatic") {
+    const generation = this.externalGenerations.get(workspace.id);
+    if (generation && workspace.externalRevision !== generation) throw new Error("The workspace changed externally while this save was queued. Reload before saving; incoming files and local edits are preserved.");
     const attachments = this.backend.attachments ? new AttachmentPreparation(workspace.id, this.backend.attachments,
       new Set(this.snapshots.get(workspace.id)?.local.filter((row) => row.table === "attachments").map((row) => row.id))) : undefined;
     try { await this.persistPrepared(workspace, legacySource, prepared, intent, attachments); attachments?.acknowledge(); }
@@ -575,6 +585,7 @@ export class WorkspacePersistence {
       return JSON.stringify(before) !== JSON.stringify(after);
     }).map((document) => document.id) ?? [];
     workspace.externalRevision = crypto.randomUUID();
+    this.externalGenerations.set(id, workspace.externalRevision);
     if (changedDocumentIds.length || JSON.stringify(baseline?.workspace) !== JSON.stringify(project.workspace)) workspace.dynamicVariableCache = {};
     workspace.documents = workspace.documents.map((document) => changedDocumentIds.includes(document.id) && isRequestDocument(document) ? { ...document, lastResponse: null, sentAt: null } : document);
     if (working?.ui.activeDocumentId && !workspace.documents.some((document) => document.id === working.ui.activeDocumentId)) {
