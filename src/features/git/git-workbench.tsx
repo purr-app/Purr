@@ -9,9 +9,16 @@ import { EditorConflicts } from "./local-editor-conflicts";
 import type { GitCommit, GitFile, GitStash } from "../../application/ports/git";
 import type { GitController } from "./use-git-workspace";
 
-export function GitWorkbench({ controller: c, onResolveEditor }: { controller: GitController; onResolveEditor: (id: string, choice: "incoming" | "local" | "draft") => void }) {
+export function GitWorkbench(props: { controller: GitController; onResolveEditor: (id: string, choice: "incoming" | "local" | "draft") => void }) {
+  const c = props.controller;
+  return <div className="flex h-full min-h-0 flex-col">
+    {c.view !== "overview" && <div className="shrink-0 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-2"><Button variant="ghost" size="sm" onClick={() => c.openView("overview")}><ArrowLeft className="size-ui-4" />Overview</Button></div>}
+    <div className="min-h-0 flex-1"><GitWorkbenchContent {...props} /></div>
+  </div>;
+}
+function GitWorkbenchContent({ controller: c, onResolveEditor }: { controller: GitController; onResolveEditor: (id: string, choice: "incoming" | "local" | "draft") => void }) {
   const [commits, setCommits] = useState<GitCommit[]>([]); const [selectedCommit, setSelectedCommit] = useState<string | null>(null); const [files, setFiles] = useState<GitFile[]>([]);
-  const [stashes, setStashes] = useState<GitStash[]>([]); const [loading, setLoading] = useState(false); const [stashMessage, setStashMessage] = useState("");
+  const [stashes, setStashes] = useState<GitStash[]>([]); const [loading, setLoading] = useState(false);
   const [remoteDialog, setRemoteDialog] = useState<{ name: string; url: string; editing: boolean } | null>(null); const [dropStash, setDropStash] = useState<GitStash | null>(null);
   const id = c.workspace?.id; const s = c.status; const blocked = c.busy || Boolean(s?.operation || s?.recovery);
   useEffect(() => {
@@ -30,7 +37,7 @@ export function GitWorkbench({ controller: c, onResolveEditor }: { controller: G
   }, [id, c.git, selectedCommit]);
   if (c.view === "conflicts") return <GitConflicts controller={c} />;
   if (c.view === "editor-conflicts") return <EditorConflicts workspace={c.workspace!} onResolve={onResolveEditor} />;
-  if (c.view === "diff") return <div className="flex h-full min-h-0 flex-col"><div className="border-b border-border-subtle px-ui-3 py-ui-1"><Button variant="ghost" size="sm" onClick={() => c.openView(c.selected?.scope === "commit" ? "history" : "overview")}><ArrowLeft className="size-ui-4" />{c.selected?.scope === "commit" ? "Back to commits" : "Overview"}</Button></div>{c.diff ? <GitDiffView diff={c.diff} /> : <p className="p-ui-4 text-ui-sm text-content-tertiary">{c.error || "Loading diff…"}</p>}</div>;
+  if (c.view === "diff") return c.diff ? <GitDiffView diff={c.diff} names={Object.fromEntries(c.workspace?.documents.map((document) => [document.id, document.name]) ?? [])} /> : <p className="p-ui-4 text-ui-sm text-content-secondary">{c.error || "Loading diff…"}</p>;
   const title = c.view === "history" ? "Commits" : c.view === "stashes" ? "Stashes" : c.view === "remotes" ? "Remotes" : "Source control";
   const history = <div className="divide-y divide-border-subtle rounded-ui-lg border border-border-subtle">{(c.view === "overview" ? commits.slice(0, 5) : commits).map((commit) => <div key={commit.id}>
     <button type="button" className="ui-focus-ring flex w-full items-start gap-ui-3 rounded-ui-md px-ui-4 py-ui-3 text-left hover:bg-purr-elevated" onClick={() => setSelectedCommit(selectedCommit === commit.id ? null : commit.id)}>
@@ -38,9 +45,9 @@ export function GitWorkbench({ controller: c, onResolveEditor }: { controller: G
     </button>
     {selectedCommit === commit.id && <div className="space-y-ui-1 border-t border-border-subtle bg-purr-surface px-ui-4 py-ui-2">{files.map((file) => <Button key={file.path} variant="ghost" size="sm" className="w-full justify-start font-code text-ui-xs" onClick={() => { void c.selectFile({ path: file.path, oldPath: file.oldPath, scope: "commit", commit: commit.id }); }}><span className="text-action-brand">{file.index}</span><span className="truncate">{file.oldPath ? `${file.oldPath} → ` : ""}{file.path}</span></Button>)}</div>}
   </div>)}</div>;
-  return <div className="h-full min-h-0 overflow-y-auto">
-    <div className="flex items-center gap-ui-3 border-b border-border-subtle px-ui-5 py-ui-3"><GitBranch className="size-ui-5 text-action-brand" /><h2 className="m-ui-0 flex-1 text-ui-lg font-medium">{title}</h2>{c.view !== "overview" && <Button variant="ghost" size="sm" onClick={() => c.openView("overview")}><ArrowLeft className="size-ui-4" />Overview</Button>}</div>
-    <div className="mx-auto max-w-ui-dialog space-y-ui-5 p-ui-5">
+  return <div className="flex h-full min-h-0 flex-col overflow-y-auto">
+    {c.view !== "overview" && <h2 className="m-ui-0 border-b border-border-subtle px-ui-5 py-ui-3 text-ui-lg font-medium">{title}</h2>}
+    <div className={`mx-auto w-full max-w-ui-dialog shrink-0 space-y-ui-5 p-ui-5 ${c.view === "overview" ? "my-auto" : ""}`}>
       {c.error && <p role="alert" className="rounded-ui-md border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-accent-red">{c.error}</p>}
       {!s ? <p className="text-ui-sm text-content-secondary">{c.error || "Reading repository…"}</p> : !s.initialized ? <div className="space-y-ui-4 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-5"><GitBranch className="size-ui-8 text-action-brand" /><h3 className="m-ui-0 text-ui-lg font-medium">Keep your project in Git</h3><p className="text-ui-sm text-content-secondary">Review and share saved requests, environments, schemas and project files. Unsaved editors, history and credential values stay local.</p><p className="break-all font-code text-ui-xs text-content-tertiary">{s.directory}</p><Button variant="brand" disabled={c.busy} onClick={() => { void c.execute({ type: "init" }); }}>Initialize Git</Button></div> : c.view === "overview" ? <>
         <div className="space-y-ui-4 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-4">
@@ -53,8 +60,7 @@ export function GitWorkbench({ controller: c, onResolveEditor }: { controller: G
         {!!Object.keys(c.workspace?.editorConflicts ?? {}).length && <Button variant="secondary" onClick={() => c.openView("editor-conflicts")}>Review local editor conflicts</Button>}
         <div className="flex items-center justify-between"><h3 className="m-ui-0 text-ui-md font-medium">Recent commits</h3><Button variant="ghost" size="sm" onClick={() => c.openView("history")}>View all</Button></div>{commits.length ? history : <p className="text-ui-sm text-content-tertiary">{loading ? "Loading commits…" : "Create your first commit from staged changes."}</p>}
       </> : c.view === "history" ? <>{commits.length ? history : <p className="text-ui-sm text-content-tertiary">{loading ? "Loading commits…" : "No commits yet."}</p>}{commits.length >= 50 && <Button variant="secondary" disabled={loading} onClick={() => { if (!id) return; setLoading(true); void c.git.history(id, commits.length).then((more) => setCommits((current) => [...current, ...more])).catch((cause) => c.setError(String(cause))).finally(() => setLoading(false)); }}>Load more</Button>}</> : c.view === "stashes" ? <>
-        <p className="text-ui-sm text-content-secondary">Stashes contain saved-file changes. Unsaved Purr editors stay local.</p>
-        <form className="flex gap-ui-2" onSubmit={(event) => { event.preventDefault(); void c.execute({ type: "stash", message: stashMessage }).then((result) => { if (result) setStashMessage(""); }); }}><Input className="ui-focus-ring" aria-label="Stash message" placeholder="Stash message (optional)" value={stashMessage} onChange={(event) => setStashMessage(event.target.value)} /><Button type="submit" variant="brand" disabled={blocked || !s.head || !s.files.length}><Archive className="size-ui-4" />Stash changes</Button></form>
+        <p className="text-ui-sm text-content-secondary">Apply a saved stash here. Create stashes from the menu beside Commit.</p>
         {stashes.map((stash) => <div key={stash.id} className="flex items-center gap-ui-3 rounded-ui-lg border border-border-subtle p-ui-3"><Archive className="size-ui-4 shrink-0 text-content-tertiary" /><div className="min-w-0 flex-1"><p className="m-ui-0 truncate text-ui-sm" title={stash.message}>{stash.message}</p><p className="m-ui-0 font-code text-ui-xs text-content-tertiary">{stash.id.slice(0, 7)}</p></div><Button variant="secondary" size="sm" disabled={blocked} onClick={() => { void c.execute({ type: "applyStash", id: stash.id }); }}>Apply</Button><Button variant="ghost" size="icon" disabled={blocked} aria-label={`Drop stash ${stash.message}`} onClick={() => setDropStash(stash)}><Trash2 className="size-ui-4 text-accent-red" /></Button></div>)}{!stashes.length && <p className="text-ui-sm text-content-tertiary">{loading ? "Loading stashes…" : "No stashes."}</p>}
       </> : c.view === "remotes" ? <>
         <div className="flex items-center justify-between"><p className="m-ui-0 text-ui-sm text-content-secondary">HTTPS and SSH use your system Git credentials.</p><Button variant="brand" size="sm" disabled={blocked} onClick={() => setRemoteDialog({ name: "origin", url: "", editing: false })}><Plus className="size-ui-4" />Add remote</Button></div>

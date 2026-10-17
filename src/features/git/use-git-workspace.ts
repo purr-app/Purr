@@ -1,10 +1,11 @@
+import { optimisticIndex, type IndexAction } from "./optimistic-index";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApplicationServices } from "../../app/application-services-context";
 import { GitError, type GitAction, type GitDiff, type GitDiffRequest, type GitStatus } from "../../application/ports/git";
 import type { Workspace } from "../workspaces/model/workspace";
 export type GitView = "overview" | "diff" | "history" | "stashes" | "remotes" | "conflicts" | "editor-conflicts";
 export type GitController = ReturnType<typeof useGitWorkspace>;
-export function useGitWorkspace(workspace: Workspace | undefined, runOperation: <T>(id: string, work: () => Promise<T>) => Promise<T>, onOpen: () => void) {
+export function useGitWorkspace(workspace: Workspace | undefined, runOperation: <T>(id: string, work: () => Promise<T>, options?: { indexOnly?: boolean }) => Promise<T>, onOpen: () => void) {
   const { git, runtime } = useApplicationServices();
   const id = workspace?.id; const activeId = useRef(id); activeId.current = id;
   const [status, setStatus] = useState<GitStatus | null>(null); const [error, setError] = useState("");
@@ -14,14 +15,23 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   const [afterCommit, setAfterCommit] = useState<GitAction | null>(null);
   const abort = useRef(new Map<string, AbortController>()); const requestGeneration = useRef(0);
   const refreshGeneration = useRef(0);
+  const indexQueues = useRef(new Map<string, Promise<unknown>>());
+  const pendingIndex = useRef(new Map<string, IndexAction[]>());
+  const baseStatus = useRef<GitStatus | null>(null);
+  const [indexWorking, setIndexWorking] = useState(false);
+  const publishStatus = useCallback((next: GitStatus, owner: string) => {
+    if (activeId.current !== owner) return;
+    baseStatus.current = next;
+    setStatus((pendingIndex.current.get(owner) ?? []).reduce(optimisticIndex, next));
+  }, []);
   const [networkAction, setNetworkAction] = useState<{ type: "fetch" | "pull" | "push"; remote: string; branch: string } | null>(null);
   const refresh = useCallback(async () => {
-    if (!id || running.current.has(id) || runtime.kind !== "desktop") return;
+    if (!id || (running.current.has(id) || pendingIndex.current.get(id)?.length) || runtime.kind !== "desktop") return;
     const requested = refreshGeneration.current;
-    try { const next = await git.status(id); if (activeId.current === id && requested === refreshGeneration.current && !running.current.has(id)) { setStatus(next); } }
+    try { const next = await git.status(id); if (activeId.current === id && requested === refreshGeneration.current && !running.current.has(id)) { publishStatus(next, id); } }
     catch (cause) { if (activeId.current === id && !(cause instanceof GitError && cause.code === "busy")) setError(cause instanceof Error ? cause.message : String(cause)); }
-  }, [id, git, runtime.kind]);
-  useEffect(() => { setBusy(Boolean(id && running.current.has(id))); setProgress(""); setNetworkAction(null); pendingPush.current = false; setStatus(null); setError(""); setSelected(null); setDiff(null); setView("overview"); setDirtyAction(null); setAfterCommit(null); setAuthorAction(null); void refresh(); }, [id, refresh]);
+  }, [id, git, runtime.kind, publishStatus]);
+  useEffect(() => { setBusy(Boolean(id && running.current.has(id))); setProgress(""); setNetworkAction(null); pendingPush.current = false; setStatus(null); baseStatus.current = null; setIndexWorking(Boolean(id && pendingIndex.current.get(id)?.length)); setError(""); setSelected(null); setDiff(null); setView("overview"); setDirtyAction(null); setAfterCommit(null); setAuthorAction(null); void refresh(); }, [id, refresh]);
   useEffect(() => {
     if (!id || runtime.kind !== "desktop") return;
     let disposed = false; let stop: (() => void) | undefined; let timer: ReturnType<typeof setTimeout> | undefined;
@@ -30,10 +40,34 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   }, [id, runtime.kind, refresh, git]);
   const execute = useCallback(async (action: GitAction): Promise<GitStatus | null> => {
     if (!id || running.current.has(id)) return null;
+    if (action.type === "stage" || action.type === "unstage") {
+      const pending = pendingIndex.current.get(id) ?? [];
+      pending.push(action); pendingIndex.current.set(id, pending);
+      refreshGeneration.current += 1; setIndexWorking(true); setError("");
+      if (baseStatus.current) setStatus(pending.reduce(optimisticIndex, baseStatus.current));
+      const operation = (indexQueues.current.get(id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+        let next: GitStatus | null = null;
+        try { next = await runOperation(id, () => git.execute(id, action), { indexOnly: true }); return next; }
+        catch (cause) { if (activeId.current === id) setError(cause instanceof Error ? cause.message : String(cause));
+          try { next = await git.status(id); } catch { /* Retain the last confirmed index. */ } return null;
+        } finally {
+          const remaining = pendingIndex.current.get(id) ?? [];
+          remaining.splice(remaining.indexOf(action), 1);
+          if (activeId.current === id) {
+            if (next) publishStatus(next, id);
+            else if (baseStatus.current) setStatus(remaining.reduce(optimisticIndex, baseStatus.current));
+            setIndexWorking(remaining.length > 0);
+          }
+        }
+      });
+      indexQueues.current.set(id, operation); return operation;
+    }
+    await indexQueues.current.get(id);
+    if (running.current.has(id)) return null;
     refreshGeneration.current += 1; running.current.add(id); setBusy(true); setError(""); setProgress("Saving local state…"); const controller = new AbortController(); abort.current.set(id, controller);
     try {
       const next = await runOperation(id, () => git.execute(id, action, { signal: controller.signal, onProgress: (message) => { if (activeId.current === id) setProgress(message); } }));
-      if (activeId.current === id) { setStatus(next); setDirtyAction(null); setAuthorAction(null); if (action.type === "finishMerge" || action.type === "abortMerge") setView("overview"); }
+      if (activeId.current === id) { publishStatus(next, id); setDirtyAction(null); setAuthorAction(null); if (action.type === "finishMerge" || action.type === "abortMerge") setView("overview"); }
       return activeId.current === id ? next : null;
     } catch (cause) {
       if (activeId.current === id) {
@@ -44,9 +78,9 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
       return null;
     } finally {
       running.current.delete(id); abort.current.delete(id);
-      if (activeId.current === id) { try { const next = await git.status(id); if (activeId.current === id) setStatus(next); } catch { /* Keep the operation error. */ } if (activeId.current === id) { setBusy(false); setProgress(""); } }
+      if (activeId.current === id) { try { const next = await git.status(id); if (activeId.current === id) publishStatus(next, id); } catch { /* Keep the operation error. */ } if (activeId.current === id) { setBusy(false); setProgress(""); } }
     }
-  }, [id, git, runOperation, onOpen]);
+  }, [id, git, runOperation, onOpen, publishStatus]);
   const selectFile = async (request: GitDiffRequest) => {
     if (!id) return; const generation = ++requestGeneration.current; setSelected(request); setView("diff"); setError(""); setDiff(null); onOpen();
     if (request.scope !== "commit") return;
@@ -54,7 +88,7 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   };
   const openView = (next: GitView) => { setView(next); setError(""); onOpen(); };
   useEffect(() => {
-    if (!id || !status || busy || view !== "diff" || !selected || selected.scope === "commit") return;
+    if (!id || !status || busy || indexWorking || view !== "diff" || !selected || selected.scope === "commit") return;
     const file = status.files.find((file) => file.path === selected.path);
     if (!file) { setView("overview"); return; }
     let request = selected;
@@ -63,7 +97,7 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
     let active = true;
     void git.diff(id, request).then((result) => { if (active) setDiff(result); }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
     return () => { active = false; };
-  }, [id, status, busy, view, selected, git]);
+  }, [id, status, busy, indexWorking, view, selected, git]);
   const network = (type: "fetch" | "pull" | "push") => {
     if (!status) return;
     const upstream = status.upstream?.split("/");
@@ -91,7 +125,7 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   };
   const sync = async () => { if (await execute({ type: "pull" })) await execute({ type: "push" }); };
   const changedFiles = status?.files.length ?? 0;
-  return { status, error, busy, progress, view, diff, selected, dirtyAction, authorAction, changedFiles, git, workspace,
+  return { status, error, busy, indexWorking, progress, view, diff, selected, dirtyAction, authorAction, changedFiles, git, workspace,
     execute, refresh, selectFile, openView, continueAfterCommit, network, networkAction, setNetworkAction, setView, setError, setDirtyAction, setAuthorAction, commit, sync, stashAndContinue,
     commitBeforeContinue: () => { setAfterCommit(dirtyAction); setDirtyAction(null); openView("overview"); },
     afterCommit, cancelAfterCommit: () => setAfterCommit(null),

@@ -64,11 +64,12 @@ export function useWorkspaces() {
     }).then((listener) => { if (disposed) listener(); else unlisten = listener; }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };
   }, [flush, lifecycle]);
-  const runGitOperation = useCallback(async <T,>(id: string, work: () => Promise<T>): Promise<T> => {
+  const runGitOperation = useCallback(async <T,>(id: string, work: () => Promise<T>, options?: { indexOnly?: boolean }): Promise<T> => {
+    if (options?.indexOnly) { await flush(); return persistence.runGitIndex(work); }
     if (gitPending.current) throw new Error("Another Git operation is running.");
     gitPending.current = true; setGitWorking(true);
     try {
-      await flush();
+      if (!persistence.getWorkspaceStatus(id).gitRecovery) await flush();
       return await persistence.runGit(id, () => latest.current?.workspaces.find((workspace) => workspace.id === id), (workspace) => {
         const current = latest.current;
         if (current) { const next = { ...current, workspaces: current.workspaces.map((item) => item.id === id ? workspace : item) }; latest.current = next; setStore(next); }
