@@ -9,13 +9,14 @@ export type GitStatus = {
   lastFetched: number | null; recovery?: boolean;
 };
 export type GitDiffRequest = { path: string; oldPath?: string; scope: "working" | "staged" | "commit"; commit?: string };
-export type GitDiff = { path: string; before: string; after: string; beforeBytes: number; afterBytes: number; binary: boolean; truncated: boolean };
+export type GitDiff = { path: string; before: string; after: string; beforeExists?: boolean; afterExists?: boolean; beforeBytes: number; afterBytes: number; binary: boolean; truncated: boolean };
 export type GitCommit = { id: string; shortId: string; message: string; author: string; timestamp: number };
 export type GitStash = { id: string; message: string };
 export type GitConflict = { path: string; base: string | null; local: string | null; incoming: string | null; binary: boolean; revision: string };
 export type GitAction =
   | { type: "init" }
   | { type: "stage" | "unstage"; paths: string[] }
+  | { type: "discard"; paths: string[] }
   | { type: "commit"; message: string; author?: { name: string; email: string } }
   | { type: "createBranch"; name: string }
   | { type: "switchBranch"; name: string; allowDirty?: boolean }
@@ -37,6 +38,7 @@ export interface GitPort {
   commitFiles(workspaceId: string, commit: string): Promise<GitFile[]>;
   stashes(workspaceId: string): Promise<GitStash[]>;
   conflicts(workspaceId: string): Promise<GitConflict[]>;
+  /** Empty directory selects the native managed Purr projects directory. */
   clone(url: string, directory: string, options?: GitOptions): Promise<string>;
 }
 export type GitErrorCode = "unavailable" | "busy" | "cancelled" | "authentication" | "dirty" | "conflict" | "identity" | "unrelated" | "invalid-project" | "stale" | "author" | "rejected" | "unsupported" | "git";

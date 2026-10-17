@@ -121,6 +121,7 @@ pub async fn git_workspace(
         Query::Status => serde_json::to_value(git.status().await?)
             .map_err(|_| GitError::new("git", "Cannot read Git state.")),
         Query::Execute { action } => {
+            let index_only = matches!(action, Action::Stage { .. } | Action::Unstage { .. });
             let result = git.execute(action).await;
             drop(lease);
             // Consumers rescan through the existing persistence pipeline, also on failure.
@@ -128,10 +129,12 @@ pub async fn git_workspace(
                 "git-state-changed",
                 serde_json::json!({"workspaceId":workspace_id}),
             );
-            let _ = app.emit(
-                "project-files-changed",
-                serde_json::json!([{"id":workspace_id,"paths":["*"]}]),
-            );
+            if !index_only {
+                let _ = app.emit(
+                    "project-files-changed",
+                    serde_json::json!([{"id":workspace_id,"paths":["*"]}]),
+                );
+            }
             result?;
             return serde_json::to_value(git.status().await?)
                 .map_err(|_| GitError::new("git", "Cannot read Git state."));
@@ -170,29 +173,39 @@ pub async fn git_clone(
     on_event: Option<tauri::ipc::JavaScriptChannelId>,
 ) -> Result<String> {
     validate_url(&url)?;
-    let target = PathBuf::from(&directory);
+    let managed = directory.trim().is_empty();
+    let target = if managed {
+        crate::persistence::runtime::default_clone_root(&app)
+            .map_err(GitError::from)?
+            .join("pending-clone")
+    } else {
+        PathBuf::from(&directory)
+    };
     let parent = target.parent().filter(|p| p.is_dir()).ok_or_else(|| {
         GitError::new("git", "Choose a directory with an existing parent folder.")
     })?;
     let parent = std::fs::canonicalize(parent)?;
-    let name = target
-        .file_name()
-        .ok_or_else(|| GitError::new("git", "Choose a project directory."))?;
-    let target = parent.join(name);
-    if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(GitError::new(
-            "git",
-            "The clone directory cannot be a symbolic link.",
-        ));
+    let mut target = parent.join(
+        target
+            .file_name()
+            .ok_or_else(|| GitError::new("git", "Choose a project directory."))?,
+    );
+    if !managed {
+        if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(GitError::new(
+                "git",
+                "The clone directory cannot be a symbolic link.",
+            ));
+        }
+        if target.exists() && (!target.is_dir() || std::fs::read_dir(&target)?.next().is_some()) {
+            return Err(GitError::new(
+                "git",
+                "Clone requires a new or empty directory.",
+            ));
+        }
+        crate::persistence::runtime::check_project_destination(&app, &target)
+            .map_err(GitError::from)?;
     }
-    if target.exists() && (!target.is_dir() || std::fs::read_dir(&target)?.next().is_some()) {
-        return Err(GitError::new(
-            "git",
-            "Clone requires a new or empty directory.",
-        ));
-    }
-    crate::persistence::runtime::check_project_destination(&app, &target)
-        .map_err(GitError::from)?;
     let state = app.state::<GitState>();
     let (_lease, cancel) =
         state.acquire(&operation_id, &format!("clone:{}", target.display()), true)?;
@@ -239,6 +252,18 @@ pub async fn git_clone(
         })?
         .into();
     git.validate_files(&files)?;
+    if managed {
+        // Identity comes from the validated canonical manifest, never a URL.
+        target = parent.join(&git.workspace);
+        if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink())
+            || target.exists() && (!target.is_dir() || std::fs::read_dir(&target)?.next().is_some())
+        {
+            return Err(GitError::new(
+                "identity",
+                "A project with this workspace identity already exists in the Purr directory.",
+            ));
+        }
+    }
     crate::persistence::runtime::check_clone_identity(&app, &git.workspace, &target)
         .map_err(|message| GitError::new("identity", message))?;
     if target.exists() {

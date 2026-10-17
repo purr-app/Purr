@@ -108,9 +108,9 @@ export interface PersistencePort
   inspectDirectory?(directory: string, optional?: boolean): Promise<StoredWorkspace | null>;
   /** Register only if the complete inspected file revision set still matches. */
   openDirectory?(directory: string, expectedRevisions: Record<string, string>): Promise<StoredWorkspace>;
-  directoryInfo?(id: string): Promise<{ directory: string; managed: boolean; pendingMove?: string | null }>;
+  directoryInfo?(id: string): Promise<{ directory: string; managed: boolean; projectsDirectory?: string; pendingMove?: string | null }>;
   createDirectory?(id: string, directory: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch): Promise<StoredWorkspace>;
   cancelMove?(id: string): Promise<void>;
-  moveDirectory?(id: string, directory: string): Promise<{ directory: string; managed: boolean; pendingMove?: string | null }>;
+  moveDirectory?(id: string, directory: string): Promise<{ directory: string; managed: boolean; projectsDirectory?: string; pendingMove?: string | null }>;
   retryProtectedStorage?(): Promise<StorageSnapshot>;
 }

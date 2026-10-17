@@ -565,3 +565,159 @@ async fn switching_never_overwrites_an_ignored_file() {
         "local ignored bytes"
     );
 }
+
+#[tokio::test]
+async fn lists_every_branch_with_an_empty_upstream() {
+    let (_dir, mut git) = repo();
+    git.execute(Action::CreateBranch {
+        name: "test".into(),
+    })
+    .await
+    .unwrap();
+    git.execute(Action::SwitchBranch {
+        name: "test".into(),
+        allow_dirty: false,
+    })
+    .await
+    .unwrap();
+    let status = git.status().await.unwrap();
+    assert_eq!(
+        status
+            .branches
+            .iter()
+            .map(|branch| branch.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["main", "test"]
+    );
+    assert!(
+        status
+            .branches
+            .iter()
+            .find(|branch| branch.name == "test")
+            .unwrap()
+            .current
+    );
+}
+
+#[tokio::test]
+async fn binary_stash_accepts_identical_assets_and_preserves_a_partial_index() {
+    let (_dir, mut git) = repo();
+    std::fs::create_dir(git.root.join("documents")).unwrap();
+    std::fs::create_dir(git.root.join("assets")).unwrap();
+    let asset = "assets/attachment.bin";
+    let bytes = b"\x00binary fixture\xff";
+    std::fs::write(git.root.join(asset), bytes).unwrap();
+    std::fs::write(git.root.join("documents/request.yaml"),
+        "purr: 2\nkind: http\nid: request\nname: Binary\nmethod: POST\nurl: https://example.test\nbody:\n  type: binary\n  file:\n    id: attachment\n    name: fixture.bin\n    mediaType: application/octet-stream\n").unwrap();
+    git.execute(Action::Stage {
+        paths: vec!["documents/request.yaml".into()],
+    })
+    .await
+    .unwrap();
+    git.execute(Action::Stash {
+        message: "Binary".into(),
+    })
+    .await
+    .unwrap();
+    let id = git.stashes().await.unwrap()[0].id.clone();
+    // A previously restored/recreated identical content-addressed asset is safe.
+    std::fs::create_dir_all(git.root.join("assets")).unwrap();
+    std::fs::write(git.root.join(asset), bytes).unwrap();
+    git.execute(Action::ApplyStash { id }).await.unwrap();
+    assert_eq!(std::fs::read(git.root.join(asset)).unwrap(), bytes);
+    assert!(git.stashes().await.unwrap().is_empty());
+    assert_eq!(command(&git.root, &["ls-files", "--", asset]), "");
+    // Older versions left a recovery checkpoint after Git restored these files.
+    git.begin_checkpoint("stash").await.unwrap();
+    git.execute(Action::FinishMerge { message: "".into() })
+        .await
+        .unwrap();
+    assert!(git.checkpoint.is_none());
+}
+
+#[tokio::test]
+async fn stash_refuses_different_untracked_contents_without_mutation() {
+    let (_dir, mut git) = repo();
+    std::fs::write(git.root.join("notes.txt"), "stashed").unwrap();
+    git.execute(Action::Stash {
+        message: "Notes".into(),
+    })
+    .await
+    .unwrap();
+    let id = git.stashes().await.unwrap()[0].id.clone();
+    std::fs::write(git.root.join("notes.txt"), "keep external").unwrap();
+    assert_eq!(
+        git.execute(Action::ApplyStash { id })
+            .await
+            .unwrap_err()
+            .code,
+        "dirty"
+    );
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("notes.txt")).unwrap(),
+        "keep external"
+    );
+    assert!(git.checkpoint.is_none());
+    assert_eq!(git.stashes().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn discard_restores_only_working_changes_and_validates_asset_dependencies() {
+    let (_dir, mut git) = repo();
+    std::fs::write(git.root.join("notes.txt"), "staged").unwrap();
+    git.execute(Action::Stage {
+        paths: vec!["notes.txt".into()],
+    })
+    .await
+    .unwrap();
+    std::fs::write(git.root.join("notes.txt"), "working").unwrap();
+    std::fs::write(git.root.join("new.txt"), "new").unwrap();
+    git.execute(Action::Discard {
+        paths: vec!["notes.txt".into(), "new.txt".into()],
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("notes.txt")).unwrap(),
+        "staged"
+    );
+    assert_eq!(command(&git.root, &["show", ":notes.txt"]), "staged");
+    assert!(!git.root.join("new.txt").exists());
+    assert!(git.checkpoint.is_none());
+    // Discarding the manifest cannot make the saved project unreadable.
+    assert!(git
+        .execute(Action::Discard {
+            paths: vec!["../private".into()]
+        })
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn diff_distinguishes_an_empty_existing_file_from_a_new_file() {
+    let (_dir, git) = repo();
+    std::fs::write(git.root.join("empty.txt"), "").unwrap();
+    command(&git.root, &["add", "empty.txt"]);
+    std::fs::write(git.root.join("empty.txt"), "new content").unwrap();
+    let diff = git
+        .diff(DiffRequest {
+            path: "empty.txt".into(),
+            old_path: None,
+            scope: "working".into(),
+            commit: None,
+        })
+        .await
+        .unwrap();
+    assert!(diff.before_exists && diff.after_exists);
+    assert_eq!(diff.before_bytes, 0);
+    let new = git
+        .diff(DiffRequest {
+            path: "empty.txt".into(),
+            old_path: None,
+            scope: "staged".into(),
+            commit: None,
+        })
+        .await
+        .unwrap();
+    assert!(!new.before_exists && new.after_exists);
+}

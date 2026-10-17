@@ -97,6 +97,8 @@ pub struct Diff {
     pub path: String,
     pub before: String,
     pub after: String,
+    pub before_exists: bool,
+    pub after_exists: bool,
     pub before_bytes: usize,
     pub after_bytes: usize,
     pub binary: bool,
@@ -133,6 +135,9 @@ pub enum Action {
         paths: Vec<String>,
     },
     Unstage {
+        paths: Vec<String>,
+    },
+    Discard {
         paths: Vec<String>,
     },
     Commit {

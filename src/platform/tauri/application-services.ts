@@ -74,7 +74,7 @@ async function confirmedCommit<T>(work: () => Promise<T>, batch: SecretBatch, co
 }
 
 class TauriPersistence implements PersistencePort {
-  directoryInfo(id: string) { return invoke<{ directory: string; managed: boolean; pendingMove?: string | null }>("project_directory", { workspaceId: id, action: { type: "info" } }); }
+  directoryInfo(id: string) { return invoke<{ directory: string; managed: boolean; projectsDirectory?: string; pendingMove?: string | null }>("project_directory", { workspaceId: id, action: { type: "info" } }); }
   async cancelMove(id: string) { await invoke("project_directory", { workspaceId: id, action: { type: "cancelMove" } }); }
   moveDirectory(id: string, directory: string) { return invoke<{ directory: string; managed: boolean }>("project_directory", { workspaceId: id, action: { type: "move", directory } }); }
   async createDirectory(id: string, directory: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch) {

@@ -91,8 +91,9 @@ export class WorkspacePersistence {
     const sourceVersion = this.formats.get(id) ?? 2;
     const protectedState = this.protectedStates.get(id) ?? this.storageState;
     const snapshot = this.snapshots.get(id);
-    const publicWritable = protectedState.status === "available" || protectedState.status !== "recovery-required" && !("code" in protectedState && ["local-record-unreadable", "local-history-unreadable"].includes(protectedState.code)) && snapshot?.unavailableLocal !== undefined && !snapshot.unavailableLocal.some((row) => row.id === "*");
-    return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
+    const gitRecovery = Boolean(snapshot?.local.some((record) => record.table === "workspace_local_state" && record.id === "git-operation" && record.value));
+    const publicWritable = !gitRecovery && (protectedState.status === "available" || protectedState.status !== "recovery-required" && !("code" in protectedState && ["local-record-unreadable", "local-history-unreadable"].includes(protectedState.code)) && snapshot?.unavailableLocal !== undefined && !snapshot.unavailableLocal.some((row) => row.id === "*"));
+    return { gitRecovery, sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
   }
   getProject(id: string) { return this.projects.get(id); }
   fileOwner(id: string, path: string): { id: string; name: string } | undefined {
@@ -111,6 +112,10 @@ export class WorkspacePersistence {
     this.queue = next;
     return next;
   }
+  /** Index mutations share the save queue but do not change canonical files. */
+  runGitIndex<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
   runGit<T>(id: string, current: () => Workspace | undefined, onReload: (workspace: Workspace) => void, work: () => Promise<T>): Promise<T> {
     const next = this.queue.catch(() => {}).then(async () => {
       try { return await work(); }
@@ -120,6 +125,7 @@ export class WorkspacePersistence {
   }
   private assertWritable(id: string) {
     const state = this.getWorkspaceStatus(id).protectedState;
+    if (this.getWorkspaceStatus(id).gitRecovery) throw new Error("Finish or abort the pending Git operation before saving this workspace.");
     if (!this.getWorkspaceStatus(id).publicWritable) throw new Error(`Storage ${state.status}. This workspace is read-only; retry before saving.`);
   }
   private async commitConfirmed<T>(batch: SecretBatch, work: () => Promise<T>, readCommitted: () => Promise<T>): Promise<T> {
@@ -534,14 +540,18 @@ export class WorkspacePersistence {
       const file = scanned ? scanned.files[path] : await this.backend.reloadResource(id, path); if (file?.revision === files[path]?.revision) continue;
       changed = true; if (file) files[path] = file; else delete files[path];
     }
+    const gitPending = (snapshot: StoredWorkspace) => snapshot.local.some((record) => record.table === "workspace_local_state" && record.id === "git-operation" && record.value);
+    const recoveryChanged = Boolean(scanned && Boolean(gitPending(scanned)) !== Boolean(gitPending(previous)));
     const protectedChanged = scanned && JSON.stringify(scanned.protectedState) !== JSON.stringify(previous.protectedState);
-    if (!changed && !protectedChanged) return null;
+    if (!changed && !protectedChanged && !recoveryChanged) return null;
     const snapshot = { ...previous, ...(scanned ? { protectedState: scanned.protectedState, local: scanned.local } : {}), files };
-    if (scanned?.protectedState?.status === "recovery-required" && scanned.protectedState.code === "git-operation-pending") {
-      this.protectedStates.set(id, scanned.protectedState);
-      if (working) return { ...working, protectedState: scanned.protectedState, publicWritable: false };
+    if (gitPending(snapshot)) {
+      // Git recovery keeps a valid canonical baseline and local editors. It does
+      // not change the credential vault's availability.
+      this.snapshots.set(id, { ...snapshot, files: previous.files });
+      if (working) return { ...working, publicWritable: false };
     }
-    if (this.protectedStates.get(id)?.status === "recovery-required" && (this.protectedStates.get(id) as { code?: string }).code === "git-operation-pending") this.protectedStates.set(id, { status: "available" });
+    if (recoveryChanged && !gitPending(snapshot)) this.snapshots.set(id, snapshot);
     let project: Project;
     try { project = this.readProject(snapshot, false); }
     catch (error) { this.protectedStates.set(id, { status: "recovery-required", code: "project-format-unreadable" }); throw error; }
@@ -578,7 +588,7 @@ export class WorkspacePersistence {
       }
       // restoreWorkspace keeps deleted dirty documents as local recovery drafts.
     }
-    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion, transientAttachments });
+    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable || this.getWorkspaceStatus(id).gitRecovery ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion, transientAttachments });
     const changedDocumentIds = working?.documents.filter((document) => {
       const before = baseline?.resources.find((resource) => resource.id === document.id);
       const after = project.resources.find((resource) => resource.id === document.id);
@@ -680,7 +690,7 @@ export class WorkspacePersistence {
       const openedProject = this.readProject(snapshot);
       this.protectedStates.set(snapshot.id, snapshot.protectedState ?? this.storageState);
       this.snapshots.set(snapshot.id, snapshot);
-      const workspace = await restoreWorkspace(openedProject, this.getWorkspaceStatus(snapshot.id).publicWritable ? snapshot.local : [], this.secure,
+      const workspace = await restoreWorkspace(openedProject, this.getWorkspaceStatus(snapshot.id).publicWritable || this.getWorkspaceStatus(snapshot.id).gitRecovery ? snapshot.local : [], this.secure,
         Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id), { hydrateSecrets: false, sourceVersion: this.formats.get(snapshot.id) });
       workspace.projectFormatVersion = this.formats.get(snapshot.id);
       workspace.protectedState = this.getWorkspaceStatus(snapshot.id).protectedState;

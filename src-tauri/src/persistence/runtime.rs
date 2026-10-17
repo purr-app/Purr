@@ -277,9 +277,7 @@ impl RuntimeStorage {
         if let Some(original) = git_checkpoint.and_then(|record| record.value.get("projectFiles")) {
             files = serde_json::from_value(original.clone()).map_err(|_| "The Git recovery snapshot is unreadable")?;
         }
-        let state = if git_checkpoint.is_some() {
-            json!({"status":"recovery-required","code":"git-operation-pending"})
-        } else if self.local.validate_owner_keys(id).is_ok() {
+        let state = if self.local.validate_owner_keys(id).is_ok() {
             json!({"status":"available"})
         } else {
             json!({"status":"unavailable","code":"protected-storage-unavailable"})
@@ -1399,7 +1397,7 @@ mod open_directory_tests {
             value: json!({"version":1,"kind":"merge","projectFiles":files}) }]).unwrap();
         fs::write(project.path().join("purr.yaml"), "<<<<<<< HEAD\ninvalid: [\n=======\n>>>>>>> incoming").unwrap();
         let snapshot = runtime.workspace(&id).unwrap();
-        assert_eq!(snapshot["protectedState"]["code"], "git-operation-pending");
+        assert_eq!(snapshot["protectedState"]["status"], "available");
         assert_eq!(snapshot["files"]["purr.yaml"]["content"], files["purr.yaml"].content);
         assert!(fs::read_to_string(project.path().join("purr.yaml")).unwrap().contains("<<<<<<<"));
     }
@@ -1603,10 +1601,18 @@ pub(crate) fn check_project_destination(app:&tauri::AppHandle,path:&Path)->Resul
         if storage.roots.values().any(|root|path.starts_with(root)||root.starts_with(path)){return Err("Choose a directory outside existing workspaces".into());}Ok(())
     })
 }
+pub(crate) fn default_clone_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    access(app, &app.state::<PersistenceState>(), |storage| {
+        if fs::symlink_metadata(&storage.projects).is_ok_and(|m| m.file_type().is_symlink()) { return Err("The projects directory cannot be a symbolic link".into()); }
+        fs::create_dir_all(&storage.projects).map_err(|_| "Cannot create the projects directory")?;
+        fs::canonicalize(&storage.projects).map_err(|_| "Cannot access the projects directory".into())
+    })
+}
 pub(crate) fn check_clone_identity(app:&tauri::AppHandle,id:&str,path:&Path)->Result<(),String>{
     valid_id(id)?;
     access(app,&app.state::<PersistenceState>(),|storage|{
         if storage.local.workspaces()?.iter().any(|(owner,_)|owner==id)||storage.roots.contains_key(id){return Err("This workspace identity is already open. Select the existing workspace instead of cloning another copy.".into());}
+        if storage.roots.values().any(|root| path.starts_with(root) || root.starts_with(path)) { return Err("Project directories cannot overlap another workspace".into()); }
         workspace_cleanup::ensure_available(&storage.local,id,path)
     })
 }
@@ -1632,7 +1638,7 @@ pub fn project_directory(app:tauri::AppHandle,id:String,action:DirectoryAction)-
             storage.local.write(&id,&[relocation_record(Value::Null)])?;
             Ok(json!({"directory":current,"managed":current==storage.projects.join(&id)}))
         },
-        DirectoryAction::Info=>{let directory=storage.files(&id)?.directory;let pending=storage.local.read_partial(&id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation").and_then(|r|r.value["target"].as_str().map(str::to_string));Ok(json!({"directory":directory,"managed":directory==storage.projects.join(&id),"pendingMove":pending}))},
+        DirectoryAction::Info=>{let directory=storage.files(&id)?.directory;let pending=storage.local.read_partial(&id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation").and_then(|r|r.value["target"].as_str().map(str::to_string));Ok(json!({"directory":directory,"managed":directory==storage.projects.join(&id),"projectsDirectory":storage.projects,"pendingMove":pending}))},
         DirectoryAction::Create{directory,files,local,secrets}=>{
             if storage.roots.contains_key(&id)||storage.local.workspaces()?.iter().any(|(owner,_)|owner==&id){return Err("This workspace already has a project directory".into());}
             let selected=PathBuf::from(directory);

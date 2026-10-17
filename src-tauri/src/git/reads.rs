@@ -62,13 +62,18 @@ impl Git {
         }
         parse_status(&raw.stdout, &mut status)?;
         let branches = self
-            .run(&[
+            .output(&[
                 "for-each-ref",
                 "--format=%(refname)%09%(HEAD)%09%(upstream:short)",
                 "refs/heads",
                 "refs/remotes",
             ])
             .await?;
+        if !branches.success {
+            return Err(classify(&branches.stderr));
+        }
+        // Preserve empty upstream fields, including the final branch record.
+        let branches = String::from_utf8_lossy(&branches.stdout);
         for line in branches.lines() {
             let parts: Vec<_> = line.split('\t').collect();
             if parts.len() < 3 || parts[0].ends_with("/HEAD") {
@@ -113,23 +118,23 @@ impl Git {
             .map(|d| d.as_millis() as u64);
         Ok(status)
     }
-    async fn blob_preview(&self, reference: &str) -> Result<(Vec<u8>, usize)> {
+    async fn blob_preview(&self, reference: &str) -> Result<(Vec<u8>, usize, bool)> {
         let size = self.output(&["cat-file", "-s", reference]).await?;
         if !size.success {
-            return Ok((vec![], 0));
+            return Ok((vec![], 0, false));
         }
         let length = size
             .text()
             .parse::<usize>()
             .map_err(|_| GitError::new("git", "Invalid Git blob size."))?;
         if length > 1024 * 1024 {
-            return Ok((vec![], length));
+            return Ok((vec![], length, true));
         }
         let out = self.output(&["cat-file", "blob", reference]).await?;
         if !out.success {
             return Err(classify(&out.stderr));
         }
-        Ok((out.stdout, length))
+        Ok((out.stdout, length, true))
     }
     pub async fn diff(&self, request: DiffRequest) -> Result<Diff> {
         self.repository().await?;
@@ -144,15 +149,17 @@ impl Git {
                         use std::io::Read;
                         let length = file.metadata()?.len() as usize;
                         if length > 1024 * 1024 {
-                            (vec![], length)
+                            (vec![], length, true)
                         } else {
                             let mut bytes = vec![];
                             file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
                             let actual = bytes.len();
-                            (bytes, actual)
+                            (bytes, actual, true)
                         }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (vec![], 0),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        (vec![], 0, false)
+                    }
                     Err(error) => return Err(error.into()),
                 };
                 (before, after)
@@ -174,7 +181,7 @@ impl Git {
                         self.blob_preview(&format!("{}:{old}", parent.text()))
                             .await?
                     } else {
-                        (vec![], 0)
+                        (vec![], 0, false)
                     },
                     self.blob_preview(&format!("{commit}:{}", request.path))
                         .await?,
@@ -189,6 +196,8 @@ impl Git {
             || std::str::from_utf8(&after.0).is_err();
         Ok(Diff {
             path: request.path,
+            before_exists: before.2,
+            after_exists: after.2,
             before_bytes: before.1,
             after_bytes: after.1,
             before: if binary || truncated {

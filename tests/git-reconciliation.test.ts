@@ -71,3 +71,42 @@ test("a request replaced by an API schema keeps a recoverable editor without reu
   await f.persistence.save(reconciled); assert.equal(deserializeResource(f.snapshot.files[f.path].content, (name) => f.snapshot.files[name].content).kind, "api-schema");
   const reopened = await new WorkspacePersistence(f.backend, f.secure).load(); assert.ok(reopened.workspaces[0].documents.some((document) => document.id === recovered.id));
 });
+
+test("Git recovery preserves local editors and vault availability, then clears even if files did not change", async () => {
+  const f = await fixture();
+  f.document.request.url = "https://example.test/unsaved";
+  await f.persistence.save(f.store);
+  f.snapshot.local.push({ table: "workspace_local_state", id: "git-operation", protection: "encrypted", value: { version: 1, kind: "stash" } });
+  const pending = await f.persistence.reconcileExternalChanges(f.store);
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).gitRecovery, true);
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).publicWritable, false);
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).protectedState.status, "available");
+  assert.equal((pending.workspaces[0].documents[0] as typeof f.document).request.url, "https://example.test/unsaved");
+  f.snapshot.local = f.snapshot.local.filter((record) => record.id !== "git-operation");
+  const restored = await f.persistence.reconcileExternalChanges(pending);
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).gitRecovery, false);
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).publicWritable, true);
+  assert.equal(restored.workspaces[0].publicWritable, true);
+  assert.equal((restored.workspaces[0].documents[0] as typeof f.document).request.url, "https://example.test/unsaved");
+});
+
+test("stash reconciliation does not recreate a removed binary asset and apply restores its bytes", async () => {
+  const f = await fixture(); const baseline = structuredClone(f.snapshot.files);
+  const file = new File([new Uint8Array([0, 255, 13, 10])], "payload.bin", { type: "application/octet-stream" });
+  f.document.request.body.type = "binary"; f.document.request.body.binary = { file, name: file.name, size: file.size, mimeType: file.type };
+  f.document.savedRequest = cloneRequestDraft(f.document.request); await f.persistence.save(f.store);
+  const stashed = structuredClone(f.snapshot.files); const asset = Object.keys(stashed).find((path) => path.startsWith("assets/"))!;
+  assert.ok(asset);
+  f.snapshot.files = baseline;
+  const clean = await f.persistence.reconcileExternalChanges(f.store);
+  await f.persistence.save(clean);
+  assert.equal(f.snapshot.files[asset], undefined);
+  assert.equal((clean.workspaces[0].documents[0] as typeof f.document).request.body.type, "none");
+  f.snapshot.files = stashed;
+  const applied = await f.persistence.reconcileExternalChanges(clean);
+  const restored = applied.workspaces[0].documents[0]; assert.ok(isRequestDocument(restored));
+  assert.equal(restored.request.body.type, "binary");
+  assert.deepEqual(new Uint8Array(await restored.request.body.binary!.file.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).protectedState.status, "available");
+  assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).publicWritable, true);
+});

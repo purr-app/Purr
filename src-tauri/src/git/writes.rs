@@ -2,6 +2,118 @@ use super::*;
 use serde_json::json;
 
 impl Git {
+    /// Restore untracked files separately so an identical existing asset does
+    /// not make Git report a failed apply after restoring the tracked request.
+    async fn restore_stash(&self, id: &str) -> Result<()> {
+        let untracked = self
+            .output(&["rev-parse", "--verify", &format!("{id}^3")])
+            .await?;
+        let mut pending = Vec::new();
+        let mut total = 0usize;
+        let reference = if untracked.success {
+            let listing = self
+                .output(&["ls-tree", "-rz", "--full-tree", &untracked.text()])
+                .await?;
+            if !listing.success {
+                return Err(classify(&listing.stderr));
+            }
+            for (path, oid, mode) in parse_tree(&listing.stdout)? {
+                if !["100644", "100755"].contains(&mode.as_str()) {
+                    return Err(GitError::new(
+                        "unsupported",
+                        "Stashed symbolic links and submodules are not supported.",
+                    ));
+                }
+                let target = self.path(&path)?;
+                let size: usize = self
+                    .run(&["cat-file", "-s", &oid])
+                    .await?
+                    .parse()
+                    .map_err(|_| GitError::new("git", "Invalid stash blob size."))?;
+                total = total.saturating_add(size);
+                if total > 64 * 1024 * 1024 {
+                    return Err(GitError::new(
+                        "git",
+                        "Stashed files exceed the 64 MiB recovery budget.",
+                    ));
+                }
+                let blob = self.output(&["cat-file", "blob", &oid]).await?;
+                if !blob.success {
+                    return Err(classify(&blob.stderr));
+                }
+                match std::fs::read(&target) {
+                    Ok(existing) if existing == blob.stdout => (),
+                    Ok(_) => return Err(GitError::new("dirty", "A stashed file already exists with different contents. Move or save it before applying this stash.")),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => pending.push((path, blob.stdout, mode)),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            let tree = self.run(&["rev-parse", &format!("{id}^{{tree}}")]).await?;
+            // A two-parent stash commit applies only tracked/index changes. It
+            // creates no refs and leaves the original stash intact until success.
+            self.run(&[
+                "-c",
+                "user.name=Purr",
+                "-c",
+                "user.email=purr@localhost",
+                "commit-tree",
+                &tree,
+                "-p",
+                &format!("{id}^1"),
+                "-p",
+                &format!("{id}^2"),
+                "-m",
+                "Restore Purr stash",
+            ])
+            .await?
+        } else {
+            id.to_owned()
+        };
+        let applied = self
+            .output(&["stash", "apply", "--index", &reference])
+            .await?;
+        for (path, bytes, mode) in pending {
+            let target = self.path(&path)?;
+            std::fs::create_dir_all(
+                target
+                    .parent()
+                    .ok_or_else(|| GitError::new("git", "Invalid stash path."))?,
+            )?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target)?;
+            file.write_all(&bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(if mode == "100755" {
+                    0o755
+                } else {
+                    0o644
+                }))?;
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+        }
+        if applied.success {
+            Ok(())
+        } else if self
+            .status()
+            .await?
+            .files
+            .iter()
+            .any(|file| file.conflicted)
+        {
+            Err(GitError::new(
+                "conflict",
+                "Stash has conflicts. The stash is preserved until you finish resolving them.",
+            ))
+        } else {
+            Err(classify(&applied.stderr))
+        }
+    }
     pub async fn execute(&mut self, action: Action) -> Result<()> {
         if matches!(action, Action::Init) {
             self.validate_worktree()?;
@@ -44,7 +156,6 @@ impl Git {
         match action {
             Action::Init => unreachable!(),
             Action::Stage { paths } => {
-                self.validate_worktree()?;
                 self.paths(&paths)?;
                 let mut args = vec!["add", "--all", "--"];
                 args.extend(paths.iter().map(String::as_str));
@@ -59,6 +170,47 @@ impl Git {
                 };
                 args.extend(paths.iter().map(String::as_str));
                 self.run(&args).await?;
+            }
+            Action::Discard { paths } => {
+                self.paths(&paths)?;
+                let tree = self.run(&["write-tree"]).await?;
+                let staged = self.files_at(&tree).await?;
+                let mut candidate = FilesystemWorkspaceStore {
+                    directory: self.root.clone(),
+                }
+                .load()
+                .map_err(GitError::from)?;
+                for path in &paths {
+                    if let Some(file) = staged.get(path) {
+                        candidate.insert(path.clone(), file.clone());
+                    } else {
+                        candidate.remove(path);
+                    }
+                }
+                // Refuse removal of an asset/schema still required by another file.
+                self.validate_files(&candidate)?;
+                self.begin_checkpoint("discard").await?;
+                let result = async {
+                    for path in &paths {
+                        if self
+                            .output(&["ls-files", "--error-unmatch", "--", path])
+                            .await?
+                            .success
+                        {
+                            self.run(&["restore", "--worktree", "--", path]).await?;
+                        } else {
+                            let target = self.path(path)?;
+                            match std::fs::remove_file(target) {
+                                Ok(()) => (),
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                                Err(error) => return Err(error.into()),
+                            }
+                        }
+                    }
+                    self.validate_worktree()
+                }
+                .await;
+                self.complete_checkpoint(result).await?;
             }
             Action::Commit { message, author } => {
                 self.validate_worktree()?;
@@ -250,22 +402,13 @@ impl Git {
                 self.validate_worktree()?;
                 self.stash_ref(&id).await?;
                 self.begin_checkpoint("stash").await?;
-                let out = self.output(&["stash", "apply", "--index", &id]).await;
-                let result = async { match out {
-                    Ok(out) if out.success => {
-                        self.validate_worktree()?;
-                        let reference = self.stash_ref(&id).await?;
-                        self.run(&["stash", "drop", &reference]).await.map(|_| ())
-                    }
-                    Ok(out) => {
-                        if self.status().await?.files.iter().any(|f| f.conflicted) {
-                            Err(GitError::new("conflict","Stash has conflicts. The stash is preserved until you finish resolving them."))
-                        } else {
-                            Err(classify(&out.stderr))
-                        }
-                    }
-                    Err(e) => Err(e),
-                } }.await;
+                let result = async {
+                    self.restore_stash(&id).await?;
+                    self.validate_worktree()?;
+                    let reference = self.stash_ref(&id).await?;
+                    self.run(&["stash", "drop", &reference]).await.map(|_| ())
+                }
+                .await;
                 if let Some(checkpoint) = self.checkpoint.as_mut() {
                     checkpoint["stashId"] = json!(id);
                 }
@@ -348,9 +491,11 @@ impl Git {
                     ));
                 }
                 self.validate_worktree()?;
-                let tree = self.run(&["write-tree"]).await?;
-                self.validate_files(&self.files_at(&tree).await?)?;
                 if status.operation.as_deref() == Some("merge") {
+                    // Only a merge commit needs a complete canonical index. A stash
+                    // intentionally restores staged and unstaged files separately.
+                    let tree = self.run(&["write-tree"]).await?;
+                    self.validate_files(&self.files_at(&tree).await?)?;
                     Self::message(&message)?;
                     self.run(&["commit", "-m", &message]).await?;
                 } else if self.checkpoint.as_ref().and_then(|c| c["kind"].as_str()) == Some("stash")
