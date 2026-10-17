@@ -29,8 +29,9 @@ export type GitAction =
   | { type: "finishMerge"; message: string }
   | { type: "abortMerge" };
 export type GitOptions = { signal?: AbortSignal; onProgress?: (message: string) => void };
+export type GitChange = { stashesChanged?: boolean };
 export interface GitPort {
-  subscribe(workspaceId: string, onChange: () => void): Promise<() => void>;
+  subscribe(workspaceId: string, onChange: (change?: GitChange) => void): Promise<() => void>;
   status(workspaceId: string): Promise<GitStatus>;
   execute(workspaceId: string, action: GitAction, options?: GitOptions): Promise<GitStatus>;
   diff(workspaceId: string, request: GitDiffRequest): Promise<GitDiff>;

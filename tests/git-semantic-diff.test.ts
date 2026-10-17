@@ -67,7 +67,10 @@ test("mirrored query parameter changes appear once, while unmatched URL queries 
   assert.ok(sections.find((section) => section.key === "params")?.changed);
   const unmatched = semanticSections(serializeResource(before), serializeResource({ ...after, params: [] }))!;
   assert.ok(unmatched.find((section) => section.key === "url")?.changed);
-  assert.equal((semanticSections("", serializeResource(after))!.find((section) => section.key === "url")!.rows[0].after as { url: string }).url, after.url);
+  assert.equal((semanticSections("", serializeResource(after))!.find((section) => section.key === "url")!.rows[0].after as { url: string }).url, "https://api.test/users#results");
+  const separated = semanticSections(serializeResource(before), serializeResource({ ...after, url: "https://api.test/users#results" }))!;
+  assert.equal(separated.find((section) => section.key === "url")?.changed, false);
+  assert.equal(separated.find((section) => section.key === "params")?.changed, true);
 });
 
 const header = (id: string, name: string, value: string) => ({ id, name, enabled: true, sensitive: false, value: { kind: "plain" as const, value } });

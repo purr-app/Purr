@@ -188,8 +188,9 @@ impl RuntimeStorage {
                                 .iter()
                                 .filter_map(|(id, root)| {
                                     if crate::git::native::ensure_idle(&handle, id).is_err() { return None; }
-                                    let relevant_git = rescan || paths.iter().any(|path| path.strip_prefix(root).is_ok_and(|p| { let text = p.to_string_lossy(); !text.starts_with(".git/objects/") && !text.starts_with(".git/logs/") }));
-                                    if relevant_git { let _ = handle.emit("git-state-changed", json!({"workspaceId":id})); }
+                                    let stashes_changed = rescan || paths.iter().any(|path| path.strip_prefix(root).is_ok_and(|p| [Path::new(".git/refs/stash"), Path::new(".git/logs/refs/stash"), Path::new(".git/packed-refs")].contains(&p)));
+                                    let relevant_git = stashes_changed || paths.iter().any(|path| path.strip_prefix(root).is_ok_and(|p| { let text = p.to_string_lossy(); !text.starts_with(".git/objects/") && !text.starts_with(".git/logs/") }));
+                                    if relevant_git { let _ = handle.emit("git-state-changed", json!({"workspaceId":id,"stashesChanged":stashes_changed})); }
                                     let relative = project_change_paths(root, &paths, rescan);
                                     if relative.is_empty() {
                                         None

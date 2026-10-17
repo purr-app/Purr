@@ -6,7 +6,7 @@ import { Modal } from "../../shared/components/ui/modal";
 import { GitDiffView } from "./git-diff";
 import { GitConflicts } from "./git-conflicts";
 import { EditorConflicts } from "./local-editor-conflicts";
-import { GitError, type GitCommit, type GitFile, type GitStash } from "../../application/ports/git";
+import { type GitFile, type GitStash } from "../../application/ports/git";
 import type { GitController } from "./use-git-workspace";
 
 const purrIcon = new URL("../../assets/purr.svg", import.meta.url).href;
@@ -19,21 +19,13 @@ export function GitWorkbench(props: { controller: GitController; onResolveEditor
   </div>;
 }
 function GitWorkbenchContent({ controller: c, onResolveEditor }: { controller: GitController; onResolveEditor: (id: string, choice: "incoming" | "local" | "draft") => void }) {
-  const [commitList, setCommitList] = useState<{ scope: string; items: GitCommit[] }>({ scope: "", items: [] }); const [selectedCommit, setSelectedCommit] = useState<string | null>(null); const [files, setFiles] = useState<GitFile[]>([]);
-  const [stashes, setStashes] = useState<GitStash[]>([]); const [loading, setLoading] = useState(false);
+  const [selectedCommit, setSelectedCommit] = useState<string | null>(null); const [files, setFiles] = useState<GitFile[]>([]);
+  const { history: historyList, stashes: stashList, loadingMore, loadMore } = c.lists;
+  const commits = historyList.items, stashes = stashList.items;
   const [remoteDialog, setRemoteDialog] = useState<{ name: string; url: string; editing: boolean } | null>(null); const [dropStash, setDropStash] = useState<GitStash | null>(null);
   const id = c.workspace?.id; const s = c.status; const blocked = c.busy || Boolean(s?.operation || s?.recovery);
   const historyScope = `${id}:${s?.branch}:${s?.head}`;
-  const commits = commitList.scope === historyScope ? commitList.items : [];
-  const stashStatus = c.view === "stashes" ? c.status : undefined;
   useEffect(() => { setSelectedCommit(null); setFiles([]); }, [historyScope]);
-  useEffect(() => {
-    if (!id || !s?.initialized || !["overview", "history", "stashes"].includes(c.view)) return;
-    let active = true; setLoading(true);
-    const work = c.view === "stashes" ? c.git.stashes(id).then((items) => { if (active) setStashes(items); }) : c.git.history(id).then((items) => { if (active) setCommitList({ scope: historyScope, items }); });
-    void work.catch((cause) => { if (active && !(cause instanceof GitError && cause.code === "busy")) c.setError(cause instanceof Error ? cause.message : String(cause)); }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [id, c.git, c.view, historyScope, s?.initialized, stashStatus, c.busy]);
   useEffect(() => {
     setFiles([]);
     if (!id || !selectedCommit) return;
@@ -71,10 +63,10 @@ function GitWorkbenchContent({ controller: c, onResolveEditor }: { controller: G
           <div className="space-y-ui-1 p-ui-4"><p className="m-ui-0 text-ui-sm text-content-primary">{s.files.length ? `${s.files.length} changed ${s.files.length === 1 ? "file" : "files"}` : "Working tree clean"}</p>{!!s.files.length && <p className="m-ui-0 text-ui-xs text-content-secondary">{s.files.filter((file) => file.index !== "." && file.index !== "?" && !file.conflicted).length} staged · Select a file to review its changes.</p>}</div>
         </div>
         {!!Object.keys(c.workspace?.editorConflicts ?? {}).length && <Button variant="secondary" onClick={() => c.openView("editor-conflicts")}>Review local editor conflicts</Button>}
-        <div className="flex items-center justify-between"><h3 className="m-ui-0 text-ui-md font-medium">Recent commits</h3><Button variant="ghost" size="sm" onClick={() => c.openView("history")}>View all</Button></div>{commits.length ? history : <p className="text-ui-sm text-content-tertiary">{loading ? "Loading commits…" : "Create your first commit from staged changes."}</p>}
-      </> : c.view === "history" ? <>{commits.length ? history : <p className="text-ui-sm text-content-tertiary">{loading ? "Loading commits…" : "No commits yet."}</p>}{commits.length >= 50 && <Button variant="secondary" disabled={loading} onClick={() => { if (!id) return; setLoading(true); void c.git.history(id, commits.length).then((more) => setCommitList((current) => current.scope === historyScope ? { ...current, items: [...current.items, ...more] } : current)).catch((cause) => c.setError(String(cause))).finally(() => setLoading(false)); }}>Load more</Button>}</> : c.view === "stashes" ? <>
+        <div className="flex items-center justify-between"><h3 className="m-ui-0 text-ui-md font-medium">Recent commits</h3><Button variant="ghost" size="sm" onClick={() => c.openView("history")}>View all</Button></div>{commits.length ? history : <p className="text-ui-sm text-content-tertiary">{historyList.loading ? "Loading commits…" : historyList.failed ? "Commits unavailable." : "Create your first commit from staged changes."}</p>}
+      </> : c.view === "history" ? <>{commits.length ? history : <p className="text-ui-sm text-content-tertiary">{historyList.loading ? "Loading commits…" : historyList.failed ? "Commits unavailable." : "No commits yet."}</p>}{commits.length >= 50 && <Button variant="secondary" disabled={loadingMore} onClick={() => { void loadMore(); }}>Load more</Button>}</> : c.view === "stashes" ? <>
         <p className="text-ui-sm text-content-secondary">Apply a saved stash here. Create stashes from the menu beside Commit.</p>
-        {stashes.map((stash) => <div key={stash.id} className="flex items-center gap-ui-3 rounded-ui-lg border border-border-subtle p-ui-3"><Archive className="size-ui-4 shrink-0 text-content-tertiary" /><div className="min-w-0 flex-1"><p className="m-ui-0 truncate text-ui-sm" title={stash.message}>{stash.message}</p><p className="m-ui-0 font-code text-ui-xs text-content-secondary">{stash.id.slice(0, 7)}</p></div><Button variant="secondary" size="sm" disabled={blocked} onClick={() => { void c.execute({ type: "applyStash", id: stash.id }); }}>Apply</Button><Button variant="ghost" size="icon" disabled={blocked} aria-label={`Drop stash ${stash.message}`} onClick={() => setDropStash(stash)}><Trash2 className="size-ui-4 text-accent-red" /></Button></div>)}{!stashes.length && <p className="text-ui-sm text-content-tertiary">{loading ? "Loading stashes…" : "No stashes."}</p>}
+        {stashes.map((stash) => <div key={stash.id} className="flex items-center gap-ui-3 rounded-ui-lg border border-border-subtle p-ui-3"><Archive className="size-ui-4 shrink-0 text-content-tertiary" /><div className="min-w-0 flex-1"><p className="m-ui-0 truncate text-ui-sm" title={stash.message}>{stash.message}</p><p className="m-ui-0 font-code text-ui-xs text-content-secondary">{stash.id.slice(0, 7)}</p></div><Button variant="secondary" size="sm" disabled={blocked} onClick={() => { void c.execute({ type: "applyStash", id: stash.id }); }}>Apply</Button><Button variant="ghost" size="icon" disabled={blocked} aria-label={`Drop stash ${stash.message}`} onClick={() => setDropStash(stash)}><Trash2 className="size-ui-4 text-accent-red" /></Button></div>)}{!stashes.length && <p className="text-ui-sm text-content-tertiary">{stashList.loading ? "Loading stashes…" : stashList.failed ? "Stashes unavailable." : "No stashes."}</p>}
       </> : c.view === "remotes" ? <>
         <div className="flex items-center justify-between"><p className="m-ui-0 text-ui-sm text-content-secondary">HTTPS and SSH use your system Git credentials.</p><Button variant="brand" size="sm" disabled={blocked} onClick={() => setRemoteDialog({ name: "origin", url: "", editing: false })}><Plus className="size-ui-4" />Add remote</Button></div>
         {s.remotes.map((remote) => <div key={remote.name} className="flex items-center gap-ui-3 rounded-ui-lg border border-border-subtle p-ui-3"><Network className="size-ui-4 shrink-0 text-content-secondary" /><div className="min-w-0 flex-1"><p className="m-ui-0 font-code text-ui-sm">{remote.name}</p><p className="m-ui-0 break-all font-code text-ui-xs text-content-secondary">{remote.url}</p></div><Button variant="ghost" size="icon" disabled={blocked} aria-label={`Edit remote ${remote.name}`} onClick={() => setRemoteDialog({ ...remote, editing: true })}><Pencil className="size-ui-4" /></Button><Button variant="ghost" size="icon" disabled={blocked} aria-label={`Remove remote ${remote.name}`} onClick={() => { void c.execute({ type: "removeRemote", name: remote.name }); }}><Trash2 className="size-ui-4 text-accent-red" /></Button></div>)}{!s.remotes.length && <p className="text-ui-sm text-content-tertiary">Connect an empty remote for a new workspace, or a repository with the same workspace ID and shared history.</p>}

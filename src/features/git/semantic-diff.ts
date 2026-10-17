@@ -98,8 +98,10 @@ export function semanticSections(beforeText: string, afterText: string): Semanti
     const params = (Array.isArray(value.params) ? value.params : []).filter((item) => object(item) && item.enabled !== false).map((item) => [item.name, item.value]);
     return stableValue([...new URLSearchParams(query).entries()]) === stableValue(params);
   };
-  // The editor mirrors enabled query rows into URL. Show that change once.
-  const omitQuery = Boolean(beforeText.trim() && afterText.trim() && mirroredQuery(before) && mirroredQuery(after));
+  // Older files mirrored enabled rows into URL. Compare each endpoint without
+  // its mirrored query, including comparisons against the separated encoding.
+  const representedQuery = (value: ObjectValue) => !String(value.url ?? "").split("#", 1)[0].includes("?") || mirroredQuery(value);
+  const omitQuery = representedQuery(before) && representedQuery(after);
   const endpoint = (value: ObjectValue) => "url" in value ? { method: value.method, url: omitQuery ? String(value.url).replace(/\?[^#]*(?=#|$)/, "") : value.url } : undefined;
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((key) => !["id", "pinnedSdl", "document", "purr", ...("url" in before || "url" in after ? ["method"] : [])].includes(key));
   const infoKeys = new Set(["kind", "name", "description", "folderId", "scope", "origin", "format", "extensionType", "configVersion", "provider", "enabled"]);

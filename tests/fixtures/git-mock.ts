@@ -6,7 +6,7 @@ import { MemorySecureStore } from "../../src/storage/secrets";
 import { serializeManifest, serializeResource } from "../../src/storage/yaml";
 import { installPersistenceMock } from "../ui/persistence-mock";
 
-export async function installGitMock(page: Page, options: { initialized?: boolean; cloneError?: boolean; conflicts?: boolean; editorConflict?: boolean; noTabs?: boolean; stageDelayMs?: number; stageError?: boolean; newFile?: boolean; recovery?: boolean; preview?: SemanticPreview; branchStash?: boolean; reloadDelayMs?: number; stashConcurrentChange?: boolean } = {}) {
+export async function installGitMock(page: Page, options: { initialized?: boolean; cloneError?: boolean; conflicts?: boolean; editorConflict?: boolean; noTabs?: boolean; stageDelayMs?: number; stageError?: boolean; newFile?: boolean; recovery?: boolean; preview?: SemanticPreview; branchStash?: boolean; reloadDelayMs?: number; stashConcurrentChange?: boolean; listDelayMs?: number; holdHistory?: boolean } = {}) {
   const workspace = createWorkspace("API project", "git-fixture"); const document = workspace.documents[0];
   if (!isRequestDocument(document)) throw new Error("Expected request fixture");
   document.id = "get-user"; document.name = "Get user"; document.saved = true; document.request.url = "https://api.example.test/users/123";
@@ -31,9 +31,11 @@ export async function installGitMock(page: Page, options: { initialized?: boolea
   await page.addInitScript(({ files, local, before, after, options }) => {
     const state = window as any; state.isTauri = true; state.__gitCalls = [];
     state.__purrProjectLoadDelayMs = options.reloadDelayMs;
+    state.__gitListDelayMs = options.listDelayMs;
+    state.__gitHoldNextHistory = options.holdHistory;
     const now = Date.now(); const initial = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const snapshot = { activeWorkspaceId: "git-fixture", workspaces: [{ id: "git-fixture", files, local }] };
-    localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot));
+    if (!localStorage.getItem("purr-native-persistence-test")) localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot));
     state.__gitStatus = { directory: "/projects/api", initialized: options.initialized !== false, version: "git version 2.50.1", branch: "main", head: initial, upstream: "origin/main", ahead: 1, behind: 2,
       files: [{ path: options.preview?.path ?? "documents/get-user.yaml", index: options.newFile ? "?" : ".", worktree: "M", conflicted: false }], branches: [{ name: "main", remote: false, current: true }, { name: "feature/team", remote: false, current: false }, { name: "origin/main", remote: true, current: false }], remotes: [{ name: "origin", url: "git@example.test:team/api.git" }], operation: null, lastFetched: now, recovery: Boolean(options.recovery) };
     state.__gitHistory = [{ id: initial, shortId: "aaaaaaa", message: "Add user endpoint", author: "Purr fixture", timestamp: now }]; state.__gitStashes = [];
@@ -58,9 +60,15 @@ export async function installGitMock(page: Page, options: { initialized?: boolea
       if (command !== "git_workspace") return;
       const query = args.query; const s = state.__gitStatus;
       if (query.type === "status") { syncFiles(); return structuredClone(s); }
-      if (query.type === "history") return state.__gitHistory;
+      if (query.type === "history" || query.type === "stashes") {
+        if (state.__gitListBusy === query.type) { state.__gitListBusy = undefined; throw { code: "busy", message: "Repository is busy" }; }
+        const items = structuredClone(query.type === "history" ? state.__gitHistory : state.__gitStashes);
+        if (query.type === "history" && state.__gitHoldNextHistory) { state.__gitHoldNextHistory = false; await new Promise((resolve) => { state.__gitReleaseHistory = resolve; }); }
+        if (state.__gitListDelayMs) await new Promise((resolve) => setTimeout(resolve, state.__gitListDelayMs));
+        state.__gitListResponses ??= []; state.__gitListResponses.push({ type: query.type, items });
+        return items;
+      }
       if (query.type === "commitFiles") return [{ path: "documents/get-user.yaml", index: "M", worktree: ".", conflicted: false }];
-      if (query.type === "stashes") return state.__gitStashes;
       if (query.type === "conflicts") return s.files.filter((file: any) => file.conflicted).map((file: any) => ({ path: file.path, base: before, local: after, incoming: after.replace("/123", "/incoming"), binary: false, revision: "conflict-revision" }));
       if (query.type === "diff") {
         const left = options.preview?.before ?? (options.newFile ? "" : before), right = options.preview?.after ?? after;

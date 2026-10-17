@@ -17,7 +17,7 @@ async function call<T>(command: string, args: Record<string, unknown>, options?:
 }
 const query = <T>(workspaceId: string, query: Record<string, unknown>, options?: GitOptions) => call<T>("git_workspace", { workspaceId, query }, options);
 export const tauriGit: GitPort = {
-  subscribe: (id, onChange) => listen<{ workspaceId: string }>("git-state-changed", ({ payload }) => { if (payload.workspaceId === id) onChange(); }),
+  subscribe: (id, onChange) => listen<{ workspaceId: string; stashesChanged?: boolean }>("git-state-changed", ({ payload }) => { if (payload.workspaceId === id) onChange({ stashesChanged: payload.stashesChanged }); }),
   status: (id) => query(id, { type: "status" }),
   execute: (id, action, options) => query(id, { type: "execute", action }, options),
   diff: (id, request) => query(id, { type: "diff", request }),

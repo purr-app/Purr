@@ -407,7 +407,7 @@ export class WorkspacePersistence {
     const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     for (const variable of previousVariables) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retainedRefs.has(variable.secretRef)
       && !currentVariables.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await prepared.delete(variable.secretRef);
-    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables }); validateProject(project);
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables, canonicalBaseline: upgrading ? undefined : previous }); validateProject(project);
     const refs = (value: unknown, found = new Set<string>()): Set<string> => {
       if (Array.isArray(value)) for (const child of value) refs(child, found);
       else if (value && typeof value === "object") {
@@ -565,7 +565,7 @@ export class WorkspacePersistence {
     const prepared = new SecretPreparationStore(this.secure);
     const transientAttachments = new TransientAttachments();
     const projected = working && this.getWorkspaceStatus(id).protectedState.status === "available" ? await projectWorkspace(working, prepared,
-      { transientAttachments, includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) }) : undefined;
+      { transientAttachments, includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : { canonicalBaseline: this.projects.get(id) }) }) : undefined;
     const local = projected?.local ?? previous.local;
     const baseline = this.projects.get(id);
     const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
