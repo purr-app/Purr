@@ -372,9 +372,9 @@ fn parse_status(bytes: &[u8], status: &mut Status) -> Result<()> {
                 status.ahead = p[0].trim_start_matches('+').parse().unwrap_or(0);
                 status.behind = p[1].trim_start_matches('-').parse().unwrap_or(0);
             }
-        } else if text.starts_with("? ") {
+        } else if let Some(path) = text.strip_prefix("? ") {
             status.files.push(FileStatus {
-                path: text[2..].into(),
+                path: path.into(),
                 old_path: None,
                 index: "?".into(),
                 worktree: "?".into(),

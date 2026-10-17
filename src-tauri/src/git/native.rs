@@ -6,10 +6,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tauri::{Emitter, Manager};
+type OperationRegistry = Arc<Mutex<HashMap<String, (String, bool, CancellationToken)>>>;
 #[derive(Default)]
-pub struct GitState(Arc<Mutex<HashMap<String, (String, bool, CancellationToken)>>>);
+pub struct GitState(OperationRegistry);
 pub(crate) struct Lease {
-    registry: Arc<Mutex<HashMap<String, (String, bool, CancellationToken)>>>,
+    registry: OperationRegistry,
     id: String,
 }
 impl Drop for Lease {
@@ -122,7 +123,13 @@ pub async fn git_workspace(
             .map_err(|_| GitError::new("git", "Cannot read Git state.")),
         Query::Execute { action } => {
             let index_only = matches!(action, Action::Stage { .. } | Action::Unstage { .. });
-            let stashes_changed = matches!(action, Action::Stash { .. } | Action::ApplyStash { .. } | Action::DropStash { .. } | Action::FinishMerge { .. });
+            let stashes_changed = matches!(
+                action,
+                Action::Stash { .. }
+                    | Action::ApplyStash { .. }
+                    | Action::DropStash { .. }
+                    | Action::FinishMerge { .. }
+            );
             let result = git.execute(action).await;
             drop(lease);
             // Consumers rescan through the existing persistence pipeline, also on failure.

@@ -313,17 +313,46 @@ async fn stash_then_switch_keeps_new_schema_and_request_changes_in_one_stash() {
     let sdl = "type Query { hello: String }";
     std::fs::write(git.root.join("schemas/schema.yaml"), definition).unwrap();
     std::fs::write(git.root.join("schemas/schema.graphql"), sdl).unwrap();
-    git.execute(Action::Stash { message: "Before switch".into() }).await.unwrap();
-    assert!(git.status().await.unwrap().files.is_empty(), "{}", command(&git.root, &["status", "--porcelain=v2", "--untracked-files=all"]));
-    git.execute(Action::SwitchBranch { name: "test".into(), allow_dirty: false }).await.unwrap();
+    git.execute(Action::Stash {
+        message: "Before switch".into(),
+    })
+    .await
+    .unwrap();
+    assert!(
+        git.status().await.unwrap().files.is_empty(),
+        "{}",
+        command(
+            &git.root,
+            &["status", "--porcelain=v2", "--untracked-files=all"]
+        )
+    );
+    git.execute(Action::SwitchBranch {
+        name: "test".into(),
+        allow_dirty: false,
+    })
+    .await
+    .unwrap();
     let stashes = git.stashes().await.unwrap();
     assert_eq!(stashes.len(), 1);
     assert!(!git.root.join("schemas/schema.yaml").exists());
     assert!(!git.root.join("schemas/schema.graphql").exists());
-    git.execute(Action::ApplyStash { id: stashes[0].id.clone() }).await.unwrap();
-    assert_eq!(std::fs::read_to_string(git.root.join("documents/request.yaml")).unwrap(), after);
-    assert_eq!(std::fs::read_to_string(git.root.join("schemas/schema.yaml")).unwrap(), definition);
-    assert_eq!(std::fs::read_to_string(git.root.join("schemas/schema.graphql")).unwrap(), sdl);
+    git.execute(Action::ApplyStash {
+        id: stashes[0].id.clone(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("documents/request.yaml")).unwrap(),
+        after
+    );
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("schemas/schema.yaml")).unwrap(),
+        definition
+    );
+    assert_eq!(
+        std::fs::read_to_string(git.root.join("schemas/schema.graphql")).unwrap(),
+        sdl
+    );
     assert!(git.stashes().await.unwrap().is_empty());
 }
 #[tokio::test]

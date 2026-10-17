@@ -264,14 +264,13 @@ fn variables(
                         return Err(invalid());
                     }
                 }
-                if value["environment"]["type"] == "specific" {
-                    if !value["environment"]["environmentId"]
+                if value["environment"]["type"] == "specific"
+                    && !value["environment"]["environmentId"]
                         .as_str()
                         .and_then(|id| resources.get(id))
                         .is_some_and(|v| v["kind"] == "environment")
-                    {
-                        return Err(invalid());
-                    }
+                {
+                    return Err(invalid());
                 }
                 if value["refresh"] == "cache" && value.get("cacheTtlSeconds").is_none() {
                     return Err(invalid());

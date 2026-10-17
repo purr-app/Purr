@@ -199,13 +199,14 @@ pub struct Author {
     pub email: String,
 }
 
+type JournalWriter =
+    Box<dyn Fn(Option<serde_json::Value>) -> std::result::Result<(), String> + Send + Sync>;
+
 pub struct Git {
     pub root: PathBuf,
     pub workspace: String,
     pub cancel: CancellationToken,
-    pub journal: Option<
-        Box<dyn Fn(Option<serde_json::Value>) -> std::result::Result<(), String> + Send + Sync>,
-    >,
+    pub journal: Option<JournalWriter>,
     pub checkpoint: Option<serde_json::Value>,
 }
 pub struct Output {

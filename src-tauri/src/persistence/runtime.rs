@@ -274,9 +274,12 @@ impl RuntimeStorage {
         self.recover()?;
         let mut files = self.files(id)?.load()?;
         let (local, unavailable) = self.local.read_partial(id)?;
-        let git_checkpoint = local.iter().find(|record| record.table == "workspace_local_state" && record.id == "git-operation");
+        let git_checkpoint = local
+            .iter()
+            .find(|record| record.table == "workspace_local_state" && record.id == "git-operation");
         if let Some(original) = git_checkpoint.and_then(|record| record.value.get("projectFiles")) {
-            files = serde_json::from_value(original.clone()).map_err(|_| "The Git recovery snapshot is unreadable")?;
+            files = serde_json::from_value(original.clone())
+                .map_err(|_| "The Git recovery snapshot is unreadable")?;
         }
         let state = if self.local.validate_owner_keys(id).is_ok() {
             json!({"status":"available"})
@@ -684,8 +687,16 @@ pub fn commit_project(
     access(&app, &state, |storage| {
         storage.recover_before_commit()?;
         let store = storage.files(&id)?;
-        if !files.is_empty() && storage.local.read_partial(&id)?.0.iter().any(|record| record.table == "workspace_local_state" && ["git-operation", "directory-relocation"].contains(&record.id.as_str())) {
-            return Err("Finish the pending Git operation or project move before saving project files".into());
+        if !files.is_empty()
+            && storage.local.read_partial(&id)?.0.iter().any(|record| {
+                record.table == "workspace_local_state"
+                    && ["git-operation", "directory-relocation"].contains(&record.id.as_str())
+            })
+        {
+            return Err(
+                "Finish the pending Git operation or project move before saving project files"
+                    .into(),
+            );
         }
         workspace_cleanup::ensure_available(&storage.local, &id, &store.directory)?;
         let protected = !batch.mutations.is_empty()
@@ -987,7 +998,10 @@ fn directory_candidate(
         .ok_or("Choose a Purr workspace folder or its purr.yaml file")?;
     let data = fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
     let managed_parent = data.join("projects");
-    if !path.is_dir() || data.starts_with(&path) || path.starts_with(&data) && path.parent() != Some(managed_parent.as_path()) {
+    if !path.is_dir()
+        || data.starts_with(&path)
+        || path.starts_with(&data) && path.parent() != Some(managed_parent.as_path())
+    {
         return Err("Choose a workspace folder outside Purr's private application storage".into());
     }
     let store = FilesystemWorkspaceStore {
@@ -1396,8 +1410,11 @@ mod open_directory_tests {
         let project = data.path().join("projects/portable");
         fixture(&project);
         let mut runtime = storage(data.path());
-        let (path, id, files) = directory_candidate(data.path(), project.to_str().unwrap()).unwrap();
-        let opened = runtime.open_directory(path.clone(), &id, files.clone(), &revisions(&files)).unwrap();
+        let (path, id, files) =
+            directory_candidate(data.path(), project.to_str().unwrap()).unwrap();
+        let opened = runtime
+            .open_directory(path.clone(), &id, files.clone(), &revisions(&files))
+            .unwrap();
         assert_eq!(opened["id"], "portable");
         assert_eq!(runtime.roots.get(&id), Some(&path));
         // A manifest cannot authorize reading arbitrary private directories or a
@@ -1416,15 +1433,37 @@ mod open_directory_tests {
         let project = tempfile::tempdir().unwrap();
         fixture(project.path());
         let mut runtime = storage(data.path());
-        let (path, id, files) = directory_candidate(data.path(), project.path().to_str().unwrap()).unwrap();
-        runtime.open_directory(path, &id, files.clone(), &revisions(&files)).unwrap();
-        runtime.local.write(&id, &[LocalRecord { table: "workspace_local_state".into(), id: "git-operation".into(), protection: super::super::local_records::RecordProtection::Encrypted,
-            value: json!({"version":1,"kind":"merge","projectFiles":files}) }]).unwrap();
-        fs::write(project.path().join("purr.yaml"), "<<<<<<< HEAD\ninvalid: [\n=======\n>>>>>>> incoming").unwrap();
+        let (path, id, files) =
+            directory_candidate(data.path(), project.path().to_str().unwrap()).unwrap();
+        runtime
+            .open_directory(path, &id, files.clone(), &revisions(&files))
+            .unwrap();
+        runtime
+            .local
+            .write(
+                &id,
+                &[LocalRecord {
+                    table: "workspace_local_state".into(),
+                    id: "git-operation".into(),
+                    protection: super::super::local_records::RecordProtection::Encrypted,
+                    value: json!({"version":1,"kind":"merge","projectFiles":files}),
+                }],
+            )
+            .unwrap();
+        fs::write(
+            project.path().join("purr.yaml"),
+            "<<<<<<< HEAD\ninvalid: [\n=======\n>>>>>>> incoming",
+        )
+        .unwrap();
         let snapshot = runtime.workspace(&id).unwrap();
         assert_eq!(snapshot["protectedState"]["status"], "available");
-        assert_eq!(snapshot["files"]["purr.yaml"]["content"], files["purr.yaml"].content);
-        assert!(fs::read_to_string(project.path().join("purr.yaml")).unwrap().contains("<<<<<<<"));
+        assert_eq!(
+            snapshot["files"]["purr.yaml"]["content"],
+            files["purr.yaml"].content
+        );
+        assert!(fs::read_to_string(project.path().join("purr.yaml"))
+            .unwrap()
+            .contains("<<<<<<<"));
     }
     #[test]
     fn portable_directory_open_preserves_identity_and_refs_without_copying_runtime_or_secrets() {
@@ -1600,148 +1639,469 @@ mod open_directory_tests {
 }
 
 /// Resolve registered roots without holding the SQLite lock during Git/network I/O.
-pub(crate) fn git_context(app:&tauri::AppHandle,id:&str,mutation:bool)->Result<(PathBuf,Option<Value>),String>{
+pub(crate) fn git_context(
+    app: &tauri::AppHandle,
+    id: &str,
+    mutation: bool,
+) -> Result<(PathBuf, Option<Value>), String> {
     valid_id(id)?;
-    access(app,&app.state::<PersistenceState>(),|storage|{
+    access(app, &app.state::<PersistenceState>(), |storage| {
         storage.recover_before_commit()?;
-        let root=storage.roots.get(id).cloned().ok_or("The workspace project directory is not registered")?;
-        if fs::symlink_metadata(&root).is_ok_and(|meta|meta.file_type().is_symlink()){return Err("The project directory was replaced by a symbolic link. Restore the original directory.".into());}
-        if !root.is_dir(){return Err("The workspace directory is missing. Restore it before continuing.".into());}
-        if mutation && storage.local.read_workspace_state(id,"directory-relocation")?.is_some(){return Err("Finish or cancel the pending project move before changing its Git repository".into());}
-        let checkpoint=storage.local.read_workspace_state(id,"git-operation")?;
-        Ok((root,checkpoint))
+        let root = storage
+            .roots
+            .get(id)
+            .cloned()
+            .ok_or("The workspace project directory is not registered")?;
+        if fs::symlink_metadata(&root).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err("The project directory was replaced by a symbolic link. Restore the original directory.".into());
+        }
+        if !root.is_dir() {
+            return Err("The workspace directory is missing. Restore it before continuing.".into());
+        }
+        if mutation
+            && storage
+                .local
+                .read_workspace_state(id, "directory-relocation")?
+                .is_some()
+        {
+            return Err(
+                "Finish or cancel the pending project move before changing its Git repository"
+                    .into(),
+            );
+        }
+        let checkpoint = storage.local.read_workspace_state(id, "git-operation")?;
+        Ok((root, checkpoint))
     })
 }
-pub(crate) fn git_journal(app:&tauri::AppHandle,id:&str,value:Option<Value>)->Result<(),String>{
-    access(app,&app.state::<PersistenceState>(),|storage|{
+pub(crate) fn git_journal(
+    app: &tauri::AppHandle,
+    id: &str,
+    value: Option<Value>,
+) -> Result<(), String> {
+    access(app, &app.state::<PersistenceState>(), |storage| {
         storage.recover_before_commit()?;
-        storage.local.write(id,&[LocalRecord{table:"workspace_local_state".into(),id:"git-operation".into(),value:value.unwrap_or(Value::Null),protection:super::local_records::RecordProtection::Encrypted}])
+        storage.local.write(
+            id,
+            &[LocalRecord {
+                table: "workspace_local_state".into(),
+                id: "git-operation".into(),
+                value: value.unwrap_or(Value::Null),
+                protection: super::local_records::RecordProtection::Encrypted,
+            }],
+        )
     })
 }
-pub(crate) fn check_project_destination(app:&tauri::AppHandle,path:&Path)->Result<(),String>{
-    let data=data_directory(app).map_err(|e|e.to_string())?;
-    if path.starts_with(&data)||data.starts_with(path){return Err("Choose a project directory outside Purr's private application storage".into());}
-    access(app,&app.state::<PersistenceState>(),|storage|{
-        if storage.roots.values().any(|root|path.starts_with(root)||root.starts_with(path)){return Err("Choose a directory outside existing workspaces".into());}Ok(())
+pub(crate) fn check_project_destination(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    let data = data_directory(app).map_err(|e| e.to_string())?;
+    if path.starts_with(&data) || data.starts_with(path) {
+        return Err("Choose a project directory outside Purr's private application storage".into());
+    }
+    access(app, &app.state::<PersistenceState>(), |storage| {
+        if storage
+            .roots
+            .values()
+            .any(|root| path.starts_with(root) || root.starts_with(path))
+        {
+            return Err("Choose a directory outside existing workspaces".into());
+        }
+        Ok(())
     })
 }
 pub(crate) fn default_clone_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     access(app, &app.state::<PersistenceState>(), |storage| {
-        if fs::symlink_metadata(&storage.projects).is_ok_and(|m| m.file_type().is_symlink()) { return Err("The projects directory cannot be a symbolic link".into()); }
-        fs::create_dir_all(&storage.projects).map_err(|_| "Cannot create the projects directory")?;
-        fs::canonicalize(&storage.projects).map_err(|_| "Cannot access the projects directory".into())
+        if fs::symlink_metadata(&storage.projects).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err("The projects directory cannot be a symbolic link".into());
+        }
+        fs::create_dir_all(&storage.projects)
+            .map_err(|_| "Cannot create the projects directory")?;
+        fs::canonicalize(&storage.projects)
+            .map_err(|_| "Cannot access the projects directory".into())
     })
 }
-pub(crate) fn check_clone_identity(app:&tauri::AppHandle,id:&str,path:&Path)->Result<(),String>{
+pub(crate) fn check_clone_identity(
+    app: &tauri::AppHandle,
+    id: &str,
+    path: &Path,
+) -> Result<(), String> {
     valid_id(id)?;
-    access(app,&app.state::<PersistenceState>(),|storage|{
-        if storage.local.workspaces()?.iter().any(|(owner,_)|owner==id)||storage.roots.contains_key(id){return Err("This workspace identity is already open. Select the existing workspace instead of cloning another copy.".into());}
-        if storage.roots.values().any(|root| path.starts_with(root) || root.starts_with(path)) { return Err("Project directories cannot overlap another workspace".into()); }
-        workspace_cleanup::ensure_available(&storage.local,id,path)
+    access(app, &app.state::<PersistenceState>(), |storage| {
+        if storage
+            .local
+            .workspaces()?
+            .iter()
+            .any(|(owner, _)| owner == id)
+            || storage.roots.contains_key(id)
+        {
+            return Err("This workspace identity is already open. Select the existing workspace instead of cloning another copy.".into());
+        }
+        if storage
+            .roots
+            .values()
+            .any(|root| path.starts_with(root) || root.starts_with(path))
+        {
+            return Err("Project directories cannot overlap another workspace".into());
+        }
+        workspace_cleanup::ensure_available(&storage.local, id, path)
     })
 }
 
 #[derive(serde::Deserialize)]
-#[serde(tag="type",rename_all="camelCase",deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum DirectoryAction {
     Info,
-    Move { directory:String },
+    Move {
+        directory: String,
+    },
     CancelMove,
-    Create { directory:String, files:Vec<FileChange>, local:Vec<LocalRecord>, secrets:SecretBatch },
+    Create {
+        directory: String,
+        files: Vec<FileChange>,
+        local: Vec<LocalRecord>,
+        secrets: SecretBatch,
+    },
 }
-pub fn project_directory(app:tauri::AppHandle,id:String,action:DirectoryAction)->Result<Value,String>{
-    valid_id(&id)?;crate::git::native::ensure_idle(&app,&id)?;
-    if let DirectoryAction::Move { directory } = action { return move_project_directory(app,id,directory); }
-    access(&app,&app.state::<PersistenceState>(),|storage|match action {
-        DirectoryAction::Move { .. } => unreachable!(),
-        DirectoryAction::CancelMove => {
-            let record=storage.local.read_partial(&id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation").ok_or("No project move is pending")?;
-            let job:super::relocation::Job=serde_json::from_value(record.value).map_err(|_|"Invalid relocation record")?;
-            let current=storage.roots.get(&id).cloned().ok_or("The workspace directory is unavailable")?;
-            if current!=job.source&&current!=job.target{return Err("The workspace directory changed outside this move".into());}
-            storage.local.write(&id,&[relocation_record(Value::Null)])?;
-            Ok(json!({"directory":current,"managed":current==storage.projects.join(&id)}))
+pub fn project_directory(
+    app: tauri::AppHandle,
+    id: String,
+    action: DirectoryAction,
+) -> Result<Value, String> {
+    valid_id(&id)?;
+    crate::git::native::ensure_idle(&app, &id)?;
+    if let DirectoryAction::Move { directory } = action {
+        return move_project_directory(app, id, directory);
+    }
+    access(
+        &app,
+        &app.state::<PersistenceState>(),
+        |storage| match action {
+            DirectoryAction::Move { .. } => unreachable!(),
+            DirectoryAction::CancelMove => {
+                let record = storage
+                    .local
+                    .read_partial(&id)?
+                    .0
+                    .into_iter()
+                    .find(|r| r.table == "workspace_local_state" && r.id == "directory-relocation")
+                    .ok_or("No project move is pending")?;
+                let job: super::relocation::Job = serde_json::from_value(record.value)
+                    .map_err(|_| "Invalid relocation record")?;
+                let current = storage
+                    .roots
+                    .get(&id)
+                    .cloned()
+                    .ok_or("The workspace directory is unavailable")?;
+                if current != job.source && current != job.target {
+                    return Err("The workspace directory changed outside this move".into());
+                }
+                storage
+                    .local
+                    .write(&id, &[relocation_record(Value::Null)])?;
+                Ok(json!({"directory":current,"managed":current==storage.projects.join(&id)}))
+            }
+            DirectoryAction::Info => {
+                let directory = storage.files(&id)?.directory;
+                let pending = storage
+                    .local
+                    .read_partial(&id)?
+                    .0
+                    .into_iter()
+                    .find(|r| r.table == "workspace_local_state" && r.id == "directory-relocation")
+                    .and_then(|r| r.value["target"].as_str().map(str::to_string));
+                Ok(
+                    json!({"directory":directory,"managed":directory==storage.projects.join(&id),"projectsDirectory":storage.projects,"pendingMove":pending}),
+                )
+            }
+            DirectoryAction::Create {
+                directory,
+                files,
+                local,
+                secrets,
+            } => {
+                if storage.roots.contains_key(&id)
+                    || storage
+                        .local
+                        .workspaces()?
+                        .iter()
+                        .any(|(owner, _)| owner == &id)
+                {
+                    return Err("This workspace already has a project directory".into());
+                }
+                let selected = PathBuf::from(directory);
+                if selected == storage.projects.join(&id) {
+                    fs::create_dir_all(&storage.projects)
+                        .map_err(|_| "Cannot create projects directory")?;
+                }
+                let parent = selected
+                    .parent()
+                    .filter(|p| p.is_dir())
+                    .ok_or("Choose a project directory with an existing parent folder")?;
+                let parent =
+                    fs::canonicalize(parent).map_err(|_| "Cannot access the project directory")?;
+                let name = selected.file_name().ok_or("Choose a project directory")?;
+                let target = parent.join(name);
+                let data = fs::canonicalize(&storage.data).unwrap_or(storage.data.clone());
+                let managed = fs::canonicalize(&storage.projects)
+                    .unwrap_or(storage.projects.clone())
+                    .join(&id);
+                if (target.starts_with(&data) || data.starts_with(&target)) && target != managed {
+                    return Err(
+                        "Choose a project directory outside private application storage".into(),
+                    );
+                }
+                if storage
+                    .roots
+                    .values()
+                    .any(|root| target.starts_with(root) || root.starts_with(&target))
+                {
+                    return Err("Project directories cannot overlap another workspace".into());
+                }
+                if fs::symlink_metadata(&target).is_ok_and(|meta| meta.file_type().is_symlink())
+                    || target.exists()
+                        && (!target.is_dir()
+                            || fs::read_dir(&target)
+                                .map_err(|_| "Cannot read project directory")?
+                                .next()
+                                .is_some())
+                {
+                    return Err("Choose a new or empty project directory. Use Import to open an existing project.".into());
+                }
+                let contents: BTreeMap<String, ProjectFile> = files
+                    .iter()
+                    .filter_map(|file| {
+                        file.content.as_ref().map(|content| {
+                            (
+                                file.path.clone(),
+                                ProjectFile {
+                                    content: content.clone(),
+                                    revision: String::new(),
+                                },
+                            )
+                        })
+                    })
+                    .collect();
+                crate::transfer::validate_project_files(&contents, &id)?;
+                if files.iter().any(|file| file.expected_revision.is_some()) {
+                    return Err("New project files cannot overwrite existing revisions".into());
+                }
+                storage.recover_before_commit()?;
+                workspace_cleanup::ensure_available(&storage.local, &id, &target)?;
+                storage.local.prepare_workspace_keys(&id)?;
+                let store = FilesystemWorkspaceStore {
+                    directory: target.clone(),
+                };
+                commit_coordinator::commit(
+                    &mut storage.local,
+                    &store,
+                    &id,
+                    &files,
+                    &local,
+                    &secrets,
+                )?;
+                storage.watch(&id, target)?;
+                storage.workspace(&id)
+            }
         },
-        DirectoryAction::Info=>{let directory=storage.files(&id)?.directory;let pending=storage.local.read_partial(&id)?.0.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation").and_then(|r|r.value["target"].as_str().map(str::to_string));Ok(json!({"directory":directory,"managed":directory==storage.projects.join(&id),"projectsDirectory":storage.projects,"pendingMove":pending}))},
-        DirectoryAction::Create{directory,files,local,secrets}=>{
-            if storage.roots.contains_key(&id)||storage.local.workspaces()?.iter().any(|(owner,_)|owner==&id){return Err("This workspace already has a project directory".into());}
-            let selected=PathBuf::from(directory);
-            if selected==storage.projects.join(&id){fs::create_dir_all(&storage.projects).map_err(|_|"Cannot create projects directory")?;}
-            let parent=selected.parent().filter(|p|p.is_dir()).ok_or("Choose a project directory with an existing parent folder")?;
-            let parent=fs::canonicalize(parent).map_err(|_|"Cannot access the project directory")?;
-            let name=selected.file_name().ok_or("Choose a project directory")?;
-            let target=parent.join(name);
-            let data=fs::canonicalize(&storage.data).unwrap_or(storage.data.clone());
-            let managed=fs::canonicalize(&storage.projects).unwrap_or(storage.projects.clone()).join(&id);
-            if (target.starts_with(&data)||data.starts_with(&target))&&target!=managed{return Err("Choose a project directory outside private application storage".into());}
-            if storage.roots.values().any(|root|target.starts_with(root)||root.starts_with(&target)){return Err("Project directories cannot overlap another workspace".into());}
-            if fs::symlink_metadata(&target).is_ok_and(|meta|meta.file_type().is_symlink())||target.exists()&&(!target.is_dir()||fs::read_dir(&target).map_err(|_|"Cannot read project directory")?.next().is_some()){return Err("Choose a new or empty project directory. Use Import to open an existing project.".into());}
-            let contents:BTreeMap<String,ProjectFile>=files.iter().filter_map(|file|file.content.as_ref().map(|content|(file.path.clone(),ProjectFile{content:content.clone(),revision:String::new()}))).collect();
-            crate::transfer::validate_project_files(&contents,&id)?;
-            if files.iter().any(|file|file.expected_revision.is_some()){return Err("New project files cannot overwrite existing revisions".into());}
-            storage.recover_before_commit()?;workspace_cleanup::ensure_available(&storage.local,&id,&target)?;
-            storage.local.prepare_workspace_keys(&id)?;
-            let store=FilesystemWorkspaceStore{directory:target.clone()};
-            commit_coordinator::commit(&mut storage.local,&store,&id,&files,&local,&secrets)?;
-            storage.watch(&id,target)?;storage.workspace(&id)
-        }
-    })
+    )
 }
 
-fn relocation_record(value:Value)->LocalRecord{LocalRecord{table:"workspace_local_state".into(),id:"directory-relocation".into(),value,protection:super::local_records::RecordProtection::Encrypted}}
-impl RuntimeStorage {
-    fn switch_project_directory(&mut self,id:&str,job:&super::relocation::Job)->Result<(),String>{
-        if self.roots.get(id)==Some(&job.target){return Ok(());}
-        self.watcher.watch(&job.target,RecursiveMode::Recursive).map_err(|_|"Cannot watch the moved project directory")?;
-        if let Err(error)=self.local.relocate_directory(id,&job.source,&job.target){let _=self.watcher.unwatch(&job.target);return Err(error);}
-        self.roots.insert(id.into(),job.target.clone());let _=self.watcher.unwatch(&job.source);Ok(())
+fn relocation_record(value: Value) -> LocalRecord {
+    LocalRecord {
+        table: "workspace_local_state".into(),
+        id: "directory-relocation".into(),
+        value,
+        protection: super::local_records::RecordProtection::Encrypted,
     }
-    fn resume_project_moves(&mut self){
-        for(id,_) in self.local.workspaces().unwrap_or_default(){
-            let Some(value)=self.local.read_partial(&id).ok().and_then(|(records,_)|records.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation")).map(|r|r.value) else{continue};
-            let Ok(job)=serde_json::from_value::<super::relocation::Job>(value) else{continue};
-            if job.version!=1{continue;}
-            if super::relocation::publish(&job).is_ok()&&self.switch_project_directory(&id,&job).is_ok()&&super::relocation::cleanup(&job).is_ok(){let _=self.local.write(&id,&[relocation_record(Value::Null)]);}
+}
+impl RuntimeStorage {
+    fn switch_project_directory(
+        &mut self,
+        id: &str,
+        job: &super::relocation::Job,
+    ) -> Result<(), String> {
+        if self.roots.get(id) == Some(&job.target) {
+            return Ok(());
+        }
+        self.watcher
+            .watch(&job.target, RecursiveMode::Recursive)
+            .map_err(|_| "Cannot watch the moved project directory")?;
+        if let Err(error) = self.local.relocate_directory(id, &job.source, &job.target) {
+            let _ = self.watcher.unwatch(&job.target);
+            return Err(error);
+        }
+        self.roots.insert(id.into(), job.target.clone());
+        let _ = self.watcher.unwatch(&job.source);
+        Ok(())
+    }
+    fn resume_project_moves(&mut self) {
+        for (id, _) in self.local.workspaces().unwrap_or_default() {
+            let Some(value) = self
+                .local
+                .read_partial(&id)
+                .ok()
+                .and_then(|(records, _)| {
+                    records.into_iter().find(|r| {
+                        r.table == "workspace_local_state" && r.id == "directory-relocation"
+                    })
+                })
+                .map(|r| r.value)
+            else {
+                continue;
+            };
+            let Ok(job) = serde_json::from_value::<super::relocation::Job>(value) else {
+                continue;
+            };
+            if job.version != 1 {
+                continue;
+            }
+            if super::relocation::publish(&job).is_ok()
+                && self.switch_project_directory(&id, &job).is_ok()
+                && super::relocation::cleanup(&job).is_ok()
+            {
+                let _ = self.local.write(&id, &[relocation_record(Value::Null)]);
+            }
         }
     }
 }
-fn move_project_directory(app:tauri::AppHandle,id:String,directory:String)->Result<Value,String>{
-    let state=app.state::<crate::git::native::GitState>();
-    let operation=SecretBatch::fresh(vec![])?.operation_id;
-    let(_lease,_)=state.acquire(&operation,&id,true).map_err(|e|e.message)?;
-    let mut job=access(&app,&app.state::<PersistenceState>(),|storage|{
+fn move_project_directory(
+    app: tauri::AppHandle,
+    id: String,
+    directory: String,
+) -> Result<Value, String> {
+    let state = app.state::<crate::git::native::GitState>();
+    let operation = SecretBatch::fresh(vec![])?.operation_id;
+    let (_lease, _) = state
+        .acquire(&operation, &id, true)
+        .map_err(|e| e.message)?;
+    let mut job = access(&app, &app.state::<PersistenceState>(), |storage| {
         storage.recover_before_commit()?;
-        let source=storage.roots.get(&id).cloned().ok_or("The workspace project is unavailable")?;
-        let records=storage.local.read_partial(&id)?.0;
-        if records.iter().any(|r|r.table=="workspace_local_state"&&r.id=="git-operation"){return Err("Finish or abort the Git operation before moving the project".into());}
-        if let Some(record)=records.iter().find(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation"){
-            let job:super::relocation::Job=serde_json::from_value(record.value.clone()).map_err(|_|"Invalid relocation record")?;
-            if job.target!=PathBuf::from(&directory){return Err("Retry the pending destination or cancel the previous move first".into());}return Ok(job);
+        let source = storage
+            .roots
+            .get(&id)
+            .cloned()
+            .ok_or("The workspace project is unavailable")?;
+        let records = storage.local.read_partial(&id)?.0;
+        if records
+            .iter()
+            .any(|r| r.table == "workspace_local_state" && r.id == "git-operation")
+        {
+            return Err("Finish or abort the Git operation before moving the project".into());
         }
-        if !source.is_dir(){return Err("The source directory is missing".into());}
-        for marker in ["MERGE_HEAD","rebase-merge","rebase-apply","CHERRY_PICK_HEAD","index.lock"]{if source.join(".git").join(marker).exists(){return Err("Finish the Git operation before moving this project".into());}}
-        if source.join(".git").is_file(){return Err("Linked Git worktrees cannot be relocated by Purr".into());}
-        let selected=PathBuf::from(&directory);let parent=fs::canonicalize(selected.parent().ok_or("Choose a destination directory")?).map_err(|_|"Choose a destination with an existing parent folder")?;
-        let target=parent.join(selected.file_name().ok_or("Choose a destination directory")?);
-        if source.starts_with(&target)||target.starts_with(&source)||target.starts_with(&storage.data)||storage.data.starts_with(&target)||storage.roots.values().any(|root|target.starts_with(root)||root.starts_with(&target)){return Err("Choose a separate directory outside existing workspaces and private application storage".into());}
-        if fs::symlink_metadata(&target).is_ok_and(|m|m.file_type().is_symlink())||target.exists()&&(!target.is_dir()||fs::read_dir(&target).map_err(|_|"Cannot inspect destination")?.next().is_some()){return Err("Move requires a new or empty destination directory".into());}
-        workspace_cleanup::ensure_available(&storage.local,&id,&target)?;
-        let staging=tempfile::Builder::new().prefix(".purr-move-").tempdir_in(&parent).map_err(|_|"Cannot create relocation staging directory")?.keep();
-        let job=super::relocation::Job{version:1,files:super::relocation::fingerprint(&source)?,source,target,staging};
-        storage.local.write(&id,&[relocation_record(serde_json::to_value(&job).map_err(|_|"Cannot prepare relocation")?)])?;Ok(job)
+        if let Some(record) = records
+            .iter()
+            .find(|r| r.table == "workspace_local_state" && r.id == "directory-relocation")
+        {
+            let job: super::relocation::Job = serde_json::from_value(record.value.clone())
+                .map_err(|_| "Invalid relocation record")?;
+            if job.target != Path::new(&directory) {
+                return Err(
+                    "Retry the pending destination or cancel the previous move first".into(),
+                );
+            }
+            return Ok(job);
+        }
+        if !source.is_dir() {
+            return Err("The source directory is missing".into());
+        }
+        for marker in [
+            "MERGE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "CHERRY_PICK_HEAD",
+            "index.lock",
+        ] {
+            if source.join(".git").join(marker).exists() {
+                return Err("Finish the Git operation before moving this project".into());
+            }
+        }
+        if source.join(".git").is_file() {
+            return Err("Linked Git worktrees cannot be relocated by Purr".into());
+        }
+        let selected = PathBuf::from(&directory);
+        let parent = fs::canonicalize(selected.parent().ok_or("Choose a destination directory")?)
+            .map_err(|_| "Choose a destination with an existing parent folder")?;
+        let target = parent.join(
+            selected
+                .file_name()
+                .ok_or("Choose a destination directory")?,
+        );
+        if source.starts_with(&target)
+            || target.starts_with(&source)
+            || target.starts_with(&storage.data)
+            || storage.data.starts_with(&target)
+            || storage
+                .roots
+                .values()
+                .any(|root| target.starts_with(root) || root.starts_with(&target))
+        {
+            return Err("Choose a separate directory outside existing workspaces and private application storage".into());
+        }
+        if fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink())
+            || target.exists()
+                && (!target.is_dir()
+                    || fs::read_dir(&target)
+                        .map_err(|_| "Cannot inspect destination")?
+                        .next()
+                        .is_some())
+        {
+            return Err("Move requires a new or empty destination directory".into());
+        }
+        workspace_cleanup::ensure_available(&storage.local, &id, &target)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".purr-move-")
+            .tempdir_in(&parent)
+            .map_err(|_| "Cannot create relocation staging directory")?
+            .keep();
+        let job = super::relocation::Job {
+            version: 1,
+            files: super::relocation::fingerprint(&source)?,
+            source,
+            target,
+            staging,
+        };
+        storage.local.write(
+            &id,
+            &[relocation_record(
+                serde_json::to_value(&job).map_err(|_| "Cannot prepare relocation")?,
+            )],
+        )?;
+        Ok(job)
     })?;
-    if job.version!=1{return Err("This move requires a newer Purr version".into());}
-    let already_published=job.target.is_dir()&&super::relocation::fingerprint(&job.target).is_ok_and(|files|files==job.files);
-    if !already_published{
-        if job.staging.is_dir()&&fs::read_dir(&job.staging).map_err(|_|"Cannot inspect relocation staging")?.next().is_some(){
-            job.staging=tempfile::Builder::new().prefix(".purr-move-").tempdir_in(job.target.parent().ok_or("Invalid destination")?).map_err(|_|"Cannot create relocation staging directory")?.keep();
-            access(&app,&app.state::<PersistenceState>(),|storage|storage.local.write(&id,&[relocation_record(serde_json::to_value(&job).map_err(|_|"Cannot prepare relocation")?)]))?;
+    if job.version != 1 {
+        return Err("This move requires a newer Purr version".into());
+    }
+    let already_published = job.target.is_dir()
+        && super::relocation::fingerprint(&job.target).is_ok_and(|files| files == job.files);
+    if !already_published {
+        if job.staging.is_dir()
+            && fs::read_dir(&job.staging)
+                .map_err(|_| "Cannot inspect relocation staging")?
+                .next()
+                .is_some()
+        {
+            job.staging = tempfile::Builder::new()
+                .prefix(".purr-move-")
+                .tempdir_in(job.target.parent().ok_or("Invalid destination")?)
+                .map_err(|_| "Cannot create relocation staging directory")?
+                .keep();
+            access(&app, &app.state::<PersistenceState>(), |storage| {
+                storage.local.write(
+                    &id,
+                    &[relocation_record(
+                        serde_json::to_value(&job).map_err(|_| "Cannot prepare relocation")?,
+                    )],
+                )
+            })?;
         }
-        super::relocation::copy(&job)?;super::relocation::publish(&job)?;
+        super::relocation::copy(&job)?;
+        super::relocation::publish(&job)?;
     }
     super::relocation::publish(&job)?;
-    access(&app,&app.state::<PersistenceState>(),|storage|storage.switch_project_directory(&id,&job))?;
+    access(&app, &app.state::<PersistenceState>(), |storage| {
+        storage.switch_project_directory(&id, &job)
+    })?;
     super::relocation::cleanup(&job)?;
-    access(&app,&app.state::<PersistenceState>(),|storage|storage.local.write(&id,&[relocation_record(Value::Null)]))?;
+    access(&app, &app.state::<PersistenceState>(), |storage| {
+        storage.local.write(&id, &[relocation_record(Value::Null)])
+    })?;
     Ok(json!({"directory":job.target,"managed":false}))
 }
