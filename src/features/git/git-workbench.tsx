@@ -8,6 +8,7 @@ import { GitConflicts } from "./git-conflicts";
 import { EditorConflicts } from "./local-editor-conflicts";
 import { type GitFile, type GitStash } from "../../application/ports/git";
 import type { GitController } from "./use-git-workspace";
+import { cn } from "../../shared/lib/cn";
 
 const purrIcon = new URL("../../assets/purr.svg", import.meta.url).href;
 
@@ -45,9 +46,21 @@ function GitWorkbenchContent({ controller: c, onResolveEditor }: { controller: G
   </div>)}</div>;
   return <div className="flex h-full min-h-0 flex-col overflow-y-auto">
     {c.view !== "overview" && <h2 className="m-ui-0 border-b border-border-subtle px-ui-5 py-ui-3 text-ui-lg font-medium">{title}</h2>}
-    <div className="mx-auto w-full max-w-ui-dialog shrink-0 space-y-ui-5 p-ui-5">
+    <div className={cn("mx-auto w-full max-w-ui-dialog shrink-0 space-y-ui-5 p-ui-5", s && !s.initialized && "my-auto")}>
       {c.error && <p role="alert" className="rounded-ui-md border border-border-subtle bg-purr-elevated p-ui-3 text-ui-sm text-accent-red">{c.error}</p>}
-      {!s ? <p className="text-ui-sm text-content-secondary">{c.error || "Reading repository…"}</p> : !s.initialized ? <div className="space-y-ui-4 rounded-ui-lg border border-border-subtle bg-purr-surface p-ui-5"><img src={purrIcon} alt="Purr" className="size-ui-10" /><h3 className="m-ui-0 text-ui-lg font-medium">Keep your project in Git</h3><p className="text-ui-sm text-content-secondary">Review and share saved requests, environments, schemas and project files. Unsaved editors, history and credential values stay local.</p><p className="break-all font-code text-ui-xs text-content-secondary">{s.directory}</p><p className="m-ui-0 text-ui-sm text-content-secondary">Use Initialize Git in Source control to start tracking this project.</p></div> : c.view === "overview" ? <>
+      {!s ? <p className="text-ui-sm text-content-secondary">{c.error || "Reading repository…"}</p> : !s.initialized ? <section aria-labelledby="git-introduction-title" className="flex flex-col items-center gap-ui-6 rounded-ui-lg border border-border-subtle bg-purr-elevated p-ui-6">
+        <img src={purrIcon} alt="Purr" className="size-ui-16 shrink-0" />
+        <div className="flex flex-col gap-ui-3 text-center">
+          <h2 id="git-introduction-title" className="m-ui-0 text-ui-xl font-medium">Keep your project in Git</h2>
+          <p className="m-ui-0 text-ui-sm text-content-secondary">Track and share saved requests, environments, schemas and project files.</p>
+          <p className="m-ui-0 text-ui-xs text-content-secondary">Unsaved editors, history and credential values stay local.</p>
+        </div>
+        <div className="flex w-full flex-col gap-ui-2 rounded-ui-md bg-purr-surface p-ui-3">
+          <p className="m-ui-0 text-ui-xs text-content-secondary">Project directory</p>
+          <p className="m-ui-0 break-all font-code text-ui-xs text-content-primary">{s.directory}</p>
+        </div>
+        <p className="m-ui-0 text-center text-ui-sm text-content-secondary">Use <span className="font-medium text-content-primary">Initialize Git</span> in Source control to start tracking this project.</p>
+      </section> : c.view === "overview" ? <>
         <div className="flex items-center gap-ui-4">
           <img src={purrIcon} alt="Purr" className="size-ui-12 shrink-0" />
           <div className="min-w-0"><h2 className="m-ui-0 truncate text-ui-xl font-medium">{c.workspace?.name ?? "Repository"}</h2><p className="m-ui-0 text-ui-sm text-content-secondary">Source control</p></div>
