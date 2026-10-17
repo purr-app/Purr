@@ -1,3 +1,4 @@
+import type { SemanticPreview } from "./semantic-git";
 import type { Page } from "@playwright/test";
 import { createWorkspace, cloneRequestDraft, isRequestDocument } from "../../src/features/workspaces/model/workspace";
 import { projectWorkspace } from "../../src/application/project-projection";
@@ -5,7 +6,7 @@ import { MemorySecureStore } from "../../src/storage/secrets";
 import { serializeManifest, serializeResource } from "../../src/storage/yaml";
 import { installPersistenceMock } from "../ui/persistence-mock";
 
-export async function installGitMock(page: Page, options: { initialized?: boolean; cloneError?: boolean; conflicts?: boolean; editorConflict?: boolean; noTabs?: boolean; stageDelayMs?: number; stageError?: boolean; newFile?: boolean; recovery?: boolean } = {}) {
+export async function installGitMock(page: Page, options: { initialized?: boolean; cloneError?: boolean; conflicts?: boolean; editorConflict?: boolean; noTabs?: boolean; stageDelayMs?: number; stageError?: boolean; newFile?: boolean; recovery?: boolean; preview?: SemanticPreview } = {}) {
   const workspace = createWorkspace("API project", "git-fixture"); const document = workspace.documents[0];
   if (!isRequestDocument(document)) throw new Error("Expected request fixture");
   document.id = "get-user"; document.name = "Get user"; document.saved = true; document.request.url = "https://api.example.test/users/123";
@@ -25,7 +26,7 @@ export async function installGitMock(page: Page, options: { initialized?: boolea
     const snapshot = { activeWorkspaceId: "git-fixture", workspaces: [{ id: "git-fixture", files, local }] };
     localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot));
     state.__gitStatus = { directory: "/projects/api", initialized: options.initialized !== false, version: "git version 2.50.1", branch: "main", head: initial, upstream: "origin/main", ahead: 1, behind: 2,
-      files: [{ path: "documents/get-user.yaml", index: ".", worktree: "M", conflicted: false }], branches: [{ name: "main", remote: false, current: true }, { name: "feature/team", remote: false, current: false }, { name: "origin/main", remote: true, current: false }], remotes: [{ name: "origin", url: "git@example.test:team/api.git" }], operation: null, lastFetched: now, recovery: Boolean(options.recovery) };
+      files: [{ path: options.preview?.path ?? "documents/get-user.yaml", index: options.newFile ? "?" : ".", worktree: "M", conflicted: false }], branches: [{ name: "main", remote: false, current: true }, { name: "feature/team", remote: false, current: false }, { name: "origin/main", remote: true, current: false }], remotes: [{ name: "origin", url: "git@example.test:team/api.git" }], operation: null, lastFetched: now, recovery: Boolean(options.recovery) };
     state.__gitHistory = [{ id: initial, shortId: "aaaaaaa", message: "Add user endpoint", author: "Purr fixture", timestamp: now }]; state.__gitStashes = [];
     state.__TAURI_INTERNALS__ = { invoke: async (command: string, args: any) => {
       state.__gitCalls.push({ command, args });
@@ -44,7 +45,10 @@ export async function installGitMock(page: Page, options: { initialized?: boolea
       if (query.type === "commitFiles") return [{ path: "documents/get-user.yaml", index: "M", worktree: ".", conflicted: false }];
       if (query.type === "stashes") return state.__gitStashes;
       if (query.type === "conflicts") return s.files.filter((file: any) => file.conflicted).map((file: any) => ({ path: file.path, base: before, local: after, incoming: after.replace("/123", "/incoming"), binary: false, revision: "conflict-revision" }));
-      if (query.type === "diff") return { path: query.request.path, before: options.newFile ? "" : before, after, beforeExists: !options.newFile, afterExists: true, beforeBytes: options.newFile ? 0 : before.length, afterBytes: after.length, binary: false, truncated: false };
+      if (query.type === "diff") {
+        const left = options.preview?.before ?? (options.newFile ? "" : before), right = options.preview?.after ?? after;
+        return { path: query.request.path, before: left, after: right, beforeExists: Boolean(left), afterExists: Boolean(right), beforeBytes: left.length, afterBytes: right.length, binary: false, truncated: false };
+      }
       const action = query.action;
       if (action.type === "stage" || action.type === "unstage") { if (options.stageDelayMs) await new Promise((resolve) => setTimeout(resolve, options.stageDelayMs)); if (options.stageError) throw { code: "git", message: "Could not update the Git index." }; }
       if (action.type === "discard") s.files = s.files.filter((file: any) => !action.paths.includes(file.path));

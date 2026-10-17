@@ -6,6 +6,7 @@ import { Input } from "../../shared/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../shared/components/ui/popover";
 import { useApplicationServices } from "../../app/application-services-context";
 import { isDocumentDirty } from "../workspaces/model/workspace";
+import { semanticKindLabel } from "./semantic-diff";
 import { cn } from "../../shared/lib/cn";
 import type { GitFile } from "../../application/ports/git";
 import type { GitController } from "./use-git-workspace";
@@ -16,10 +17,33 @@ export function GitSidebar({ controller: c, onOpenDocument }: { controller: GitC
   const [discard, setDiscard] = useState<GitFile[] | null>(null);
   const [commitMenu, setCommitMenu] = useState(false);
   const s = c.status; const blocked = c.busy || Boolean(s?.operation || s?.recovery);
+  const blockedHint = c.busy ? "Wait for the current Git operation." : s?.operation ? "Finish the current Git operation first." : s?.recovery ? "Review the pending Git recovery first." : undefined;
+  const stagedFiles = s?.files.filter((file) => file.index !== "." && file.index !== "?" && !file.conflicted) ?? [];
+  const commitReady = !blocked && Boolean(message.trim()) && stagedFiles.length > 0;
+  const commitHint = blockedHint ?? (!stagedFiles.length ? "Stage changes to commit." : !message.trim() ? "Enter a commit message." : `Commit ${stagedFiles.length} staged ${stagedFiles.length === 1 ? "file" : "files"} only.`);
+  const fetchHint = blockedHint ?? (!s?.remotes.length ? "Add a remote to fetch." : "Fetch from remote");
+  const syncHint = blockedHint ?? (!s?.upstream ? "Set an upstream branch to sync." : "Pull and push this branch");
+  const pullHint = blockedHint ?? (!s?.remotes.length ? "Add a remote to pull." : "Pull from remote");
+  const pushHint = blockedHint ?? (!s?.remotes.length ? "Add a remote to push." : !s.head ? "Create a commit before pushing." : !s.branch ? "Switch to a branch before pushing." : "Push to remote");
   const dirtyEditors = c.workspace?.documents.filter((document) => isDocumentDirty(document)).length ?? 0;
   const stage = (files: GitFile[], staged: boolean) => { void c.execute({ type: staged ? "unstage" : "stage", paths: [...new Set(files.flatMap((file) => [file.path, ...(file.oldPath && (staged ? file.index === "R" : file.worktree === "R") ? [file.oldPath] : [])]))] }); };
   const commit = async (push = false) => { if (message.trim()) { if (await c.commit(message.trim(), push)) setMessage(""); } };
-  const fileName = (file: GitFile) => persistence.fileOwner(c.workspace!.id, file.path)?.name ?? file.path.split("/").pop() ?? file.path;
+  const project = c.workspace ? persistence.getProject(c.workspace.id) : undefined;
+  const resourceLabel = (file: GitFile) => {
+    const owner = c.workspace ? persistence.fileOwner(c.workspace.id, file.path) : undefined;
+    const resource = project?.resources.find((item) => item.id === owner?.id);
+    const parents: string[] = []; const visited = new Set<string>();
+    let parent = resource?.folderId;
+    while (parent && !visited.has(parent)) {
+      visited.add(parent); const folder = project?.resources.find((item) => item.id === parent && item.kind === "folder");
+      if (!folder) break; parents.unshift(folder.name); parent = folder.folderId;
+    }
+    const assetId = file.path.startsWith("assets/") ? file.path.slice(7).replace(/\.bin$/, "") : undefined;
+    const attachment = assetId ? project?.resources.flatMap((item) => item.kind === "http" || item.kind === "graphql" ? item.body.type === "binary" ? [item.body.file] : item.body.type === "form-data" ? item.body.fields.map((field) => field.file) : [] : []).find((file) => file?.id === assetId) : undefined;
+    return { name: attachment?.name ?? owner?.name ?? file.path.split("/").pop() ?? file.path,
+      context: file.path === "purr.yaml" ? "Workspace settings" : resource ? [...parents, /\.(graphql|gql)$/i.test(file.path) ? "GraphQL SDL" : semanticKindLabel(resource.kind)].join(" / ") : file.path.startsWith("assets/") ? "Binary asset" : /\.(graphql|graphqls|gql)$/i.test(file.path) ? "GraphQL SDL" : file.path };
+  };
+  const fileName = (file: GitFile) => resourceLabel(file).name;
   const group = (title: string, files: GitFile[], staged: boolean) => {
     if (staged && !files.length) return null;
     const ActionIcon = staged ? Minus : Plus;
@@ -32,23 +56,24 @@ export function GitSidebar({ controller: c, onOpenDocument }: { controller: GitC
       </div>
       <div className="space-y-ui-1">{files.map((file) => {
         const owner = persistence.fileOwner(c.workspace!.id, file.path);
+        const label = resourceLabel(file);
         return <div key={file.path} className={cn("group flex items-center gap-ui-1 rounded-ui-md px-ui-2 py-ui-2 hover:bg-purr-elevated", c.selected?.path === file.path && c.selected.scope === (staged ? "staged" : "working") && c.view === "diff" && "bg-purr-highlight")}>
-          <button className="ui-focus-ring min-w-0 flex-1 rounded-ui-md text-left" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => { void c.selectFile({ path: file.path, oldPath: file.oldPath, scope: staged ? "staged" : "working" }); }}>
-            <span className="block truncate text-ui-sm text-content-primary">{fileName(file)}</span><span className="block truncate font-code text-ui-2xs text-content-secondary">{file.path}</span>
+          <button className="ui-focus-ring min-w-0 flex-1 rounded-ui-md text-left" aria-label={`${fileName(file)} ${file.path}`} title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => { void c.selectFile({ path: file.path, oldPath: file.oldPath, scope: staged ? "staged" : "working" }); }}>
+            <span className="block truncate text-ui-sm text-content-primary">{label.name}</span><span className={cn("block truncate text-ui-xs text-content-secondary", label.context === file.path && "font-code")}>{label.context}</span>
           </button>
           <div className="hidden shrink-0 items-center group-hover:flex group-focus-within:flex">
             {owner && <Button variant="ghost" size="icon" aria-label={`Open ${fileName(file)} document`} title="Open document" onClick={() => onOpenDocument(owner.id)}><FileSymlink className="size-ui-3-5" /></Button>}
             {!staged && <Button variant="ghost" size="icon" aria-label={`Discard ${fileName(file)} changes`} title="Discard changes" disabled={blocked || c.indexWorking} onClick={() => setDiscard([file])}><RotateCcw className="size-ui-3-5" /></Button>}
             <Button variant="ghost" size="icon" aria-label={`${staged ? "Unstage" : "Stage"} ${fileName(file)}`} title={staged ? "Unstage changes" : "Stage changes"} disabled={blocked} onClick={() => stage([file], staged)}><ActionIcon className="size-ui-4" /></Button>
           </div>
-          <span className={cn("w-ui-3 text-center font-code text-ui-xs", file.index === "?" || file.index === "A" ? "text-status-success" : file.index === "D" || file.worktree === "D" ? "text-accent-red" : "text-action-brand")}>{file.index === "?" ? "U" : staged ? file.index : file.worktree}</span>
+          <span className={cn("w-ui-3 text-center font-code text-ui-xs", file.index === "?" || file.index === "A" ? "text-status-success" : file.index === "D" || file.worktree === "D" ? "text-accent-red" : "text-content-secondary")}>{file.index === "?" ? "U" : staged ? file.index : file.worktree}</span>
         </div>;
       })}</div>
       {!files.length && <p className="m-ui-0 px-ui-2 py-ui-2 text-ui-xs text-content-secondary">No changes</p>}
     </section>;
   };
   return <aside id="workspace-sidebar" aria-label="Source control" className="flex h-full min-h-0 min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max flex-col bg-purr-base">
-    <div className="flex items-center gap-ui-2 px-ui-3 py-ui-3"><GitBranch className="size-ui-4 text-action-brand" /><h2 className="m-ui-0 flex-1 text-ui-sm font-medium">Source control</h2><Button variant="ghost" size="icon" disabled={c.busy || runtime.kind !== "desktop"} aria-label="Refresh Git" title="Refresh Git" onClick={() => { void c.refresh(); }}><RefreshCw className="size-ui-3-5" /></Button></div>
+    <div className="flex items-center gap-ui-2 px-ui-3 py-ui-3"><GitBranch className="size-ui-4 text-content-secondary" /><h2 className="m-ui-0 flex-1 text-ui-sm font-medium">Source control</h2><Button variant="ghost" size="icon" disabled={c.busy || runtime.kind !== "desktop"} aria-label="Refresh Git" title="Refresh Git" onClick={() => { void c.refresh(); }}><RefreshCw className="size-ui-3-5" /></Button></div>
     {runtime.kind !== "desktop" ? <p className="px-ui-3 text-ui-sm text-content-secondary">Git integration requires the Purr desktop app.</p> : !s ? <p className="px-ui-3 text-ui-sm text-content-tertiary">{c.error || "Reading repository…"}</p> : !s.initialized ? <div className="space-y-ui-3 px-ui-3 py-ui-4"><p className="text-ui-sm text-content-secondary">Track saved requests, environments, schemas and project files with Git.</p><Button variant="brand" className="w-full" disabled={c.busy} onClick={() => { void c.execute({ type: "init" }); }}><GitBranch className="size-ui-4" />Initialize Git</Button></div> : <>
       <div className="space-y-ui-2 border-b border-border-subtle px-ui-3 pb-ui-3">
         <Popover open={branchOpen} onOpenChange={(open) => { setBranchOpen(open); if (!open) setSearch(""); }}><PopoverTrigger asChild><Button variant="secondary" size="sm" className="w-full justify-between" title="Switch or create branch" aria-label="Select Git branch" disabled={blocked}><GitBranch className="size-ui-3-5" /><span className="flex-1 truncate text-left font-code">{s.branch ?? `Detached ${s.head?.slice(0, 7) ?? "HEAD"}`}</span><ChevronDown className="size-ui-3-5" /></Button></PopoverTrigger>
@@ -64,7 +89,10 @@ export function GitSidebar({ controller: c, onOpenDocument }: { controller: GitC
             </div>
           </PopoverContent>
         </Popover>
-        <div className="flex items-center gap-ui-2"><Button variant="secondary" size="sm" className="flex-1" disabled={blocked || !s.remotes.length} onClick={() => { c.network("fetch"); }}><RefreshCw className="size-ui-3-5" />Fetch</Button><Button variant="secondary" size="sm" className="flex-1" disabled={blocked || !s.upstream} onClick={() => { void c.sync(); }} aria-label={`Sync ${s.ahead} ahead ${s.behind} behind`}><GitMerge className="size-ui-3-5" />Sync<span className="font-code text-ui-2xs text-action-brand">↑{s.ahead} ↓{s.behind}</span></Button></div>
+        <div className="flex items-center gap-ui-2">
+          <span className="min-w-0 flex-1" title={fetchHint}><Button variant="secondary" size="sm" className="w-full" aria-description={fetchHint} disabled={blocked || !s.remotes.length} onClick={() => { c.network("fetch"); }}><RefreshCw className="size-ui-3-5" />Fetch</Button></span>
+          <span className="min-w-0 flex-1" title={syncHint}><Button variant="secondary" size="sm" className="w-full" aria-description={syncHint} disabled={blocked || !s.upstream} onClick={() => { void c.sync(); }} aria-label={`Sync ${s.ahead} ahead ${s.behind} behind`}><GitMerge className="size-ui-3-5" />Sync<span className="font-code text-ui-2xs">↑{s.ahead} ↓{s.behind}</span></Button></span>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {(s.operation || s.recovery || s.files.some((file) => file.conflicted)) && <button className="ui-focus-ring flex w-full items-center gap-ui-2 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-3 text-left text-ui-sm text-accent-orange" onClick={() => c.openView("conflicts")}><GitMerge className="size-ui-4" /><span>{s.files.some((file) => file.conflicted) ? `Resolve ${s.files.filter((file) => file.conflicted).length} conflicts` : "Review pending operation"}</span></button>}
@@ -73,21 +101,24 @@ export function GitSidebar({ controller: c, onOpenDocument }: { controller: GitC
         <form className="space-y-ui-2 px-ui-3 py-ui-3" onSubmit={(event) => { event.preventDefault(); void commit(); }}>
           <textarea aria-label="Commit message" placeholder="Describe your changes…" value={message} onChange={(event) => setMessage(event.target.value)} disabled={blocked} className="ui-focus-ring h-ui-16 w-full resize-y rounded-ui-md border border-border-subtle bg-purr-elevated px-ui-2 py-ui-2 font-ui text-ui-sm text-content-primary placeholder:text-content-tertiary" onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void commit(); } }} />
           <div className="flex items-stretch gap-ui-1">
-            <Button type="submit" variant="brand" className="flex-1" disabled={blocked || !message.trim() || !s.files.some((file) => file.index !== "." && file.index !== "?" && !file.conflicted)}><Check className="size-ui-4" />Commit</Button>
-            <Popover open={commitMenu} onOpenChange={setCommitMenu}><PopoverTrigger asChild><Button variant="brand" className="w-control-md px-ui-0" aria-label="More commit actions" disabled={blocked}><ChevronDown className="size-ui-4" /></Button></PopoverTrigger>
+            <span className="min-w-0 flex-1" title={`${commitHint}${dirtyEditors ? " Unsaved editors stay local." : ""}`}><Button type="submit" variant="brand" className="w-full" aria-description={`${commitHint} Commits staged changes only.`} disabled={!commitReady}><Check className="size-ui-4" />Commit</Button></span>
+            <Popover open={commitMenu} onOpenChange={setCommitMenu}><PopoverTrigger asChild><Button variant={commitReady ? "brand" : "secondary"} className="w-control-md px-ui-0" aria-label="More commit actions" disabled={blocked}><ChevronDown className="size-ui-4" /></Button></PopoverTrigger>
               <PopoverContent align="end" className="rounded-ui-lg border border-border bg-purr-overlay p-ui-1 shadow-popover">
-                <Button variant="ghost" size="sm" className="flex w-full justify-start" disabled={!s.remotes.length || !message.trim()} onClick={() => { setCommitMenu(false); void commit(true); }}><ArrowUp className="size-ui-4" />Commit and Push</Button>
+                <Button variant="ghost" size="sm" className="flex w-full justify-start" disabled={!stagedFiles.length || !s.remotes.length || !message.trim()} onClick={() => { setCommitMenu(false); void commit(true); }}><ArrowUp className="size-ui-4" />Commit and Push</Button>
                 <Button variant="ghost" size="sm" className="flex w-full justify-start" disabled={!s.head || !s.files.length} onClick={() => { setCommitMenu(false); void c.execute({ type: "stash", message: message.trim() }).then((result) => { if (result) { setMessage(""); c.openView("stashes"); } }); }}><Archive className="size-ui-4" />Stash changes</Button>
               </PopoverContent>
             </Popover>
           </div>
-          {dirtyEditors > 0 && <p className="m-ui-0 text-ui-2xs text-content-tertiary">{dirtyEditors} unsaved editor{dirtyEditors === 1 ? "" : "s"}. Git includes saved files only.</p>}
         </form>
-        {group("Staged changes", s.files.filter((file) => file.index !== "." && file.index !== "?" && !file.conflicted), true)}
+        {group("Staged changes", stagedFiles, true)}
         {group("Changes", s.files.filter((file) => file.worktree !== "." && !file.conflicted), false)}
+
       </div>
       <div className="space-y-ui-1 border-t border-border-subtle px-ui-2 py-ui-2">{([{ view: "history", label: "Commits", icon: GitCommitHorizontal }, { view: "stashes", label: "Stashes", icon: Archive }, { view: "remotes", label: "Remotes", icon: Network }] as const).map(({ view, label, icon: Icon }) => <Button key={view} variant="ghost" size="sm" className={cn("w-full justify-start", c.view === view && "bg-purr-highlight text-content-primary")} onClick={() => c.openView(view)}><Icon className="size-ui-4" />{label}</Button>)}
-        <div className="flex gap-ui-1 border-t border-border-subtle pt-ui-2"><Button variant="ghost" size="sm" className="flex-1" disabled={blocked || !s.remotes.length} onClick={() => { c.network("pull"); }}><ArrowDown className="size-ui-3-5" />Pull</Button><Button variant="ghost" size="sm" className="flex-1" disabled={blocked || !s.remotes.length || !s.head || !s.branch} onClick={() => { c.network("push"); }}><ArrowUp className="size-ui-3-5" />Push</Button></div>
+        <div className="flex gap-ui-1 border-t border-border-subtle pt-ui-2">
+          <span className="min-w-0 flex-1" title={pullHint}><Button variant="ghost" size="sm" className="w-full" aria-description={pullHint} disabled={blocked || !s.remotes.length} onClick={() => { c.network("pull"); }}><ArrowDown className="size-ui-3-5" />Pull</Button></span>
+          <span className="min-w-0 flex-1" title={pushHint}><Button variant="ghost" size="sm" className="w-full" aria-description={pushHint} disabled={blocked || !s.remotes.length || !s.head || !s.branch} onClick={() => { c.network("push"); }}><ArrowUp className="size-ui-3-5" />Push</Button></span>
+        </div>
       </div>
     </>}
     {c.error && s && <div role="alert" className="shrink-0 break-words border-t border-border-subtle px-ui-3 py-ui-2 text-ui-xs text-accent-red">{c.error}</div>}

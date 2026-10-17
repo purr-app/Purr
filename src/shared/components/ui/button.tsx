@@ -5,16 +5,16 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/cn";
 
 const buttonVariants = cva(
-  "ui-focus-ring inline-flex shrink-0 items-center justify-center gap-ui-2 whitespace-nowrap rounded-ui-md font-ui transition-colors duration-ui-fast disabled:pointer-events-none disabled:opacity-ui-disabled",
+  "ui-focus-ring inline-flex shrink-0 items-center justify-center gap-ui-2 whitespace-nowrap rounded-ui-md font-ui transition-colors duration-ui-fast disabled:pointer-events-none disabled:text-content-disabled disabled:shadow-none disabled:[&_svg]:text-content-disabled",
   {
     variants: {
       variant: {
-        default: "bg-action-brand text-content-primary shadow-button hover:bg-action-brand-hover",
-        brand: "bg-action-brand text-content-primary shadow-button hover:bg-action-brand-hover",
-        http: "bg-action-emerald text-purr-base shadow-button hover:bg-action-emerald-hover",
-        graphql: "bg-action-graphql text-purr-base shadow-button hover:bg-action-graphql-hover",
-        secondary: "border border-border-subtle bg-purr-elevated text-content-secondary hover:bg-purr-highlight hover:text-content-primary",
-        toolbar: "border border-border-default bg-purr-highlight text-content-primary hover:bg-purr-muted",
+        default: "bg-action-brand text-content-primary shadow-button hover:bg-action-brand-hover disabled:bg-purr-elevated",
+        brand: "bg-action-brand text-content-primary shadow-button hover:bg-action-brand-hover disabled:bg-purr-elevated",
+        http: "bg-action-emerald text-purr-base shadow-button hover:bg-action-emerald-hover disabled:bg-purr-elevated",
+        graphql: "bg-action-graphql text-purr-base shadow-button hover:bg-action-graphql-hover disabled:bg-purr-elevated",
+        secondary: "border border-border-subtle bg-purr-elevated text-content-secondary hover:bg-purr-highlight hover:text-content-primary disabled:bg-purr-elevated",
+        toolbar: "border border-border-default bg-purr-highlight text-content-primary hover:bg-purr-muted disabled:border-border-subtle disabled:bg-purr-elevated",
         ghost: "text-content-secondary hover:bg-purr-highlight hover:text-content-primary",
       },
       size: {

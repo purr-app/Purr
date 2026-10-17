@@ -11,11 +11,13 @@ export function GitDialogs({ controller: c }: { controller: GitController }) {
     {c.dirtyAction && <Modal title="Uncommitted changes" onClose={() => { if (!c.busy) c.setDirtyAction(null); }} className="w-ui-name-dialog">
       <div className="space-y-ui-4 p-ui-5"><p className="text-ui-sm text-content-secondary">Commit or stash your saved changes before {c.dirtyAction.type === "pull" ? "pulling" : "switching branches"}. Unsaved editors remain local.</p>
         {c.error && <p role="alert" className="text-ui-sm text-accent-red">{c.error}</p>}
-        <div className="flex flex-wrap justify-end gap-ui-2"><Button variant="ghost" disabled={c.busy} onClick={() => c.setDirtyAction(null)}>Cancel</Button>
-          {!("allowDirty" in c.dirtyAction && c.dirtyAction.allowDirty) && <Button variant="secondary" disabled={c.busy} onClick={() => { const action = { ...c.dirtyAction!, allowDirty: true } as GitAction; c.setDirtyAction(null); void c.execute(action); }}>Continue safely</Button>}
-          <Button variant="secondary" disabled={c.busy} onClick={c.commitBeforeContinue}>Commit…</Button><Button variant="brand" disabled={c.busy || !c.status?.head} onClick={() => { void c.stashAndContinue(); }}>Stash and continue</Button>
+        <div className="grid grid-cols-2 gap-ui-2">
+          <Button variant="secondary" className="w-full" disabled={c.busy} onClick={c.commitBeforeContinue}>Commit…</Button>
+          <Button variant="brand" className="w-full" disabled={c.busy || !c.status?.head} onClick={() => { void c.stashAndContinue(); }}>Stash and continue</Button>
+          {!("allowDirty" in c.dirtyAction && c.dirtyAction.allowDirty) && <Button variant="secondary" className="col-span-2 w-full" disabled={c.busy} onClick={() => { const action = { ...c.dirtyAction!, allowDirty: true } as GitAction; c.setDirtyAction(null); void c.execute(action); }}>Continue safely</Button>}
         </div>
-        <p className="m-ui-0 text-ui-xs text-content-tertiary">Continue lets Git preserve compatible changes. If files would be overwritten, the operation stops.</p>
+        <p className="m-ui-0 text-ui-xs text-content-secondary">Continue keeps compatible changes. Git stops if it would overwrite a local change.</p>
+        <div className="flex justify-end border-t border-border-subtle pt-ui-3"><Button variant="ghost" disabled={c.busy} onClick={() => c.setDirtyAction(null)}>Cancel</Button></div>
       </div>
     </Modal>}
     {c.networkAction && <Modal title={`${c.networkAction.type[0].toUpperCase()}${c.networkAction.type.slice(1)} changes`} onClose={() => { if (!c.busy) c.setNetworkAction(null); }} className="w-ui-name-dialog">

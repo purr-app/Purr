@@ -85,9 +85,10 @@
     --border-focus: var(--accent-blue);
 
     --content-primary: #f4f4f5;
-    --content-secondary: #a1a1aa;
-    --content-tertiary: #85858f;
+    --content-secondary: #b0b1bd;
+    --content-tertiary: #9495a2;
     --content-quaternary: #52525b;
+    --content-disabled: #7c7d89;
 
     /* Named accents are reusable; methods and status codes reference these tokens. */
     --accent-emerald: #10b981;
@@ -125,10 +126,12 @@
     --action-brand-border: rgb(59 130 246 / 28%);
 
     /* Diff surfaces and text marks retain contrast on neutral Obsidian panels. */
-    --syntax-diff-removed-line: color-mix(in srgb, var(--accent-red) 14%, var(--purr-code-bg));
-    --syntax-diff-removed-mark: color-mix(in srgb, var(--accent-red) 32%, var(--purr-code-bg));
-    --syntax-diff-added-line: color-mix(in srgb, var(--accent-emerald) 14%, var(--purr-code-bg));
-    --syntax-diff-added-mark: color-mix(in srgb, var(--accent-emerald) 32%, var(--purr-code-bg));
+    --syntax-diff-removed-text: color-mix(in srgb, var(--accent-red) 48%, var(--content-secondary));
+    --syntax-diff-added-text: color-mix(in srgb, var(--accent-emerald) 48%, var(--content-secondary));
+    --syntax-diff-removed-line: color-mix(in srgb, var(--accent-red) 7%, var(--purr-code-bg));
+    --syntax-diff-removed-mark: color-mix(in srgb, var(--accent-red) 18%, var(--purr-code-bg));
+    --syntax-diff-added-line: color-mix(in srgb, var(--accent-emerald) 7%, var(--purr-code-bg));
+    --syntax-diff-added-mark: color-mix(in srgb, var(--accent-emerald) 18%, var(--purr-code-bg));
 
     --method-get: var(--accent-emerald);
     --method-post: var(--accent-blue);
@@ -214,6 +217,7 @@
     --document-tab-drag-threshold: 0.25rem;
     --dialog-width: 44rem;
     --settings-dialog-height: 40rem;
+    --semantic-label-width: 11rem;
     --name-dialog-width: 26rem;
     --notification-width: 26rem;
   --variable-list-max-height: 20rem;
@@ -585,7 +589,8 @@
   }
 
   input.ui-focus-ring:focus-visible,
-  textarea.ui-focus-ring:focus-visible {
+  textarea.ui-focus-ring:focus-visible,
+  .ui-focus-ring-inset:focus-visible {
     border-color: var(--border-focus);
     outline-offset: calc(var(--focus-ring-width) * -1);
   }
@@ -622,10 +627,12 @@
 .purr-git-diff .cm-mergeView { min-height: 100%; background: var(--purr-code-bg); }
 .purr-git-diff .cm-mergeViewEditor { min-width: 0; }
 .purr-git-diff .cm-merge-a .cm-changedLine { background: var(--syntax-diff-removed-line); }
+.purr-git-diff .cm-merge-a .cm-changedText { background: var(--syntax-diff-removed-mark); }
 .purr-git-diff .cm-deletedText { background: var(--syntax-diff-removed-mark); text-decoration: line-through; text-decoration-color: var(--accent-red); }
 .purr-git-diff .cm-merge-b .cm-changedLine { background: var(--syntax-diff-added-line); }
+.purr-git-diff .cm-merge-b .cm-changedText { background: var(--syntax-diff-added-mark); }
 .purr-git-diff .cm-insertedText { background: var(--syntax-diff-added-mark); text-decoration: none; }
 .purr-git-diff .cm-deletedLineGutter { background: var(--accent-red); }
 .purr-git-diff .cm-insertedLineGutter { background: var(--status-success); }
 .purr-git-diff .cm-merge-gap { background: var(--purr-surface); border-color: var(--border-subtle); }
-.purr-git-diff .cm-collapseUnchanged { background: var(--purr-surface); color: var(--content-tertiary); border-color: var(--border-subtle); font-family: var(--font-family-ui); }
+.purr-git-diff .cm-collapsedLines { background: var(--purr-surface); color: var(--content-tertiary); border-color: var(--border-subtle); font-family: var(--font-family-ui); }

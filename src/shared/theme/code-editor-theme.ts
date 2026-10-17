@@ -1,6 +1,18 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
-import { tags } from "@lezer/highlight";
+import { tags, tagHighlighter } from "@lezer/highlight";
+
+// The same parser tags and palette as editors, without mounting an EditorView.
+export const purrReadOnlyHighlighting = tagHighlighter([
+  { tag: [tags.propertyName, tags.typeName, tags.atom], class: "text-syntax-property" },
+  { tag: [tags.variableName, tags.attributeName], class: "text-syntax-attribute" },
+  { tag: tags.tagName, class: "text-syntax-tag" },
+  { tag: [tags.string, tags.attributeValue, tags.character], class: "text-syntax-string" },
+  { tag: tags.number, class: "text-syntax-number" },
+  { tag: [tags.bool, tags.null, tags.keyword], class: "text-syntax-boolean" },
+  { tag: [tags.comment, tags.meta, tags.bracket], class: "text-content-tertiary" },
+  { tag: tags.punctuation, class: "text-content-secondary" },
+]);
 
 // All values come from the Purr theme. CodeMirror owns its layout and measurement.
 export const purrCodeTheme = EditorView.theme(
