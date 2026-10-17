@@ -1,4 +1,5 @@
 pub mod app;
+pub mod git;
 pub mod http;
 pub mod importing;
 pub mod observability;

@@ -7,6 +7,7 @@ import { serializeResource, deserializeResourceFile, normalizeLegacyResource, no
 import { normalizeRequestAuth, createRequestAuth, type OAuthToken, type RequestAuth } from "../features/request-workbench/model/request-auth";
 import { createRequestBody, type RequestBodyField } from "../features/request-workbench/model/request-body";
 import type { RequestDraft, RequestHeader } from "../features/request-workbench/model/request";
+import { applyRequestQueryParamsToUrl, separateRequestQueryParams } from "../features/request-workbench/model/request";
 import { createGraphqlDocument, createHttpDocument, createSchemaDocument, createWorkspace, getEffectiveVariableValues, isDocumentDirty, isExtensionDocument, isRequestDocument, validateWorkspace,
   type ExtensionDocument, type Workspace, type WorkspaceDocument, type RequestDocument, type SchemaDocument, type Variable } from "../features/workspaces/model/workspace";
 import type { SecretBatch, SecureStore } from "./ports/credentials";
@@ -56,6 +57,10 @@ function parseWorkspaceAuthRuntime(value: unknown, workspace: string): Workspace
   return { version: 1, entries };
 }
 
+function definitionText(resource: ProjectResource, version: 1 | 2): string {
+  const path = resource.kind === "schema" ? `schemas/${resource.id}.graphql` : resource.kind === "api-schema" ? `schemas/${resource.id}.openapi` : undefined;
+  return serializeResource(resource, path, version) + (resource.kind === "schema" ? resource.pinnedSdl ?? "" : resource.kind === "api-schema" ? resource.document : "");
+}
 async function valueHash(value: unknown): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -246,8 +251,9 @@ export async function restoreGlobalVariables(value: unknown, secure: SecureStore
     throw new Error("Global variables must be static.");
   return Promise.all(definitions.map((variable) => variableFromDefinition(variable, secure, hydrate)));
 }
-async function requestDefinition(document: RequestDocument, workspace: string, secure: SecureStore, assets: Record<string, string>): Promise<RequestDefinition> {
+async function requestDefinition(document: RequestDocument, workspace: string, secure: SecureStore, assets: Record<string, string>, previous?: RequestDefinition): Promise<RequestDefinition> {
   const draft = document.savedRequest ?? document.request;
+  const query = separateRequestQueryParams(draft.url, draft.params);
   const fileRef = async (file: File) => {
     const encoded = await encodeFile(file);
     assets[`assets/${encoded.contentDigest}.bin`] = encoded.record.base64;
@@ -264,19 +270,27 @@ async function requestDefinition(document: RequestDocument, workspace: string, s
     ...(draft.tracing ? { tracing: draft.tracing } : {}),
     ...(draft.settings ? { settings: draft.settings } : {}),
     ...(draft.tracePropagation ? { tracePropagation: draft.tracePropagation } : {}),
-    method: draft.method, url: draft.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(draft.params), pathParams: pairs(draft.pathParams ?? []),
+    method: draft.method, url: query.url, ...(draft.documentation ? { documentation: draft.documentation } : {}), params: pairs(query.params), pathParams: pairs(draft.pathParams ?? []),
     headers: await Promise.all(draft.headers.filter((header) => !header.readOnly && (header.name || header.value || header.secretRef))
       .map((header) => headerToDefinition(header, secure, workspace, `requests/${document.id}/saved/headers`))), body: payload,
     auth: await authToDefinition(draft.auth, secure, workspace, `requests/${document.id}/saved`), ...(draft.environmentId ? { environmentId: draft.environmentId } : {}),
     ...(!draft.workspace.headersEnabled || !draft.workspace.authEnabled || !draft.useCookieJar || Object.values(draft.workspace.headerOverrides).some((value) => !value)
       ? { overrides: { headers: draft.workspace.headersEnabled, auth: draft.workspace.authEnabled, cookies: draft.useCookieJar,
         excludedHeaderIds: Object.keys(draft.workspace.headerOverrides).filter((id) => draft.workspace.headerOverrides[id] === false).sort() } } : {}) };
-  return document.kind === "graphql" ? { ...common, kind: "graphql", graphql: { query: draft.graphql!.query, variables: draft.graphql!.variables,
+  const definition: RequestDefinition = document.kind === "graphql" ? { ...common, kind: "graphql", graphql: { query: draft.graphql!.query, variables: draft.graphql!.variables,
     ...(draft.graphql!.operationName ? { operation: draft.graphql!.operationName } : {}), ...(draft.graphql!.schemaId ? { schemaId: draft.graphql!.schemaId } : {}) } }
     : { ...common, kind: "http" };
+  if (previous) {
+    const query = separateRequestQueryParams(previous.url, previous.params.map((row, index) => ({ ...row, key: row.name, id: `param-${index + 1}` })));
+    // Preserve existing canonical bytes and session hashes on UI-only saves. Adopt
+    // the separated representation when the saved request definition next changes.
+    const normalized = { ...previous, url: query.url, params: pairs(query.params) };
+    if (serializeResource(normalized) === serializeResource(definition)) return previous;
+  }
+  return definition;
 }
 
-export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { transientAttachments?: TransientAttachments; attachments?: AttachmentPreparation; includeExecutions?: boolean; globalVariables?: readonly Variable[]; localOnlyBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
+export async function projectWorkspace(workspace: Workspace, source: SecureStore, options: { transientAttachments?: TransientAttachments; attachments?: AttachmentPreparation; includeExecutions?: boolean; globalVariables?: readonly Variable[]; localOnlyBaseline?: Project; canonicalBaseline?: Project; sourceVersion?: ProjectFormatVersion; legacyRevisions?: Record<string, string>; sourceRevisions?: Record<string, string> } = {}): Promise<{ project: Project; local: LocalRecord[]; assets: Record<string, string>; secrets: SecretBatch }> {
   const secure = source instanceof SecretPreparationStore ? source : new SecretPreparationStore(source);
   // Historical tabs are views of local executions, never saved documents or drafts.
   const historicalIds = new Set(workspace.documents.filter((document) => isRequestDocument(document) && document.historical).map((document) => document.id));
@@ -320,6 +334,7 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
     auth: await Promise.all(auth.map(async (entry) => ({ ...entry, value: await authFromDefinition(entry.config, canonicalReader, false) }))),
     headers: await Promise.all(headers.map(async (header) => ({ ...await headerFromDefinition(header, canonicalReader, false), scope: header.scope }))),
   };
+  local.push({ table: "workspace_local_state", id: "editor-conflicts", protection: "encrypted", value: { version: 1, conflicts: workspace.editorConflicts ?? {} } });
   const identityVariables = getEffectiveVariableValues(workspace, options.globalVariables ?? []);
   // Only acquired tokens are runtime state. Saved credentials remain canonical
   // definitions backed by SecureStore and inactive editor forms stay in session state.
@@ -327,18 +342,19 @@ export async function projectWorkspace(workspace: Workspace, source: SecureStore
   for (const document of workspace.documents) {
     if (isRequestDocument(document)) {
       const definition = document.saved ? baseline?.resources.find((item): item is RequestDefinition => item.id === document.id && (item.kind === "http" || item.kind === "graphql"))
-        ?? (!baseline ? await requestDefinition(document, workspace.id, secure, assets) : undefined) : undefined;
+        ?? (!baseline ? await requestDefinition(document, workspace.id, secure, assets,
+          options.canonicalBaseline?.resources.find((item): item is RequestDefinition => item.id === document.id && (item.kind === "http" || item.kind === "graphql"))) : undefined) : undefined;
       if (definition) resources.push(definition);
       const hasDraft = !document.saved || isDocumentDirty(document);
       if (hasDraft) {
         const draft = await protectRuntime({ ...document, lastResponse: null, sentAt: null }, secure, workspace.id, `drafts/${document.id}`) as Record<string, unknown>;
         // The portable baseline tracks external edits; it is not a runtime secret snapshot.
         local.push({ table: "drafts", id: document.id, value: await encodeFiles({ ...compactLocalRequestDocument(draft) as Record<string, unknown>, base: baseline ? null : definition ?? null,
-          ...(baseline && definition ? { baseFingerprint: await valueHash(serializeResource(definition, undefined, 1)) } : {}),
+          ...(baseline && definition ? { baseFingerprint: await valueHash(definitionText(definition, 1)) } : {}),
         }, attachments, options.attachments, options.transientAttachments) });
       }
       local.push({ table: "document_session_state", id: document.id, value: { ui: document.ui, ...(isRequestDocument(document) ? { responseStorage: document.responseStorage ?? "inherit" } : {}), createdAt: document.createdAt, updatedAt: document.updatedAt, sentAt: document.sentAt,
-        ...(definition && !hasDraft ? { ...(baseline ? { definitionHash: await valueHash(serializeResource(definition, undefined, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definitionHash: await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) }),
+        ...(definition && !hasDraft ? { ...(baseline ? { definitionHash: await valueHash(definitionText(definition, 1)), legacySourceRevision: options.legacyRevisions?.[document.id] } : { definitionHash: await valueHash(definitionText(definition, options.sourceVersion ?? 2)) }),
           editor: await encodeFiles(compactLocalRequest(await protectRuntime(document.request, secure, workspace.id, `editor/${document.id}`)), attachments, options.attachments, options.transientAttachments) } : {}) } });
       if (options.includeExecutions !== false && document.lastResponse) local.push({ table: "request_executions", id: `${document.id}-${document.lastResponse.timeline.startedAtMs}`, protection: responseRecordProtection(document.lastResponse), value: { documentId: document.id, response: responseRecordProtection(document.lastResponse) === "plaintext" ? await protectResponseSnapshot(document.lastResponse, secure, workspace.id, `executions/${document.id}-${document.lastResponse.timeline.startedAtMs}`) : responseForPersistence(document.lastResponse) } });
     } else if (document.kind === "schema") {
@@ -417,11 +433,12 @@ async function requestFromDefinition(resource: RequestDefinition, secure: Secure
     rows.push({ id: "field-empty", key: "", value: "", enabled: false });
     if (resource.body.type === "form-data") body.formData = rows; else body.urlEncoded = rows;
   }
-  const draft: RequestDraft = { ...document.request, method: resource.method, url: resource.url, documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure, hydrate),
+  const query = separateRequestQueryParams(resource.url, resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })));
+  const draft: RequestDraft = { ...document.request, method: resource.method, url: applyRequestQueryParamsToUrl(query.url, query.params), documentation: resource.documentation ?? "", body, auth: await authFromDefinition(resource.auth, secure, hydrate),
     tracing: resource.tracing,
     settings: resource.settings,
     tracePropagation: resource.tracePropagation,
-    params: [...resource.params.map((row, index) => ({ id: `param-${index}`, key: row.name, value: row.value, enabled: row.enabled })), { id: "param-empty", key: "", value: "", enabled: false }],
+    params: [...query.params.map((row, index) => ({ ...row, id: `param-${index}` })), { id: "param-empty", key: "", value: "", enabled: false }],
     pathParams: resource.pathParams.map((row, index) => ({ id: `path-param-${index}`, key: row.name, value: row.value, enabled: row.enabled })),
     headers: [...await Promise.all(resource.headers.map((header) => headerFromDefinition(header, secure, hydrate))), { id: "header-empty", name: "", value: "", enabled: false }],
     useCookieJar: resource.overrides?.cookies ?? true, environmentId: resource.environmentId,
@@ -457,6 +474,8 @@ export async function restoreWorkspace(
   workspace.requestConfig.tracePropagation = project.workspace.tracePropagation;
   const get = (table: LocalRecord["table"], id: string) => records.find((item) => item.table === table && item.id === id)?.value;
   const attachments = new Map(records.filter((item) => item.table === "attachments").map((item) => [item.id, item.value]));
+  const conflictsRecord = get("workspace_local_state", "editor-conflicts") as { version?: number; conflicts?: Workspace["editorConflicts"] } | undefined;
+  workspace.editorConflicts = conflictsRecord?.version === 1 && conflictsRecord.conflicts && typeof conflictsRecord.conflicts === "object" ? { ...conflictsRecord.conflicts } : {};
   const state = get("workspace_local_state", "state") as { ui: Workspace["ui"]; activeEnvironmentId: string | null; responseStorage?: "plaintext" | "encrypted" } | undefined;
   if (state) { workspace.ui = state.ui; workspace.activeEnvironmentId = state.activeEnvironmentId; workspace.responseStorage = state.responseStorage === "encrypted" ? "encrypted" : "plaintext"; }
   else workspace.ui = { ...workspace.ui, openDocumentIds: [], activeDocumentId: null };
@@ -508,22 +527,36 @@ export async function restoreWorkspace(
   for (const record of records.filter((item) => item.table === "drafts")) {
     const draft = await resolveRuntime(expandLocalRequestDocument(decodeFiles(record.value, attachments, workspace.id, loadAttachment, options.transientAttachments?.files)), secure, hydrate) as (RequestDocument | SchemaDocument | ExtensionDocument) & { base?: ProjectResource | null; baseFingerprint?: string };
     const index = workspace.documents.findIndex((document) => document.id === draft.id);
-    if (index < 0 && !draft.saved) workspace.documents.push(draft);
-    else if (index >= 0 && (isRequestDocument(draft) || isExtensionDocument(draft))) {
-      const definition = project.resources.find((item) => item.id === draft.id);
-      if (draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)))
-        throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
+    const incoming = project.resources.find((item) => item.id === draft.id);
+    if (index < 0) {
+      const recoveryId = incoming ? crypto.randomUUID() : draft.id;
+      if (draft.saved) workspace.editorConflicts![recoveryId] = { version: 1, base: draft.base ?? null, incoming: incoming ?? null };
+      workspace.documents.push({ ...draft, id: recoveryId, saved: false });
+      if (incoming) workspace.ui = { ...workspace.ui, openDocumentIds: workspace.ui.openDocumentIds.map((id) => id === draft.id ? recoveryId : id), activeDocumentId: workspace.ui.activeDocumentId === draft.id ? recoveryId : workspace.ui.activeDocumentId };
+    } else if (isRequestDocument(draft) || isExtensionDocument(draft)) {
+      const canonical = workspace.documents[index];
+      const definition = incoming;
       const normalizedBase = draft.base && options.sourceVersion === 1 ? resourceSchema.parse(normalizeLegacyResource(draft.base as unknown as Record<string, unknown>)) : draft.base;
-      const baseAtCanonicalLocation = normalizedBase && definition
-        ? { ...normalizedBase, ...(definition.folderId ? { folderId: definition.folderId } : { folderId: undefined }) }
-        : draft.base;
-      if (baseAtCanonicalLocation && definition && serializeResource(baseAtCanonicalLocation, undefined, options.sourceVersion ?? 2) !== serializeResource(definition, undefined, options.sourceVersion ?? 2))
-        throw new Error("A saved request changed on disk while it has local edits. Local edits are preserved; resolve or restore the external change before reloading.");
-      // documents/ owns hierarchy. Preserve the dirty request editor state but
-      // always take its location from the canonical filesystem projection.
-      workspace.documents[index] = { ...draft, ...(definition?.folderId ? { folderId: definition.folderId } : { folderId: undefined }) };
+      const baseAtCanonicalLocation = normalizedBase && definition ? { ...normalizedBase, folderId: definition.folderId } : normalizedBase;
+      const changed = Boolean(draft.baseFingerprint && definition && draft.baseFingerprint !== await valueHash(definitionText(definition, options.sourceVersion ?? 2)))
+        || Boolean(baseAtCanonicalLocation && definition && definitionText(baseAtCanonicalLocation, options.sourceVersion ?? 2) !== definitionText(definition, options.sourceVersion ?? 2));
+      if (changed) workspace.editorConflicts![draft.id] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
+      if (isRequestDocument(draft) && isRequestDocument(canonical) && draft.kind === canonical.kind) {
+        workspace.documents[index] = { ...draft, name: canonical.name, savedRequest: canonical.savedRequest, folderId: canonical.folderId };
+      } else if (isExtensionDocument(draft) && isExtensionDocument(canonical)) {
+        workspace.documents[index] = { ...draft, name: canonical.name, savedConfig: canonical.savedConfig, savedConfigVersion: canonical.savedConfigVersion, folderId: canonical.folderId };
+      } else {
+        const recoveryId = crypto.randomUUID();
+        workspace.editorConflicts![recoveryId] = { version: 1, base: normalizedBase ?? null, incoming: definition ?? null };
+        delete workspace.editorConflicts![draft.id];
+        workspace.documents.push({ ...draft, id: recoveryId, saved: false, name: `${draft.name} (recovered)` });
+        workspace.ui = { ...workspace.ui, openDocumentIds: workspace.ui.openDocumentIds.map((id) => id === draft.id ? recoveryId : id), activeDocumentId: workspace.ui.activeDocumentId === draft.id ? recoveryId : workspace.ui.activeDocumentId };
+
+      }
+      if (!isDocumentDirty(workspace.documents[index])) delete workspace.editorConflicts![draft.id];
     }
   }
+
   const canonicalFolderIds = new Set((workspace.extraResources ?? [])
     .filter((resource) => resource.kind === "folder")
     .map((resource) => resource.id));
@@ -550,8 +583,8 @@ export async function restoreWorkspace(
     }
     if (isRequestDocument(result)) {
       const definition = project.resources.find((item) => item.id === result.id);
-      const sessionMatches = session?.definitionHash && definition ? session.definitionHash === await valueHash(serializeResource(definition, undefined, options.sourceVersion ?? 2)) : session?.definition && definition && (() => {
-        try { return serializeResource(deserializeResourceFile(session.definition).value, undefined, options.sourceVersion ?? 2) === serializeResource(definition, undefined, options.sourceVersion ?? 2); }
+      const sessionMatches = session?.definitionHash && definition ? session.definitionHash === await valueHash(definitionText(definition, options.sourceVersion ?? 2)) : session?.definition && definition && (() => {
+        try { return definitionText(deserializeResourceFile(session.definition).value, options.sourceVersion ?? 2) === definitionText(definition, options.sourceVersion ?? 2); }
         catch { return false; }
       })();
       if (session?.editor && definition && sessionMatches && !records.some((record) => record.table === "drafts" && record.id === result.id)) {

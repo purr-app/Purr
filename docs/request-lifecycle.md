@@ -92,6 +92,8 @@ Path params are separate from query rows in `RequestDraft` and `RequestDefinitio
 
 The editable representation is an ordered array of `{id,key,value,enabled}` rows. Order, disabled rows, empty working row, and duplicate names are preserved in runtime. The canonical projection drops only the synthetic empty row and preserves duplicates and enabled state.
 
+Canonical HTTP/GraphQL YAML stores the URL template without its query string (retaining any fragment); query values live only in `params`. The editor still displays the full URL reconstructed from enabled rows. Older files with mirrored or URL-only queries remain readable and adopt this representation when their saved request definition next changes; UI-only saves preserve their existing encoding. Explicit rows, including disabled rows, own their names, and unmatched URL-only rows are retained. This is a compatible representation within the existing format, not a new format version or a change to transport composition.
+
 `getRequestQueryParamsFromUrl` keeps the table synchronized with the URL query. Editing the table rewrites the URL query through `URLSearchParams`; serialization therefore applies standard percent encoding and preserves repeated enabled pairs. URL variables that expand to a query string are re-read during `resolveRequestEnvironment`; generated rows are merged without replacing an existing same-name row.
 
 An API-key auth scheme in query mode contributes one managed read-only effective row. `getRequestQueryParams` suppresses a same-name manual row in the effective view, while the stored manual row remains intact. Disabled rows are never sent.

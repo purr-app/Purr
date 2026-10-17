@@ -1,3 +1,4 @@
+import type { GitPort } from "./git";
 import type { SecretTransferPort } from "./secret-transfer";
 import type {
   ImportSource,
@@ -69,6 +70,7 @@ export type RuntimePlatform = Readonly<{
 }>;
 
 export type PlatformAdapters = Readonly<{
+  git: GitPort;
   observability: ObservabilityPort;
   persistenceBackend: PersistencePort;
   secureStore: SecureStore;

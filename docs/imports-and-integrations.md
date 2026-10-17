@@ -12,7 +12,8 @@ This document distinguishes working import/export behavior from architectural ex
 | Duplicate a Purr document | Working inside a workspace |
 | Native `ImportAdapter` contract and registry | Implemented boundary |
 | Validate and persist a `NormalizedImportResult` | Implemented application path |
-| New-workspace import UI | Working for file, folder, URL, and pasted text |
+| New-workspace import UI | Working for file, folder, URL, pasted text, and Git repository clone |
+| Git source control | Desktop init, staging, commits, branches, fetch/pull/push, stashes, semantic/YAML diffs and merge conflict editing; see [Git integration](git.md) |
 | Open exported/copied Purr project folder | Desktop New workspace → Import → Choose folder instead; preserves identity and SecretRefs |
 | OpenAPI 3.0/3.1 adapter | Working first version |
 | Postman Collection v2.0/v2.1 and environment JSON adapters | Working; scripts and saved response examples are reported as unsupported |
@@ -279,3 +280,5 @@ registrar.menuItems.register({
 ```
 
 The standard **New workspace → Import** flow recognizes Purr-native project directories and selected `purr.yaml` files before trying the existing collection importers. Choose folder instead selects an exported/copied/Git directory. Non-Purr files and folders continue through OpenAPI/Postman import; invalid Purr projects show an error rather than silently falling back. This registers the selected external directory in place after canonical validation and revision checks. Exported/copy/Git directories retain workspace identity for subsequent encrypted secret import. Existing same-ID workspaces in another directory are never overwritten or silently reidentified.
+
+The shared **Path or URL** field recognizes HTTPS/SSH repository URLs ending in `.git` and changes the submit action to Clone; there is no separate import tab. The native Purr projects directory is the default, with a read-only location display and optional folder picker for a custom destination. Removing the `.git` URL switches back to ordinary import. Clone validates a ready Purr project before publishing and registers it through the same open-directory path. Empty/non-Purr repositories cannot replace an existing workspace; use New workspace and Add remote for a new project. Existing project documents are never merged with another repository by cloning.

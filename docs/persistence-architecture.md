@@ -53,6 +53,9 @@ In canonical format v2, protected literal and mixed-expression values never belo
 | Extension-document draft / dirty working copy | `ExtensionDocument.config` | public sanitized `drafts` + protected runtime refs | No | No by contract | Preserves edits and saved baseline even when the owning module is unavailable |
 | Inactive body/auth editor modes | `RequestDraft` | public sanitized `document_session_state.editor` with protected references | No | Maybe | UX state, not active definition |
 | Open/preview/active tabs | `Workspace.ui` | public `workspace_local_state/state` | No | No | Machine/session navigation |
+| Editor conflict base/incoming | `Workspace.editorConflicts` | encrypted version-1 `workspace_local_state/editor-conflicts` | No | References only | Review dirty editors without overwriting incoming definitions |
+| Interrupted Git operation | native Git adapter | encrypted version-1 `workspace_local_state/git-operation` | No | Potentially | Original index/dirty bytes and fingerprints for guarded restart/abort |
+| Pending project move | native persistence | encrypted version-1 `workspace_local_state/directory-relocation` | No | Paths only | Whole-directory publication and conditional cleanup |
 | Sidebar width/order/open state | `Workspace.ui` | public `workspace_local_state/state` | No | No | Local layout preference |
 | Request/response layout and split ratios | `Workspace.ui` | public `workspace_local_state/state` | No | No | Local layout preference |
 | Active environment | `Workspace.activeEnvironmentId` | public `workspace_local_state/state` | No | No | Machine/session choice |
@@ -327,3 +330,19 @@ HTTP/GraphQL resources accept an optional, strictly validated `settings` object 
 `SecretTransferPort` is composed beside persistence; `secret_transfer` performs bounded native file dialogs, encryption, metadata-only inventory/preview and transactional import. Browser adapters explicitly report unsupported. A preview is a short-lived window/workspace-bound native capability, not a frontend payload of values. Commit validates both canonical revisions and destination secret revisions through the existing coordinator. `WorkspacePersistence.runSecretTransfer` serializes import with saves/history and invalidates cached reads even after a lost reply; imported refs clear only unchanged editor buffers, preserving pending edits.
 
 S06 adds no SQLite table, schema upgrade, root-key change or legacy workspace migration. Receipts, CAS revisions, secret rows and scoped keys keep their existing ownership. Recovery reads a versioned detached ciphertext bundle, not arbitrary SQLite snapshots. Source keys exist transiently and never replace active destination keys. See [format, limits and recovery procedure](secret-transfer-and-recovery.md).
+
+### Choosing a new project directory
+
+New workspace creates a canonical project directly in the selected new/empty directory through `project_directory`. The native adapter validates its v2 files and uses the existing revision-checked commit coordinator for files, encrypted editor state, credentials and registry publication. Its default comes from the native profile's `projects/<workspace-id>` directory. The UI never assembles a platform-specific app-data path. Custom directories cannot overlap another workspace or private application storage. Creation never imports or replaces a nonempty directory.
+
+### Moving an existing project
+
+Workspace settings moves the entire project directory, including `.git`, hidden files, empty directories, symlinks and binary assets. The encrypted version-1 `workspace_local_state/directory-relocation` record owns the source, target, staging path and content fingerprints. File copying runs outside the SQLite lock under a per-workspace mutation lease. Publication switches the registry and watcher only after the copy and unchanged source have been verified; original files are removed only while their fingerprints still match. Explicit destinations remain user-owned.
+
+Startup resumes already-verifiable publication/cleanup. An interrupted or externally changed copy stays recoverable through Resume move or Cancel pending move. Cancelling before registry publication keeps the original active and preserves temporary copies. A published project can retry cleanup or choose Keep both directories to end recovery without deletion. Replaced root symlinks are rejected and externally changed originals are retained. Canonical saves and Git mutations cannot bypass a pending relocation.
+
+### Git recovery and index changes
+
+The encrypted `workspace_local_state/git-operation` checkpoint gates canonical saves while Git may have a partial project. It does not change `protectedState` or the availability of credential keys. Startup uses its valid pre-operation project files with local editor state; finishing or aborting rescans and clears this gate even if canonical file revisions are unchanged. Recovery commands skip the ordinary pre-operation flush so a pending checkpoint cannot prevent its own completion.
+
+Stage/unstage shares the persistence queue but changes only the Git index. It does not trigger a canonical rescan or disable workspace interaction. File-changing operations still flush and reconcile normally. Stash completion validates the complete working project, keeping the restored staged subset independent of untracked binary assets; commit and merge completion validate their complete staged tree. Default cloning publishes under the native managed projects root using the validated canonical workspace ID. Directory inspection/open also accepts that exact managed path with a matching manifest identity; every other private application directory remains excluded. No SQLite or canonical format migration is introduced.

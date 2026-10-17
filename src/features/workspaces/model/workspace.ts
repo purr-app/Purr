@@ -108,7 +108,11 @@ export function getDocumentBadge(document: WorkspaceDocument) {
 export function getDocumentGroup(document: WorkspaceDocument) {
   return !document.saved ? "Drafts" : document.kind === "schema" ? "Schema Connections" : "Documents";
 }
+export type EditorConflict = { version: 1; base: ProjectResource | null; incoming: ProjectResource | null };
 export type Workspace = {
+  /** Local recovery metadata; never part of the canonical project. */
+  editorConflicts?: Record<string, EditorConflict>;
+  externalRevision?: string;
   schemaVersion: 1;
   /** Ephemeral capabilities; never project into canonical definitions. */
   projectFormatVersion?: 1 | 2;
@@ -140,6 +144,9 @@ export type Workspace = {
     settingsTabActive: boolean;
     variablesTabOpen: boolean;
     variablesTabActive: boolean;
+    /** Legacy local UI flags are read for compatibility; Git is a rail activity. */
+    gitTabOpen?: boolean;
+    gitTabActive?: boolean;
     sidebarOpen: boolean;
     sidebarActivity: SidebarActivity;
     sidebarWidth: number;
@@ -238,7 +245,7 @@ export function createExtensionDocument(extensionType: string, name: string, con
     configVersion, config: structuredClone(config), savedConfigVersion: null, savedConfig: null, ui: {} };
 }
 
-export type SidebarActivity = "documents" | "history";
+export type SidebarActivity = "documents" | "history" | "git";
 
 export function toggleWorkspaceSidebar(workspace: Workspace): Workspace {
   return { ...workspace, ui: { ...workspace.ui, sidebarOpen: !workspace.ui.sidebarOpen } };
@@ -260,7 +267,7 @@ export function createWorkspace(name = "Personal", id: string = crypto.randomUUI
       sidebarWidth: 15, sidebarActivity: "documents",
       sidebarItemOrder: [],
       documentOrder: [],
-      variablesTabOpen: false, variablesTabActive: false,
+      variablesTabOpen: false, variablesTabActive: false, gitTabOpen: false, gitTabActive: false,
       view: "canvas", lastRequestKind: "http", splitRatios: { horizontal: 50, vertical: 50 },
     },
   };
@@ -272,7 +279,7 @@ export function openDocument(workspace: Workspace, id: string): Workspace {
   return { ...workspace, ui: { ...workspace.ui,
     openDocumentIds: workspace.ui.openDocumentIds.includes(id) ? workspace.ui.openDocumentIds : [...workspace.ui.openDocumentIds, id],
     ...(document.kind === "schema" ? { lastGraphqlSchemaId: document.id } : isRequestDocument(document) && document.request.graphql?.schemaId ? { lastGraphqlSchemaId: document.request.graphql.schemaId } : {}),
-    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
+    activeDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, sidebarActivity: workspace.ui.sidebarActivity === "git" ? "documents" : workspace.ui.sidebarActivity, gitTabActive: false, lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind,
   } };
 }
 
@@ -287,7 +294,7 @@ export function previewDocument(workspace: Workspace, id: string): Workspace {
   const openDocumentIds = canReplace
     ? workspace.ui.openDocumentIds.map((value) => value === preview!.id ? id : value)
     : [...workspace.ui.openDocumentIds, id];
-  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false,
+  return { ...workspace, ui: { ...workspace.ui, openDocumentIds, activeDocumentId: id, previewDocumentId: id, sidebarActivity: workspace.ui.sidebarActivity === "git" ? "documents" : workspace.ui.sidebarActivity, cookiesTabActive: false, settingsTabActive: false, variablesTabActive: false, gitTabActive: false,
     lastRequestKind: isRequestDocument(document) ? document.kind : workspace.ui.lastRequestKind } };
 }
 
@@ -700,7 +707,9 @@ export function validateWorkspace(value: unknown): Workspace {
         && workspace.ui.cookiesTabActive !== true && workspace.ui.settingsTabActive !== true,
       view: ["canvas", "horizontal", "vertical"].includes(workspace.ui.view) ? workspace.ui.view : "canvas",
       sidebarOpen: workspace.ui.sidebarOpen !== false,
-      sidebarActivity: workspace.ui?.sidebarActivity === "history" ? "history" : "documents",
+      sidebarActivity: workspace.ui?.sidebarActivity === "git" ? "git" : workspace.ui?.sidebarActivity === "history" ? "history" : "documents",
+      gitTabOpen: false,
+      gitTabActive: false,
       sidebarWidth: Math.max(12, Math.min(28, typeof workspace.ui.sidebarWidth === "number" ? workspace.ui.sidebarWidth : 15)),
       sidebarItemOrder: Array.isArray(workspace.ui.sidebarItemOrder)
         ? [...new Set(workspace.ui.sidebarItemOrder)].filter((id) => ids.has(id) || (workspace.extraResources ?? []).some((resource) => resource.kind === "folder" && resource.id === id))

@@ -59,6 +59,15 @@ struct State {
     result: Option<ResultCiphers>,
     lock: Option<File>,
 }
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(lock) = &self.lock {
+            // Closing alone can leave the lock held by a concurrently forked
+            // child until exec. The manager owns the lock, not those children.
+            let _ = lock.unlock();
+        }
+    }
+}
 pub struct KeyManager {
     directory: PathBuf,
     app_id: String,
@@ -250,7 +259,7 @@ impl KeyManager {
             }
             lock.try_lock()
                 .map_err(|_| ProtectedError::unavailable("root-vault-in-use"))?;
-            state.lock = Some(lock); // retained until the manager and all owners exit
+            state.lock = Some(lock); // retained until the manager exits
         }
         let inventory = EncryptedInventory::inspect(&self.directory)?;
         let mut metadata = self.read_metadata()?;
@@ -762,6 +771,34 @@ mod tests {
         drop(first);
         second.retry().unwrap();
         assert_eq!(p.writes.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn exiting_manager_releases_lock_even_when_a_descriptor_is_inherited() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(Provider::default());
+        let first = manager(dir.path(), &p);
+        first.open().unwrap();
+        // A concurrently spawned child can retain the open file description
+        // between fork and exec, even though the descriptor is close-on-exec.
+        let inherited = first
+            .state
+            .lock()
+            .unwrap()
+            .lock
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .unwrap();
+        let second = manager(dir.path(), &p);
+        assert_eq!(error(second.open()).code, "root-vault-in-use");
+        drop(first);
+        second.retry().unwrap();
+        assert_eq!(p.writes.load(Ordering::Relaxed), 1);
+        drop(inherited);
+        assert_eq!(
+            error(manager(dir.path(), &p).open()).code,
+            "root-vault-in-use"
+        );
     }
     #[test]
     fn resumes_every_published_migration_state_without_changing_key() {

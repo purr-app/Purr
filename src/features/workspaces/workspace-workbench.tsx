@@ -1,3 +1,7 @@
+import { GitSidebar } from "../git/git-sidebar";
+import { GitWorkbench } from "../git/git-workbench";
+import { GitDialogs } from "../git/git-dialogs";
+import { useGitWorkspace } from "../git/use-git-workspace";
 import { secretRef } from "../../storage/secrets";
 import { resolveResponseStoragePolicy } from "../../application/response-storage-policy";
 import { workspaceHttpTransport } from "../request-workbench/services/workspace-http-transport";
@@ -37,6 +41,7 @@ import { CommandPalette, type PaletteAction } from "./components/command-palette
 import { DocumentTabs } from "./components/document-tabs";
 import { createDynamicVariable, VariablesExplorer, type VariableScope } from "./components/variables-explorer";
 import { DynamicVariableResolutionError, resolveDynamicVariables } from "./services/dynamic-variable-resolver";
+import { NewWorkspaceDialog } from "./components/new-workspace-dialog";
 import { NameDialog } from "./components/name-dialog";
 import { ImportWorkspaceDialog } from "./components/import-workspace-dialog";
 import { WorkspaceHeader } from "./components/workspace-header";
@@ -67,7 +72,6 @@ import {
   createGraphqlDocument,
   createSchemaDocument,
   createExtensionDocument,
-  createWorkspace,
   discardDocument,
   deleteDocument,
   duplicateDocument,
@@ -153,7 +157,8 @@ export function WorkspaceWorkbench() {
   const extensions = useExtensionRegistry();
   const { persistence } = rootServices;
   const historyRevision = useSyncExternalStore(persistence.history?.subscribe ?? noHistorySubscription, persistence.history?.getSnapshot ?? noHistoryRevision);
-  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets } = useWorkspaces();
+  const { store, setStore, updateWorkspace, deleteWorkspace, loadError, saveError, saveNeedsRecovery, saving, gitWorking, runGitOperation, retry, retrySave, flush, saveExplicitWorkspace, retryProtectedStorage, applyImportedSecrets } = useWorkspaces();
+  const liveStore = useRef(store); liveStore.current = store;
   useEffect(() => updates.controller.beforeRestart(flush), [updates.controller, flush]);
   const [upgradeConfirmation, setUpgradeConfirmation] = useState<{ run: () => Promise<void>; cancel: () => void } | null>(null);
   const [explicitSaving, setExplicitSaving] = useState(false);
@@ -206,12 +211,16 @@ export function WorkspaceWorkbench() {
     });
   }, [saveError, saveNeedsRecovery, retryingSave, retrySave, notify, dismiss]);
   const workspace = store?.workspaces.find((item) => item.id === store.activeWorkspaceId);
+  const gitActive = workspace?.ui.sidebarActivity === "git";
+  const openGit = () => { updates.leaveTab(); if (workspace) updateWorkspace(workspace.id, (current) => ({ ...current, ui: { ...current.ui, sidebarActivity: "git", sidebarOpen: true } })); };
+  const gitController = useGitWorkspace(workspace, runGitOperation, openGit);
+
   const services = useMemo(() => workspace?.id ? {
     ...rootServices,
     httpTransport: workspaceHttpTransport(rootServices.httpTransport, workspace.id, workspace.responseStorage),
   } : rootServices, [rootServices, workspace?.id, workspace?.responseStorage]);
   const workspaceStatus = workspace ? persistence.getWorkspaceStatus(workspace.id) : undefined;
-  const writable = !workspaceStatus || workspaceStatus.publicWritable;
+  const writable = (!workspaceStatus || workspaceStatus.publicWritable) && !gitWorking;
   useEffect(() => {
     setVariableScope("effective");
     setVariableSelection(null);
@@ -305,7 +314,15 @@ export function WorkspaceWorkbench() {
       updateWorkspace(workspaceId, (current) => ({ ...current, cookies: cookieJar.list() }));
     });
   }, [cookieJar, updateWorkspace, workspace?.id]);
+  useEffect(() => {
+    if (!workspace?.externalRevision) return;
+    const prefix = `${workspace.id}:`;
+    setSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix))));
+    dynamicSessionCaches.current.get(workspace.id)?.clear();
+  }, [workspace?.id, workspace?.externalRevision]);
+  const documentGeneration = workspace?.externalRevision;
   const changeSession = (patch: Partial<RequestSession>) => {
+    if (workspace && liveStore.current?.workspaces.find((item) => item.id === workspace.id)?.externalRevision !== documentGeneration) return;
     setSessions((current) => ({ ...current, [sessionKey]: { ...(current[sessionKey] ?? restoredSession), ...patch } }));
     if (!workspace || !currentDocument || currentDocument.historical || (!("response" in patch) && patch.sending !== true)) return;
     const workspaceId = workspace.id;
@@ -381,6 +398,7 @@ export function WorkspaceWorkbench() {
   };
   const addDocument = (kind: CreatableDocumentKind = workspace?.ui.lastRequestKind ?? "http", folderId?: string) => {
     updates.leaveTab();
+    update((current) => ({ ...current, ui: { ...current.ui, sidebarActivity: "documents" } }));
     if (kind === "schema") {
       const document = { ...createSchemaDocument(), saved: true };
       update((current) => openDocument({ ...current, documents: [...current.documents, document] }, document.id));
@@ -602,16 +620,16 @@ export function WorkspaceWorkbench() {
     if (view === "canvas") changeSession({ canvasFocus: session.response || session.error || session.sending ? "response" : "request" });
   };
   const toggleSidebar = () => update(toggleWorkspaceSidebar);
-  const openCookies = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false } })); };
+  const openCookies = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, cookiesTabOpen: true, cookiesTabActive: true, settingsTabActive: false, variablesTabActive: false, sidebarActivity: "documents" } })); };
   const closeCookies = () => update((current) => closeWorkspaceTab(current, "cookies"));
-  const openSettings = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false } })); };
+  const openSettings = () => { updates.leaveTab(); update((current) => ({ ...current, ui: { ...current.ui, settingsTabOpen: true, settingsTabActive: true, cookiesTabActive: false, variablesTabActive: false, sidebarActivity: "documents" } })); };
   const closeSettings = () => update((current) => closeWorkspaceTab(current, "settings"));
   const openVariables = (scope: VariableScope = variableScope, selectedId?: string | null, draft?: Variable | null) => {
     updates.leaveTab();
     setVariableScope(scope);
     if (selectedId !== undefined) setVariableSelection(selectedId);
     if (draft !== undefined) setVariableDraft(draft);
-    update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: true, variablesTabActive: true, cookiesTabActive: false, settingsTabActive: false } }));
+    update((current) => ({ ...current, ui: { ...current.ui, variablesTabOpen: true, variablesTabActive: true, sidebarActivity: "documents", cookiesTabActive: false, settingsTabActive: false } }));
   };
   const closeVariables = () => { setVariableSelection(null); setVariableDraft(null); update((current) => closeWorkspaceTab(current, "variables")); };
   const showEnvironment = async () => {
@@ -654,7 +672,8 @@ export function WorkspaceWorkbench() {
     void saveWithConfirmation(candidate, upgrade).then(after).catch(() => {});
   };
   const saveCurrentDocument = () => {
-    if (!workspace || explicitSaving) return;
+    if (!workspace || explicitSaving || gitWorking) return;
+    if (activeDocument && workspace.editorConflicts?.[activeDocument.id]) { gitController.openView("editor-conflicts"); return; }
     if (activeDocument && isExtensionDocument(activeDocument)) {
       requestExplicitSave({ ...workspace, documents: workspace.documents.map((document) => document.id === activeDocument.id && isExtensionDocument(document)
         ? { ...document, saved: true, savedConfigVersion: document.configVersion, savedConfig: structuredClone(document.config), updatedAt: new Date().toISOString() } : document) });
@@ -669,7 +688,7 @@ export function WorkspaceWorkbench() {
     ...(activeDocument && isExtensionDocument(activeDocument) && (!activeDocument.saved || isDocumentDirty(activeDocument)) ? [
       { id: "save-extension", title: "Save extension document", icon: <Save className="size-ui-4" />, shortcut: keyboardShortcuts.saveDocument, run: saveCurrentDocument },
     ] : []),
-    ...(currentDocument && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive && !workspace?.ui.variablesTabActive ? [
+    ...(currentDocument && !gitActive && !workspace?.ui.cookiesTabActive && !workspace?.ui.settingsTabActive && !workspace?.ui.variablesTabActive ? [
       { id: "send", title: "Run request", icon: <SendHorizontal className="size-ui-4" />, shortcut: keyboardShortcuts.sendRequest, run: () => requestActions.current?.send() },
       ...(!currentDocument.saved || isDocumentDirty(currentDocument) ? [{ id: "save", title: currentDocument.saved ? "Save document changes" : "Save document", icon: <Save className="size-ui-4" />, shortcut: keyboardShortcuts.saveDocument, run: saveCurrentDocument }] : []),
       ...(isDocumentDirty(currentDocument) ? [{
@@ -706,6 +725,7 @@ export function WorkspaceWorkbench() {
   useHotkeys(`${keyboardShortcuts.commandPalette.hotkey},${keyboardShortcuts.openRecentRequest.hotkey}`, () => setDialog((current) => current === "palette" ? null : "palette"), { ...shortcutOptions, enabled: Boolean(workspace) && (!dialog || dialog === "palette") });
   useHotkeys(keyboardShortcuts.closeDocument.hotkey, () => {
     if (updates.activeTab) updates.closeTab(updates.activeTab);
+    else if (gitActive) gitController.openView("overview");
     else if (workspace?.ui.settingsTabActive) closeSettings();
     else if (workspace?.ui.variablesTabActive) closeVariables();
     else if (workspace?.ui.cookiesTabActive) closeCookies();
@@ -784,9 +804,9 @@ export function WorkspaceWorkbench() {
       onEnvironment={changeEnvironment} onEditEnvironment={showEnvironment} onNewEnvironment={() => setDialog("new-environment")}
       onPalette={() => setDialog("palette")} onView={selectView} />
     <div className="flex min-h-0 flex-1">
-      <WorkspaceActivityRail activity={workspace.ui.sidebarActivity} open={workspace.ui.sidebarOpen}
-        onSelect={(activity) => update((current) => selectSidebarActivity(current, activity))} />
-      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>{workspace.ui.sidebarActivity === "history" ? <aside id="workspace-sidebar" aria-label="Workspace history" className="h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max bg-purr-base">
+      <WorkspaceActivityRail activity={workspace.ui.sidebarActivity} open={workspace.ui.sidebarOpen} gitChanges={gitController.changedFiles}
+        onSelect={(activity) => { updates.leaveTab(); update((current) => selectSidebarActivity(current, activity)); }} />
+      <Collapsible open={workspace.ui.sidebarOpen} orientation="horizontal" className={cn("h-full shrink-0", resizingSidebar && "!transition-none")} style={{ "--sidebar-width": `${workspace.ui.sidebarWidth}rem` } as CSSProperties}>{workspace.ui.sidebarActivity === "git" ? <GitSidebar controller={gitController} onOpenDocument={(id) => { if (id === workspace.id) openVariables("workspace"); else if (workspace.environments.some((environment) => environment.id === id)) openVariables(`environment:${id}`, null, null); else update((current) => openDocument({ ...current, ui: { ...current.ui, sidebarActivity: "documents" } }, id)); }} /> : workspace.ui.sidebarActivity === "history" ? <aside id="workspace-sidebar" aria-label="Workspace history" className="h-full min-w-ui-sidebar-min w-ui-sidebar-dynamic max-w-ui-sidebar-max bg-purr-base">
         <HistoryPanel workspaceId={workspace.id} selectedId={currentDocument?.historical?.entryId} onOpen={(id) => { void openHistory(id); }} />
       </aside> : <WorkspaceSidebar key={workspace.id} workspace={workspace} extensionTypes={extensions.documentTypes} onOpen={(id) => { updates.leaveTab(); update((current) => previewDocument(current, id)); }} onPin={(id) => update((current) => pinDocument(current, id))} onNew={addDocument} onNewExtension={addExtensionDocument} onNewFolder={createFolder} onDuplicate={duplicateById} onDiscard={discardById} onDiscardAll={discardAll} onDelete={deleteById} onRename={(id) => setDialog({ renameDocument: id })} onMoveDocument={moveDocument} onMoveDocuments={moveDocuments} onReorderDocument={reorderSidebarItem} onMoveFolder={moveFolder} onRenameFolder={(id) => setDialog({ renameFolder: id })} onDeleteFolder={deleteFolder} onOpenFolder={() => {
         setActionError("");
@@ -813,12 +833,22 @@ export function WorkspaceWorkbench() {
         update((current) => ({ ...current, ui: { ...current.ui, sidebarWidth: Math.max(12, Math.min(28, current.ui.sidebarWidth + (event.key === "ArrowRight" ? 1 : -1))) } }));
       }} />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {!writable ? <div role="status" className="flex items-center justify-between gap-ui-3 border-b border-border-subtle bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-content-secondary"><span>{protectedStorageMessage(workspaceStatus!.protectedState)} Workspace definitions remain readable; editing and Send are unavailable.</span><Button variant="brand" size="sm" onClick={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "secrets"); openSettings(); }}>Required local secrets</Button></div> : null}
-        <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
+        {workspaceStatus!.gitRecovery && !gitActive ? <div role="status" className="flex items-center justify-between gap-ui-3 bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-content-secondary"><span>A Git operation needs to be finished or aborted. Your local editors and secrets are preserved.</span><Button variant="brand" size="sm" onClick={() => gitController.openView("conflicts")}>Review Git operation</Button></div> : null}
+        {!writable && !gitWorking && !workspaceStatus!.gitRecovery ? <div role="status" className="flex items-center justify-between gap-ui-3 border-b border-border-subtle bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-content-secondary"><span>{protectedStorageMessage(workspaceStatus!.protectedState)} Workspace definitions remain readable; editing and Send are unavailable.</span><Button variant="brand" size="sm" onClick={() => { tabStates.scope(`${workspace.id}:settings`).set("settings.tab", "secrets"); openSettings(); }}>Required local secrets</Button></div> : null}
+        {activeDocument && workspace.editorConflicts?.[activeDocument.id] && !gitActive && <div role="status" className="flex items-center justify-between gap-ui-3 border-b border-border-subtle bg-purr-elevated px-ui-4 py-ui-2 text-ui-sm text-accent-orange"><span>This document changed on disk. Your local editor is preserved.</span><Button variant="secondary" size="sm" onClick={() => gitController.openView("editor-conflicts")}>Review changes</Button></div>}
+        {(!gitActive || updates.activeTab) && <DocumentTabs workspace={workspace} cookieCount={cookieJar!.list().length} extensionTypes={extensions.documentTypes} onOpen={(id) => update((current) => openDocument(current, id))} onClose={closeById}
           onPin={(id) => update((current) => pinDocument(current, id))} onDuplicate={duplicateById} onCloseOther={closeOtherTabs} onCloseAll={closeAllTabs} onReorder={(sourceId, targetId) => update((current) => reorderOpenDocuments(current, sourceId, targetId))}
-          onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />
+          onOpenCookies={openCookies} onCloseCookies={closeCookies} onOpenSettings={openSettings} onCloseSettings={closeSettings} onOpenVariables={() => openVariables()} onCloseVariables={closeVariables} onNew={addDocument} onNewExtension={addExtensionDocument} onSave={saveCurrentDocument} />}
+        {gitActive && !updates.activeTab && <section id="git-workspace-panel" aria-label="Git workspace" className="m-ui-2 flex min-h-0 flex-1 flex-col overflow-hidden rounded-ui-xl border border-border-subtle bg-purr-surface"><GitWorkbench key={workspace.id} controller={gitController} onResolveEditor={(id, choice) => update((current) => {
+          const editorConflicts = { ...current.editorConflicts }; delete editorConflicts[id];
+          if (choice === "local") return { ...current, editorConflicts };
+          if (choice === "incoming") return { ...discardDocument(current, id), editorConflicts };
+          const copied = duplicateDocument(current, id);
+          return { ...discardDocument(copied, id), editorConflicts };
+        })} /></section>}
+        <GitDialogs controller={gitController} />
         {updates.activeTab && <div id="application-update-panel" role="tabpanel" aria-labelledby={`document-tab-${updates.activeTab}`} className="min-h-0 flex-1"><ApplicationUpdatePanel /></div>}
-        <div hidden={Boolean(updates.activeTab)} id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
+        <div hidden={Boolean(updates.activeTab || gitActive)} id="active-document-panel" role="tabpanel" aria-labelledby={workspace.ui.settingsTabActive ? "document-tab-workspace-settings-tab" : workspace.ui.variablesTabActive ? "document-tab-workspace-variables-tab" : workspace.ui.cookiesTabActive ? "document-tab-workspace-cookies-tab" : activeDocument ? `document-tab-${activeDocument.id}` : undefined} className="min-h-0 min-w-0 flex-1">
           <WorkspaceIntegrationsProvider workspaceId={workspace.id} request={currentDocument?.request} workspacePropagation={workspace.requestConfig.tracePropagation}
             definitions={requestConfig.integrations}
             authContext={{ variables, variableStates, secretStore: persistence.secure, workspaceProfiles: requestConfig.auth.filter((item) => item.enabled).map((item) => ({ id: item.id, name: item.name, auth: item.value })) }}
@@ -987,7 +1017,7 @@ export function WorkspaceWorkbench() {
           : currentDocument ? <div className="flex h-full min-h-0 flex-col">
             {workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id) ? <p role="status" className="m-ui-0 border-b border-border-subtle bg-purr-elevated px-ui-3 py-ui-2 text-ui-sm text-content-secondary">This document has unavailable local state. Editing is disabled until Retry / Unlock in Workspace settings → Secrets restores it. Other documents remain usable.</p> : null}
             <div className="min-h-0 flex-1">{currentDocument.historical?.readOnly && currentDocument.lastResponse ? <div className="h-full min-h-0 bg-purr-base p-ui-2"><ResponseViewer response={currentDocument.lastResponse} workspaceId={workspace.id} documentId={currentDocument.historical.documentId} onOpenHistory={(id) => { void openHistory(id, true); }} historyEntryId={currentDocument.historical.entryId} historyStartedAt={currentDocument.historical.startedAt}
-              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench localUnavailable={workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id)} publicWritable={writable} responseStorage={currentDocument.responseStorage ?? "inherit"} workspaceResponseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === currentDocument.id && isRequestDocument(item) ? { ...item, responseStorage } : item) }))} protectedState={workspaceStatus!.protectedState} dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
+              onReturnCurrent={historySource(workspace, currentDocument) ? () => update((current) => returnFromHistory(current, currentDocument)) : undefined} /></div> : <RequestWorkbench localUnavailable={workspaceStatus!.unavailableDocumentIds.includes(currentDocument.id)} publicWritable={writable && !gitActive} responseStorage={currentDocument.responseStorage ?? "inherit"} workspaceResponseStorage={workspace.responseStorage ?? "plaintext"} onResponseStorageChange={(responseStorage) => update((current) => ({ ...current, documents: current.documents.map((item) => item.id === currentDocument.id && isRequestDocument(item) ? { ...item, responseStorage } : item) }))} protectedState={workspaceStatus!.protectedState} dynamicExecution={currentDocument.historical?.dynamicExecution} onOpenDependency={(id) => { void openHistory(id); }} key={`${workspace.id}:${currentDocument.id}:${workspace.activeEnvironmentId ?? "none"}`} draft={currentDocument.request} setDraft={setDraft}
             requestKind={currentDocument.kind} workspaceConfig={currentDocument.historical ? { ...requestConfig, schemaConnections: [] } : requestConfig}
             workspaceName={workspace.name} workspaceId={workspace.id} documentId={currentDocument.historical?.documentId ?? currentDocument.id} documentName={getDocumentDisplayName(currentDocument)} sourceDocuments={sourceDocuments}
             historyEntryId={currentDocument.historical?.entryId} historyStartedAt={currentDocument.historical?.startedAt}
@@ -1049,10 +1079,11 @@ export function WorkspaceWorkbench() {
       </div>
     </Modal>}
     {dialog === "palette" && <CommandPalette workspace={workspace} actions={actions} onOpenDocument={(id) => update((current) => previewDocument(current, id))} onClose={() => setDialog(null)} />}
-    {dialog === "new-workspace" && <NameDialog title="New workspace" label="Workspace name" initial="" onClose={() => setDialog(null)} onSave={async (name) => {
-      const created = createWorkspace(name);
+    {dialog === "new-workspace" && <NewWorkspaceDialog onClose={() => setDialog(null)} onCreate={async (created, directory, initializeGit) => {
       await flush();
-      await persistence.save({ ...store, activeWorkspaceId: created.id, workspaces: [...store.workspaces, created] });
+      if (services.runtime.kind === "desktop") await persistence.createWorkspaceAt(created, directory);
+      else await persistence.save({ ...store, activeWorkspaceId: created.id, workspaces: [...store.workspaces, created] });
+      if (initializeGit) { try { await services.git.execute(created.id, { type: "init" }); } catch (cause) { setActionError(`Workspace created. Git initialization failed: ${cause instanceof Error ? cause.message : String(cause)}`); } }
       setStore((current) => current ? { ...current, activeWorkspaceId: created.id, workspaces: [...current.workspaces, created] } : current);
       setDialog(null);
     }} />}
@@ -1066,7 +1097,7 @@ export function WorkspaceWorkbench() {
       }} />}
     {importResult && <ImportReportDialog report={importResult} onClose={() => setImportResult(null)} />}
     {dialog === "import-environment" && <ImportWorkspaceDialog target="environment" onClose={() => setDialog(null)} onImport={importEnvironment} />}
-    {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} />}
+    {dialog === "import-workspace" && <ImportWorkspaceDialog onClose={() => setDialog(null)} onImport={importWorkspace} onClone={async (url, directory, options) => { await flush(); const path = await services.git.clone(url, directory, options); await importWorkspace({ kind: "directory", path }); }} />}
     {dialog === "save-document" && currentDocument && <NameDialog title="Save document" label="Document name" initial={getDocumentDisplayName(currentDocument)} onClose={() => setDialog(null)} onSave={(name) => {
       requestExplicitSave({ ...workspace, documents: workspace.documents.map((document) => document.id === currentDocument.id && isRequestDocument(document) ? { ...document, name, saved: true, savedRequest: cloneRequestDraft(document.request), updatedAt: new Date().toISOString() } : document) }, false, () => setDialog(null));
     }} />}

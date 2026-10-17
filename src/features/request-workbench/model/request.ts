@@ -398,6 +398,17 @@ export function applyRequestQueryParamsToUrl(
   return `${baseUrl}${query ? `?${query}` : ""}${hash}`;
 }
 
+/** Canonical files keep the endpoint and ordered query rows separately.
+ * Explicit rows own their names, including disabled rows; retain URL-only rows
+ * for older files/imports in the same order used by request composition. */
+export function separateRequestQueryParams(url: string, params: RequestQueryParam[]) {
+  const names = new Set(params.filter((param) => param.key || param.value).map((param) => param.key));
+  const nextId = getHighestQueryParamId(params);
+  const urlOnly = getRequestQueryParamsFromUrl(url).filter((param) => param.enabled && !names.has(param.key))
+    .map((param, index) => ({ ...param, id: `param-${nextId + index + 1}` }));
+  return { url: applyRequestQueryParamsToUrl(url, []), params: [...urlOnly, ...params] };
+}
+
 export function getEnabledRequestHeaderCount(headers: RequestHeader[]) {
   return headers.filter(
     (header) => header.enabled && header.name.trim().length > 0,

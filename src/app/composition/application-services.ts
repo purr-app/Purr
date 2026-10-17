@@ -1,3 +1,4 @@
+import type { GitPort } from "../../application/ports/git";
 import type { SecretTransferPort } from "../../application/ports/secret-transfer";
 import type { HttpTransportPort } from "../../application/ports/http";
 import type { ObservabilityPort } from "../../application/ports/observability";
@@ -19,6 +20,7 @@ import type {
 import type { WorkspacePersistence } from "../../application/workspace-persistence";
 
 export type ApplicationServices = Readonly<{
+  git: GitPort;
   observability: ObservabilityPort;
   persistence: WorkspacePersistence;
   secureStore: SecureStore;

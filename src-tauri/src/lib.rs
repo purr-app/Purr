@@ -1,6 +1,7 @@
 mod commands;
 mod composition;
 mod content;
+mod git;
 mod http;
 mod importing;
 #[cfg(target_os = "macos")]

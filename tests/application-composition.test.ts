@@ -1,3 +1,4 @@
+import { unavailableGit } from "../src/platform/browser/git";
 import { unavailableSecretTransfer } from "../src/storage/unavailable-secret-transfer";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -28,6 +29,7 @@ function memoryServices(): ApplicationServices {
     secureStore,
   );
   return Object.freeze({
+    git: unavailableGit,
     observability: { validateConfig: unavailable, integrations: async () => [], trace: unavailable },
     persistence,
     secureStore,

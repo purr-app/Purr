@@ -1,3 +1,4 @@
+import { unavailableGit } from "./git";
 import { unavailableSecretTransfer } from "../../storage/unavailable-secret-transfer";
 import { externalHttpUrl } from "../../shared/lib/external-url";
 import type { PlatformAdapters } from "../../application/ports/platform";
@@ -84,6 +85,7 @@ const unavailableContent = () =>
 export function createBrowserPlatformAdapters(): PlatformAdapters {
   const secureStore = new BrowserSecureStore();
   return {
+    git: unavailableGit,
     observability: {
       validateConfig: () => unavailable("Integration settings require the desktop app."),
       integrations: async () => [],

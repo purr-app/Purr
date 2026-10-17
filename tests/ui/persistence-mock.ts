@@ -8,9 +8,19 @@ export async function installPersistenceMock(page: Page) {
       configurable: true, get: () => internals,
       set: (value) => {
         const original = value.invoke;
-        value.transformCallback ??= () => 1;
+        const callbacks = new Map<number, (event: any) => void>();
+        const listeners = new Map<number, { event: string; handler: number }>();
+        let nextListener = 1;
+        value.transformCallback ??= (callback: (event: any) => void) => { const id = callbacks.size + 1; callbacks.set(id, callback); return id; };
+        (window as any).__purrEmitNativeEvent = (event: string, payload: unknown) => {
+          let count = 0;
+          for (const [id, listener] of listeners) if (listener.event === event) { callbacks.get(listener.handler)?.({ event, id, payload }); count++; }
+          return count;
+        };
         let mutationQueue: Promise<unknown> = Promise.resolve();
         const dispatch = async (command: string, args: any) => {
+          if (command === "load_project" || command === "commit_project") (window as any).__gitCalls?.push({ command, args });
+          if (command === "load_project" && (window as any).__purrProjectLoadDelayMs) await new Promise((resolve) => setTimeout(resolve, (window as any).__purrProjectLoadDelayMs));
           const snapshot = JSON.parse(localStorage.getItem("purr-native-persistence-test") ?? '{"activeWorkspaceId":"","workspaces":[]}');
           const histories = JSON.parse(localStorage.getItem("purr-native-history-test") ?? "{}");
           const secrets = JSON.parse(localStorage.getItem("purr-native-secure-test") ?? "{}");
@@ -137,6 +147,22 @@ export async function installPersistenceMock(page: Page) {
             }
             return restoreHistory(snapshot.workspaces.find((item: any) => item.id === args.id));
           }
+          if (command === "project_directory") {
+            const id = args.workspaceId; const action = args.action;
+            if (action.type === "info") return { directory: snapshot.workspaces.find((item: any) => item.id === id)?.directory ?? `/projects/${id}`, projectsDirectory: "/projects", managed: true };
+            if (action.type === "create") {
+              await dispatch("commit_project", { id, files: action.files, local: action.local, secrets: action.secrets });
+              const created = JSON.parse(localStorage.getItem("purr-native-persistence-test")!);
+              created.workspaces.find((item: any) => item.id === id).directory = action.directory;
+              localStorage.setItem("purr-native-persistence-test", JSON.stringify(created));
+              return dispatch("load_project", { id });
+            }
+            if (action.type === "move") {
+              const workspace = snapshot.workspaces.find((item: any) => item.id === id); workspace.directory = action.directory;
+              localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot));
+              return { directory: action.directory, managed: false };
+            }
+          }
           if (command === "commit_project") {
             let workspace = snapshot.workspaces.find((item: any) => item.id === args.id);
             if (!workspace) { workspace = { id: args.id, files: {}, local: [] }; snapshot.workspaces.push(workspace); }
@@ -205,8 +231,8 @@ export async function installPersistenceMock(page: Page) {
             localStorage.setItem("purr-native-secure-test", JSON.stringify(secrets));
             localStorage.setItem("purr-native-secure-revisions-test", JSON.stringify(revisions)); return;
           }
-          if (command === "plugin:event|listen") return 1;
-          if (command === "plugin:event|unlisten") return;
+          if (command === "plugin:event|listen") { const id = nextListener++; listeners.set(id, { event: args.event, handler: args.handler }); return id; }
+          if (command === "plugin:event|unlisten") { listeners.delete(args.eventId); return; }
           return original(command, args);
         };
         value.invoke = (command: string, args: any) => {

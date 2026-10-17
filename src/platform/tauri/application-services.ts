@@ -1,3 +1,4 @@
+import { tauriGit } from "./git";
 import { nativeSecretTransfer } from "./secret-transfer";
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -73,6 +74,14 @@ async function confirmedCommit<T>(work: () => Promise<T>, batch: SecretBatch, co
 }
 
 class TauriPersistence implements PersistencePort {
+  directoryInfo(id: string) { return invoke<{ directory: string; managed: boolean; projectsDirectory?: string; pendingMove?: string | null }>("project_directory", { workspaceId: id, action: { type: "info" } }); }
+  async cancelMove(id: string) { await invoke("project_directory", { workspaceId: id, action: { type: "cancelMove" } }); }
+  moveDirectory(id: string, directory: string) { return invoke<{ directory: string; managed: boolean }>("project_directory", { workspaceId: id, action: { type: "move", directory } }); }
+  async createDirectory(id: string, directory: string, files: FileChange[], local: LocalChange[], secrets: SecretBatch) {
+    const snapshot = await invoke<StoredWorkspace>("project_directory", { workspaceId: id, action: { type: "create", directory, files, local, secrets } });
+    this.cache.set(id, snapshot.files); return snapshot;
+  }
+
   readonly history = tauriHistory;
   readonly attachments = tauriAttachments;
   private cache = new Map<string, Record<string, ProjectFile>>();
@@ -501,6 +510,7 @@ class TauriResponseContent implements ResponseContentPort {
 export function createTauriPlatformAdapters(): PlatformAdapters {
   const secureStore = new TauriSecureStore();
   return {
+    git: tauriGit,
     observability: tauriObservability,
     persistenceBackend: new TauriPersistence(),
     secureStore,

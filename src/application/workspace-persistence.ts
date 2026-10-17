@@ -72,6 +72,7 @@ export class WorkspacePersistence {
   getGlobalProtectedState() { return this.globalState; }
   private globalVariables: Variable[] = [];
   private deleted = new Set<string>();
+  private externalGenerations = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
   readonly secure: CachedSecureStore;
   readonly history: RequestHistory | null;
@@ -90,10 +91,17 @@ export class WorkspacePersistence {
     const sourceVersion = this.formats.get(id) ?? 2;
     const protectedState = this.protectedStates.get(id) ?? this.storageState;
     const snapshot = this.snapshots.get(id);
-    const publicWritable = protectedState.status === "available" || protectedState.status !== "recovery-required" && !("code" in protectedState && ["local-record-unreadable", "local-history-unreadable"].includes(protectedState.code)) && snapshot?.unavailableLocal !== undefined && !snapshot.unavailableLocal.some((row) => row.id === "*");
-    return { sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
+    const gitRecovery = Boolean(snapshot?.local.some((record) => record.table === "workspace_local_state" && record.id === "git-operation" && record.value));
+    const publicWritable = !gitRecovery && (protectedState.status === "available" || protectedState.status !== "recovery-required" && !("code" in protectedState && ["local-record-unreadable", "local-history-unreadable"].includes(protectedState.code)) && snapshot?.unavailableLocal !== undefined && !snapshot.unavailableLocal.some((row) => row.id === "*"));
+    return { gitRecovery, sourceVersion, migrationRequired: sourceVersion === 1, protectedState, publicWritable, runtimeProtectedState: snapshot?.runtimeProtectedState ?? protectedState, unavailableLocal: snapshot?.unavailableLocal ?? [], unavailableDocumentIds: snapshot?.unavailableLocal?.filter((row) => ["drafts", "document_session_state", "schema_cache"].includes(row.table)).map((row) => row.id) ?? [] };
   }
   getProject(id: string) { return this.projects.get(id); }
+  fileOwner(id: string, path: string): { id: string; name: string } | undefined {
+    const project = this.projects.get(id);
+    if (path === "purr.yaml") return project?.workspace;
+    const resourceId = [...this.paths.get(id)?.entries() ?? [], ...this.sdlPaths.get(id)?.entries() ?? []].find(([, value]) => value === path)?.[0];
+    return project?.resources.find((resource) => resource.id === resourceId);
+  }
   /** Native transfer publishes through the same save/history queue. Secret
    * buffers are invalidated even when transport loses the commit response. */
   runSecretTransfer<T>(work: () => Promise<T>): Promise<T> {
@@ -104,8 +112,20 @@ export class WorkspacePersistence {
     this.queue = next;
     return next;
   }
+  /** Index mutations share the save queue but do not change canonical files. */
+  runGitIndex<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
+  runGit<T>(id: string, current: () => Workspace | undefined, onReload: (workspace: Workspace) => void, work: () => Promise<T>): Promise<T> {
+    const next = this.queue.catch(() => {}).then(async () => {
+      try { return await work(); }
+      finally { const refreshed = await this.reconcileWorkspace(id, ["*"], current()); if (refreshed) onReload(refreshed); }
+    });
+    this.queue = next; return next;
+  }
   private assertWritable(id: string) {
     const state = this.getWorkspaceStatus(id).protectedState;
+    if (this.getWorkspaceStatus(id).gitRecovery) throw new Error("Finish or abort the pending Git operation before saving this workspace.");
     if (!this.getWorkspaceStatus(id).publicWritable) throw new Error(`Storage ${state.status}. This workspace is read-only; retry before saving.`);
   }
   private async commitConfirmed<T>(batch: SecretBatch, work: () => Promise<T>, readCommitted: () => Promise<T>): Promise<T> {
@@ -209,6 +229,7 @@ export class WorkspacePersistence {
     } return project;
   }
   async load(): Promise<WorkspaceStore> {
+    this.externalGenerations.clear();
     this.secure.clear();
     const stored = await this.backend.load(); const workspaces: Workspace[] = [];
     this.storageState = stored.protectedState ?? { status: "available" };
@@ -255,7 +276,7 @@ export class WorkspacePersistence {
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(raw)));
       const legacySource = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
       if (!workspaces.some((item) => item.id === workspace.id)) { await this.persist(workspace, legacySource); workspaces.push(workspace); }
-      else if (this.snapshots.get(workspace.id)?.local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-source")?.value !== legacySource)
+      else if (this.snapshots.get(workspace.id)?.local.find((record) => record.table === "workspace_local_state" && ["legacy-source", "git-operation", "directory-relocation"].includes(record.id))?.value !== legacySource)
         throw new Error("Legacy data changed after migration started. Both versions are preserved; resolve the legacy change before continuing.");
     }
     if (!workspaces.length) workspaces.push(createWorkspace("Personal", "personal"));
@@ -345,6 +366,8 @@ export class WorkspacePersistence {
       && !after.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await secure.delete(variable.secretRef);
   }
   private async persist(workspace: Workspace, legacySource?: string, prepared = new SecretPreparationStore(this.secure), intent: "automatic" | "explicit" = "automatic") {
+    const generation = this.externalGenerations.get(workspace.id);
+    if (generation && workspace.externalRevision !== generation) throw new Error("The workspace changed externally while this save was queued. Reload before saving; incoming files and local edits are preserved.");
     const attachments = this.backend.attachments ? new AttachmentPreparation(workspace.id, this.backend.attachments,
       new Set(this.snapshots.get(workspace.id)?.local.filter((row) => row.table === "attachments").map((row) => row.id))) : undefined;
     try { await this.persistPrepared(workspace, legacySource, prepared, intent, attachments); attachments?.acknowledge(); }
@@ -363,7 +386,7 @@ export class WorkspacePersistence {
       const projection = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history, localOnlyBaseline: previous, sourceVersion: 1, legacyRevisions,
         sourceRevisions: Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.revision])) });
       const local = projection.local.filter((record) => !this.backend.history || record.table !== "request_executions");
-      const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source").map((record) => [key(record), record]));
+      const retained = new Map(snapshot.local.filter((record) => record.table === "request_executions" || record.table === "workspace_local_state" && ["legacy-source", "git-operation", "directory-relocation"].includes(record.id)).map((record) => [key(record), record]));
       for (const record of local) retained.set(key(record), record);
       if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local) if (record.table === "attachments" && !retained.has(key(record))) retained.set(key(record), record);
       const old = new Map(snapshot.local.map((record) => [key(record), record]));
@@ -384,7 +407,7 @@ export class WorkspacePersistence {
     const retainedRefs = new Set(currentVariables.flatMap((variable) => variable.kind === "static" && variable.sensitive && variable.secretRef ? [variable.secretRef] : []));
     for (const variable of previousVariables) if (variable.kind === "static" && variable.sensitive && variable.secretRef && !retainedRefs.has(variable.secretRef)
       && !currentVariables.some((candidate) => candidate.id === variable.id && candidate.kind === "static" && candidate.sensitive)) await prepared.delete(variable.secretRef);
-    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables }); validateProject(project);
+    const { project, local: projectedLocal, assets } = await projectWorkspace(workspace, prepared, { attachments, includeExecutions: !this.backend.history || Boolean(legacySource), globalVariables: this.globalVariables, canonicalBaseline: upgrading ? undefined : previous }); validateProject(project);
     const refs = (value: unknown, found = new Set<string>()): Set<string> => {
       if (Array.isArray(value)) for (const child of value) refs(child, found);
       else if (value && typeof value === "object") {
@@ -455,7 +478,7 @@ export class WorkspacePersistence {
     }
     if (changes.some((change) => [...unavailableDocuments].some((id) => change.path === paths.get(id)))) throw new Error("This document has unavailable local state. Retry / Unlock before saving it.");
     const oldLocal = new Map(snapshot.local.map((record) => [key(record), record])); const nextLocal = new Map(local.map((record) => [key(record), record]));
-    for (const record of snapshot.local) if ((record.table === "request_executions" || record.table === "workspace_local_state" && record.id === "legacy-source") && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
+    for (const record of snapshot.local) if ((record.table === "request_executions" || record.table === "workspace_local_state" && ["legacy-source", "git-operation", "directory-relocation"].includes(record.id)) && !nextLocal.has(key(record))) nextLocal.set(key(record), record);
     // An in-flight request can outlive its source document. Its lazy native
     // upload files must survive until the completed history entry adopts them.
     if (this.history?.hasPendingExecutions(workspace.id)) for (const record of snapshot.local)
@@ -517,11 +540,22 @@ export class WorkspacePersistence {
       const file = scanned ? scanned.files[path] : await this.backend.reloadResource(id, path); if (file?.revision === files[path]?.revision) continue;
       changed = true; if (file) files[path] = file; else delete files[path];
     }
-    if (!changed) return null;
-    const snapshot = { ...previous, files };
+    const gitPending = (snapshot: StoredWorkspace) => snapshot.local.some((record) => record.table === "workspace_local_state" && record.id === "git-operation" && record.value);
+    const recoveryChanged = Boolean(scanned && Boolean(gitPending(scanned)) !== Boolean(gitPending(previous)));
+    const protectedChanged = scanned && JSON.stringify(scanned.protectedState) !== JSON.stringify(previous.protectedState);
+    if (!changed && !protectedChanged && !recoveryChanged) return null;
+    const snapshot = { ...previous, ...(scanned ? { protectedState: scanned.protectedState, local: scanned.local } : {}), files };
+    if (gitPending(snapshot)) {
+      // Git recovery keeps a valid canonical baseline and local editors. It does
+      // not change the credential vault's availability.
+      this.snapshots.set(id, { ...snapshot, files: previous.files });
+      if (working) return { ...working, publicWritable: false };
+    }
+    if (recoveryChanged && !gitPending(snapshot)) this.snapshots.set(id, snapshot);
     let project: Project;
     try { project = this.readProject(snapshot, false); }
     catch (error) { this.protectedStates.set(id, { status: "recovery-required", code: "project-format-unreadable" }); throw error; }
+    if (project.workspace.id !== id) { this.protectedStates.set(id, { status: "recovery-required", code: "project-format-unreadable" }); throw new Error("The project identity changed externally. Files and local edits are preserved."); }
     const sourceVersion = deserializeManifestFile(files["purr.yaml"].content).sourceVersion;
     const legacyDraft = previous.local.find((record) => record.table === "workspace_local_state" && record.id === "legacy-definition-draft")?.value as { sourceRevisions?: Record<string, string> } | undefined;
     if (legacyDraft?.sourceRevisions) try { assertLegacyBaseline(snapshot, legacyDraft.sourceRevisions); }
@@ -531,7 +565,7 @@ export class WorkspacePersistence {
     const prepared = new SecretPreparationStore(this.secure);
     const transientAttachments = new TransientAttachments();
     const projected = working && this.getWorkspaceStatus(id).protectedState.status === "available" ? await projectWorkspace(working, prepared,
-      { transientAttachments, includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : {}) }) : undefined;
+      { transientAttachments, includeExecutions: !this.backend.history, ...(sourceVersion === 1 ? { localOnlyBaseline: this.projects.get(id), sourceVersion } : { canonicalBaseline: this.projects.get(id) }) }) : undefined;
     const local = projected?.local ?? previous.local;
     const baseline = this.projects.get(id);
     const merged: Project = { workspace: project.workspace, resources: [...project.resources] };
@@ -552,10 +586,23 @@ export class WorkspacePersistence {
         merged.resources = merged.resources.filter((item) => item.id !== resourceId);
         if (localResource) merged.resources.push(localResource);
       }
-      // Removing a saved definition must not discard an unsaved working copy.
-      if (local.some((record) => record.table === "drafts" && (record.value as { saved?: boolean }).saved && !merged.resources.some((item) => item.id === record.id))) throw new Error("External deletion conflicts with a working copy");
+      // restoreWorkspace keeps deleted dirty documents as local recovery drafts.
     }
-    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion, transientAttachments });
+    const workspace = await restoreWorkspace(merged, this.getWorkspaceStatus(id).publicWritable || this.getWorkspaceStatus(id).gitRecovery ? local : [], prepared, Object.fromEntries(Object.entries(files).map(([path, file]) => [path, file.content])), this.attachmentLoader(id), { hydrateSecrets: false, sourceVersion, transientAttachments });
+    const changedDocumentIds = working?.documents.filter((document) => {
+      const before = baseline?.resources.find((resource) => resource.id === document.id);
+      const after = project.resources.find((resource) => resource.id === document.id);
+      return JSON.stringify(before) !== JSON.stringify(after);
+    }).map((document) => document.id) ?? [];
+    workspace.externalRevision = crypto.randomUUID();
+    this.externalGenerations.set(id, workspace.externalRevision);
+    if (changedDocumentIds.length || JSON.stringify(baseline?.workspace) !== JSON.stringify(project.workspace)) workspace.dynamicVariableCache = {};
+    workspace.documents = workspace.documents.map((document) => changedDocumentIds.includes(document.id) && isRequestDocument(document) ? { ...document, lastResponse: null, sentAt: null } : document);
+    if (working?.ui.activeDocumentId && !workspace.documents.some((document) => document.id === working.ui.activeDocumentId)) {
+      const index = working.ui.openDocumentIds.indexOf(working.ui.activeDocumentId);
+      const recovered = workspace.documents.find((document) => workspace.editorConflicts?.[document.id]?.incoming?.id === working.ui.activeDocumentId);
+      workspace.ui.activeDocumentId = recovered?.id ?? [...working.ui.openDocumentIds.slice(index + 1), ...working.ui.openDocumentIds.slice(0, index).reverse()].find((documentId) => workspace.ui.openDocumentIds.includes(documentId)) ?? null;
+    }
     this.readProject(snapshot); this.snapshots.set(id, snapshot); this.projects.set(id, project);
     workspace.projectFormatVersion = sourceVersion; workspace.protectedState = this.getWorkspaceStatus(id).protectedState; workspace.publicWritable = this.getWorkspaceStatus(id).publicWritable; return workspace;
   }
@@ -643,7 +690,7 @@ export class WorkspacePersistence {
       const openedProject = this.readProject(snapshot);
       this.protectedStates.set(snapshot.id, snapshot.protectedState ?? this.storageState);
       this.snapshots.set(snapshot.id, snapshot);
-      const workspace = await restoreWorkspace(openedProject, this.getWorkspaceStatus(snapshot.id).publicWritable ? snapshot.local : [], this.secure,
+      const workspace = await restoreWorkspace(openedProject, this.getWorkspaceStatus(snapshot.id).publicWritable || this.getWorkspaceStatus(snapshot.id).gitRecovery ? snapshot.local : [], this.secure,
         Object.fromEntries(Object.entries(snapshot.files).map(([path, file]) => [path, file.content])), this.attachmentLoader(snapshot.id), { hydrateSecrets: false, sourceVersion: this.formats.get(snapshot.id) });
       workspace.projectFormatVersion = this.formats.get(snapshot.id);
       workspace.protectedState = this.getWorkspaceStatus(snapshot.id).protectedState;
@@ -656,6 +703,31 @@ export class WorkspacePersistence {
     const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
   }
 
+  directoryInfo(id: string) {
+    if (!this.backend.directoryInfo) return Promise.reject(new Error("Project directories require the desktop application."));
+    return this.backend.directoryInfo(id);
+  }
+  createWorkspaceAt(workspace: Workspace, directory: string): Promise<Workspace> {
+    const work = async () => {
+      if (!this.backend.createDirectory) throw new Error("Custom project directories require the desktop application.");
+      const prepared = new SecretPreparationStore(this.secure);
+      const { project, local } = await projectWorkspace(workspace, prepared, { includeExecutions: false });
+      if (project.resources.length) throw new Error("Create an empty workspace before adding saved documents.");
+      const snapshot = await this.backend.createDirectory(workspace.id, directory,
+        [{ path: "purr.yaml", content: serializeManifest(project.workspace), expectedRevision: null }], local, await prepared.batch());
+      prepared.acknowledge(); this.snapshots.set(workspace.id, snapshot); this.projects.set(workspace.id, this.readProject(snapshot));
+      this.protectedStates.set(workspace.id, snapshot.protectedState ?? { status: "available" });
+      return workspace;
+    };
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
+  moveDirectory(id: string, directory: string) {
+    const work = async () => {
+      if (!this.backend.moveDirectory) throw new Error("Moving projects requires the desktop application.");
+      return this.backend.moveDirectory(id, directory);
+    };
+    const next = this.queue.catch(() => {}).then(work); this.queue = next; return next;
+  }
   async attachDirectory(id: string, directory: string): Promise<Workspace> {
     if (!this.backend.attachDirectory) throw new Error("Directory workspaces require the desktop application.");
     if (this.snapshots.has(id)) throw new Error("This workspace is already open.");

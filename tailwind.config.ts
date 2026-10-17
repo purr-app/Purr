@@ -7,6 +7,12 @@ export default {
     extend: {
       colors: {
         syntax: {
+          "diff-removed-text": "var(--syntax-diff-removed-text)",
+          "diff-added-text": "var(--syntax-diff-added-text)",
+          "diff-removed-line": "var(--syntax-diff-removed-line)",
+          "diff-added-line": "var(--syntax-diff-added-line)",
+          "diff-removed": "var(--syntax-diff-removed-mark)",
+          "diff-added": "var(--syntax-diff-added-mark)",
           property: "var(--syntax-property)",
           string: "var(--syntax-string)",
           number: "var(--syntax-number)",
@@ -33,6 +39,7 @@ export default {
           secondary: "var(--content-secondary)",
           tertiary: "var(--content-tertiary)",
           quaternary: "var(--content-quaternary)",
+          disabled: "var(--content-disabled)",
         },
         action: {
           emerald: {
@@ -135,6 +142,7 @@ export default {
         "ui-document-tab": "var(--document-tab-max-width)",
         "ui-settings-dialog": "var(--settings-dialog-height)",
         "ui-dialog": "var(--dialog-width)",
+        "ui-semantic-label": "var(--semantic-label-width)",
         "ui-name-dialog": "var(--name-dialog-width)",
         "ui-notification": "var(--notification-width)",
         "ui-variable-list": "var(--variable-list-max-height)",
