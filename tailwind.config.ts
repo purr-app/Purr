@@ -7,6 +7,8 @@ export default {
     extend: {
       colors: {
         syntax: {
+          "diff-removed": "var(--syntax-diff-removed-mark)",
+          "diff-added": "var(--syntax-diff-added-mark)",
           property: "var(--syntax-property)",
           string: "var(--syntax-string)",
           number: "var(--syntax-number)",

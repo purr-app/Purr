@@ -47,11 +47,11 @@ export function diffRows(before: unknown[], after: unknown[]): SemanticRow[] {
 export function semanticSections(beforeText: string, afterText: string): SemanticSection[] | null {
   const before = semanticValue(beforeText), after = semanticValue(afterText);
   if (!before || !after) return null;
-  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((key) => !["id", "pinnedSdl", "document", "purr"].includes(key));
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((key) => !["id", "pinnedSdl", "document", "purr", ...("url" in before || "url" in after ? ["method"] : [])].includes(key));
   const order = ["kind", "name", "description", "folderId", "method", "url", "params", "pathParams", "headers", "auth", "body", "graphql", "variables", "settings", "documentation"];
   keys.sort((a, b) => (order.includes(a) ? order.indexOf(a) : order.length) - (order.includes(b) ? order.indexOf(b) : order.length));
   return keys.map((key) => {
-    const left = before[key], right = after[key];
+    const left = key === "url" ? { method: before.method, url: before.url } : before[key], right = key === "url" ? { method: after.method, url: after.url } : after[key];
     const rows = Array.isArray(left) || Array.isArray(right) ? diffRows(Array.isArray(left) ? left : [], Array.isArray(right) ? right : [])
       : ["body", "graphql", "settings", "auth"].includes(key) && (object(left) || object(right))
         ? [...new Set([...Object.keys(object(left) ? left : {}), ...Object.keys(object(right) ? right : {})])].map((field) => {
@@ -66,6 +66,7 @@ export function displayValue(value: unknown): string {
   if (value === undefined) return "—";
   if (typeof value === "string") return value || "(empty)";
   if (object(value)) {
+    if (["plain", "template"].includes(String(value.kind))) return String(value.value ?? "(empty)");
     if (value.kind === "secret" && typeof value.ref === "string") return `Stored credential · ${value.ref}`;
     if (typeof value.name === "string" && ("value" in value || "secretRef" in value || "file" in value)) {
       const content = typeof value.secretRef === "string" ? `Stored credential · ${value.secretRef}`
@@ -79,4 +80,26 @@ export function displayValue(value: unknown): string {
     return JSON.stringify(fields, null, 2);
   }
   return JSON.stringify(value, null, 2) ?? "—";
+}
+
+/** Compare named values/settings rather than displaying serialized variable DTOs. */
+export function semanticRowFields(row: SemanticRow, section: string): SemanticRow[] {
+  if (!["variables", "headers", "introspectionHeaders", "params", "pathParams"].includes(section)) return [row];
+  const fields = (value: unknown): ObjectValue => {
+    if (!object(value)) return {};
+    const { id: _id, name: _name, secretRef, value: content, ...rest } = value;
+    return { ...(secretRef ? { value: { kind: "secret", ref: secretRef } } : "value" in value ? { value: content } : {}), ...rest };
+  };
+  const before = fields(row.before), after = fields(row.after);
+  const names: Record<string, string> = { value: "Value", kind: "Type", enabled: "Enabled", sensitive: "Sensitive", documentId: "Source request", expression: "Extraction expression", language: "Extraction language", refresh: "Refresh", cacheTtlSeconds: "Cache TTL (seconds)", environment: "Environment", provider: "Secret provider", key: "Secret key" };
+  const keys = [...new Set([...Object.keys(after), ...Object.keys(before)])];
+  if (object(row.before) && object(row.after) && row.before.name !== row.after.name) { keys.unshift("name"); before.name = row.before.name; after.name = row.after.name; }
+  const describe = (value: unknown, key: string): unknown => {
+    if (key === "environment" && object(value)) return value.type === "current" ? "Current environment" : value.environmentId;
+    if (key === "language") return value === "jsonpath" ? "JSONPath" : value === "jq" ? "jq" : value;
+    if (key === "kind") return value === "dynamic-request" ? "Extract from request" : value === "static" ? "Static" : value === "external-secret" ? "External secret" : value;
+    if (key === "refresh") return value === "every-time" ? "Every request" : value === "session" ? "Once per session" : value === "cache" ? "Cached" : value;
+    return value;
+  };
+  return keys.map((key) => ({ key, label: names[key] ?? label(key), before: describe(before[key], key), after: describe(after[key], key), changed: stableValue(before[key]) !== stableValue(after[key]), moved: false }));
 }

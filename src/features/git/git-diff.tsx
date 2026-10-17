@@ -6,8 +6,8 @@ import { yaml } from "@codemirror/lang-yaml";
 import { purrCodeTheme, purrCodeHighlighting } from "../../shared/theme/code-editor-theme";
 import { Button } from "../../shared/components/ui/button";
 import { SegmentedTabs } from "../../shared/components/ui/segmented-tabs";
-import { cn } from "../../shared/lib/cn";
-import { displayValue, semanticSections } from "./semantic-diff";
+import { SemanticComparison } from "./semantic-comparison";
+import { semanticSections } from "./semantic-diff";
 import type { GitDiff } from "../../application/ports/git";
 
 export function YamlDiff({ before, after }: { before: string; after: string }) {
@@ -20,30 +20,32 @@ export function YamlDiff({ before, after }: { before: string; after: string }) {
   }, [before, after]);
   return <div className="flex min-h-0 flex-1 flex-col"><div className="grid grid-cols-2 border-b border-border-subtle bg-purr-surface px-ui-4 py-ui-2 text-ui-xs text-content-secondary"><span>Before</span><span>After</span></div><div ref={host} className="purr-git-diff min-h-0 flex-1 overflow-auto" aria-label="File diff" /></div>;
 }
-export function GitDiffView({ diff }: { diff: GitDiff }) {
+function FilePreview({ content, isYaml }: { content: string; isYaml: boolean }) {
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!host.current) return;
+    const view = new EditorView({ parent: host.current, doc: content, extensions: [purrCodeTheme, purrCodeHighlighting, ...(isYaml ? [yaml()] : []), lineNumbers(), EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.lineWrapping] });
+    return () => view.destroy();
+  }, [content, isYaml]);
+  return <div ref={host} className="min-h-0 flex-1 overflow-auto" aria-label="File content" />;
+}
+export function GitDiffView({ diff, names }: { diff: GitDiff; names?: Record<string, string> }) {
   const sections = useMemo(() => semanticSections(diff.before, diff.after), [diff.before, diff.after]);
   const [mode, setMode] = useState<"semantic" | "yaml">("semantic"); const [unchanged, setUnchanged] = useState(false);
-  if (diff.binary || diff.truncated) return <div className="p-ui-5 text-ui-sm text-content-secondary">{diff.binary ? "Binary file" : "This file is too large to preview."}<p className="font-code">{diff.beforeBytes.toLocaleString()} → {diff.afterBytes.toLocaleString()} bytes</p></div>;
+  const single = (diff.beforeExists === false || diff.beforeExists === undefined && !diff.beforeBytes) ? "after" as const : (diff.afterExists === false || diff.afterExists === undefined && !diff.afterBytes) ? "before" as const : undefined;
+  if (diff.binary || diff.truncated) return <div className="p-ui-5 text-ui-sm text-content-secondary">{diff.binary ? single === "after" ? "New binary file" : "Binary file" : "This file is too large to preview."}<p className="font-code">{single ? (single === "after" ? diff.afterBytes : diff.beforeBytes).toLocaleString() : `${diff.beforeBytes.toLocaleString()} → ${diff.afterBytes.toLocaleString()}`} bytes</p></div>;
   const activeMode = sections ? mode : "yaml";
   return <div className="flex h-full min-h-0 flex-col">
     <div className="flex flex-wrap items-center justify-between gap-ui-3 border-b border-border-subtle px-ui-4 py-ui-2">
+      {single && <span className="rounded-ui-md bg-purr-highlight px-ui-2 py-ui-1 text-ui-xs font-medium text-content-primary">{single === "after" ? "New file" : "Deleted file"}</span>}
       <span className="min-w-0 flex-1 truncate font-code text-ui-xs text-content-secondary" title={diff.path}>{diff.path}</span>
       <SegmentedTabs label="Diff view" id="git-diff-mode" panelId="git-diff-content" value={activeMode} onValueChange={setMode} options={[{ value: "semantic", label: "Semantic", disabled: !sections }, { value: "yaml", label: sections || /\.ya?ml$/i.test(diff.path) ? "YAML" : "Text" }]} />
     </div>
     <div id="git-diff-content" className="flex min-h-0 flex-1 flex-col">
-      {activeMode === "yaml" ? <YamlDiff before={diff.before} after={diff.after} /> : <div className="min-h-0 flex-1 space-y-ui-3 overflow-auto p-ui-4">
-        <div className="flex items-center justify-between gap-ui-3 text-ui-xs text-content-tertiary"><span>{sections?.filter((section) => section.changed).length} sections changed</span><Button variant="ghost" size="xs" onClick={() => setUnchanged(!unchanged)}>{unchanged ? "Hide unchanged" : "Show unchanged"}</Button></div>
+      {activeMode === "yaml" ? single ? <FilePreview content={diff[single]} isYaml={/\.ya?ml$/i.test(diff.path)} /> : <YamlDiff before={diff.before} after={diff.after} /> : <div className="min-h-0 flex-1 space-y-ui-3 overflow-auto p-ui-4">
+        {!single && <div className="flex items-center justify-between gap-ui-3 text-ui-xs text-content-secondary"><span>{sections?.filter((section) => section.changed).length} sections changed</span><Button variant="ghost" size="xs" onClick={() => setUnchanged(!unchanged)}>{unchanged ? "Hide unchanged" : "Show unchanged"}</Button></div>}
         {!sections?.some((section) => section.changed) && <p className="text-ui-sm text-content-secondary">No semantic changes. Switch to YAML to review formatting changes.</p>}
-        {sections?.filter((section) => unchanged || section.changed).map((section) => <details key={section.key} open={section.changed} className="overflow-hidden rounded-ui-lg border border-border-subtle bg-purr-surface">
-          <summary className="ui-focus-ring cursor-pointer px-ui-3 py-ui-2 text-ui-sm font-medium text-content-primary">{section.label}<span className="ml-ui-2 font-code text-ui-xs text-content-tertiary">{section.rows.filter((row) => row.changed).length || "unchanged"}</span></summary>
-          <div className="divide-y divide-border-subtle border-t border-border-subtle">{section.rows.filter((row) => unchanged || row.changed).map((row) => <div key={row.key} className="px-ui-3 py-ui-2">
-            {section.rows.length > 1 && <div className="mb-ui-2 flex items-center gap-ui-2 font-code text-ui-xs text-content-secondary">{row.label}{row.moved && <span className="text-accent-orange">Reordered</span>}</div>}
-            <div className="grid grid-cols-1 gap-ui-3 lg:grid-cols-2">
-              <div className={cn("min-w-0 rounded-ui-md border-l p-ui-3", row.changed ? "border-accent-red bg-purr-highlight" : "border-border-subtle")}><div className="mb-ui-1 text-ui-2xs text-content-tertiary">Before</div><pre className="m-ui-0 whitespace-pre-wrap break-words font-code text-ui-sm text-content-secondary">{displayValue(row.before)}</pre></div>
-              <div className={cn("min-w-0 rounded-ui-md border-l p-ui-3", row.changed ? "border-status-success bg-action-emerald-surface" : "border-border-subtle")}><div className="mb-ui-1 text-ui-2xs text-content-tertiary">After</div><pre className="m-ui-0 whitespace-pre-wrap break-words font-code text-ui-sm text-content-primary">{displayValue(row.after)}</pre></div>
-            </div>
-          </div>)}</div>
-        </details>)}
+        {sections?.filter((section) => single || unchanged || section.changed).map((section) => <SemanticComparison key={`${diff.path}:${section.key}:${single ?? "comparison"}`} section={section} unchanged={unchanged} single={single} names={names} />)}
       </div>}
     </div>
   </div>;

@@ -124,6 +124,12 @@
     --action-brand-surface: rgb(59 130 246 / 14%);
     --action-brand-border: rgb(59 130 246 / 28%);
 
+    /* Diff surfaces and text marks retain contrast on neutral Obsidian panels. */
+    --syntax-diff-removed-line: color-mix(in srgb, var(--accent-red) 14%, var(--purr-code-bg));
+    --syntax-diff-removed-mark: color-mix(in srgb, var(--accent-red) 32%, var(--purr-code-bg));
+    --syntax-diff-added-line: color-mix(in srgb, var(--accent-emerald) 14%, var(--purr-code-bg));
+    --syntax-diff-added-mark: color-mix(in srgb, var(--accent-emerald) 32%, var(--purr-code-bg));
+
     --method-get: var(--accent-emerald);
     --method-post: var(--accent-blue);
     --method-put: var(--accent-orange);
@@ -615,10 +621,10 @@
 /* Git merge views share the existing editor and semantic status palette. */
 .purr-git-diff .cm-mergeView { min-height: 100%; background: var(--purr-code-bg); }
 .purr-git-diff .cm-mergeViewEditor { min-width: 0; }
-.purr-git-diff .cm-merge-a .cm-changedLine,
-.purr-git-diff .cm-deletedText { background: var(--purr-highlight); text-decoration-color: var(--accent-red); }
-.purr-git-diff .cm-merge-b .cm-changedLine,
-.purr-git-diff .cm-insertedText { background: var(--action-emerald-surface); }
+.purr-git-diff .cm-merge-a .cm-changedLine { background: var(--syntax-diff-removed-line); }
+.purr-git-diff .cm-deletedText { background: var(--syntax-diff-removed-mark); text-decoration: line-through; text-decoration-color: var(--accent-red); }
+.purr-git-diff .cm-merge-b .cm-changedLine { background: var(--syntax-diff-added-line); }
+.purr-git-diff .cm-insertedText { background: var(--syntax-diff-added-mark); text-decoration: none; }
 .purr-git-diff .cm-deletedLineGutter { background: var(--accent-red); }
 .purr-git-diff .cm-insertedLineGutter { background: var(--status-success); }
 .purr-git-diff .cm-merge-gap { background: var(--purr-surface); border-color: var(--border-subtle); }
