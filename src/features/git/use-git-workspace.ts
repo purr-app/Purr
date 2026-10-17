@@ -15,19 +15,21 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   const [afterCommit, setAfterCommit] = useState<GitAction | null>(null);
   const abort = useRef(new Map<string, AbortController>()); const requestGeneration = useRef(0);
   const refreshGeneration = useRef(0);
+  const invalidated = useRef(new Set<string>());
   const indexQueues = useRef(new Map<string, Promise<unknown>>());
   const pendingIndex = useRef(new Map<string, IndexAction[]>());
   const baseStatus = useRef<GitStatus | null>(null);
   const [indexWorking, setIndexWorking] = useState(false);
   const publishStatus = useCallback((next: GitStatus, owner: string) => {
     if (activeId.current !== owner) return;
+    invalidated.current.delete(owner);
     baseStatus.current = next;
     setStatus((pendingIndex.current.get(owner) ?? []).reduce(optimisticIndex, next));
   }, []);
   const [networkAction, setNetworkAction] = useState<{ type: "fetch" | "pull" | "push"; remote: string; branch: string } | null>(null);
   const refresh = useCallback(async () => {
     if (!id || (running.current.has(id) || pendingIndex.current.get(id)?.length) || runtime.kind !== "desktop") return;
-    const requested = refreshGeneration.current;
+    const requested = ++refreshGeneration.current;
     try { const next = await git.status(id); if (activeId.current === id && requested === refreshGeneration.current && !running.current.has(id)) { publishStatus(next, id); } }
     catch (cause) { if (activeId.current === id && !(cause instanceof GitError && cause.code === "busy")) setError(cause instanceof Error ? cause.message : String(cause)); }
   }, [id, git, runtime.kind, publishStatus]);
@@ -35,10 +37,10 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   useEffect(() => {
     if (!id || runtime.kind !== "desktop") return;
     let disposed = false; let stop: (() => void) | undefined; let timer: ReturnType<typeof setTimeout> | undefined;
-    void git.subscribe(id, () => { clearTimeout(timer); timer = setTimeout(() => { void refresh(); }, 180); }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
+    void git.subscribe(id, () => { invalidated.current.add(id); clearTimeout(timer); timer = setTimeout(() => { void refresh(); }, 0); }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
     return () => { disposed = true; stop?.(); clearTimeout(timer); };
   }, [id, runtime.kind, refresh, git]);
-  const execute = useCallback(async (action: GitAction): Promise<GitStatus | null> => {
+  const execute = useCallback(async (action: GitAction, options?: { stashBefore?: boolean }): Promise<GitStatus | null> => {
     if (!id || running.current.has(id)) return null;
     if (action.type === "stage" || action.type === "unstage") {
       const pending = pendingIndex.current.get(id) ?? [];
@@ -65,22 +67,44 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
     await indexQueues.current.get(id);
     if (running.current.has(id)) return null;
     refreshGeneration.current += 1; running.current.add(id); setBusy(true); setError(""); setProgress("Saving local state…"); const controller = new AbortController(); abort.current.set(id, controller);
+    let currentAction = action, stashed = false, completed = false;
     try {
-      const next = await runOperation(id, () => git.execute(id, action, { signal: controller.signal, onProgress: (message) => { if (activeId.current === id) setProgress(message); } }));
-      if (activeId.current === id) { publishStatus(next, id); setDirtyAction(null); setAuthorAction(null); if (action.type === "finishMerge" || action.type === "abortMerge") setView("overview"); }
+      const next = await runOperation(id, async () => {
+        const run = async (nextAction: GitAction) => {
+          currentAction = nextAction;
+          const next = await git.execute(id, nextAction, { signal: controller.signal, onProgress: (message) => { if (activeId.current === id) setProgress(message); } });
+          publishStatus(next, id);
+          return next;
+        };
+        let stashId: string | undefined;
+        if (options?.stashBefore) {
+          const previousStash = action.type === "pull" ? (await git.stashes(id))[0]?.id : undefined;
+          await run({ type: "stash", message: `Before ${action.type === "pull" ? "pull" : "switch"}` }); stashed = true;
+          if (action.type === "pull") { const latest = (await git.stashes(id))[0]?.id; if (latest !== previousStash) stashId = latest; }
+        }
+        let next = await run(action);
+        if (stashId) next = await run({ type: "applyStash", id: stashId });
+        completed = true;
+        return next;
+      });
+      if (activeId.current === id) { setDirtyAction(null); setAuthorAction(null); if (action.type === "finishMerge" || action.type === "abortMerge") setView("overview"); }
       return activeId.current === id ? next : null;
     } catch (cause) {
       if (activeId.current === id) {
-        if (cause instanceof GitError && cause.code === "dirty" && (action.type === "pull" || action.type === "switchBranch")) setDirtyAction(action);
-        else if (cause instanceof GitError && cause.code === "author" && action.type === "commit") setAuthorAction(action);
+        if (cause instanceof GitError && cause.code === "dirty" && (currentAction.type === "pull" || currentAction.type === "switchBranch")) {
+          if (stashed) setError("Your changes are safely stashed, but files changed again before continuing. Review the remaining changes and retry the operation.");
+          else setDirtyAction(currentAction);
+        }
+        else if (cause instanceof GitError && cause.code === "author" && currentAction.type === "commit") setAuthorAction(currentAction);
         else { setError(cause instanceof Error ? cause.message : String(cause)); if (cause instanceof GitError && cause.code === "conflict") { setView("conflicts"); onOpen(); } }
       }
       return null;
     } finally {
+      if (!completed && activeId.current === id) { try { const next = await git.status(id); if (activeId.current === id) publishStatus(next, id); } catch { /* Keep the operation error. */ } }
       running.current.delete(id); abort.current.delete(id);
-      if (activeId.current === id) { try { const next = await git.status(id); if (activeId.current === id) publishStatus(next, id); } catch { /* Keep the operation error. */ } if (activeId.current === id) { setBusy(false); setProgress(""); } }
+      if (activeId.current === id) { setBusy(false); setProgress(""); if (invalidated.current.has(id)) void refresh(); }
     }
-  }, [id, git, runOperation, onOpen, publishStatus]);
+  }, [id, git, runOperation, onOpen, publishStatus, refresh]);
   const selectFile = async (request: GitDiffRequest) => {
     if (!id) return; const generation = ++requestGeneration.current; setSelected(request); setView("diff"); setError(""); setDiff(null); onOpen();
     if (request.scope !== "commit") return;
@@ -118,10 +142,7 @@ export function useGitWorkspace(workspace: Workspace | undefined, runOperation: 
   const stashAndContinue = async () => {
     if (!id || !dirtyAction) return;
     const pending = dirtyAction; setDirtyAction(null);
-    if (!await execute({ type: "stash", message: `Before ${pending.type === "pull" ? "pull" : "switch"}` })) return;
-    const stash = (await git.stashes(id))[0];
-    const result = await execute({ ...pending, allowDirty: false } as GitAction);
-    if (result && pending.type === "pull" && stash) await execute({ type: "applyStash", id: stash.id });
+    await execute({ ...pending, allowDirty: false } as GitAction, { stashBefore: true });
   };
   const sync = async () => { if (await execute({ type: "pull" })) await execute({ type: "push" }); };
   const changedFiles = status?.files.length ?? 0;

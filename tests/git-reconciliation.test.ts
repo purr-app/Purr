@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { WorkspacePersistence } from "../src/application/workspace-persistence";
 import { MemorySecureStore } from "../src/storage/secrets";
 import { MemoryPersistenceBackend } from "./helpers/memory-persistence";
-import { cloneRequestDraft, isRequestDocument } from "../src/features/workspaces/model/workspace";
+import { cloneRequestDraft, createSchemaDocument, isRequestDocument } from "../src/features/workspaces/model/workspace";
 import { deserializeResource, serializeResource } from "../src/storage/yaml";
 
 async function fixture() {
@@ -109,4 +109,22 @@ test("stash reconciliation does not recreate a removed binary asset and apply re
   assert.deepEqual(new Uint8Array(await restored.request.body.binary!.file.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
   assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).protectedState.status, "available");
   assert.equal(f.persistence.getWorkspaceStatus(f.workspace.id).publicWritable, true);
+});
+
+test("stash removes a new pinned schema without autosave recreating its definition or SDL", async () => {
+  const f = await fixture(); const baseline = structuredClone(f.snapshot.files);
+  const schema = createSchemaDocument(); schema.saved = true; schema.name = "Rick and Morty copy";
+  schema.endpoint = "https://rickandmortyapi.com/graphql/"; schema.source = "introspection";
+  schema.sdl = "type Query { character: Character }\ntype Character { name: String }";
+  f.workspace.documents.push(schema); await f.persistence.save(f.store);
+  const stashed = structuredClone(f.snapshot.files);
+  assert.equal(Object.keys(stashed).filter((path) => path.startsWith("schemas/")).length, 2);
+  f.snapshot.files = baseline;
+  const clean = await f.persistence.reconcileExternalChanges(f.store);
+  assert.equal(clean.workspaces[0].documents.some((document) => document.id === schema.id), false);
+  await f.persistence.save(clean);
+  assert.equal(Object.keys(f.snapshot.files).some((path) => path.startsWith("schemas/")), false);
+  f.snapshot.files = stashed;
+  const applied = await f.persistence.reconcileExternalChanges(clean);
+  assert.equal(applied.workspaces[0].documents.find((document) => document.id === schema.id)?.kind, "schema");
 });

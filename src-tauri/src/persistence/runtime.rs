@@ -1606,9 +1606,8 @@ pub(crate) fn git_context(app:&tauri::AppHandle,id:&str,mutation:bool)->Result<(
         let root=storage.roots.get(id).cloned().ok_or("The workspace project directory is not registered")?;
         if fs::symlink_metadata(&root).is_ok_and(|meta|meta.file_type().is_symlink()){return Err("The project directory was replaced by a symbolic link. Restore the original directory.".into());}
         if !root.is_dir(){return Err("The workspace directory is missing. Restore it before continuing.".into());}
-        let records=storage.local.read_partial(id)?.0;
-        if mutation && records.iter().any(|r|r.table=="workspace_local_state"&&r.id=="directory-relocation"){return Err("Finish or cancel the pending project move before changing its Git repository".into());}
-        let checkpoint=records.into_iter().find(|r|r.table=="workspace_local_state"&&r.id=="git-operation").map(|r|r.value);
+        if mutation && storage.local.read_workspace_state(id,"directory-relocation")?.is_some(){return Err("Finish or cancel the pending project move before changing its Git repository".into());}
+        let checkpoint=storage.local.read_workspace_state(id,"git-operation")?;
         Ok((root,checkpoint))
     })
 }

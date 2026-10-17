@@ -26,6 +26,69 @@ test("switch offers stash and keeps the stash on the original branch", async ({ 
   expect(await page.evaluate(() => (window as any).__gitCalls.filter((call: any) => call.args?.query?.action?.type === "applyStash").length)).toBe(0);
 });
 
+test("stash and switch archives a new pinned schema once and apply restores every file", async ({ page }) => {
+  await installGitMock(page, { branchStash: true }); await page.goto("/"); const sidebar = await sourceControl(page);
+  await expect(sidebar.getByText("Rick and Morty copy", { exact: true })).toHaveCount(2);
+  await sidebar.getByRole("button", { name: "Select Git branch" }).click(); await page.getByRole("button", { name: "feature/team", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Uncommitted changes" }); await dialog.getByRole("button", { name: "Stash and continue" }).click();
+  await expect(sidebar.getByRole("button", { name: "Select Git branch" })).toContainText("feature/team"); await expect(dialog).toHaveCount(0);
+  await expect(sidebar.getByText("No changes", { exact: true })).toBeVisible();
+  await sidebar.getByRole("button", { name: "Stashes", exact: true }).click();
+  await expect(page.locator("#git-workspace-panel").getByRole("button", { name: "Apply", exact: true })).toHaveCount(1);
+  expect(await page.evaluate(() => (window as any).__gitCalls.filter((call: any) => call.args?.query?.action?.type === "stash").length)).toBe(1);
+  const intervening = await page.evaluate(() => { const calls = (window as any).__gitCalls; const stash = calls.findIndex((call: any) => call.args?.query?.action?.type === "stash"); const switchBranch = calls.findIndex((call: any, index: number) => index > stash && call.args?.query?.action?.type === "switchBranch"); return calls.slice(stash + 1, switchBranch).filter((call: any) => call.command === "commit_project" || call.command === "load_project"); });
+  expect(intervening).toEqual([]);
+  await page.locator("#git-workspace-panel").getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(sidebar.getByText("Rick and Morty copy", { exact: true })).toHaveCount(2);
+});
+
+test("a concurrent file after stash stops continuation without reopening a stash loop", async ({ page }) => {
+  await installGitMock(page, { branchStash: true, stashConcurrentChange: true }); await page.goto("/"); const sidebar = await sourceControl(page);
+  await sidebar.getByRole("button", { name: "Select Git branch" }).click(); await page.getByRole("button", { name: "feature/team", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Uncommitted changes" }); await dialog.getByRole("button", { name: "Stash and continue" }).click();
+  await expect(sidebar.getByRole("alert")).toContainText("Your changes are safely stashed"); await expect(dialog).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "Select Git branch" })).toContainText("main");
+  expect(await page.evaluate(() => (window as any).__gitStashes.length)).toBe(1);
+});
+
+test("confirmed branch and commits update before a slow workspace rescan finishes", async ({ page }) => {
+  await installGitMock(page, { branchStash: true, reloadDelayMs: 1800 }); await page.goto("/"); const sidebar = await sourceControl(page);
+  await sidebar.getByRole("button", { name: "Commits", exact: true }).click(); const panel = page.locator("#git-workspace-panel");
+  await expect(panel).toContainText("Add user endpoint");
+  await sidebar.getByRole("button", { name: "Select Git branch" }).click(); await page.getByRole("button", { name: "feature/team", exact: true }).click();
+  await page.getByRole("dialog", { name: "Uncommitted changes" }).getByRole("button", { name: "Stash and continue" }).click();
+  await expect(sidebar.getByRole("button", { name: "Select Git branch" })).toContainText("feature/team", { timeout: 1000 });
+  await expect(panel).toContainText("Test branch commit", { timeout: 1000 }); await expect(panel).not.toContainText("Add user endpoint");
+  await expect(sidebar.getByRole("status")).toBeVisible();
+});
+
+test("stash and pull restores only the newly created stash and keeps an older stash", async ({ page }) => {
+  await installGitMock(page, { branchStash: true }); await page.goto("/"); const sidebar = await sourceControl(page);
+  await page.evaluate(() => { (window as any).__gitStashes.push({ id: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", message: "Existing stash" }); });
+  await sidebar.getByRole("button", { name: "Pull", exact: true }).click();
+  await page.getByRole("dialog", { name: "Uncommitted changes" }).getByRole("button", { name: "Stash and continue" }).click();
+  await expect(sidebar.getByRole("button", { name: "Select Git branch" })).toBeEnabled();
+  await expect(sidebar.getByText("Rick and Morty copy", { exact: true })).toHaveCount(2);
+  expect(await page.evaluate(() => (window as any).__gitStashes.map((stash: any) => stash.id))).toEqual(["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]);
+  const actions = await page.evaluate(() => (window as any).__gitCalls.flatMap((call: any) => call.args?.query?.action ? [call.args.query.action.type] : []));
+  expect(actions).toEqual(["pull", "stash", "pull", "applyStash"]);
+});
+
+test("Git invalidation during reconciliation is refreshed after the operation settles", async ({ page }) => {
+  await installGitMock(page, { branchStash: true, reloadDelayMs: 1800 }); await page.goto("/"); const sidebar = await sourceControl(page);
+  await sidebar.getByRole("button", { name: "Select Git branch" }).click(); await page.getByRole("button", { name: "feature/team", exact: true }).click();
+  await page.getByRole("dialog", { name: "Uncommitted changes" }).getByRole("button", { name: "Stash and continue" }).click();
+  await expect(sidebar.getByRole("button", { name: "Select Git branch" })).toContainText("feature/team", { timeout: 1000 });
+  expect(await page.evaluate(() => {
+    const snapshot = JSON.parse(localStorage.getItem("purr-native-persistence-test")!);
+    snapshot.workspaces[0].files["schemas/later.graphql"] = { content: "scalar Later", revision: "later" };
+    localStorage.setItem("purr-native-persistence-test", JSON.stringify(snapshot));
+    return (window as any).__purrEmitNativeEvent("git-state-changed", { workspaceId: "git-fixture" });
+  })).toBeGreaterThan(0);
+  await expect(sidebar.getByRole("button", { name: "Select Git branch" })).toBeEnabled();
+  await expect(sidebar.getByRole("button", { name: "later.graphql schemas/later.graphql", exact: true })).toBeVisible();
+});
+
 test("staging later edits to an indexed rename includes only its current path", async ({ page }) => {
   await installGitMock(page); await page.goto("/");
   await page.evaluate(() => { const file = (window as any).__gitStatus.files[0]; file.index = "R"; file.worktree = "M"; file.oldPath = "documents/original.yaml"; });

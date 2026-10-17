@@ -385,7 +385,11 @@ impl Git {
                         "Create a first commit before stashing.",
                     ));
                 }
+                // Stash uses directory pathspecs internally to clean untracked files.
+                // Literal mode leaves new directories on disk (Git 2.50); this
+                // command takes no user-supplied paths, so let Git expand its own.
                 self.run(&[
+                    "--no-literal-pathspecs",
                     "stash",
                     "push",
                     "--include-untracked",

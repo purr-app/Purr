@@ -802,6 +802,19 @@ impl LocalStateStore {
         }
         Ok(records)
     }
+    /// Git coordination needs one control record, not decrypted editor/cache/history payloads.
+    pub(crate) fn read_workspace_state(&self, workspace: &str, id: &str) -> Result<Option<Value>, String> {
+        let row = self.db.query_row(
+            "SELECT payload,protection FROM workspace_local_state WHERE workspace_id=?1 AND id=?2",
+            params![workspace, id],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?)),
+        ).optional().map_err(db_error)?;
+        row.map(|(bytes, protection)| {
+            let protection = RecordProtection::parse(&protection)?;
+            let plain = self.decode_runtime(workspace, protection.as_str(), &bytes, &format!("{workspace}/workspace_local_state/{id}"))?;
+            serde_json::from_slice(&plain).map_err(|_| "Damaged workspace control record".into())
+        }).transpose()
+    }
     pub fn read_partial(&self, workspace: &str) -> Result<(Vec<LocalRecord>, Vec<Value>), String> {
         let mut records = Vec::new();
         let mut unavailable = Vec::new();
@@ -1270,6 +1283,25 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn workspace_control_reads_are_scoped_and_do_not_decode_schema_caches() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = MemoryRootKeyStore::default();
+        let mut store = LocalStateStore::open(&directory.path().join("state.db"), &root).unwrap();
+        let checkpoint = serde_json::json!({"version":1,"kind":"switch"});
+        store.write("workspace", &[
+            LocalRecord { protection: Default::default(), table: "workspace_local_state".into(), id: "git-operation".into(), value: checkpoint.clone() },
+            LocalRecord { protection: Default::default(), table: "schema_cache".into(), id: "schema".into(), value: serde_json::json!({"sdl":"large cached schema"}) },
+        ]).unwrap();
+        store.db.execute("UPDATE schema_cache SET payload=x'00' WHERE workspace_id='workspace'", []).unwrap();
+        assert!(!store.read_partial("workspace").unwrap().1.is_empty());
+        assert_eq!(store.read_workspace_state("workspace", "git-operation").unwrap(), Some(checkpoint));
+        assert_eq!(store.read_workspace_state("other-workspace", "git-operation").unwrap(), None);
+        assert_eq!(store.read_workspace_state("workspace", "directory-relocation").unwrap(), None);
+        store.db.execute("UPDATE workspace_local_state SET payload=x'00' WHERE workspace_id='workspace' AND id='git-operation'", []).unwrap();
+        assert!(store.read_workspace_state("workspace", "git-operation").is_err());
     }
 
     #[test]

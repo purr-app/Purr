@@ -296,6 +296,36 @@ async fn stash_application_restores_the_real_index_and_later_working_copy() {
     );
     assert!(git.stashes().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn stash_then_switch_keeps_new_schema_and_request_changes_in_one_stash() {
+    let (_dir, mut git) = repo();
+    std::fs::create_dir(git.root.join("documents")).unwrap();
+    std::fs::create_dir(git.root.join("schemas")).unwrap();
+    let before = "purr: 2\nkind: http\nid: request\nname: Request\nmethod: GET\nurl: https://example.test/before\n";
+    let after = before.replace("/before", "/after");
+    std::fs::write(git.root.join("documents/request.yaml"), before).unwrap();
+    command(&git.root, &["add", "documents/request.yaml"]);
+    command(&git.root, &["commit", "-m", "Request baseline"]);
+    command(&git.root, &["branch", "test"]);
+    std::fs::write(git.root.join("documents/request.yaml"), &after).unwrap();
+    let definition = "purr: 2\nkind: schema\nid: schema\nname: Rick and Morty copy\nsource:\n  type: introspection\nendpoint: https://example.test/graphql\npinned: schemas/schema.graphql\n";
+    let sdl = "type Query { hello: String }";
+    std::fs::write(git.root.join("schemas/schema.yaml"), definition).unwrap();
+    std::fs::write(git.root.join("schemas/schema.graphql"), sdl).unwrap();
+    git.execute(Action::Stash { message: "Before switch".into() }).await.unwrap();
+    assert!(git.status().await.unwrap().files.is_empty(), "{}", command(&git.root, &["status", "--porcelain=v2", "--untracked-files=all"]));
+    git.execute(Action::SwitchBranch { name: "test".into(), allow_dirty: false }).await.unwrap();
+    let stashes = git.stashes().await.unwrap();
+    assert_eq!(stashes.len(), 1);
+    assert!(!git.root.join("schemas/schema.yaml").exists());
+    assert!(!git.root.join("schemas/schema.graphql").exists());
+    git.execute(Action::ApplyStash { id: stashes[0].id.clone() }).await.unwrap();
+    assert_eq!(std::fs::read_to_string(git.root.join("documents/request.yaml")).unwrap(), after);
+    assert_eq!(std::fs::read_to_string(git.root.join("schemas/schema.yaml")).unwrap(), definition);
+    assert_eq!(std::fs::read_to_string(git.root.join("schemas/schema.graphql")).unwrap(), sdl);
+    assert!(git.stashes().await.unwrap().is_empty());
+}
 #[tokio::test]
 async fn submodules_are_rejected_even_outside_canonical_directories() {
     let (_dir, git) = repo();
