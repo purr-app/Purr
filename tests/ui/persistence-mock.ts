@@ -139,7 +139,7 @@ export async function installPersistenceMock(page: Page) {
           }
           if (command === "project_directory") {
             const id = args.workspaceId; const action = args.action;
-            if (action.type === "info") return { directory: snapshot.workspaces.find((item: any) => item.id === id)?.directory ?? `/projects/${id}`, managed: true };
+            if (action.type === "info") return { directory: snapshot.workspaces.find((item: any) => item.id === id)?.directory ?? `/projects/${id}`, projectsDirectory: "/projects", managed: true };
             if (action.type === "create") {
               await dispatch("commit_project", { id, files: action.files, local: action.local, secrets: action.secrets });
               const created = JSON.parse(localStorage.getItem("purr-native-persistence-test")!);

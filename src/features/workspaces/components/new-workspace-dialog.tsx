@@ -12,11 +12,12 @@ export function ProjectDirectoryField({ value, onChange, disabled = false }: { v
   const { importDialog } = useApplicationServices();
   const [error, setError] = useState("");
   return <div className="space-y-ui-1">
-    <label className="block space-y-ui-2 text-ui-sm text-content-secondary">Project directory
-      <div className="flex items-center gap-ui-2"><Input aria-label="Project directory" className="ui-focus-ring min-w-0 font-code" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} spellCheck={false} placeholder="/path/to/project" />
-        <Button variant="secondary" type="button" disabled={disabled} aria-label="Choose project directory" title="Choose project directory" onClick={() => { void importDialog.choosePath(true).then((path) => { if (path) { onChange(path); setError(""); } }).catch((cause) => setError(String(cause))); }}><FolderOpen className="size-ui-4" /></Button>
+    <div className="space-y-ui-2 text-ui-sm text-content-secondary"><span>Project directory</span>
+      <div className="flex items-stretch gap-ui-2">
+        <div aria-label="Project directory" title={value} className="flex h-control-lg min-w-0 flex-1 items-center rounded-ui-lg border border-border-subtle bg-purr-elevated px-ui-3 font-code text-ui-md text-content-primary"><span className="truncate select-text">{value || "Choose a project directory"}</span></div>
+        <Button variant="secondary" size="lg" className="w-control-lg px-ui-0" type="button" disabled={disabled} aria-label="Choose project directory" title="Choose project directory" onClick={() => { void importDialog.choosePath(true).then((path) => { if (path) { onChange(path); setError(""); } }).catch((cause) => setError(String(cause))); }}><FolderOpen className="size-ui-4" /></Button>
       </div>
-    </label>
+    </div>
     {error && <p role="alert" className="text-ui-xs text-accent-red">{error}</p>}
   </div>;
 }

@@ -985,7 +985,8 @@ fn directory_candidate(
     let path = project_directory_input(directory, false)?
         .ok_or("Choose a Purr workspace folder or its purr.yaml file")?;
     let data = fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
-    if !path.is_dir() || data.starts_with(&path) || path.starts_with(&data) {
+    let managed_parent = data.join("projects");
+    if !path.is_dir() || data.starts_with(&path) || path.starts_with(&data) && path.parent() != Some(managed_parent.as_path()) {
         return Err("Choose a workspace folder outside Purr's private application storage".into());
     }
     let store = FilesystemWorkspaceStore {
@@ -1005,6 +1006,9 @@ fn directory_candidate(
         .ok_or("The workspace identity is missing")?
         .to_string();
     valid_id(&id)?;
+    if path.starts_with(&data) && path != managed_parent.join(&id) {
+        return Err("The managed project directory must match its workspace identity".into());
+    }
     crate::transfer::validate_project_files(&files, &id)?;
     Ok((path, id, files))
 }
@@ -1384,6 +1388,26 @@ mod open_directory_tests {
             .iter()
             .map(|(path, file)| (path.clone(), file.revision.clone()))
             .collect()
+    }
+    #[test]
+    fn managed_clone_opens_through_the_existing_directory_pipeline() {
+        let data = tempfile::tempdir().unwrap();
+        let project = data.path().join("projects/portable");
+        fixture(&project);
+        let mut runtime = storage(data.path());
+        let (path, id, files) = directory_candidate(data.path(), project.to_str().unwrap()).unwrap();
+        let opened = runtime.open_directory(path.clone(), &id, files.clone(), &revisions(&files)).unwrap();
+        assert_eq!(opened["id"], "portable");
+        assert_eq!(runtime.roots.get(&id), Some(&path));
+        // A manifest cannot authorize reading arbitrary private directories or a
+        // different managed identity, even if its canonical contents are valid.
+        let mismatched = data.path().join("projects/another-identity");
+        fixture(&mismatched);
+        assert!(directory_candidate(data.path(), mismatched.to_str().unwrap()).is_err());
+        let private = data.path().join("private/portable");
+        fixture(&private);
+        assert!(directory_candidate(data.path(), private.to_str().unwrap()).is_err());
+        assert!(directory_candidate(data.path(), data.path().to_str().unwrap()).is_err());
     }
     #[test]
     fn git_checkpoint_keeps_conflicted_workspace_open_after_restart() {
